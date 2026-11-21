@@ -1,21 +1,21 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
 
-#include <intravenous/runtime/node_definitions_project_graph_bridge.h>
-#include <intravenous/runtime/graph_connections.h>
-#include <intravenous/runtime/project_graph.h>
-#include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/project_graph_graph_connections_bridge.h>
-#include <intravenous/runtime/project_graph_node_instances_bridge.h>
-#include <intravenous/runtime/project_graph_package_definitions_bridge.h>
-#include <intravenous/runtime/project_graph_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/socket_rpc_requests.h>
-#include <intravenous/runtime/socket_rpc_response_builders.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_jit.h>
-#include <intravenous/runtime/node_instances_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/iv_module_source_introspection.h>
+#include <intravenous/app/bridges/node_definitions_project_graph_bridge.h>
+#include <intravenous/project/graph_connections.h>
+#include <intravenous/project/project_graph.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/app/bridges/project_graph_graph_connections_bridge.h>
+#include <intravenous/app/bridges/project_graph_node_instances_bridge.h>
+#include <intravenous/app/bridges/project_graph_package_definitions_bridge.h>
+#include <intravenous/app/bridges/project_graph_iv_module_source_introspection_bridge.h>
+#include <intravenous/rpc/socket_rpc_requests.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/packages/package_jit.h>
+#include <intravenous/app/bridges/node_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/packages/iv_module_source_introspection.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

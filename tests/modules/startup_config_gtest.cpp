@@ -1,6 +1,6 @@
 #include "../module_test_utils.h"
 
-#include <intravenous/runtime/startup_config.h>
+#include <intravenous/app/startup_config.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

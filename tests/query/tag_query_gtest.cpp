@@ -4,8 +4,8 @@
 #include <intravenous/query/tag_query_program.h>
 #include <intravenous/query/tag_query_schema.h>
 #include <intravenous/query/tag_query_tokenizer.h>
-#include <intravenous/runtime/node_definition_search.h>
-#include <intravenous/runtime/node_definition_types.h>
+#include <intravenous/packages/node_definition_search.h>
+#include <intravenous/packages/node_definition_types.h>
 
 #include <nlohmann/json.hpp>
 

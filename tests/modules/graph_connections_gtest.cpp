@@ -2,9 +2,9 @@
 #include "../event_source_test_support.h"
 #include <intravenous/dsl.h>
 #include <intravenous/graph/configured_graph.hpp>
-#include <intravenous/runtime/configuration_expression.h>
-#include <intravenous/runtime/graph_connections.h>
-#include <intravenous/runtime/project_node_path_resolver.h>
+#include <intravenous/project/configuration_expression.h>
+#include <intravenous/project/graph_connections.h>
+#include <intravenous/project/project_node_path_resolver.h>
 
 #include <gtest/gtest.h>
 

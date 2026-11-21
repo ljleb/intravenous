@@ -6,10 +6,10 @@
 #include "fake_audio_device.h"
 #include <intravenous/module/loader.h>
 #include <intravenous/module/package_manifest.h>
-#include <intravenous/runtime/handlers.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/package_pipeline_types.h>
-#include <intravenous/runtime/startup_config.h>
+#include <intravenous/app/handlers.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/packages/package_pipeline_types.h>
+#include <intravenous/app/startup_config.h>
 #include <intravenous/juce/vst_runtime.h>
 
 #include <algorithm>

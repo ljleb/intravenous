@@ -1,12 +1,12 @@
 #include "module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/system_audio_devices.h>
-#include <intravenous/runtime/project_graph.h>
-#include <intravenous/runtime/project_graph_system_audio_devices_bridge.h>
-#include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_system_audio_devices_bridge.h>
-#include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/audio/system_audio_devices.h>
+#include <intravenous/project/project_graph.h>
+#include <intravenous/app/bridges/project_graph_system_audio_devices_bridge.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/app/bridges/socket_rpc_system_audio_devices_bridge.h>
+#include <intravenous/rpc/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

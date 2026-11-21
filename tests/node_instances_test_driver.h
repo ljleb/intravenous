@@ -3,7 +3,7 @@
 #include "event_source_test_support.h"
 
 #include <intravenous/graph/builder.h>
-#include <intravenous/runtime/node_instances.h>
+#include <intravenous/project/node_instances.h>
 
 #include <filesystem>
 #include <memory>

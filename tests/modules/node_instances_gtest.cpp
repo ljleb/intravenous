@@ -3,13 +3,13 @@
 #include "../node_instances_test_driver.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/iv_module_instances_events.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_events.h>
-#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_watcher.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/project/iv_module_instances_events.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/packages/node_definitions_events.h>
+#include <intravenous/app/bridges/package_definitions_node_definitions_bridge.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/packages/package_watcher.h>
 
 #include <gtest/gtest.h>
 

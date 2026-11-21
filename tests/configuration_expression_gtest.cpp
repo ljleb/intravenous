@@ -1,4 +1,4 @@
-#include <intravenous/runtime/configuration_expression.h>
+#include <intravenous/project/configuration_expression.h>
 #include <intravenous/node/message.h>
 
 #include <gtest/gtest.h>

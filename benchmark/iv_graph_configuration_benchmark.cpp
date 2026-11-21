@@ -40,9 +40,9 @@
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/compiler_record.h>
-#include <intravenous/runtime/node_definition_types.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/node_definition_types.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_pipeline_types.h>
 
 #include <algorithm>
 #include <array>

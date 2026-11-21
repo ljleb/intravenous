@@ -1,7 +1,7 @@
 #include <intravenous/graph_jit/region_specialization.h>
 
 #include <intravenous/graph/reflected_node_operations.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/package_pipeline_types.h>
 
 #include <algorithm>
 #include <bit>

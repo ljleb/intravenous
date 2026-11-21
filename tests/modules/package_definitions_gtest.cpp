@@ -2,8 +2,8 @@
 #include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_pipeline_events.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/packages/package_pipeline_events.h>
 
 #include <gtest/gtest.h>
 

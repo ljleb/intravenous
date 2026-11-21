@@ -1,20 +1,20 @@
 #include "../module_test_utils.h"
 #include "../event_source_test_support.h"
 
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_events.h>
-#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_pipeline_events.h>
-#include <intravenous/runtime/package_watcher.h>
-#include <intravenous/runtime/socket_rpc_package_definitions_bridge.h>
-#include <intravenous/runtime/socket_rpc_package_watcher_bridge.h>
-#include <intravenous/runtime/socket_rpc_node_instances_bridge.h>
-#include <intravenous/runtime/project_persistence.h>
-#include <intravenous/runtime/socket_rpc_project_persistence_bridge.h>
-#include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/packages/node_definitions_events.h>
+#include <intravenous/app/bridges/package_definitions_node_definitions_bridge.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/packages/package_pipeline_events.h>
+#include <intravenous/packages/package_watcher.h>
+#include <intravenous/app/bridges/socket_rpc_package_definitions_bridge.h>
+#include <intravenous/app/bridges/socket_rpc_package_watcher_bridge.h>
+#include <intravenous/app/bridges/socket_rpc_node_instances_bridge.h>
+#include <intravenous/project/persistence/project_persistence.h>
+#include <intravenous/app/bridges/socket_rpc_project_persistence_bridge.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/rpc/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

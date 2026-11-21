@@ -1,5 +1,5 @@
 #pragma once
-#include <intravenous/runtime/observation_types.h>
+#include <intravenous/observations/observation_types.h>
 
 #include <intravenous/graph/reflected_node_operations.h>
 

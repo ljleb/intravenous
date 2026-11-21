@@ -1,6 +1,6 @@
 #include <intravenous/compat.h>
 #include <intravenous/node/context.h>
-#include <intravenous/runtime/handlers.h>
+#include <intravenous/app/handlers.h>
 
 #include <gtest/gtest.h>
 

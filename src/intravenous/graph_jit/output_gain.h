@@ -6,8 +6,8 @@
 #include <intravenous/graph_jit/output_gain_runtime.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/basic_nodes/output_gain.h>
-#include <intravenous/runtime/node_definition_types.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/node_definition_types.h>
+#include <intravenous/packages/package_pipeline_types.h>
 
 #include <map>
 #include <cmath>

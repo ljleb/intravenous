@@ -1,8 +1,8 @@
-#include <intravenous/runtime/persisted_data_store.h>
-#include <intravenous/runtime/buffered_storage.h>
-#include <intravenous/runtime/playback_preparation_metrics.h>
-#include <intravenous/runtime/tick_materialization_snapshot.h>
-#include <intravenous/runtime/graph_jit.h>
+#include <intravenous/execution/storage/persisted_data_store.h>
+#include <intravenous/execution/storage/buffered_storage.h>
+#include <intravenous/execution/playback_preparation_metrics.h>
+#include <intravenous/execution/tick_materialization_snapshot.h>
+#include <intravenous/graph_jit/graph_jit.h>
 
 #include <gtest/gtest.h>
 #include <algorithm>

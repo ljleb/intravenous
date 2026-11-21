@@ -4,13 +4,13 @@
 
 #include <intravenous/bridge.h>
 #include <intravenous/linux_file_descriptor.h>
-#include <intravenous/runtime/node_instances.h>
+#include <intravenous/project/node_instances.h>
 #include <intravenous/module/package_manifest.h>
-#include <intravenous/runtime/package_discovery_watcher.h>
-#include <intravenous/runtime/package_pipeline_events.h>
-#include <intravenous/runtime/package_watcher.h>
-#include <intravenous/runtime/package_watcher_service.h>
-#include <intravenous/runtime/package_watcher_service_bridge.h>
+#include <intravenous/packages/package_discovery_watcher.h>
+#include <intravenous/packages/package_pipeline_events.h>
+#include <intravenous/packages/package_watcher.h>
+#include <intravenous/packages/package_watcher_service.h>
+#include <intravenous/app/bridges/package_watcher_service_bridge.h>
 
 #include <gtest/gtest.h>
 

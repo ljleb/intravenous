@@ -1,10 +1,10 @@
-#include <intravenous/runtime/graph_executor.h>
-#include <intravenous/runtime/server_options.h>
-#include <intravenous/runtime/socket_rpc_graph_executor_bridge.h>
-#include <intravenous/runtime/socket_rpc_requests.h>
-#include <intravenous/runtime/socket_rpc_routes.h>
-#include <intravenous/runtime/socket_rpc_response_builders.h>
-#include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/execution/graph_executor.h>
+#include <intravenous/app/server_options.h>
+#include <intravenous/app/bridges/socket_rpc_graph_executor_bridge.h>
+#include <intravenous/rpc/socket_rpc_requests.h>
+#include <intravenous/rpc/socket_rpc_routes.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
+#include <intravenous/rpc/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

@@ -84,7 +84,7 @@ No extra permanent instructional text or toolbar buttons are needed. Playback
 position must stay independent of the viewport transform.
 
 No known intentional compiler errors, but the incomplete feature has not been
-compiled. New files include `runtime/project_playback.h` and the
+compiled. New files include `execution/project_playback.h` and the
 `socket_rpc_graph_executor_bridge.{h,cpp}` pair; the latter is registered in
 the runtime CMake source list. The owner retains Git staging and existing
 `projects/simple_sine` changes. Do not stop at this partial checkpoint.
@@ -102,7 +102,7 @@ information even without a seek.
 `ReflectedContinuousOutputPortBinding` in `graph/reflected_node_operations.h`
 gives `SampleCaptureSlot::capture()` a physical `sequential_begin_index` and
 one `disposition` for the current invocation. It does not retain the earlier
-invocation's `disposition`. In `runtime/tick_invocation_frame.cpp`, Sample
+invocation's `disposition`. In `execution/tick_invocation_frame.cpp`, Sample
 capture returns immediately on `untouched`. For example, if a recorder writes
 `[100,104)` with latency two and leaves the next block `untouched`, capture
 drops the still-eligible values at `102` and `103`. After a seek to `500`, it
@@ -116,7 +116,7 @@ empty pending list causes capture to return without publishing that range.
 `TimedEvent::time` for live consumers across a seek. That time is no longer the
 project address to publish in a recording.
 
-`RealtimeProducedRecordHeader` in `runtime/realtime_produced_record.h` describes
+`RealtimeProducedRecordHeader` in `execution/storage/realtime_produced_record.h` describes
 one `begin` and `range_extent`. It can describe each final range separately,
 but it cannot recover authoring decisions that were lost before publication.
 `TickInvocationWorkspace` currently reserves queue blocks from the maximum
@@ -154,12 +154,12 @@ pass found a separate constraint in the queue. That pass assumed the existing
 record format could carry the split ranges at a cost close to their byte size.
 
 `RealtimeProducedRecordHeader::record_block_count` in
-`runtime/realtime_produced_record.h` frames each record in whole 64 KiB blocks.
+`execution/storage/realtime_produced_record.h` frames each record in whole 64 KiB blocks.
 `BackgroundEvaluationTransaction::Impl::decode_produced_records()` in
-`runtime/background_evaluation_transaction.cpp` expects a header at the start
+`execution/background/background_evaluation_transaction.cpp` expects a header at the start
 of a block and consumes all remaining bytes as that record's payload. It
 cannot decode two small ranges in the same block. `producer_capacity_policy()`
-in `runtime/graph_executor.cpp` multiplies the worst callback's block count by
+in `execution/graph_executor.cpp` multiplies the worst callback's block count by
 128 for the default high watermark. `AsyncCapacityManager::allocate_slab()`
 allocates storage for all those blocks.
 

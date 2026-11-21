@@ -1,7 +1,7 @@
 #include <intravenous/graph_jit/output_gain.h>
 #include <intravenous/graph_jit/output_gain_execution.h>
 #include <intravenous/basic_nodes/output_gain.h>
-#include <intravenous/runtime/node_instance_interface.h>
+#include <intravenous/project/node_instance_interface.h>
 #include <gtest/gtest.h>
 
 #include <array>

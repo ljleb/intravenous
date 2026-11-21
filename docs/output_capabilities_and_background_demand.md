@@ -498,7 +498,7 @@ Sparse backing is page-granular, but Linux virtual memory areas (VMAs) are
 one virtual interval, and overlaying physically consecutive backing-page
 runs can cover many pages per `mmap()` call/VMA. The existing recording
 `RecordingPageRunNode` index and `map_recording_region()` run iteration in
-`src/intravenous/runtime/persisted_data_store.cpp` demonstrate that
+`src/intravenous/execution/storage/persisted_data_store.cpp` demonstrate that
 implementation direction. Do not replace run-aware mapping with an
 unconditional `mmap()` per page. Conversely, scattered replacements and
 shared immutable snapshot mappings can fragment a previously compact view
@@ -550,7 +550,7 @@ only after all relevant pins and committed-version references are accounted
 for. Preserve unchanged physical pages across immutable versions.
 
 The current `RecordingPageAllocator::allocate()` in
-`src/intravenous/runtime/persisted_data_store.cpp` grows its `memfd` and
+`src/intravenous/execution/storage/persisted_data_store.cpp` grows its `memfd` and
 advances `next_file_offset_` monotonically; it does **not** yet reclaim
 obsolete backing offsets. This is a source-state observation, not normative
 permission for unbounded growth. Generalizing that allocator for Tick

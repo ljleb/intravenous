@@ -1,7 +1,7 @@
 #include "module_test_utils.h"
 
 #include <intravenous/graph/configured_graph.hpp>
-#include <intravenous/runtime/configuration_expression.h>
+#include <intravenous/project/configuration_expression.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

@@ -1,7 +1,7 @@
 #include "test_support.h"
-#include <intravenous/runtime/observation_resolution.h>
-#include <intravenous/runtime/socket_rpc_response_builders.h>
-#include <intravenous/runtime/runtime_project_events.h>
+#include <intravenous/observations/observation_resolution.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
+#include <intravenous/project/runtime_project_events.h>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <thread>

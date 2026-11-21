@@ -1,6 +1,6 @@
 #define IV_INTERNAL_TRANSLATION_UNIT
 
-#include <intravenous/runtime/app.h>
+#include <intravenous/app/app.h>
 #include <intravenous/module/dev_runtime.h>
 
 #include <iostream>

@@ -1,4 +1,4 @@
-#include <intravenous/runtime/background_planning_scheduler.h>
+#include <intravenous/execution/background/background_planning_scheduler.h>
 
 #include <gtest/gtest.h>
 

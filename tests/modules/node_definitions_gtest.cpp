@@ -2,8 +2,8 @@
 #include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_definitions_events.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/packages/node_definitions_events.h>
 
 #include <gtest/gtest.h>
 

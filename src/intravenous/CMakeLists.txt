@@ -274,7 +274,7 @@ add_custom_command(OUTPUT "${iv_sdk_snapshot}/.snapshot"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}"
         "${iv_sdk_snapshot}/src/intravenous"
     COMMAND "${CMAKE_COMMAND}" -E touch "${iv_sdk_snapshot}/.snapshot"
-    DEPENDS ${IV_PACKAGE_PCH_HEADERS} ${iv_sdk_templates}
+    DEPENDS "${CMAKE_CURRENT_LIST_FILE}" ${IV_PACKAGE_PCH_HEADERS} ${iv_sdk_templates}
     VERBATIM)
 add_custom_target(intravenous_runtime_sdk DEPENDS "${iv_sdk_snapshot}/.snapshot")
 configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmake @ONLY)
@@ -283,7 +283,7 @@ configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmak
 # database entry is copied to new module sources, where clangd infers the
 # command for their module.cpp from this canonical source.
 add_library(intravenous_module_source_template_tooling OBJECT EXCLUDE_FROM_ALL
-    runtime/module_source_template/module.cpp
+    packages/source_template/module.cpp
 )
 iv_configure_intravenous_target(intravenous_module_source_template_tooling PUBLIC)
 target_link_libraries(intravenous_module_source_template_tooling PRIVATE iv_builder)
@@ -338,18 +338,18 @@ add_library(intravenous_module_watcher OBJECT
 iv_configure_intravenous_target(intravenous_module_watcher PUBLIC)
 
 add_library(intravenous_graph_jit OBJECT
-    runtime/async_capacity_manager.cpp
-    runtime/background_coverage_propagation.cpp
-    runtime/background_evaluation_call_frame.cpp
-    runtime/background_evaluation_transaction.cpp
-    runtime/background_storage_realization.cpp
-    runtime/graph_executor.cpp
-    runtime/graph_jit.cpp
-    runtime/persisted_data_store.cpp
-    runtime/buffered_storage.cpp
-    runtime/realtime_persisted_state.cpp
-    runtime/tick_invocation_frame.cpp
-    runtime/tick_materialization_snapshot.cpp
+    execution/storage/async_capacity_manager.cpp
+    execution/background/background_coverage_propagation.cpp
+    execution/background/background_evaluation_call_frame.cpp
+    execution/background/background_evaluation_transaction.cpp
+    execution/background/background_storage_realization.cpp
+    execution/graph_executor.cpp
+    graph_jit/graph_jit.cpp
+    execution/storage/persisted_data_store.cpp
+    execution/storage/buffered_storage.cpp
+    execution/storage/realtime_persisted_state.cpp
+    execution/tick_invocation_frame.cpp
+    execution/tick_materialization_snapshot.cpp
     graph_jit/connection_plan.cpp
     graph_jit/background_storage_plan.cpp
     graph_jit/lowering.cpp
@@ -388,38 +388,38 @@ add_dependencies(intravenous_graph_jit iv_builder)
 
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_instances_events
-    runtime/iv_module_instances_events.cpp
+    project/iv_module_instances_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_node_definitions_events
-    runtime/node_definitions_events.cpp
+    packages/node_definitions_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_package_pipeline_events
-    runtime/package_pipeline_events.cpp
+    packages/package_pipeline_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_project_graph_events
-    runtime/project_graph_events.cpp
+    project/project_graph_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_iv_module_source_introspection_events
-    runtime/iv_module_source_introspection_linker_events.cpp
+    packages/iv_module_source_introspection_linker_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_runtime_project_events
-    runtime/runtime_project_linker_events.cpp
+    project/runtime_project_linker_events.cpp
 )
 iv_add_linker_event_object(
     intravenous_runtime_project_persistence_events
-    runtime/project_persistence_events.cpp
+    project/persistence/project_persistence_events.cpp
 )
 target_link_libraries(intravenous_runtime_project_persistence_events PRIVATE
     nlohmann_json::nlohmann_json
 )
 iv_add_linker_event_object(
     intravenous_runtime_socket_rpc_events
-    runtime/socket_rpc_linker_events.cpp
+    rpc/socket_rpc_linker_events.cpp
 )
 target_link_libraries(intravenous_runtime_socket_rpc_events PRIVATE
     nlohmann_json::nlohmann_json
@@ -434,66 +434,66 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     query/tag_query_parser.cpp
     query/tag_query_program.cpp
     query/tag_query_tokenizer.cpp
-    runtime/system_audio_devices.cpp
-    runtime/audio_input_synchronizer.cpp
-    runtime/config.cpp
-    runtime/node_definitions.cpp
-    runtime/node_definition_search.cpp
-    runtime/node_definitions_project_graph_bridge.cpp
-    runtime/package_definitions_node_definitions_bridge.cpp
-    runtime/package_watcher_package_definitions_bridge.cpp
-    runtime/package_watcher_package_jit_bridge.cpp
-    runtime/package_watcher_project_graph_bridge.cpp
-    runtime/package_watcher_node_instances_bridge.cpp
-    runtime/package_watcher_service_bridge.cpp
-    runtime/node_instances.cpp
-    runtime/node_instances_iv_module_source_introspection_bridge.cpp
-    runtime/configuration_expression.cpp
-    runtime/graph_connections.cpp
-    runtime/project_connection_json.cpp
-    runtime/project_node_path_resolver.cpp
-    runtime/project_graph.cpp
-    runtime/observations.cpp
-    runtime/observation_bridges.cpp
-    runtime/project_graph_system_audio_devices_bridge.cpp
-    runtime/project_graph_package_jit_bridge.cpp
-    runtime/project_graph_graph_connections_bridge.cpp
-    runtime/project_graph_graph_executor_bridge.cpp
-    runtime/project_graph_graph_jit_bridge.cpp
-    runtime/project_graph_iv_module_source_introspection_bridge.cpp
-    runtime/project_graph_node_instances_bridge.cpp
-    runtime/project_graph_package_definitions_bridge.cpp
-    runtime/package_definitions.cpp
-    runtime/package_jit.cpp
-    runtime/package_watcher.cpp
-    runtime/package_discovery_watcher.cpp
-    runtime/package_watcher_service.cpp
-    runtime/iv_module_source_introspection.cpp
-    runtime/iv_module_source_introspection_events.cpp
-    runtime/project_persistence.cpp
-    runtime/project_persistence_builder.cpp
-    runtime/project_autosave.cpp
-    runtime/runtime_project_events.cpp
-    runtime/project_persistence_system_audio_devices_bridge.cpp
-    runtime/project_persistence_project_autosave_bridge.cpp
-    runtime/project_persistence_project_graph_bridge.cpp
-    runtime/project_persistence_package_jit_bridge.cpp
-    runtime/socket_rpc_system_audio_devices_bridge.cpp
-    runtime/socket_rpc_graph_executor_bridge.cpp
-    runtime/socket_rpc_iv_module_source_introspection_bridge.cpp
-    runtime/socket_rpc_node_instances_bridge.cpp
-    runtime/socket_rpc_project_graph_bridge.cpp
-    runtime/socket_rpc_package_definitions_bridge.cpp
-    runtime/socket_rpc_package_watcher_bridge.cpp
-    runtime/socket_rpc_project_autosave_bridge.cpp
-    runtime/socket_rpc_project_persistence_bridge.cpp
-    runtime/socket_rpc_json_serialization.cpp
-    runtime/socket_rpc_requests.cpp
-    runtime/socket_rpc_response_builders.cpp
-    runtime/socket_rpc_routes.cpp
-    runtime/socket_rpc_server.cpp
-    runtime/startup_config.cpp
-    runtime/uuid.cpp
+    audio/system_audio_devices.cpp
+    audio/audio_input_synchronizer.cpp
+    app/config.cpp
+    packages/node_definitions.cpp
+    packages/node_definition_search.cpp
+    app/bridges/node_definitions_project_graph_bridge.cpp
+    app/bridges/package_definitions_node_definitions_bridge.cpp
+    app/bridges/package_watcher_package_definitions_bridge.cpp
+    app/bridges/package_watcher_package_jit_bridge.cpp
+    app/bridges/package_watcher_project_graph_bridge.cpp
+    app/bridges/package_watcher_node_instances_bridge.cpp
+    app/bridges/package_watcher_service_bridge.cpp
+    project/node_instances.cpp
+    app/bridges/node_instances_iv_module_source_introspection_bridge.cpp
+    project/configuration_expression.cpp
+    project/graph_connections.cpp
+    project/persistence/project_connection_json.cpp
+    project/project_node_path_resolver.cpp
+    project/project_graph.cpp
+    observations/observations.cpp
+    app/bridges/observation_bridges.cpp
+    app/bridges/project_graph_system_audio_devices_bridge.cpp
+    app/bridges/project_graph_package_jit_bridge.cpp
+    app/bridges/project_graph_graph_connections_bridge.cpp
+    app/bridges/project_graph_graph_executor_bridge.cpp
+    app/bridges/project_graph_graph_jit_bridge.cpp
+    app/bridges/project_graph_iv_module_source_introspection_bridge.cpp
+    app/bridges/project_graph_node_instances_bridge.cpp
+    app/bridges/project_graph_package_definitions_bridge.cpp
+    packages/package_definitions.cpp
+    packages/package_jit.cpp
+    packages/package_watcher.cpp
+    packages/package_discovery_watcher.cpp
+    packages/package_watcher_service.cpp
+    packages/iv_module_source_introspection.cpp
+    packages/iv_module_source_introspection_events.cpp
+    project/persistence/project_persistence.cpp
+    project/persistence/project_persistence_builder.cpp
+    project/persistence/project_autosave.cpp
+    project/runtime_project_events.cpp
+    app/bridges/project_persistence_system_audio_devices_bridge.cpp
+    app/bridges/project_persistence_project_autosave_bridge.cpp
+    app/bridges/project_persistence_project_graph_bridge.cpp
+    app/bridges/project_persistence_package_jit_bridge.cpp
+    app/bridges/socket_rpc_system_audio_devices_bridge.cpp
+    app/bridges/socket_rpc_graph_executor_bridge.cpp
+    app/bridges/socket_rpc_iv_module_source_introspection_bridge.cpp
+    app/bridges/socket_rpc_node_instances_bridge.cpp
+    app/bridges/socket_rpc_project_graph_bridge.cpp
+    app/bridges/socket_rpc_package_definitions_bridge.cpp
+    app/bridges/socket_rpc_package_watcher_bridge.cpp
+    app/bridges/socket_rpc_project_autosave_bridge.cpp
+    app/bridges/socket_rpc_project_persistence_bridge.cpp
+    rpc/socket_rpc_json_serialization.cpp
+    rpc/socket_rpc_requests.cpp
+    rpc/socket_rpc_response_builders.cpp
+    rpc/socket_rpc_routes.cpp
+    rpc/socket_rpc_server.cpp
+    app/startup_config.cpp
+    project/uuid.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
 list(JOIN IV_PACKAGE_COMPILE_FLAGS " " IV_PACKAGE_COMPILE_FLAGS_COMMAND_LINE)
@@ -577,7 +577,7 @@ target_compile_definitions(intravenous_module_loader PRIVATE
 add_executable(intravenous
     third_party/miniaudio/miniaudio.c
     main.cpp
-    runtime/app.cpp
+    app/app.cpp
 )
 set_target_properties(intravenous PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
 

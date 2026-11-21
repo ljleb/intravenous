@@ -3,17 +3,17 @@
 #include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
-#include <intravenous/runtime/package_jit.h>
-#include <intravenous/runtime/package_pipeline_events.h>
-#include <intravenous/runtime/package_watcher.h>
-#include <intravenous/runtime/package_watcher_package_definitions_bridge.h>
-#include <intravenous/runtime/package_watcher_package_jit_bridge.h>
-#include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/startup_config.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/app/bridges/package_definitions_node_definitions_bridge.h>
+#include <intravenous/packages/package_jit.h>
+#include <intravenous/packages/package_pipeline_events.h>
+#include <intravenous/packages/package_watcher.h>
+#include <intravenous/app/bridges/package_watcher_package_definitions_bridge.h>
+#include <intravenous/app/bridges/package_watcher_package_jit_bridge.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/app/startup_config.h>
 
 #include <gtest/gtest.h>
 

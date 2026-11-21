@@ -5,10 +5,10 @@
 #include <intravenous/graph/builder.h>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/module/package_definitions.h>
-#include <intravenous/runtime/node_definitions_events.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/package_pipeline_types.h>
-#include <intravenous/runtime/project_node_path_resolver.h>
+#include <intravenous/packages/node_definitions_events.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_pipeline_types.h>
+#include <intravenous/project/project_node_path_resolver.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>

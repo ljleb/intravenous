@@ -3,8 +3,8 @@
 #include "event_source_test_support.h"
 
 #include <intravenous/filesystem_paths.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/packages/package_pipeline_types.h>
 
 #include <memory>
 #include <string>

@@ -2,7 +2,7 @@
 // the same no-DSP graph; the legacy case adds the old all-binding polling loop.
 // This measures polling overhead, not a prediction of a real DSP graph's gain.
 #include <intravenous/compat.h>
-#include <intravenous/runtime/graph_executor.h>
+#include <intravenous/execution/graph_executor.h>
 
 #include <algorithm>
 #include <atomic>

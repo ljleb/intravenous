@@ -8,7 +8,7 @@
 #include <intravenous/graph_jit/lowering_plan.h>
 #include <intravenous/graph_jit/region_specialization.h>
 #include <intravenous/graph_jit/tick_invocation_call.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/package_pipeline_types.h>
 #include <intravenous/node/manual_control.h>
 
 #include <algorithm>

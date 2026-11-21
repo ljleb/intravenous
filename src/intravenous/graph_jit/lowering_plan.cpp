@@ -4,7 +4,7 @@
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/sample_storage_plan.h>
 #include <intravenous/graph_jit/transient_arena_plan.h>
-#include <intravenous/runtime/package_pipeline_types.h>
+#include <intravenous/packages/package_pipeline_types.h>
 
 #include <llvm/IR/Function.h>
 

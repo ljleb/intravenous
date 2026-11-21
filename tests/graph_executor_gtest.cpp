@@ -1,7 +1,7 @@
-#include <intravenous/runtime/background_coverage_propagation.h>
+#include <intravenous/execution/background/background_coverage_propagation.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include "event_source_test_support.h"
-#include <intravenous/runtime/graph_executor.h>
+#include <intravenous/execution/graph_executor.h>
 
 #include <intravenous/node/layout.h>
 #include <intravenous/node/lifecycle.h>

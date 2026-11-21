@@ -2,13 +2,13 @@
 #include "../event_source_test_support.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/node_definitions.h>
-#include <intravenous/runtime/node_instances.h>
-#include <intravenous/runtime/package_definitions.h>
-#include <intravenous/runtime/package_definitions_node_definitions_bridge.h>
-#include <intravenous/runtime/package_pipeline_events.h>
-#include <intravenous/runtime/package_watcher.h>
-#include <intravenous/runtime/package_watcher_package_definitions_bridge.h>
+#include <intravenous/packages/node_definitions.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/app/bridges/package_definitions_node_definitions_bridge.h>
+#include <intravenous/packages/package_pipeline_events.h>
+#include <intravenous/packages/package_watcher.h>
+#include <intravenous/app/bridges/package_watcher_package_definitions_bridge.h>
 
 #include <gtest/gtest.h>
 

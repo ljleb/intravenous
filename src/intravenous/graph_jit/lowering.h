@@ -1,5 +1,5 @@
 #pragma once
-#include <intravenous/runtime/observation_types.h>
+#include <intravenous/observations/observation_types.h>
 
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
@@ -8,7 +8,7 @@
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
-#include <intravenous/runtime/graph_jit.h>
+#include <intravenous/graph_jit/graph_jit.h>
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
