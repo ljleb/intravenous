@@ -130,6 +130,11 @@ test("child lanes show their own type and preserve the source label", () => {
     assert.equal(semantic.sourceLabel, "detune_pair 1");
     assert.equal(graphScopeNodeLabel(child), "Quotient · detune_pair 1");
     assert.equal(graphScopeNodeLabel(owner), "My Oscillator");
+    const virtual = semanticNodeFromScopeChild({ ...child, virtualNode: true,
+        virtualMemberCount: 4, address: { ...owner.address, path: [declaration] } }, scope);
+    assert.equal(virtual.virtualNode, true);
+    assert.equal(virtual.memberCount, 4);
+    assert.equal(semantic.memberCount, 1);
 });
 
 test("pending realization is distinct from a reported configuration failure", () => {

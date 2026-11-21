@@ -2377,6 +2377,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const& child = children.at(0);
     EXPECT_EQ(child.at("childDisplayName"), "NamedSamplePass");
     EXPECT_EQ(child.at("childSourceLabel"), "named");
+    EXPECT_EQ(child.at("virtualMemberCount"), 1);
     auto parse_address = [](auto const& node) {
         return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
     };
@@ -2400,6 +2401,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_EQ(member.at("childDisplayName"), "NamedSamplePass");
     EXPECT_EQ(alias_member.at("childDisplayName"), member.at("childDisplayName"));
     EXPECT_EQ(member.at("childSourceLabel"), "named 1");
+    EXPECT_FALSE(member.contains("virtualMemberCount"));
     EXPECT_EQ(alias_member.at("childSourceLabel"), "alias 1");
     EXPECT_EQ(alias_member.at("address"), member.at("address"));
     EXPECT_NE(alias_member.at("membershipAddress"), member.at("address"));

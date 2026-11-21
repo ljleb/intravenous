@@ -3889,6 +3889,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 auto child_address = address;
                 child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
                 std::optional<NodeAddress> membership_address;
+                std::optional<std::size_t> virtual_member_count;
                 if (!child.virtual_node) {
                     auto const placement = generation->placements.find(address.instance_id);
                     if (placement != generation->placements.end()) {
@@ -3906,6 +3907,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     auto const selected = resolve_node_address(graph, generation->placements, child_address);
                     if (selected.size() == 1) {
                         auto const& members = selected.front().virtual_member_indices;
+                        virtual_member_count = members.size();
                         if (record.type_identity == "sample-port" || record.type_identity == "event-port") {
                             auto includes_bundle = [&](NodeBundleHandle bundle) {
                                 return std::ranges::any_of(members, [&](auto index) { return record.node_bundle_handles[index] == bundle; });
@@ -3938,6 +3940,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     .address = std::move(child_address),
                     .membership_address = std::move(membership_address),
                     .virtual_node = child.virtual_node.has_value(),
+                    .virtual_member_count = virtual_member_count,
                     .instance = *owner,
                     .child_display_name = child_lane_display_name(*generation, child, leaf_names_by_type),
                     .child_source_label = child.source_label,

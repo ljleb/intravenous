@@ -39,9 +39,10 @@ test("an unregistered definition uses the generic presentation", () => {
 test("timeline capability follows the selected presentation", () => {
     const presentations = registry();
     presentations.register({ presentationId: "iv.test.timeline", displayName: "Timeline",
-        definitionIds: ["iv.test.osc"], component: "timeline", timeline: true });
+        definitionIds: ["iv.test.osc"], component: "timeline", timeline: true, icon: "M2 4v8" });
     assert.equal(presentations.select("iv.test.osc", "iv.test.timeline").timeline, true);
     assert.equal(presentations.select("iv.test.osc", "iv.generic").timeline, undefined);
+    assert.equal(presentations.select("iv.test.osc", "iv.test.timeline").icon, "M2 4v8");
 });
 
 test("without a preference the first candidate by presentation ID is selected", () => {

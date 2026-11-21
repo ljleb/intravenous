@@ -160,6 +160,51 @@ test("window display retains the last compatible samples across graph refreshes"
     values.clear();
     assert.equal(values.windowForDisplay(data.id), undefined);
 });
+
+test("a returning viewport keeps its fine samples across demotion and later windows", () => {
+    const values = new ObservationValues();
+    const data = result();
+    const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
+    const request = { id: data.id, source, operation: "waveform", window: data.window };
+    const publish = (window: ObservationWindowResult) => receiveSnapshot(values, {
+        activationId: "1", generation: "1", revision: "0", index: "0", blockSize: 64, dataVersion: "0",
+        scopes: [{ scopeId: "viewport", values: [], windows: [window] }],
+    });
+    values.expectWindows([request]);
+    publish(data);
+    for (let offset = 1; offset <= 4; ++offset) {
+        const window = { ...data.window, begin: String(BigInt(data.window.begin) + BigInt(offset) * BigInt(data.window.length)) };
+        values.expectWindows([{ ...request, window }]);
+        publish({ ...data, window, regions: [] });
+    }
+    values.expectWindows([]);
+    assert.equal(values.windowForDisplay(data.id), undefined);
+    values.expectWindows([request]);
+    publish({ ...data, status: "pending", regions: [] });
+    assert.deepEqual(values.windowForDisplay(data.id)?.regions, data.regions);
+    assert.equal(values.windowForDisplay(data.id)?.outdated, true);
+    values.retireWindow(data.id);
+    values.expectWindows([{ ...request, source: { ...source, member: "min" } }]);
+    assert.equal(values.windowForDisplay(data.id), undefined);
+});
+
+test("the retained payload budget evicts history while preserving current readings", () => {
+    const values = new ObservationValues();
+    const data = result();
+    const marks = Array.from({ length: 1024 }, () => ({ index: data.window.begin, depth: 0 }));
+    const windows: ObservationWindowResult[] = Array.from({ length: 66 }, (_, index) => ({ ...data,
+        id: `window:${index}`, regions: [], marks }));
+    const interests = windows.map(({ id, window }) => ({ id, window, operation: "beat-grid", source: {
+        node: { instanceId: id }, kind: "input" as const, member: "beats", portKind: "event" as const,
+    } }));
+    values.expectWindows(interests);
+    receiveSnapshot(values, { activationId: "1", generation: "1", revision: "0", index: "0", blockSize: 64, dataVersion: "0",
+        scopes: [{ scopeId: "viewport", values: [], windows }] });
+    assert.equal(values.readyWindowsForDisplay([interests[0].id], data.window).length, 1);
+    values.expectWindows([]);
+    assert.equal(values.readyWindowsForDisplay([interests[0].id], data.window).length, 0);
+    assert.equal(values.readyWindowsForDisplay([interests.at(-1)!.id], data.window).length, 1);
+});
 test("viewport Tock interests carry windows and panning never requests live observation operations", async () => {
     const { PresentationObservations } = await import("../webview/presentation/observationContext");
     const requests: import("../src/observations").ObservationHostRequest[] = [];

@@ -13,6 +13,8 @@ export type PresentationRegistration<Component> = {
     displayName: string;
     definitionIds: readonly string[];
     component: Component;
+    // Stroke path data in a 16 by 16 viewBox. The host renders it as SVG.
+    icon?: string;
     timeline?: true;
     // Supplies configuration source when a new instance needs arguments
     // that the backend definition cannot default.
@@ -27,6 +29,7 @@ export type PresentationSelection<Component> = {
     displayName: string;
     component: Component;
     usedGeneric: boolean;
+    icon?: string;
     timeline?: true;
     createInitialConfiguration?: () => string;
 };
@@ -91,6 +94,7 @@ export class PresentationRegistry<Component> {
             presentationId: selected.presentationId,
             displayName: selected.displayName,
             component: selected.component,
+            icon: selected.icon,
             usedGeneric: false,
             ...(selected.timeline ? { timeline: selected.timeline } : {}),
             createInitialConfiguration: selected.createInitialConfiguration,
@@ -102,6 +106,7 @@ export class PresentationRegistry<Component> {
             presentationId: this.generic.presentationId,
             displayName: this.generic.displayName,
             component: this.generic.component,
+            icon: this.generic.icon,
             usedGeneric: true,
         };
     }

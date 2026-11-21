@@ -7103,6 +7103,40 @@ continue to govern observable behavior._
   Authored detach validation still precedes planning for manual overrides.
   Native test verification is pending.
 
+### Project-authored presentation lanes (2026-11-20)
+
+The owner requested project-authored presentations and wants the built-in
+specialized lanes to use the same public interface. The lane declares the
+definitions it presents and supplies header metadata, including an icon.
+The host owns the graph, lane header, ports, viewport, and observation budgets.
+The plugin owns the contents and local presentation state of its lane.
+
+The current `PresentationRegistry` only selects Vue components built into the
+client. `AutomationCurvePresentation` receives the internal graph editor
+context and hands it a DOM pointer event to start a drag. `BeatsSettings`
+uses the internal beats editing controller. A separate execution context needs
+a serializable boundary for those operations.
+
+The rendering boundary is an open design choice. A sandboxed Vue renderer
+allows custom layouts. It needs a bridge for pointer gestures, coordinates,
+host menus, and cursor return. Host-rendered controls and drawing primitives
+put those interactions in the host and constrain the UI plugins can build.
+Importing project Vue components directly into the graph editor would share
+its browser context. A TypeScript interface alone does not enforce isolation.
+
+After the rendering choice, define host-to-plugin snapshots and plugin-to-host
+commands, including their version, ownership, and disposal rules. Use the
+automation curve and Beats lanes to prove the interface. Then add project
+discovery and loading through the isolated runtime.
+
+The snapshot needs the selected node, accepted construction data, ports,
+display mode, timeline coordinates, and observation results. Reads and
+commands must use identities the host grants to the lane. The host checks
+edits against the current project revision and returns the outcome to the
+plugin. A plugin can save its own presentation state as JSON through the
+existing project presentation state path. Closing the lane releases its
+observations, gestures, and callbacks.
+
 ## Dependency summary
 
 The main execution path is approximately:

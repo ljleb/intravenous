@@ -138,7 +138,8 @@ export class PresentationObservations {
         if (eligible !== (!!previous && !previous.prefetch)) this.profile?.recorder.recordEligibility(id, this.visible && eligible);
         if (sameSource && previous.window && next.window) { this.scheduleWindows(scheduling); return; }
         this.values.values.delete(id);
-        this.values.forgetWindow(id);
+        if (next) this.values.prepareWindow(id, next);
+        this.values.retireWindow(id);
         this.schedule();
         if (scheduling === "viewport") this.scheduleWindows(scheduling);
     }

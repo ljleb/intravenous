@@ -108,7 +108,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         loadState: child.loadState,
         errorMessage: child.errorMessage,
         instanceId: child.instance.instanceId, definitionId: child.virtualNode ? "" : definitionId,
-        kind: definitionId, sourceIdentity: "", memberCount: 1,
+        kind: definitionId, sourceIdentity: "", memberCount: child.virtualMemberCount ?? 1,
         members: [], sourceSpans: [],
         ports: [
             ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),

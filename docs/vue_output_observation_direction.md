@@ -454,6 +454,12 @@ with empty coverage replaces any cached preview in that span. A positional
 event source can require the precise visible window. An indexed source can
 reuse a padded window across nearby views.
 
+When a lane leaves the visible tier, the client can keep recent ready results
+in a bounded display cache. Retiring an interest releases server demand.
+When the lane returns, a finer cached result can cover the same span while a
+replacement is pending. A source or sample-rate change invalidates incompatible
+data. Active readings remain available when the cache evicts their history.
+
 Maximum live publication rate, nearby-tier cadence, overscan distance,
 debounce/hysteresis, deactivation grace time, and lease/heartbeat timeout are
 bounded **tuning parameters**, not architectural constants. Choose and measure

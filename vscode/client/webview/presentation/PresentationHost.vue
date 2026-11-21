@@ -31,6 +31,7 @@ provideLane(props.lane || props.moduleBoundary ? {
     copyDebugDetails: () => emit("copyDebugDetails"),
     get rename() { return props.renameLane; },
     regionHeight: toRef(() => props.regionHeight),
+    icon: computed(() => selection.value.icon),
 } : null);
 
 const nodeEvents = useNodeEventMessaging();

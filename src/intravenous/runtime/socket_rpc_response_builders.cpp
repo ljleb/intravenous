@@ -524,6 +524,7 @@ Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
         if (node.membership_address)
             entry["membershipAddress"] = node_address_json(*node.membership_address, ProjectConnectionJsonNames::socket_rpc);
         if (node.virtual_node) entry["virtualNode"] = true;
+        if (node.virtual_member_count) entry["virtualMemberCount"] = *node.virtual_member_count;
         if (node.child_display_name) entry["childDisplayName"] = *node.child_display_name;
         if (node.child_source_label) entry["childSourceLabel"] = *node.child_source_label;
         nodes.push_back(std::move(entry));

@@ -777,7 +777,8 @@ test("automation bounds keep their fine outline during successive edits of the c
     publish("9", { ...fine, dataVersion: "1", regions: [] });
     assert.deepEqual(tracksFor(20, 8, fine.window), []);
     values.expectWindows([]);
-    assert.deepEqual(retained(), []);
+    assert.equal(values.windowForDisplay(fine.id), undefined);
+    assert.ok(retained().some(({ id, outdated }) => id === fine.id && outdated));
 });
 
 test("bound tracks keep unavailable samples and separate Coverage Regions out of the preview", () => {

@@ -23,6 +23,7 @@ export type GraphScopeNode = {
     address: NodeAddress;
     membershipAddress?: NodeAddress;
     virtualNode?: boolean;
+    virtualMemberCount?: number;
     childDisplayName?: string;
     childSourceLabel?: string;
     // Accepted definition when realized; instance.definitionId is the desired

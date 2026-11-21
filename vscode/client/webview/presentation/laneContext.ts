@@ -6,6 +6,7 @@ export type LaneContext = {
     copyDebugDetails: () => void;
     rename?: (name: string, previousName: string) => void;
     regionHeight: Readonly<Ref<number | undefined>>;
+    icon?: Readonly<Ref<string | undefined>>;
 };
 const key: InjectionKey<LaneContext | null> = Symbol("nodeLane");
 export function provideLane(context: LaneContext | null): void { provide(key, context); }
