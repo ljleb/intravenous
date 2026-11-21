@@ -1,8 +1,13 @@
 # Runtime responsibility audit
 
-This implementation audit began on 2026-11-21. It covers project-owned
-source and test files above 4,000 lines and related work in `Observations`.
-It excludes vendored miniaudio.
+This implementation audit began on 2026-11-21. Its inventory covers
+project-owned runtime source and test files above 4,000 lines. It excludes
+vendored miniaudio. The findings also cover related work across file
+boundaries. The project owner reported that all tests passed after the
+realtime root extraction.
+
+The next item is [Sample port planning](#sample-port-planning). Its goal is
+to remove work that repeats for trials with the same callback order.
 
 ## Completed work
 
@@ -17,6 +22,8 @@ It excludes vendored miniaudio.
   takes proposed manual controls separately from the stored controls.
   Accepted edits keep their authored controls when configuration fails.
 
+The [Event binding](#event-binding) section records the separate work on
+Event planning.
 The [original findings](./historical/runtime_responsibility_audit_2026-11-21.md)
 describe the earlier behavior.
 
@@ -47,6 +54,7 @@ can change the sources of its downstream routes. Authored validation checks
 feedback, `detach()`, replay dependencies, Region inputs, and complete-buffer
 inputs. The effective routes drive the background schedule, the realtime
 schedule, and physical storage planning.
+[Connection topology](../src/intravenous/graph_jit/connection_plan.cpp#L4941)
 
 ### Connection routing, scheduling, and port grouping
 
@@ -62,6 +70,23 @@ requirements for Sample and Event producer groups.
 `ConnectionTopology::build_analysis_plan()` calls both planners and
 completes the background bindings.
 [Port grouping](../src/intravenous/graph_jit/connections/port_group_plan.cpp#L1347) · [Connection analysis](../src/intravenous/graph_jit/connection_plan.cpp#L5039)
+
+### Realtime root construction and execution
+
+`RootPlanBuilder` resolves native callbacks, validates bindings, and computes
+scratch offsets before publication. `execute_realtime_root()` reads the
+finished `RealtimeRootPlan` to run a block on the audio thread. The plan
+definition is private to these two files.
+[Root construction](../src/intravenous/graph_jit/realtime/root_plan.cpp#L274) ·
+[Plan records](../src/intravenous/graph_jit/realtime/root_plan.h#L340) ·
+[Root execution](../src/intravenous/graph_jit/realtime_root.cpp#L2233)
+
+`PrimitiveExecutionStep::has_port_operations()` gives lowering and root
+construction the same list of Sample and Event operations that prevent an
+acyclic batch. Root construction checks the resolved Tick and skip callback
+addresses and uses the capture flag it computed when it built each step.
+[Port operations](../src/intravenous/graph_jit/lowering_plan.h#L326) ·
+[Native batch validation](../src/intravenous/graph_jit/realtime/root_plan.cpp#L2243)
 
 ### Observation compilation
 
@@ -115,12 +140,13 @@ request.
 `ConnectionTopology::build_analysis_plan()` prepares one
 `ConnectionAnalysisPlan` per callback order. Sample and Event storage
 planners share its schedule, delivery routes, and buffer requirements
-across trials. Each trial applies the cost model and packs the buffers
-to measure the stack usage.
+across trials. Each trial still prepares Sample and Event bindings, applies
+the cost model, and packs the buffers to measure the stack usage.
 
 GraphJit plans package imports from `ConnectionTopology` before the
 trials. It fills in replay metadata, Event capture capacities, and
 port-state transfer records after it accepts the schedule and layout.
+[Stack-budget trials](../src/intravenous/graph_jit/lowering_plan.cpp#L5767)
 
 ### Executor cutover and Tock preview
 
@@ -148,45 +174,78 @@ which object files each executable and test links. [CMake targets](../src/intrav
 
 ## Open findings and proposals
 
-### Realtime root construction and execution
+### Sample port planning
 
-`RootPlanBuilder` resolves bindings and validates the plan before
-publication. `execute_realtime_root()` consumes the completed
-`RealtimeRootPlan` on the audio thread. That plan gives the two files
-a boundary. Some batch checks can share a rule, such as which operations
-force scalar execution. Checks that compare resolved callback addresses
-belong in construction because the addresses are available there.
-[Root construction](../src/intravenous/graph_jit/realtime_root.cpp#L2871) ·
-[Batch validation](../src/intravenous/graph_jit/realtime_root.cpp#L4839) ·
-[Root execution](../src/intravenous/graph_jit/realtime_root.cpp#L5538)
+`plan_sample_ports()` builds the Tick Sample bindings and calls
+`build_sample_storage_plan()` to choose and pack storage. Each trial
+copies the whole `ConnectionAnalysisPlan`. It changes only the Sample
+connections in that copy. It selects the realtime part of mixed Tick and
+Tock routes and fills missing `detach()` initial values.
+[Sample port planner](../src/intravenous/graph_jit/lowering_plan.cpp#L2854) ·
+[Copy and route preparation](../src/intravenous/graph_jit/lowering_plan.cpp#L3814) ·
+[Sample storage planner](../src/intravenous/graph_jit/sample_storage_plan.cpp#L789)
 
-The batch overlap check uses the packed layout. If the check rejects a
-batch, GraphJit builds the declarations again for the new order.
-[Batch selection](../src/intravenous/graph_jit/lowering_plan.cpp#L5954)
+Extract Sample port planning from `lowering_plan.cpp` and give
+`build_sample_storage_plan()` prepared Sample connections. Let it read the
+schedule and producer groups from the original analysis. Reuse the prepared
+connections for stack-budget trials with the same callback order. Preserve
+their indices because `SampleStoragePlan` returns bindings indexed by
+connection. Each trial chooses storage and packs the resulting buffers for
+its cost model.
+
+### Realtime batch selection
+
+`realtime_ready_group_batches()` checks callback symbols, Tick capture counts,
+and overlap between lanes when at least one access writes. Cyclic batches can
+run Sample and Event operations around each phase. Root construction checks
+cyclic phase structure again when it validates the native callbacks.
+
+When lowering rejects a candidate batch, it removes its members from the
+realtime batch classes and builds the schedule, declarations, and port plans
+again. The packed layout is required to check overlap. Check which rules can
+reject candidates earlier and which planned records can be reused after a
+rejection.
+[Batch eligibility](../src/intravenous/graph_jit/lowering_plan.cpp#L5049) ·
+[Schedule retry](../src/intravenous/graph_jit/lowering_plan.cpp#L5943)
+
+The Front 16 probe of `simple_sine` counted 17 scalar sine specializations
+that shared one code address. It saw zero calls to `run_step_batch()` in
+the traced block. The audit item above concerns compile-time retries.
+Front 16 tracks measuring a block callback and a grouped specialization
+for the realtime path.
+[Oscillator batching probe](implementation_fronts_direction.md#additional-front-16-work-on-simple_sine-oscillator-batching)
 
 ### Ownership in the large source files
 
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
 | [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L5039) | 5,275 | `ConnectionTopology::build()` resolves effective routes and validates authored routes. `build_analysis_plan()` calls the scheduling and grouping planners, inventories in-flight requirements, and records background bindings. |
-| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L5528) | 6,132 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. The separate Event planner keeps stream binding, storage selection, and buffer packing together. Storage trials share one connection analysis per callback order. |
-| [`realtime_root.cpp`](../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
-| [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1558) | 4,390 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` now owns control binding on a finished `ConfiguredGraph`. Read-model projection, edit history, and executor preparation can consume that result. |
-| [`persisted_data_store.cpp`](../src/intravenous/execution/storage/persisted_data_store.cpp#L3088) | 4,044 | `Candidate::overwrite()` and the Region replacement functions encode snapshot and recording semantics. The cache policy consumes payload costs and usage facts. The store owns payload estimates, lease release, and recording writes. |
+| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L5517) | 6,121 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. The Event planner owns stream binding, storage selection, and buffer packing. Storage trials share one connection analysis per callback order. Extract Sample port planning next. |
+| [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1592) | 4,417 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` owns control binding on a finished `ConfiguredGraph`. `handle_socket_rpc_get_graph_scope()` also builds the editor's read model, including manual controls and execution status. |
+| [`persisted_data_store.cpp`](../src/intravenous/execution/storage/persisted_data_store.cpp#L3209) | 4,044 | `Candidate::overwrite()` writes positional recordings. `replace_sample_regions()` and `replace_event_regions()` replace authored Regions in the candidate snapshot. The cache policy consumes payload costs and usage facts. The store keeps recording writes, payload estimates, and lease release. |
+
+Review where read-model projection, edit history, and executor preparation
+can consume the configured graph and its control bindings directly.
+[Graph scope projection](../src/intravenous/project/project_graph.cpp#L3918)
 
 The [connection-planning tests](../tests/graph_jit_connection_plan_gtest.cpp)
-(4,988 lines), [project graph tests](../tests/modules/project_graph_gtest.cpp)
-(4,996 lines), and [executor tests](../tests/graph_executor_gtest.cpp)
+(5,070 lines), [project graph tests](../tests/modules/project_graph_gtest.cpp)
+(5,028 lines), and [executor tests](../tests/graph_executor_gtest.cpp)
 (4,841 lines) can follow production boundaries as they become explicit.
 Useful divisions include authored routing versus scheduling, project edits
 versus execution publication, and cutover versus background Coverage.
 
 ### Cross-component header dependencies
 
-The move gives the components separate locations. Their headers still
-expose some cross-component dependencies. For example, `observations.h`
-includes the RPC request header for a disconnect record. A client identity
-record shared at the event boundary can remove that dependency.
-`graph_jit.h` also defines the request that serves the `ProjectGraph`
-bridge. Moving that request to the bridge boundary can keep the compiler
-interface focused on compilation inputs and results.
+`Observations::handle_disconnect()` takes
+`SocketRpcClientDisconnectedRequest`, so `observations.h` includes
+`socket_rpc_requests.h`. A client identity record shared at the event
+boundary can remove that dependency.
+[Observations interface](../src/intravenous/observations/observations.h#L94)
+
+`GraphJit::handle_project_graph_transaction()` takes
+`ProjectGraphGraphJitRequest` through the application bridge. Review which
+fields describe compilation and which describe project publication before
+moving the project-facing request to that bridge.
+[GraphJit request](../src/intravenous/graph_jit/graph_jit.h#L248) ·
+[Application bridge](../src/intravenous/app/bridges/project_graph_graph_jit_bridge.cpp#L8)

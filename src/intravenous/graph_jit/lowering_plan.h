@@ -322,6 +322,21 @@ struct PrimitiveExecutionStep {
 
     std::vector<EventOperationRef> event_operations_before{};
     std::vector<EventOperationRef> event_operations_after{};
+
+    [[nodiscard]] bool has_port_operations() const noexcept
+    {
+        return !sample_carry_restores_before.empty()
+            || !sample_materializations_before.empty()
+            || !sample_compositions_before.empty()
+            || !sample_transition_materializations_before.empty()
+            || !sample_feedback_writes_after.empty()
+            || !sample_materializations_after.empty()
+            || !sample_compositions_after.empty()
+            || !sample_transition_materializations_after.empty()
+            || !sample_carry_commits_after.empty()
+            || !event_operations_before.empty()
+            || !event_operations_after.empty();
+    }
 };
 
 struct ExecutionRegionPlan {

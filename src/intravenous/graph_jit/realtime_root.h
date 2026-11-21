@@ -18,7 +18,7 @@ struct LoweringPlan;
 // Immutable graph-dependent data of one realtime root realization. The root's
 // code, execute_realtime_root(), is part of the application binary, so a graph
 // edit builds a new RealtimeRootPlan and compiles no realtime code. The
-// definition is private to realtime_root.cpp.
+// definition is shared privately by construction and execution.
 struct RealtimeRootPlan;
 
 // Builds the realtime root that executes plan. The root takes ownership of the

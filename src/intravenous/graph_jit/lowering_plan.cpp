@@ -5165,18 +5165,7 @@ std::expected<bool, std::string> realtime_ready_group_batches(
         // legal for an antichain, but it can extend transient live ranges and
         // increase stack pressure. The initial cost model keeps such groups
         // scalar; Front 16 can cost that transformation with layout jointly.
-        if (!allow_step_operations
-            && (!step.sample_carry_restores_before.empty()
-            || !step.sample_materializations_before.empty()
-            || !step.sample_compositions_before.empty()
-            || !step.sample_transition_materializations_before.empty()
-            || !step.sample_feedback_writes_after.empty()
-            || !step.sample_materializations_after.empty()
-            || !step.sample_compositions_after.empty()
-            || !step.sample_transition_materializations_after.empty()
-            || !step.sample_carry_commits_after.empty()
-            || !step.event_operations_before.empty()
-            || !step.event_operations_after.empty())) {
+        if (!allow_step_operations && step.has_port_operations()) {
             return false;
         }
 

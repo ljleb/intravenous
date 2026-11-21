@@ -181,3 +181,32 @@ and `plan_event_groups()` in a file that owns port grouping.
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
 | [`connection_plan.cpp`](../../src/intravenous/graph_jit/connection_plan.cpp#L7007) | 7,286 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and records background bindings for the schedule. |
+
+
+## Realtime root construction and execution proposal
+
+The runtime responsibility audit recorded this proposal on 2026-11-21.
+The [completed extraction](../runtime_responsibility_audit.md#realtime-root-construction-and-execution)
+and the [remaining batch work](../runtime_responsibility_audit.md#realtime-batch-selection)
+replace it. The source references below describe the file before the
+extraction.
+
+### Realtime root construction and execution
+
+`RootPlanBuilder` resolves bindings and validates the plan before
+publication. `execute_realtime_root()` consumes the completed
+`RealtimeRootPlan` on the audio thread. That plan gives the two files
+a boundary. Some batch checks can share a rule, such as which operations
+force scalar execution. Checks that compare resolved callback addresses
+belong in construction because the addresses are available there.
+[Root construction](../../src/intravenous/graph_jit/realtime_root.cpp#L2871) ·
+[Batch validation](../../src/intravenous/graph_jit/realtime_root.cpp#L4839) ·
+[Root execution](../../src/intravenous/graph_jit/realtime_root.cpp#L5538)
+
+The batch overlap check uses the packed layout. If the check rejects a
+batch, GraphJit builds the declarations again for the new order.
+[Batch selection](../../src/intravenous/graph_jit/lowering_plan.cpp#L5954)
+
+| File | Lines | Boundary to scrutinize |
+| --- | ---: | --- |
+| [`realtime_root.cpp`](../../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
