@@ -139,6 +139,31 @@ to change if it uses operations unavailable in the other domain.
 `TockCoverageContext<Node>` and its Tock batch-lane views likewise expose
 `ctx.state()` for background-owned state, rather than `ctx.tock_state()`.
 
+### Tick State across graph generations
+
+The executor pairs successors with predecessors by migration identity. A
+selector-backed identity can span authored graph edits. A structural identity
+can pair nodes within the same configured graph across an observation cutover.
+
+A Tick node with State can provide `move()` or let the executor construct
+the successor's State from a `State&&`. Use one of these paths if future
+callbacks depend on signal history. The executor transfers State between
+matched nodes with compatible State layouts.
+
+If a successor can reconstruct its State and preserve observable behavior
+with the same configuration, the author can write `State(State&&) = delete;`
+and omit `move()`. The package compiler requires that explicit deletion when
+State cannot be constructed from a `State&&` and the node supplies no
+`move()`. This catches accidental loss of the automatic move after a change
+to State. The check applies to registered and package-private leaf nodes.
+
+For fresh State, the executor calls `initialize()` during preparation when
+its dependencies are ready and calls `release()` on the predecessor at
+cutover. Initialization that needs imports or moved State runs at the
+cutover boundary and follows the existing realtime constraints.
+A node with no State needs no State transfer.
+Tock State follows its own reconstruction contract below.
+
 ### Tock generation migration is supported, but is not semantic persistence
 
 Tock has the same optional authored `move(MoveContext<Node> const&)` operation as

@@ -21,11 +21,7 @@ struct SystemAudioInput {
     struct State {
         SystemAudioInputBinding binding{};
 
-        // The binding only names the SystemAudioDevices binding for
-        // device_id, and resolving one is not safe on the audio thread, where
-        // a move would run. State is therefore not movable: a successor runs
-        // initialize() before the edit activates and resolves its own
-        // device_id.
+        // Prepare the successor's device binding outside the audio thread.
         State() = default;
         State(State&&) = delete;
     };
@@ -69,11 +65,7 @@ struct SystemAudioOutput {
     struct State {
         SystemAudioOutputBinding binding{};
 
-        // The binding only names the SystemAudioDevices binding for
-        // device_id, and resolving one is not safe on the audio thread, where
-        // a move would run. State is therefore not movable: a successor runs
-        // initialize() before the edit activates and resolves its own
-        // device_id.
+        // Prepare the successor's device binding outside the audio thread.
         State() = default;
         State(State&&) = delete;
     };

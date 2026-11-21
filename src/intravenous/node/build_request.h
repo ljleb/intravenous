@@ -1419,7 +1419,13 @@ consteval std::size_t node_background_state_alignment()
 #define IV_NODE_COMPILER_RECORD_ATTR __attribute__((used, section("iv_node_types")))
 #endif
 
-template<class Node>
+// Pass the exact State type to the Clang package plugin when the executor
+// has no move. A void argument requires no source-level check.
+template<class Node, class StateRequiringMoveDeletion = std::conditional_t<
+    has_tick_family_v<Node> && !has_move<Node> &&
+        !has_implicit_move<Node>,
+    typename NodeState<Node>::Type,
+    void>>
 IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
     node_compiler_record {
         .code_key = node_code_key_v<Node>,

@@ -1559,7 +1559,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     NodeInstancesMutation instance_mutation,
     GraphConnectionsMutation connection_mutation,
     bool publish_execution,
-    IvPackageDefinitionsChanged const* package_definitions,
+    NodeDefinitionsSnapshotChanged const* definitions_change,
     InteractionTransactions* interaction_transactions,
     std::optional<std::vector<ProjectManualControl>> proposed_controls,
     bool record_history,
@@ -1567,6 +1567,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
+    auto const& definitions = definitions_change ? definitions_change->snapshot : definitions_snapshot_;
     bool const capture_effect = publish_execution && (record_history || accepted_effect)
         && (!std::holds_alternative<std::monostate>(instance_mutation)
             || !std::holds_alternative<std::monostate>(connection_mutation) || proposed_controls);
@@ -1580,7 +1581,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     };
     GraphBuilder root_builder;
     NodeInstancesProjectGraphRequest request{
-        .snapshot = definitions_snapshot_,
+        .snapshot = definitions,
         .root_builder = &root_builder,
         .mutation = std::move(instance_mutation),
         .prepare_failure_interfaces = publish_execution,
@@ -1617,9 +1618,9 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     if (publish_execution) {
         publication.graph_changed = true;
         if (request.instances_list_changed) publication.instances = request.instances;
-        if (package_definitions || request.instance_declarations_changed) {
+        if (definitions_change || request.instance_declarations_changed) {
             IvModuleSourceIntrospectionProjectGraphRequest introspection{};
-            if (package_definitions) introspection.package_definitions = *package_definitions;
+            if (definitions_change) introspection.package_definitions = definitions_change->package_definitions;
             if (request.instance_declarations_changed) {
                 introspection.instance_declarations = request.instances;
             }
@@ -1679,8 +1680,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             .publication = std::move(publication),
         };
     };
-    auto const definitions_generation =
-        definitions_snapshot_ ? definitions_snapshot_->generation : 0;
+    auto const definitions_generation = definitions->generation;
     // A failed instance batch leaves the root builder unusable, so connections
     // are not realized; their mutation still joins the desired revision.
     bool const instances_failed = !request.result.diagnostics.empty();
@@ -1770,8 +1770,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     auto finished_graph = std::move(*configured_graph);
     auto generation = std::make_shared<ProjectGraphGeneration>();
     generation->configured_generation = next_configured_generation_;
-    generation->definitions_generation = definitions_snapshot_->generation;
-    generation->definitions = definitions_snapshot_;
+    generation->definitions_generation = definitions_generation;
+    generation->definitions = definitions;
     generation->placements = std::move(request.result.placements);
     for (auto const& [instance_id, placement] : generation->placements) {
         if (finished_graph.node_bundles.bundle(placement.root).is_concrete())
@@ -2385,8 +2385,6 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
         && change.snapshot->generation <= definitions_snapshot_->generation) {
         return;
     }
-    auto previous_snapshot = definitions_snapshot_;
-    definitions_snapshot_ = change.snapshot;
     // Catalog publication alone does not change a configured graph. Preserve
     // its pinned provider closure, executable and pending compiler request.
     // A prior configuration failure must retry: it may name a newly available
@@ -2402,19 +2400,14 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
         introspection.package_definitions = change.package_definitions;
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_source_introspection_requested_event, introspection);
         change.publication.virtual_nodes = std::move(introspection.result);
-        return;
-    }
-    try {
+    } else {
         auto rebuilt = rebuild_locked(
-            std::monostate{}, std::monostate{}, true, &change.package_definitions);
+            std::monostate{}, std::monostate{}, true, &change);
         change.publication = std::move(rebuilt.publication);
-    } catch (...) {
-        // A snapshot is committed only together with the root generation built
-        // from it. This also keeps an identical publication retryable after a
-        // fatal wiring/structural failure.
-        definitions_snapshot_ = std::move(previous_snapshot);
-        throw;
     }
+    // A reported configuration failure still accepts the desired catalog.
+    // Exceptions leave this publication retryable.
+    definitions_snapshot_ = change.snapshot;
 }
 
 void ProjectGraph::append_history_effect_locked(ProjectEditEffect effect)

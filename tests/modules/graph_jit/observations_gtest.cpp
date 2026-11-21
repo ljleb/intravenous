@@ -3,6 +3,7 @@
 #include <intravenous/rpc/socket_rpc_response_builders.h>
 #include <intravenous/project/runtime_project_events.h>
 #include <nlohmann/json.hpp>
+#include <array>
 #include <chrono>
 #include <thread>
 
@@ -180,11 +181,16 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationCanReplaceCodeWithoutChanging
     EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, 47.0);
 }
 
-TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesAnonymousFeedbackThroughStorageCutover)
+TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesFeedbackAndSystemAudioThroughStorageCutover)
 {
-    auto graph = configured_unequal_latency_projected_sample_feedback_graph(*revision);
-    auto const bundles = concrete_bundles(*graph);
+    auto feedback = configured_unequal_latency_projected_sample_feedback_graph(*revision);
+    auto const bundles = concrete_bundles(*feedback);
     ASSERT_EQ(bundles.size(), 2u);
+    auto loopback = configured_module_graph(*revision, "iv.test.graph_jit.system_audio_loopback");
+    GraphBuilder builder;
+    auto const observed_output = builder.embed(*feedback, "feedback").node_bundle(bundles[1]);
+    builder.embed(*loopback, "audio");
+    auto graph = std::make_shared<ConfiguredGraph const>(builder.finish());
     auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
     GraphJitCompileRequest inputs{
         .project_generation = 763, .graph = graph, .definitions = definitions,
@@ -193,7 +199,7 @@ TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesAnonymousFeedbackThro
     auto predecessor = jit->compile(inputs);
     ASSERT_TRUE(predecessor.succeeded()) << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
     inputs.observations = {.revision = 1, .probes = {{.id = 89, .operation = &operation,
-        .kind = ObservationSourceKind::output, .bundle = bundles[1], .channels = {0}, .available = true}}};
+        .kind = ObservationSourceKind::output, .bundle = observed_output, .channels = {0}, .available = true}}};
     inputs.project_generation = 764;
     auto cutover = in_event_source([&] {
         return jit->handle_project_graph_transaction({
@@ -203,24 +209,54 @@ TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesAnonymousFeedbackThro
     ASSERT_TRUE(cutover.succeeded()) << (cutover.diagnostics.empty() ? "" : cutover.diagnostics.front().message);
     auto uninterrupted = jit->compile(inputs);
     ASSERT_TRUE(uninterrupted.succeeded()) << (uninterrupted.diagnostics.empty() ? "" : uninterrupted.diagnostics.front().message);
+
+    struct DeviceBuffers {
+        std::array<Sample, 128> capture{};
+        std::array<Sample, 128> render{};
+        std::size_t input_resolutions = 0;
+        std::size_t output_resolutions = 0;
+    } device;
+    device.capture.fill(Sample{.25f});
+    auto observed_resources = resources;
+    observed_resources.system_audio = {
+        .owner = &device,
+        .resolve_input_fn = [](void* owner, std::string_view) {
+            ++static_cast<DeviceBuffers*>(owner)->input_resolutions;
+            return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
+                return static_cast<DeviceBuffers*>(owner)->capture;
+            }};
+        },
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            ++static_cast<DeviceBuffers*>(owner)->output_resolutions;
+            return SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<Sample> {
+                return static_cast<DeviceBuffers*>(owner)->render;
+            }};
+        },
+    };
     GraphExecutor reference(resources);
-    GraphExecutor observed(resources);
+    GraphExecutor observed(observed_resources);
     ASSERT_EQ(reference.stage(uninterrupted.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_EQ(observed.stage(predecessor.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_TRUE(reference.activate_pending(index(0)));
     ASSERT_TRUE(observed.activate_pending(index(0)));
     reference.tick_block(index(0), 64);
     observed.tick_block(index(0), 64);
+    EXPECT_EQ(device.render, device.capture);
+    EXPECT_EQ(device.input_resolutions, 1u);
+    EXPECT_EQ(device.output_resolutions, 1u);
     ASSERT_FALSE(observed.stage_observation_update({
         .execution_generation = 763, .update = cutover.compiled_graph,
     }));
     ASSERT_EQ(observed.stage(cutover.compiled_graph), GraphExecutorStageResult::accepted);
+    EXPECT_EQ(device.input_resolutions, 2u);
+    EXPECT_EQ(device.output_resolutions, 2u);
     ASSERT_TRUE(observed.activate_pending(index(64)));
     EXPECT_EQ(observed.active_generation(), 764u);
     // One sample per frame makes a dropped in-flight sample visible in the
     // readout, even if subsequent samples would give the same block peak.
     for (auto sample = 64; sample < 80; ++sample) {
         SCOPED_TRACE(sample);
+        device.render.fill(Sample{});
         reference.tick_block(index(sample), 1);
         observed.tick_block(index(sample), 1);
         auto const* expected = reference.collect_observations();
@@ -232,7 +268,11 @@ TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesAnonymousFeedbackThro
         EXPECT_EQ(expected_level.samples, 1u);
         EXPECT_EQ(actual_level.samples, 1u);
         EXPECT_DOUBLE_EQ(actual_level.peak, expected_level.peak);
+        EXPECT_EQ(device.render[0].value, .25f);
+        EXPECT_EQ(device.render[1].value, .25f);
     }
+    EXPECT_EQ(device.input_resolutions, 2u);
+    EXPECT_EQ(device.output_resolutions, 2u);
 }
 
 TEST_F(GraphJitRuntimeFixture, ObservationSinkWithBackgroundDeliveryImportsItsSequentialInitializer)

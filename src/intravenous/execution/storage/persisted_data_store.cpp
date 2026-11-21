@@ -12,6 +12,7 @@
 #include <iterator>
 #include <numeric>
 #include <ranges>
+#include <set>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -2826,6 +2827,19 @@ PersistedDataStore::Candidate::working_snapshot() const
 }
 
 namespace {
+template<class Node, class Visit>
+void visit_outputs(Node const* root, Visit const& visit)
+{
+    if (!root) return;
+    if (auto const* entries = std::get_if<typename Node::Values>(&root->entries)) {
+        for (auto const& value : *entries)
+            if (value) visit(*value);
+        return;
+    }
+    for (auto const& child : std::get<typename Node::Children>(root->entries))
+        visit_outputs(child.get(), visit);
+}
+
 template<class Node, class Transform>
 std::shared_ptr<Node const> transform_outputs(
     std::shared_ptr<Node const> const& root, Transform const& transform)
@@ -3066,96 +3080,80 @@ void PersistedDataStore::set_cache_realization(
     PersistedOutputHandle output, OutputRealization realization)
 {
     if (!owns_output(output)) throw std::invalid_argument("cache output belongs to another store");
-    auto& policy = cache_policy_[output];
-    policy.realization = realization;
-    pending_computed_reclamation_ |= realization == OutputRealization::computed && policy.uses < 2;
+    auto& use = cache_uses_[output];
+    use.realization = realization;
+    pending_computed_reclamation_ |= use.discard_on_first_use();
 }
 
 void PersistedDataStore::prepare_cache(std::size_t incoming_bytes,
     std::span<PersistedPayloadSelection const> required,
     std::function<void(std::span<PersistedPayloadSelection const>)> const& release_leases)
 {
-    auto const& limits = buffered_pages_->limits();
-    struct Victim { PersistedOutputHandle output; std::size_t bytes; CachePolicy policy; };
+    using persisted_data_store_detail::CacheRetentionPolicy;
+    using persisted_data_store_detail::CacheUse;
+    CacheRetentionPolicy const policy{buffered_pages_->limits(), incoming_bytes};
+    std::set<PersistedOutputHandle> touched;
+    for (auto const& selection : required) {
+        if (selection.coverage.empty() || !touched.insert(selection.output).second) continue;
+        auto& use = cache_uses_[selection.output];
+        use.last_use = ++cache_clock_;
+        ++use.uses;
+    }
+    auto const usage = buffered_pages_->usage();
+    if (!pending_computed_reclamation_ &&
+        !policy.needs_reclamation(usage, usage.live_page_bytes + usage.event_bytes)) return;
+    if (required.empty()) pending_computed_reclamation_ = false;
+
+    std::map<PersistedOutputHandle, IndexCoverage> demand;
+    for (auto const& selection : required) {
+        if (!selection.coverage.empty()) demand[selection.output].include(selection.coverage);
+    }
+    struct Victim {
+        std::size_t keep_index;
+        std::size_t bytes;
+        CacheUse use;
+        IndexCoverage required;
+    };
     std::vector<Victim> victims;
     std::vector<PersistedPayloadSelection> keep;
     std::size_t retained_bytes = 0;
-    std::vector<PersistedOutputHandle> touched;
-    for (auto const& selection : required) {
-        if (selection.coverage.empty() || std::ranges::contains(touched, selection.output)) continue;
-        touched.push_back(selection.output);
-        auto& policy = cache_policy_[selection.output];
-        policy.last_use = ++cache_clock_;
-        ++policy.uses;
-    }
-    auto const usage = buffered_pages_->usage();
-    auto const live = usage.live_page_bytes + usage.event_bytes;
-    auto mapping_pressure = [&](BufferedStorageUsage const& current) {
-        return current.reserved_mapping_bytes > limits.max_total_mapping_bytes - limits.max_total_mapping_bytes / 4
-            || current.mapped_runs > limits.max_mapping_runs - limits.max_mapping_runs / 4;
-    };
-    if (!pending_computed_reclamation_ && live <= limits.max_cached_payload_bytes
-        && incoming_bytes <= limits.max_backing_bytes
-        && live <= limits.max_backing_bytes - incoming_bytes && !mapping_pressure(usage)) return;
-    if (required.empty()) pending_computed_reclamation_ = false;
-    auto requested = [&](PersistedOutputHandle output) {
-        IndexCoverage result;
-        for (auto const& selection : required)
-            if (selection.output == output) result.include(selection.coverage);
-        return result;
-    };
     auto admit = [&](auto const& source, std::size_t bytes) {
-        if (source->positional_recording || source->coverage.empty()) return;
-        auto& policy = cache_policy_[source->output];
-        auto demand = requested(source->output);
-        keep.push_back({source->output, source->coverage});
+        if (source.coverage.empty()) return;
+        auto const required = demand.find(source.output);
+        auto const protected_coverage = required == demand.end() ? IndexCoverage{} : required->second;
+        auto const& use = cache_uses_[source.output];
+        if (!(source.coverage - protected_coverage).empty())
+            victims.push_back({keep.size(), bytes, use, protected_coverage});
+        keep.push_back({source.output, source.coverage});
         retained_bytes += bytes;
-        if (!(source->coverage - demand).empty()) victims.push_back({source->output, bytes, policy});
     };
-    (void)transform_outputs(published_owner_->sample_outputs_, [&](auto const& source) {
-        if (source->positional_recording) return source;
+    visit_outputs(published_owner_->sample_outputs_.get(), [&](auto const& source) {
+        if (source.positional_recording) return;
         std::size_t bytes = 0;
         // A conservative page-rounded footprint, including independent
         // overlapping Regions. Hard allocation limits use allocator accounting.
-        for (auto const& region : *source->logical_regions)
+        auto const width = source.geometry.value_size_bytes * channel_count(source.layout);
+        auto const page = buffered_pages_->page_size();
+        for (auto const& region : *source.logical_regions)
             for (auto range : region.materialized_coverage()) {
-                auto const width = source->geometry.value_size_bytes * channel_count(source->layout);
-                auto const page = buffered_pages_->page_size();
                 auto const count = checked_product(checked_frame_count(range), width);
                 bytes += count / page * page + (count % page ? page : 0);
             }
         admit(source, bytes);
-        return source;
     });
-    (void)transform_outputs(published_owner_->event_outputs_, [&](auto const& source) {
-        if (source->positional_recording) return source;
-        std::size_t bytes = source->timeline ? source->timeline->capacity() * sizeof(TimedEvent) : 0;
-        for (auto const& region : *source->logical_regions) bytes += region.events.capacity() * sizeof(TimedEvent);
+    visit_outputs(published_owner_->event_outputs_.get(), [&](auto const& source) {
+        if (source.positional_recording) return;
+        std::size_t bytes = source.timeline ? source.timeline->capacity() * sizeof(TimedEvent) : 0;
+        for (auto const& region : *source.logical_regions) bytes += region.events.capacity() * sizeof(TimedEvent);
         admit(source, bytes);
-        return source;
     });
     std::stable_sort(victims.begin(), victims.end(), [](auto const& left, auto const& right) {
-        if (left.policy.realization != right.policy.realization)
-            return left.policy.realization == OutputRealization::computed;
-        if (left.policy.last_use != right.policy.last_use) return left.policy.last_use < right.policy.last_use;
-        if (left.policy.uses != right.policy.uses) return left.policy.uses < right.policy.uses;
-        return left.bytes > right.bytes;
+        return CacheRetentionPolicy::reclaim_before(left.use, left.bytes, right.use, right.bytes);
     });
-    auto pressure = [&] {
-        auto const usage = buffered_pages_->usage();
-        auto const live = usage.live_page_bytes + usage.event_bytes;
-        return retained_bytes > limits.max_cached_payload_bytes
-            || incoming_bytes > limits.max_backing_bytes
-            || live > limits.max_backing_bytes - incoming_bytes || mapping_pressure(usage);
-    };
-    for (auto const& victim : victims) {
-        // Computed results are not admitted to optional retention on first
-        // use. Repeated reads establish reuse; buffered results favor caching.
-        bool const discard_computed = victim.policy.realization == OutputRealization::computed
-            && victim.policy.uses < 2;
-        if (!discard_computed && !pressure()) continue;
-        auto found = std::ranges::find(keep, victim.output, &PersistedPayloadSelection::output);
-        found->coverage = requested(victim.output);
+    for (auto& victim : victims) {
+        if (!victim.use.discard_on_first_use() &&
+            !policy.needs_reclamation(buffered_pages_->usage(), retained_bytes)) continue;
+        keep[victim.keep_index].coverage = std::move(victim.required);
         release_leases(keep);
         reclaim_cached_payload(keep);
         retained_bytes -= std::min(retained_bytes, victim.bytes);
@@ -3996,7 +3994,7 @@ PersistedDataPublishResult PersistedDataStore::publish(Candidate&& candidate)
                 published_owner_->sample_output_levels_, index) != nullptr
             : find_output<EventOutputNode, EventOutputState>(published_owner_->event_outputs_,
                 published_owner_->event_output_levels_, index) != nullptr;
-        if (!present) cache_policy_.erase(output);
+        if (!present) cache_uses_.erase(output);
     }
     candidate.store_ = nullptr;
     candidate.base_identity_.reset();

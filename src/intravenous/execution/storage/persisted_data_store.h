@@ -3,6 +3,8 @@
 #include <intravenous/channel_layout.h>
 #include <intravenous/coverage.h>
 #include <intravenous/event_sequence.h>
+#include <intravenous/execution/storage/buffered_storage_limits.h>
+#include <intravenous/execution/storage/cache_retention_policy.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/stable_graph_identity.h>
 #include <intravenous/node/continuous_port.h>
@@ -229,39 +231,6 @@ using SampleOutputNode = OutputDirectoryNode<SampleOutputState>;
 using EventOutputNode = OutputDirectoryNode<EventOutputState>;
 
 } // namespace persisted_data_store_detail
-
-// Executor resources, not authored port semantics. Defaults are provisional
-// limits for the initial shared backend and remain configurable by its owner.
-struct BufferedStorageLimits {
-    std::size_t max_contiguous_mapping_bytes = std::size_t{1} << 30;
-    std::size_t max_total_mapping_bytes = std::size_t{4} << 30;
-    std::size_t max_backing_bytes = std::size_t{1} << 30;
-    std::size_t max_mapping_runs = 16384;
-    std::size_t process_vma_headroom = 512;
-    std::size_t max_resident_bytes = std::size_t{64} << 20;
-    // Optional retained results share the hard backing budget with recordings
-    // and pinned readers. This additional bound cannot evict either owner.
-    std::size_t max_cached_payload_bytes = std::size_t{256} << 20;
-};
-
-struct BufferedStorageUsage {
-    std::size_t page_size = 0;
-    // Physical sample backing; event_bytes is charged alongside it.
-    std::size_t backing_bytes = 0;
-    // Logical file extent includes punched, reusable slots.
-    std::size_t file_extent_bytes = 0;
-    std::size_t live_page_bytes = 0;
-    std::size_t event_bytes = 0;
-    // All free offsets, including slots without physical backing.
-    std::size_t reusable_page_bytes = 0;
-    std::size_t cached_page_bytes = 0;
-    std::size_t reserved_mapping_bytes = 0;
-    std::size_t mapped_runs = 0;
-    std::size_t resident_bytes = 0;
-    std::uint64_t reused_pages = 0;
-    std::uint64_t mapping_calls = 0;
-    std::uint64_t cache_evictions = 0;
-};
 
 struct BufferedResidentRange { std::byte const* data = nullptr; std::size_t bytes = 0; };
 
@@ -658,12 +627,7 @@ private:
         output_slots_{};
     mutable std::mutex reader_slots_mutex_{};
     std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
-    struct CachePolicy {
-        OutputRealization realization = OutputRealization::buffered;
-        std::uint64_t last_use = 0;
-        std::uint64_t uses = 0;
-    };
-    std::map<PersistedOutputHandle, CachePolicy> cache_policy_{};
+    std::map<PersistedOutputHandle, persisted_data_store_detail::CacheUse> cache_uses_{};
     std::uint64_t cache_clock_ = 0;
     std::atomic<std::uint64_t> cache_evictions_{0};
     bool pending_computed_reclamation_ = false;

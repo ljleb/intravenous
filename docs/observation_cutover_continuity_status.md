@@ -99,8 +99,9 @@ adopting the successor. See the [recording ownership rules](./sequential_port_st
 
 The regression tests compare sampled feedback across a storage cutover,
 exercise code replacement in the active generation, and check that
-removing the last probe publishes an empty frame. The tests and the
-paused Saw replay still need to run against the new executable.
+removing the last probe publishes an empty frame. The project owner reported
+the full test suite passing after the Tick lifecycle change. The paused Saw
+replay has yet to be verified against that build.
 
 Preparation progress now carries an attempt ID. `ProjectGraph` assigns an
 execution generation only when a candidate needs a structural cutover.
@@ -109,6 +110,46 @@ generation. The prediction tests use resolvable ports, and the integration
 fixtures acknowledge activations while waiting for the latest preparation.
 See the [runtime responsibility audit](./runtime_responsibility_audit.md) for
 the remaining ownership decisions.
+
+The live Saw project exposed a rejected storage cutover at
+`SystemAudioOutput`. Its Tick State stores a configured device binding.
+The node resolves that binding during preparation because the device
+lookup takes a mutex. The state has no move operation. The cutover check
+rejected it before new probes could publish, even though its binding is derived
+from the configuration. A knob edit changes the audio configuration and can
+activate a graph with the requested probes and a freshly resolved binding.
+
+This exposes a distinction in `NodeStorage::prepare_migration_from()`.
+Movement describes whether a successor can inherit a live State object.
+It does not describe whether fresh initialization is equivalent. Any
+solution needs to preserve state that carries signal history while keeping
+device lookup off the audio thread.
+
+`SystemAudioInput` and `SystemAudioOutput` have no authored or implicit move.
+That lifecycle promises that initializing a successor with the same
+configuration preserves behavior. When a new probe needs a storage cutover,
+`NodeStorage` matches the nodes by identity and initializes their device
+bindings during preparation.
+The storage cutover regression checks live probe readings, the feedback
+signal, and system audio across activation. It also checks that device
+resolution completes before activation.
+See [Tick State across graph generations](./node_interaction_and_presentation_communication_direction.md#tick-state-across-graph-generations).
+
+## Optional migration declaration
+
+An explicit Tick migration declaration is a possible later API change. A
+Tick node with `State` and no authored `move()` would choose
+`iv::StateMigration::move` or `iv::StateMigration::reinitialize` through a
+`state_migration` constant. The compiler would reject an omitted choice or
+an automatic move of nonmovable State. An authored `move()` would express
+the choice on its own. A node without State would need no declaration.
+
+This would catch a change such as adding a mutex to a delay's State at
+compile time. Under the current rule, that change can remove the implicit
+move and make fresh initialization the expected behavior. The declaration
+would leave identity matching and layout compatibility checks in place.
+The project owner deferred this API change pending evidence that the extra
+declaration is needed.
 
 ## Evidence
 

@@ -1484,9 +1484,55 @@ CXXRecordDecl const* node_type_from_compiler_record_specialization(
     return values.front().getAsType()->getAsCXXRecordDecl();
 }
 
+void check_deleted_state_move(
+    ASTContext& context,
+    CXXRecordDecl const& node,
+    VarTemplateSpecializationDecl const& compiler_record)
+{
+    auto const args = compiler_record.getTemplateArgs().asArray();
+    if (args.size() < 2 || args[1].getKind() != TemplateArgument::Type) {
+        return;
+    }
+    auto const state_type = args[1].getAsType();
+    if (state_type->isVoidType()) return;
+
+    auto const* state = state_type->getAsCXXRecordDecl();
+    if (state) {
+        state = state->getDefinition();
+    }
+    if (state) {
+        for (auto const* ctor : state->ctors()) {
+            if (ctor->isMoveConstructor() && !ctor->isImplicit() && ctor->isDeletedAsWritten()) {
+                return;
+            }
+        }
+    }
+
+    auto& diagnostics = context.getDiagnostics();
+    auto const location = state ? state->getLocation() : node.getLocation();
+    auto const id = diagnostics.getCustomDiagID(
+        DiagnosticsEngine::Error,
+        "Tick node %0 cannot construct State from State&& and has no move() callback");
+    diagnostics.Report(location, id) << type_string(context, context.getCanonicalTagType(&node));
+
+    auto const preserve = diagnostics.getCustomDiagID(
+        DiagnosticsEngine::Note,
+        "if State carries playback history, define 'void move(iv::MoveContext<YourNode> const& ctx) const' "
+        "and transfer the data you need from ctx.previous_state() to ctx.state()");
+    diagnostics.Report(location, preserve);
+
+    auto const rebuild = diagnostics.getCustomDiagID(
+        DiagnosticsEngine::Note,
+        "if fresh initialization with the same configuration and resources preserves behavior, "
+        "write 'State(State&&) = delete;' to opt in. Keep State default-constructible, "
+        "for example with 'State() = default;'");
+    diagnostics.Report(location, rebuild);
+}
+
 class ReflectedNodeDiscovery final {
 public:
     explicit ReflectedNodeDiscovery(ASTContext& context)
+        : context_(context)
     {
         auto const iv_name = DeclarationName{&context.Idents.get("iv")};
         auto const details_name = DeclarationName{&context.Idents.get("details")};
@@ -1537,10 +1583,12 @@ private:
                     != nodes_.end()) {
                 continue;
             }
+            check_deleted_state_move(context_, *node, *specialization);
             nodes_.push_back(node);
         }
     }
 
+    ASTContext& context_;
     std::vector<CXXRecordDecl const*> nodes_;
 };
 
@@ -2434,10 +2482,13 @@ void write_state_metadata(
     CompilerInstance& compiler,
     std::filesystem::path const& metadata_dir)
 {
+    if (compiler.getDiagnostics().hasErrorOccurred()) return;
+
     auto& context = compiler.getASTContext();
     StateMetadataCollector state_collector(context);
     NodeConfigMetadataCollector node_config_collector(context);
     ReflectedNodeDiscovery reflected_node_discovery(context);
+    if (compiler.getDiagnostics().hasErrorOccurred()) return;
     ConfigurationTypeIdentityCollector configuration_type_collector(compiler);
     NodeMessageHandlerCollector node_message_collector(
         compiler, configuration_type_collector);

@@ -880,10 +880,31 @@ int main(int, char** argv)
         iv::NodeStorage original = original_layout.create_storage(resources);
         original.initialize();
 
+        auto anonymous_layout = original_layout;
+        anonymous_layout.nodes[0].migration_identity.clear();
+        auto anonymous = anonymous_layout.create_storage(resources);
+        bool rejected = false;
+        try {
+            (void)anonymous.prepare_migration_from(original, true);
+        } catch (std::runtime_error const&) {
+            rejected = true;
+        }
+        iv::test::require(rejected,
+            "an observation cutover must match the reinitialized node to its predecessor");
+
+        auto observed = original_layout.create_storage(resources);
+        auto migration = observed.prepare_migration_from(original, true);
+        iv::test::require(
+            !weights(observed).empty() &&
+                weights(observed).data() != weights(original).data() &&
+                std::ranges::equal(weights(observed), weights(original)),
+            "prepare should rebuild weights in the successor's own storage");
+        migration.commit();
+
         iv::UniformToPower changed_node(-5, 4, iv::Sample{0.25f});
         auto const changed_layout = declare_power(changed_node);
         iv::NodeStorage changed = changed_layout.create_storage(resources);
-        changed.initialize(&original);
+        changed.initialize(&observed);
         iv::NodeStorage fresh = changed_layout.create_storage(resources);
         fresh.initialize();
 

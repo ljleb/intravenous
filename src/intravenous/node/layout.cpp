@@ -1205,35 +1205,32 @@ namespace iv {
                     identity);
         }
 
-        std::unordered_map<std::string_view, size_t> current_by_identity;
-        current_by_identity.reserve(layout->nodes.size());
+        std::unordered_set<std::string_view> current_identities;
+        current_identities.reserve(layout->nodes.size());
         for (size_t node = 0; node < layout->nodes.size(); ++node) {
             auto const& record = layout->nodes[node];
             auto const& identity = record.migration_identity;
-            if (identity.empty()) continue;
-            if (!current_by_identity.emplace(identity, node).second)
+            if (!identity.empty() && !current_identities.insert(identity).second)
                 throw std::runtime_error(
                     "duplicate node migration identity in current storage: " +
                     identity);
             auto const previous_it = previous_by_identity.find(identity);
-            if (previous_it == previous_by_identity.end()) continue;
-            auto const previous_node = previous_it->second;
-            if (!record.lifecycle.move_fn ||
-                !can_move_from(previous, node, previous_node)) {
-                continue;
-            }
-            migration.previous_node_for_current[node] = previous_node;
-            migration.previous_nodes_consumed[previous_node] = true;
-        }
-
-        if (preserve_state) {
-            for (size_t node = 0; node < layout->nodes.size(); ++node) {
-                auto const& record = layout->nodes[node];
-                if (record.state_size != 0
-                    && migration.previous_node_for_current[node] == Migration::no_node) {
-                    throw std::runtime_error("observation cutover cannot preserve Tick State for "
-                        + record.migration_identity);
+            if (previous_it != previous_by_identity.end()) {
+                auto const previous_node = previous_it->second;
+                auto const& prior = previous.layout->nodes[previous_node];
+                if (record.lifecycle.move_fn && can_move_from(previous, node, previous_node)) {
+                    migration.previous_node_for_current[node] = previous_node;
+                    migration.previous_nodes_consumed[previous_node] = true;
+                    continue;
                 }
+                // With no move operation, the node promises that a fresh
+                // State preserves behavior for the same configuration.
+                if (!record.lifecycle.move_fn && !prior.lifecycle.move_fn)
+                    continue;
+            }
+            if (preserve_state && record.state_size != 0) {
+                throw std::runtime_error("observation cutover cannot preserve Tick State for "
+                    + identity);
             }
         }
 

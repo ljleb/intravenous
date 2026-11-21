@@ -844,7 +844,11 @@ TEST(SharedBufferedStorage, CachePressureRetainsRequiredWindowsWithoutFabricatin
     replace(seed, samples(id, span(0, 2 * frames), 7, mono_planar_channel_layout));
     ASSERT_EQ(store.publish(std::move(seed)), PersistedDataPublishResult::published);
     (void)store.reclaim_retired();
-    auto required = std::array{PersistedPayloadSelection{id, IndexCoverage{span(0, frames)}}};
+    auto const half_page = frames / 2;
+    auto required = std::array{
+        PersistedPayloadSelection{id, IndexCoverage{span(half_page, frames - half_page)}},
+        PersistedPayloadSelection{id, IndexCoverage{span(0, half_page)}},
+    };
     store.prepare_cache(page, required, [](auto) {});
     auto reader = store.register_reader();
     auto pin = reader.pin();

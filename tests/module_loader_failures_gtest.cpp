@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -38,6 +39,79 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
     expect_failure_contains(
         [&] { (void)iv::test::load_project_package_definitions(loader, missing_dir); },
         "iv_package.json");
+}
+
+TEST(ModuleLoaderFailures, NonmovableTickStateRequiresAnAuthoredMoveDecision)
+{
+    auto const workspace = iv::test::make_inline_module_workspace(
+        "tick_state_move_decision",
+        R"cpp(
+#include <intravenous/dsl.h>
+
+struct ImmovableMember {
+    ImmovableMember() = default;
+    ImmovableMember(ImmovableMember&&) = delete;
+};
+
+struct NonmovableTick {
+    struct State {
+        ImmovableMember member;
+        State() = default;
+        State& operator=(State&&) = delete;
+    };
+
+    void tick(iv::TickSampleContext<NonmovableTick> const&) const {}
+};
+
+void tick_state_move_decision(iv::GraphBuilder& graph)
+{
+    (void)graph.node<NonmovableTick>();
+    graph.outputs();
+}
+)cpp");
+    auto const request = iv::PackageBuildRequest{.package_root = workspace};
+    iv::ModuleLoader loader(iv::test::repo_root());
+    auto expect_move_diagnostic = [&] {
+        // The exception reports the failed command. Clang writes the
+        // diagnostic to the build output, which Ninja can forward to stdout.
+        testing::internal::CaptureStdout();
+        testing::internal::CaptureStderr();
+        EXPECT_THROW((void)loader.compile_package(request), std::runtime_error);
+        auto const output = testing::internal::GetCapturedStdout()
+            + testing::internal::GetCapturedStderr();
+        for (auto const* text : {
+                 "cannot construct State from State&&",
+                 "move(iv::MoveContext<YourNode> const& ctx) const",
+                 "ctx.previous_state()",
+                 "fresh initialization with the same configuration and resources preserves behavior",
+                 "State(State&&) = delete;",
+             }) {
+            EXPECT_NE(output.find(text), std::string::npos) << output;
+        }
+    };
+    {
+        SCOPED_TRACE("package-private leaf");
+        expect_move_diagnostic();
+    }
+
+    auto const path = workspace / "module.cpp";
+    auto source = iv::test::read_text(path);
+    constexpr std::string_view private_leaf = "    (void)graph.node<NonmovableTick>();\n";
+    auto const private_use = source.find(private_leaf);
+    ASSERT_NE(private_use, std::string::npos);
+    source.erase(private_use, private_leaf.size());
+    source += "\nIV_NODE(\"iv.test.tick_state_export\", NonmovableTick, \"Tick State Export\");\n";
+    iv::test::write_text(path, source);
+    {
+        SCOPED_TRACE("registered leaf");
+        expect_move_diagnostic();
+    }
+
+    auto const declaration = source.find("State& operator=(State&&) = delete;");
+    ASSERT_NE(declaration, std::string::npos);
+    source.insert(declaration, "State(State&&) = delete;\n        ");
+    iv::test::write_text(path, source);
+    EXPECT_TRUE(std::filesystem::is_regular_file(loader.compile_package(request).path));
 }
 
 TEST(ModuleLoaderFailures, IncompatibleSingleCppCompilerOverrideFailsBeforePackageConfiguration)

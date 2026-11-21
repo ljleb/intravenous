@@ -43,3 +43,20 @@ boundaries. Split shared headers as clients move. `Observations` can depend
 on its own requests without pulling in the RPC parser. `GraphJit` can expose
 compiled artifacts without depending on `ProjectGraph`'s transaction record.
 Those changes reduce the headers a new caller needs to read and include.
+
+
+## Definition catalog, shared test fixture, and cache retention
+
+These findings preceded the changes recorded in the [current audit](../runtime_responsibility_audit.md#catalog-publication-test-fixture-and-cache-retention).
+
+| Current operation | Work that can be avoided | Where the decision belongs |
+| --- | --- | --- |
+| [`ProjectGraph::handle_node_definitions_snapshot_changed()`](../../src/intravenous/project/project_graph.cpp#L2376) replaces `definitions_snapshot_` before it checks whether configuration needs to change. If rebuilding throws, it restores the old snapshot. | Configuration reads the proposed snapshot through the same field that stores the accepted catalog. The caller needs a restore path to keep a failed publication retryable. | Pass the proposed `NodeDefinitionsSnapshot` to configuration. Commit the desired catalog when the publication succeeds. Preserve the configured generation's provider closure until the replacement graph is ready. |
+
+The [shared GraphJit runtime package fixture](../../tests/modules/graph_jit/package_fixture.cpp#L8020)
+has 8,095 lines. Its raw-string chunks have a compiler size limit, so adding
+a fixture for one behavior can break a chunk containing unrelated fixtures.
+Actual package source files grouped by behavior can still share one built
+artifact and the current workspace lock.
+
+In `PersistedDataStore::prepare_cache()`, victim ranking, payload byte estimates, and lease release shared the same implementation. The store also held the rules for overwriting recordings and retaining pinned snapshots.

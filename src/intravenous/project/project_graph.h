@@ -325,8 +325,8 @@ class ProjectGraph {
     std::uint64_t next_configured_generation_ = 1;
     std::jthread compile_worker_{};
 
-    // `package_definitions` is the module-definition change of the
-    // definitions publication this build follows, if any.
+    // `definitions_change` supplies the catalog and source metadata for a
+    // proposed definitions publication.
     // `interaction_transactions`, when set, routes the NodeInstances and
     // GraphConnections steps through that node-message interaction's
     // transactions, opening them first if needed.
@@ -336,7 +336,7 @@ class ProjectGraph {
         NodeInstancesMutation instance_mutation,
         GraphConnectionsMutation connection_mutation,
         bool publish_execution = true,
-        IvPackageDefinitionsChanged const* package_definitions = nullptr,
+        NodeDefinitionsSnapshotChanged const* definitions_change = nullptr,
         InteractionTransactions* interaction_transactions = nullptr,
         std::optional<std::vector<ProjectManualControl>> proposed_controls = std::nullopt,
         bool record_history = true,
