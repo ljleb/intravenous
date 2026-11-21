@@ -1145,9 +1145,10 @@ TEST_F(GraphJitRuntimeFixture, RetainedStereoToMonoHistoryRecordsItsSources)
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->sample_producer_groups.front().storage_plan);
+    ASSERT_FALSE(analysis->sample_producer_groups.front().external_boundary);
     EXPECT_EQ(
-        analysis->sample_producer_groups.front().storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            analysis->sample_producer_groups.front().storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto compiled = compile_graph(graph, 229);

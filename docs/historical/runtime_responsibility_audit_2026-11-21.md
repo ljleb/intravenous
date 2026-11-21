@@ -87,3 +87,31 @@ This row appeared in the runtime responsibility audit on 2026-11-21. The [curren
 | Current operation | Work that can be avoided | Where the decision belongs |
 | --- | --- | --- |
 | [`ProjectGraph::compile_graph`](../../src/intravenous/project/project_graph.cpp#L712) requests compilation with a predecessor when bindings alone cannot satisfy a probe change. [`GraphJit`](../../src/intravenous/graph_jit/graph_jit.cpp#L2234) derives transition inputs before the executor checks if the compiled code fits the active layout. | Compatible observation code can leave a state-transfer plan unused. The attempt-ID change avoids reserving an execution generation in this case. | Check compatibility against the steady lowering result first, then build the transition only when the check calls for a cutover. Reuse the steady result in either path. |
+
+## Stack-budget retries before schedule reuse
+
+The runtime responsibility audit recorded the repeated planning below on
+2026-11-21. See the [current implementation](../runtime_responsibility_audit.md#stack-budget-retries).
+
+| Current operation | Work that can be avoided | Where the decision belongs |
+| --- | --- | --- |
+| [`build_lowering_plan`](../../src/intravenous/graph_jit/lowering_plan.cpp#L9732) retries `plan_realtime_ports()` when packed stack size exceeds the budget. After building declarations and imports it can reject a batch and restart planning. | Each stack trial repeats parts of connection analysis and configures background replay. A rejected batch discards declarations and imports as well. | Give storage selection stable inputs for a given callback order and reserve replanning for facts that change with that order. Check batch compatibility as soon as the necessary layouts and callback signatures are known. The packed high-water mark may still require a search. |
+
+The [storage planning status](../sequential_port_storage_planning.md#current-implementation-status)
+described the path from connection analysis to packed stack allocation as follows.
+
+- the fixed 64-event and 16-KiB thresholds are gone. The shared pure chooser
+  now enumerates transient, carry, and full-persistent candidates, exposes their
+  copied bytes, ring-addressed bytes, stack footprint, persistent footprint, and
+  weighted cost, and accepts candidate-specific whole-group copy counts plus a
+  configured stack-budget constraint. `GraphJit` now propagates one configured
+  cost model through connection, sample, event, and feedback planning. After the
+  sample/event stack buffers are independently lifetime-packed, lowering lays
+  those two byte ranges into one generated-root stack allocation and enforces
+  the budget against that final byte count. If it does not fit, lowering raises
+  the stack-byte cost and re-runs storage selection so eligible producer,
+  history/latency, feedback, and disconnected-output buffers move to
+  `NodeStorage`; a final minimum-stack pass either fits or reports that the
+  remaining mandatory conversion/merge buffers exceed the budget. The default
+  weights preserve the landed block-relative/rate-derived crossover until
+  topology-specific costs justify an earlier full-persistent choice;

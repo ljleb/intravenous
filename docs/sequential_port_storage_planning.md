@@ -989,21 +989,16 @@ The storage-model and storage-placement refactors have landed:
 - ordinary event capacities start from
   `ceil(max_events_per_index * temporal_span)` and are rounded to a power of
   two;
-- the fixed 64-event and 16-KiB thresholds are gone. The shared pure chooser
-  now enumerates transient, carry, and full-persistent candidates, exposes their
-  copied bytes, ring-addressed bytes, stack footprint, persistent footprint, and
-  weighted cost, and accepts candidate-specific whole-group copy counts plus a
-  configured stack-budget constraint. `GraphJit` now propagates one configured
-  cost model through connection, sample, event, and feedback planning. After the
-  sample/event stack buffers are independently lifetime-packed, lowering lays
-  those two byte ranges into one generated-root stack allocation and enforces
-  the budget against that final byte count. If it does not fit, lowering raises
-  the stack-byte cost and re-runs storage selection so eligible producer,
-  history/latency, feedback, and disconnected-output buffers move to
-  `NodeStorage`; a final minimum-stack pass either fits or reports that the
-  remaining mandatory conversion/merge buffers exceed the budget. The default
-  weights preserve the landed block-relative/rate-derived crossover until
-  topology-specific costs justify an earlier full-persistent choice;
+- the shared storage chooser estimates the cost of transient buffers, carry,
+  and full persistent buffers. It accounts for copied bytes, ring addressing,
+  and stack and persistent storage. GraphJit applies these costs to Sample,
+  Event, and feedback storage for a fixed connection schedule. It packs both
+  transient arenas into one stack allocation and checks the total byte count.
+  If the allocation exceeds the budget, GraphJit raises the cost of stack
+  bytes and repeats storage planning with the same connection analysis. If
+  those trials fail to fit, GraphJit tries the minimum-stack placements.
+  If the packed stack still exceeds the budget, GraphJit reports the required size.
+  See the [stack-budget retry audit](runtime_responsibility_audit.md#stack-budget-retries).
 - invalid event rate/span capacities fail connection planning immediately;
 - ordinary full persistent rings are fixed at compile time from the producer
   rate and `history + block + latency`; no current event strategy grows a ring

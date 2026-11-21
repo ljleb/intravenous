@@ -3091,7 +3091,7 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         // which persisted capture reads like any other output binding. A mixed
         // group plans realtime storage from its realtime channels alone.
         if (!group.has_realtime_connections) continue;
-        if (!group.storage_plan) {
+        if (group.external_boundary) {
             return std::unexpected(
                 "GraphJit sample-edge planning has no internal realtime storage plan");
         }
@@ -5822,7 +5822,7 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
         // background evaluation. Its Tick sources, if any, receive raw output
         // sinks below, which persisted capture reads.
         if (!group.has_realtime_connections) continue;
-        if (!group.storage_plan) {
+        if (group.external_boundary) {
             return std::unexpected(
                 "GraphJit event planning has no internal realtime storage plan");
         }
@@ -6835,8 +6835,10 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
             return std::unexpected(
                 "GraphJit event flow requires an internal concrete producer");
         }
+        auto const base_storage = choose_event_connection_storage_plan(
+            group.storage_requirements, cost_model);
         if (!group.requires_invocation_aggregate
-            && group.storage_plan->kind == RealtimeBufferStorageKind::transient_stack
+            && base_storage.kind == RealtimeBufferStorageKind::transient_stack
             && analysis.primitives[*source_primitive].bundle.maximum_block_size
                 < input.specialization.block_size) {
             return std::unexpected(
@@ -6986,7 +6988,7 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
         // for purposes of aliasing.
         auto const reuse_raw_source = can_alias_raw_source
             && (raw_has_retained_storage
-                || group.storage_plan->kind == RealtimeBufferStorageKind::transient_stack);
+                || base_storage.kind == RealtimeBufferStorageKind::transient_stack);
         auto source_representation = raw_canonical_representation;
         if (!reuse_raw_source) {
             if (retained_history > std::numeric_limits<std::size_t>::max()
@@ -7040,7 +7042,7 @@ std::expected<EventPortBindingPlan, std::string> bind_event_ports(
                     + '.' + std::to_string(source_id.port),
                 .reset_transient = true,
                 .transient_alias = can_alias_raw_source
-                        && group.storage_plan->candidate_costs.transient_stack.legal
+                        && base_storage.candidate_costs.transient_stack.legal
                     ? std::optional(raw_canonical_representation) : std::nullopt,
                 .append_merge = plan.merges.size(),
             });
@@ -9376,6 +9378,81 @@ std::expected<bool, std::string> realtime_ready_group_batches(
     return true;
 }
 
+std::expected<void, std::string> configure_background_replay(
+    BackgroundEvaluationPlan& background, GraphAnalysis const& analysis)
+{
+    for (auto& node : background.nodes) {
+        auto const primitive = std::ranges::find_if(
+            analysis.primitives,
+            [&](PrimitiveAnalysis const& candidate) {
+                return candidate.bundle.node_bundle == node.bundle;
+            });
+        if (primitive == analysis.primitives.end()
+            || primitive->implementation == nullptr) {
+            return std::unexpected(
+                "GraphJit background node has no primitive implementation");
+        }
+        node.implementation_identity =
+            primitive->implementation->identity;
+        node.provider_version =
+            primitive->implementation->provider_version;
+        node.configuration_identity =
+            primitive->implementation->configuration_identity;
+    }
+    for (auto& replay : background.runtime.replay_invocations) {
+        if (replay.node >= background.nodes.size()) {
+            return std::unexpected(
+                "GraphJit background replay invocation references an invalid node");
+        }
+        auto const bundle = background.nodes[replay.node].bundle;
+        auto const primitive = std::ranges::find_if(
+            analysis.primitives,
+            [&](PrimitiveAnalysis const& candidate) {
+                return candidate.bundle.node_bundle == bundle;
+            });
+        if (primitive == analysis.primitives.end()
+            || primitive->implementation == nullptr) {
+            return std::unexpected(
+                "GraphJit background replay invocation has no primitive implementation");
+        }
+
+        // Replay invokes the imported Tick wrapper, never skip_block().
+        // A non-pointwise implementation therefore has authored block
+        // input access and needs one bounded contiguous workspace.
+        replay.block_input_access =
+            !primitive->implementation->pointwise_tick;
+    }
+    return {};
+}
+
+std::expected<void, std::string> bind_event_capture_capacities(
+    BackgroundEvaluationPlan& background,
+    GraphAnalysis const& analysis,
+    EventPortBindingPlan const& event_ports)
+{
+    for (auto& capture : background.tick_runtime.event_captures) {
+        if (capture.port >= background.ports.size()) {
+            return std::unexpected("GraphJit Event capture references a missing port");
+        }
+        auto const port = background.ports[capture.port].configured_port;
+        std::size_t primitive = 0;
+        while (primitive < analysis.primitives.size()
+            && analysis.primitives[primitive].bundle.node_bundle != port.node_bundle_handle) {
+            ++primitive;
+        }
+        if (primitive >= event_ports.primitives.size()
+            || port.port_index >= event_ports.primitives[primitive].outputs.size()) {
+            return std::unexpected("GraphJit recorded Event output has no primitive binding");
+        }
+        auto const storage = event_ports.primitives[primitive].outputs[port.port_index].storage;
+        if (!storage || *storage >= event_ports.ports.size()) {
+            return std::unexpected("GraphJit recorded Event output has no callback storage");
+        }
+        capture.event_acceptance_capacity = event_ports.ports[*storage].event_capacity;
+    }
+    return {};
+}
+
 } // namespace
 
 std::expected<LoweringPlan, std::string> build_lowering_plan(
@@ -9610,85 +9687,31 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     }
 
     struct RealtimePortPlans {
-        ConnectionAnalysisPlan connections{};
         SamplePortBindingPlan sample_ports{};
         EventPortBindingPlan event_ports{};
         RootStackBufferPlan root_stack{};
     };
 
-    auto configure_background_replay = [&](ConnectionAnalysisPlan& connections)
-        -> std::expected<void, std::string> {
-        auto& background = connections.background;
-        for (auto& node : background.nodes) {
-            auto const primitive = std::ranges::find_if(
-                analysis->primitives,
-                [&](PrimitiveAnalysis const& candidate) {
-                    return candidate.bundle.node_bundle == node.bundle;
-                });
-            if (primitive == analysis->primitives.end()
-                || primitive->implementation == nullptr) {
-                return std::unexpected(
-                    "GraphJit background node has no primitive implementation");
-            }
-            node.implementation_identity =
-                primitive->implementation->identity;
-            node.provider_version =
-                primitive->implementation->provider_version;
-            node.configuration_identity =
-                primitive->implementation->configuration_identity;
-        }
-        for (auto& replay : background.runtime.replay_invocations) {
-            if (replay.node >= background.nodes.size()) {
-                return std::unexpected(
-                    "GraphJit background replay invocation references an invalid node");
-            }
-            auto const bundle = background.nodes[replay.node].bundle;
-            auto const primitive = std::ranges::find_if(
-                analysis->primitives,
-                [&](PrimitiveAnalysis const& candidate) {
-                    return candidate.bundle.node_bundle == bundle;
-                });
-            if (primitive == analysis->primitives.end()
-                || primitive->implementation == nullptr) {
-                return std::unexpected(
-                    "GraphJit background replay invocation has no primitive implementation");
-            }
-
-            // Replay invokes the imported Tick wrapper, never skip_block().
-            // A non-pointwise implementation therefore has authored block
-            // input access and needs one bounded contiguous workspace.
-            replay.block_input_access =
-                !primitive->implementation->pointwise_tick;
-        }
-        return {};
-    };
-
-    // Background topology keeps all callback batch classes. Stack-budget
-    // retries change only the realtime schedule and storage policy.
+    // Background topology keeps all callback batch classes. Only a change
+    // to the realtime batch classes requires a new connection analysis.
     auto const& configured_cost_model = input.realtime_storage_cost_model;
     auto topology = ConnectionTopology::build(
         input.graph, *port_realization, input.specialization.block_size,
         callback_batch_classes, input.configured_bundles);
     if (!topology) return std::unexpected(std::move(topology.error()));
+    auto imports = plan_package_imports(
+        input, *analysis, topology->background_topology());
+    if (!imports) return std::unexpected(std::move(imports.error()));
     std::vector<std::size_t> realtime_batch_classes = callback_batch_classes;
     auto const no_batch_class = std::numeric_limits<std::size_t>::max();
 
-    auto plan_realtime_ports = [&](RealtimeStorageCostModel const& cost_model)
+    auto plan_realtime_ports = [&](ConnectionAnalysisPlan const& connections,
+                                   RealtimeStorageCostModel const& cost_model)
         -> std::expected<RealtimePortPlans, std::string> {
-        auto connections = ConnectionTopology(*topology).build_analysis_plan(
-            cost_model,
-            realtime_batch_classes,
-            callback_elision_candidates);
-        if (!connections) {
-            return std::unexpected(std::move(connections.error()));
-        }
-        if (auto replay = configure_background_replay(*connections); !replay) {
-            return std::unexpected(std::move(replay.error()));
-        }
         auto sample_ports = plan_sample_ports(
             input,
             *analysis,
-            *connections,
+            connections,
             *port_realization,
             cost_model,
             static_sample_values);
@@ -9696,33 +9719,15 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             return std::unexpected(std::move(sample_ports.error()));
         }
         auto event_ports = plan_event_ports(
-            input, *analysis, *connections, *port_realization, cost_model);
+            input, *analysis, connections, *port_realization, cost_model);
         if (!event_ports) {
             return std::unexpected(std::move(event_ports.error()));
-        }
-        for (auto& capture : connections->background.tick_runtime.event_captures) {
-            auto const port = connections->background.ports[capture.port].configured_port;
-            std::size_t primitive = 0;
-            while (primitive < analysis->primitives.size()
-                && analysis->primitives[primitive].bundle.node_bundle != port.node_bundle_handle) {
-                ++primitive;
-            }
-            if (primitive >= event_ports->primitives.size()
-                || port.port_index >= event_ports->primitives[primitive].outputs.size()) {
-                return std::unexpected("GraphJit recorded Event output has no primitive binding");
-            }
-            auto const storage = event_ports->primitives[primitive].outputs[port.port_index].storage;
-            if (!storage || *storage >= event_ports->ports.size()) {
-                return std::unexpected("GraphJit recorded Event output has no callback storage");
-            }
-            capture.event_acceptance_capacity = event_ports->ports[*storage].event_capacity;
         }
         auto root_stack = plan_root_stack_buffers(*sample_ports, *event_ports);
         if (!root_stack) {
             return std::unexpected(std::move(root_stack.error()));
         }
         return RealtimePortPlans{
-            .connections = std::move(*connections),
             .sample_ports = std::move(*sample_ports),
             .event_ports = std::move(*event_ports),
             .root_stack = *root_stack,
@@ -9731,7 +9736,11 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
 
     auto const stack_budget = configured_cost_model.stack_budget_bytes;
     for (;;) {
-        auto realtime_ports = plan_realtime_ports(configured_cost_model);
+        auto connections = ConnectionTopology(*topology).build_analysis_plan(
+            realtime_batch_classes, callback_elision_candidates);
+        if (!connections) return std::unexpected(std::move(connections.error()));
+
+        auto realtime_ports = plan_realtime_ports(*connections, configured_cost_model);
         if (!realtime_ports) {
             return std::unexpected(std::move(realtime_ports.error()));
         }
@@ -9746,10 +9755,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             // schedule first falls back to the scalar order before stack pressure
             // is applied. Costing batching against such moves is Front 16 work.
             std::ranges::fill(realtime_batch_classes, no_batch_class);
-            realtime_ports = plan_realtime_ports(configured_cost_model);
-            if (!realtime_ports) {
-                return std::unexpected(std::move(realtime_ports.error()));
-            }
+            continue;
         }
 
         if (realtime_ports->root_stack.size_bytes > stack_budget) {
@@ -9775,7 +9781,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                     break;
                 }
                 pressure_model.stack_footprint_byte_weight = pressure;
-                auto candidate = plan_realtime_ports(pressure_model);
+                auto candidate = plan_realtime_ports(*connections, pressure_model);
                 if (!candidate) {
                     return std::unexpected(std::move(candidate.error()));
                 }
@@ -9798,7 +9804,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 while (low < high) {
                     auto const midpoint = low + (high - low) / 2;
                     pressure_model.stack_footprint_byte_weight = midpoint;
-                    auto candidate = plan_realtime_ports(pressure_model);
+                    auto candidate = plan_realtime_ports(*connections, pressure_model);
                     if (!candidate) {
                         return std::unexpected(std::move(candidate.error()));
                     }
@@ -9822,7 +9828,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 minimum_stack_model.ring_addressed_byte_weight = 0;
                 minimum_stack_model.stack_footprint_byte_weight = 1;
                 minimum_stack_model.persistent_footprint_byte_weight = 0;
-                auto minimum_stack = plan_realtime_ports(minimum_stack_model);
+                auto minimum_stack = plan_realtime_ports(*connections, minimum_stack_model);
                 if (!minimum_stack) {
                     return std::unexpected(std::move(minimum_stack.error()));
                 }
@@ -9842,70 +9848,12 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         auto declarations = plan_declarations(
             input,
             *analysis,
-            realtime_ports->connections,
+            *connections,
             *port_realization,
             realtime_ports->sample_ports,
             realtime_ports->event_ports);
         if (!declarations) return std::unexpected(std::move(declarations.error()));
 
-        for (auto& node : realtime_ports->connections.background.nodes) {
-            auto const primitive = std::ranges::find_if(
-                analysis->primitives,
-                [&](PrimitiveAnalysis const& candidate) {
-                    return candidate.bundle.node_bundle == node.bundle;
-                });
-            if (primitive == analysis->primitives.end()) {
-                return std::unexpected(
-                    "background node has no matching TockState layout record");
-            }
-            if (!node.authored_tock_execution) {
-                node.tock_state_node.reset();
-                continue;
-            }
-            auto const primitive_index = static_cast<std::size_t>(
-                std::distance(analysis->primitives.begin(), primitive));
-            if (primitive_index >= declarations->primitive_layout_nodes.size()) {
-                return std::unexpected(
-                    "background Tock node lost its top-level layout mapping");
-            }
-            node.tock_state_node =
-                declarations->primitive_layout_nodes[primitive_index];
-        }
-
-        auto realtime_port_state_realizations =
-            plan_sample_realtime_port_state_realizations(
-                input.graph,
-                *analysis,
-                realtime_ports->connections,
-                *declarations,
-                realtime_ports->sample_ports);
-        if (!realtime_port_state_realizations) {
-            return std::unexpected(
-                std::move(realtime_port_state_realizations.error()));
-        }
-        auto event_realtime_port_state_realizations =
-            plan_event_realtime_port_state_realizations(
-                input.graph,
-                *analysis,
-                realtime_ports->connections,
-                *declarations,
-                realtime_ports->event_ports);
-        if (!event_realtime_port_state_realizations) {
-            return std::unexpected(
-                std::move(event_realtime_port_state_realizations.error()));
-        }
-        realtime_port_state_realizations->event_states =
-            std::move(*event_realtime_port_state_realizations);
-        auto fresh = declare_fresh_sample_storage_values(
-            declarations->node_layout,
-            realtime_ports->sample_ports.storage,
-            realtime_ports->connections.realtime_port_states,
-            *realtime_port_state_realizations);
-        if (!fresh) return std::unexpected(std::move(fresh.error()));
-
-        auto imports = plan_package_imports(
-            input, *analysis, realtime_ports->connections.background);
-        if (!imports) return std::unexpected(std::move(imports.error()));
         for (std::size_t primitive = 0;
              primitive < realtime_ports->sample_ports.primitives.size();
              ++primitive) {
@@ -9923,15 +9871,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             }
         }
 
-        auto configurations = plan_node_configurations(
-            input, *analysis, realtime_ports->connections, *imports);
-        if (!configurations) {
-            return std::unexpected(std::move(configurations.error()));
-        }
-
         auto execution = plan_execution(
             *analysis,
-            realtime_ports->connections,
+            *connections,
             *declarations,
             *imports,
             realtime_ports->sample_ports,
@@ -9951,7 +9893,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 continue;
             }
             auto batches = realtime_ready_group_batches(
-                realtime_ports->connections,
+                *connections,
                 *declarations,
                 *imports,
                 realtime_ports->sample_ports,
@@ -9992,9 +9934,76 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             continue;
         }
 
+        auto replay = configure_background_replay(connections->background, *analysis);
+        if (!replay) return std::unexpected(std::move(replay.error()));
+        auto captures = bind_event_capture_capacities(
+            connections->background, *analysis, realtime_ports->event_ports);
+        if (!captures) return std::unexpected(std::move(captures.error()));
+
+        for (auto& node : connections->background.nodes) {
+            auto const primitive = std::ranges::find_if(
+                analysis->primitives,
+                [&](PrimitiveAnalysis const& candidate) {
+                    return candidate.bundle.node_bundle == node.bundle;
+                });
+            if (primitive == analysis->primitives.end()) {
+                return std::unexpected(
+                    "background node has no matching TockState layout record");
+            }
+            if (!node.authored_tock_execution) {
+                node.tock_state_node.reset();
+                continue;
+            }
+            auto const primitive_index = static_cast<std::size_t>(
+                std::distance(analysis->primitives.begin(), primitive));
+            if (primitive_index >= declarations->primitive_layout_nodes.size()) {
+                return std::unexpected(
+                    "background Tock node lost its top-level layout mapping");
+            }
+            node.tock_state_node =
+                declarations->primitive_layout_nodes[primitive_index];
+        }
+
+        auto realtime_port_state_realizations =
+            plan_sample_realtime_port_state_realizations(
+                input.graph,
+                *analysis,
+                *connections,
+                *declarations,
+                realtime_ports->sample_ports);
+        if (!realtime_port_state_realizations) {
+            return std::unexpected(
+                std::move(realtime_port_state_realizations.error()));
+        }
+        auto event_realtime_port_state_realizations =
+            plan_event_realtime_port_state_realizations(
+                input.graph,
+                *analysis,
+                *connections,
+                *declarations,
+                realtime_ports->event_ports);
+        if (!event_realtime_port_state_realizations) {
+            return std::unexpected(
+                std::move(event_realtime_port_state_realizations.error()));
+        }
+        realtime_port_state_realizations->event_states =
+            std::move(*event_realtime_port_state_realizations);
+        auto fresh = declare_fresh_sample_storage_values(
+            declarations->node_layout,
+            realtime_ports->sample_ports.storage,
+            connections->realtime_port_states,
+            *realtime_port_state_realizations);
+        if (!fresh) return std::unexpected(std::move(fresh.error()));
+
+        auto configurations = plan_node_configurations(
+            input, *analysis, *connections, *imports);
+        if (!configurations) {
+            return std::unexpected(std::move(configurations.error()));
+        }
+
         return LoweringPlan{
             .port_realization = std::move(*port_realization),
-            .connections = std::move(realtime_ports->connections),
+            .connections = std::move(*connections),
             .declarations = std::move(*declarations),
             .imports = std::move(*imports),
             .configurations = std::move(*configurations),

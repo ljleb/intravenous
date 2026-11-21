@@ -35,15 +35,14 @@ bool configured_sample_connection_is_detached(
 std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
 build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
-    std::size_t kernel_block_size,
-    iv::RealtimeStorageCostModel const& cost_model)
+    std::size_t kernel_block_size)
 {
     auto port_realization = iv::graph_jit::resolve_port_realization(graph);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
     }
     return iv::graph_jit::detail::build_connection_analysis_plan(
-        graph, *port_realization, kernel_block_size, cost_model);
+        graph, *port_realization, kernel_block_size);
 }
 
 iv::graph_jit::TickInvocationCall const empty_tick_invocation{};

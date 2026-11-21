@@ -322,9 +322,10 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
     ASSERT_TRUE(direct_analysis.has_value())
         << (direct_analysis ? std::string{} : direct_analysis.error());
     ASSERT_EQ(direct_analysis->sample_producer_groups.size(), 1u);
-    ASSERT_TRUE(direct_analysis->sample_producer_groups[0].storage_plan.has_value());
+    ASSERT_FALSE(direct_analysis->sample_producer_groups[0].external_boundary);
     EXPECT_EQ(
-        direct_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            direct_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     auto direct_plan = iv::graph_jit::detail::build_sample_storage_plan(
         *direct_analysis, 64);
@@ -377,10 +378,10 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
     ASSERT_TRUE(transient_analysis.has_value())
         << (transient_analysis ? std::string{} : transient_analysis.error());
     ASSERT_EQ(transient_analysis->sample_producer_groups.size(), 1u);
-    ASSERT_TRUE(
-        transient_analysis->sample_producer_groups[0].storage_plan.has_value());
+    ASSERT_FALSE(transient_analysis->sample_producer_groups[0].external_boundary);
     EXPECT_EQ(
-        transient_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            transient_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     auto transient_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
@@ -657,9 +658,10 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
         << (fanout_analysis ? std::string{} : fanout_analysis.error());
     ASSERT_EQ(fanout_analysis->sample_producer_groups.size(), 1u);
     ASSERT_EQ(fanout_analysis->sample_producer_groups[0].connection_indices.size(), 4u);
-    ASSERT_TRUE(fanout_analysis->sample_producer_groups[0].storage_plan.has_value());
+    ASSERT_FALSE(fanout_analysis->sample_producer_groups[0].external_boundary);
     EXPECT_EQ(
-        fanout_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            fanout_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
 
     auto fanout_plan = iv::graph_jit::detail::build_sample_storage_plan(
@@ -804,11 +806,11 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
         stereo_conversion_analysis->sample_producer_groups[0]
             .connection_indices.size(),
         2u);
-    ASSERT_TRUE(
-        stereo_conversion_analysis->sample_producer_groups[0]
-            .storage_plan.has_value());
+    ASSERT_FALSE(stereo_conversion_analysis->sample_producer_groups[0]
+            .external_boundary);
     EXPECT_EQ(
-        stereo_conversion_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            stereo_conversion_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     auto stereo_conversion_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
@@ -902,9 +904,10 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
     EXPECT_EQ(producer.storage_requirements.retained_frames, 1u);
-    ASSERT_TRUE(producer.storage_plan.has_value());
+    ASSERT_FALSE(producer.external_boundary);
     EXPECT_EQ(
-        producer.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            producer.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
@@ -989,9 +992,10 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
     auto const& producer = analysis->sample_producer_groups.front();
     EXPECT_EQ(producer.storage_requirements.retained_frames, 5002u);
-    ASSERT_TRUE(producer.storage_plan.has_value());
+    ASSERT_FALSE(producer.external_boundary);
     EXPECT_EQ(
-        producer.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            producer.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
@@ -1054,9 +1058,10 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
     ASSERT_EQ(analysis->sample_producer_groups.size(), 2u);
     for (auto const& producer : analysis->sample_producer_groups) {
         EXPECT_EQ(producer.storage_requirements.retained_frames, 1u);
-        ASSERT_TRUE(producer.storage_plan.has_value());
+        ASSERT_FALSE(producer.external_boundary);
         EXPECT_EQ(
-            producer.storage_plan->kind,
+            iv::choose_sample_connection_storage_plan(
+                producer.storage_requirements).kind,
             iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     }
 
@@ -1237,9 +1242,10 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
         latency_source_group,
         latency_conversion_analysis->sample_producer_groups.end());
     EXPECT_EQ(latency_source_group->storage_requirements.retained_frames, 7u);
-    ASSERT_TRUE(latency_source_group->storage_plan.has_value());
+    ASSERT_FALSE(latency_source_group->external_boundary);
     EXPECT_EQ(
-        latency_source_group->storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            latency_source_group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     std::size_t converted_read_0 = 0;
@@ -1938,11 +1944,11 @@ TEST_F(GraphJitRuntimeFixture, PersistentSampleHistory)
                 ? std::string{}
                 : persistent_history_analysis.error());
     ASSERT_EQ(persistent_history_analysis->sample_producer_groups.size(), 1u);
-    ASSERT_TRUE(
-        persistent_history_analysis->sample_producer_groups[0]
-            .storage_plan.has_value());
+    ASSERT_FALSE(persistent_history_analysis->sample_producer_groups[0]
+            .external_boundary);
     EXPECT_EQ(
-        persistent_history_analysis->sample_producer_groups[0].storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            persistent_history_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         persistent_history_analysis->sample_producer_groups[0]

@@ -381,7 +381,7 @@ struct SampleProducerGroupPlan {
     bool has_realtime_connections = false;
     bool has_background_connections = false;
     SampleConnectionStorageRequirements storage_requirements{};
-    std::optional<SampleConnectionStoragePlan> storage_plan{};
+    bool external_boundary = false;
     ConnectionLiveIntervalPlan live_interval{};
 };
 
@@ -420,32 +420,8 @@ struct EventProducerGroupPlan {
     // sequence. This is an execution/materialization fact, not a storage kind.
     bool requires_invocation_aggregate = false;
     EventConnectionStorageRequirements storage_requirements{};
-    std::optional<EventConnectionStoragePlan> storage_plan{};
+    bool external_boundary = false;
     ConnectionLiveIntervalPlan live_interval{};
-};
-
-enum class ConnectionStorageLifetime {
-    transient,
-    persistent,
-    external,
-};
-
-// This is a semantic storage request, not an allocated region. Sample storage
-// realization consumes these requirements after storage-plan selection;
-// transient byte-range arena allocation is a separate concern from policy choice.
-struct ConnectionStorageRegionRequirement {
-    PlannedConnectionData data = PlannedConnectionData::sample;
-    std::size_t producer_group_index = 0;
-    ConnectionStorageLifetime lifetime = ConnectionStorageLifetime::transient;
-    ConnectionLiveIntervalPlan live_interval{};
-    std::size_t current_block_frames = 0;
-    std::size_t retained_extent = 0;
-    std::size_t channel_count = 1;
-    std::size_t value_size_bytes = 0;
-};
-
-struct ConnectionStoragePlan {
-    std::vector<ConnectionStorageRegionRequirement> regions{};
 };
 
 // A public module input is a source at its inward-facing boundary. Structural
@@ -476,7 +452,6 @@ struct ConnectionAnalysisPlan {
     std::vector<EventConnectionPlan> event_connections{};
     std::vector<SampleProducerGroupPlan> sample_producer_groups{};
     std::vector<EventProducerGroupPlan> event_producer_groups{};
-    ConnectionStoragePlan storage{};
     // Authoritative semantic inventory of every non-empty Sequential-input
     // history and Tick-output history/latency extent. Storage planning may
     // share or elide their physical representations, but must map back to
@@ -505,8 +480,8 @@ sequential_connection_coverage(
 
 // Normalized connections and the background topology derived from them. The
 // graph and its port realization must outlive this object and remain unchanged.
-// A planning attempt receives a copy when the caller needs to retain topology
-// for retries. A one-shot caller can transfer it without a copy.
+// Schedule changes start from this topology. Storage trials for a fixed
+// schedule share the ConnectionAnalysisPlan returned by build_analysis_plan().
 class ConnectionTopology {
 public:
     static std::expected<ConnectionTopology, std::string> build(
@@ -516,8 +491,12 @@ public:
         std::span<std::size_t const> callback_batch_classes,
         ConfiguredBundleInventory configured_bundles = {});
 
+    BackgroundEvaluationPlan const& background_topology() const noexcept
+    {
+        return plan_.background;
+    }
+
     std::expected<ConnectionAnalysisPlan, std::string> build_analysis_plan(
-        RealtimeStorageCostModel const& cost_model,
         std::span<std::size_t const> callback_batch_classes,
         std::span<NodeBundleHandle const> callback_elision_candidates) &&;
 
@@ -546,7 +525,6 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model = {},
     // Optional entry positions are ConfiguredGraph NodeBundleHandle values.
     // Equal identifiers mean equal callback-facing implementation/realization.
     // The empty span preserves the ordinary deterministic bundle order.

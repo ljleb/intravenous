@@ -868,7 +868,6 @@ std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
 build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
     std::size_t kernel_block_size,
-    iv::RealtimeStorageCostModel const& cost_model = {},
     std::span<std::size_t const> callback_batch_classes = {},
     std::span<iv::NodeBundleHandle const> callback_elision_candidates = {})
 {
@@ -880,7 +879,6 @@ build_connection_analysis_plan(
         graph,
         *port_realization,
         kernel_block_size,
-        cost_model,
         callback_batch_classes,
         callback_elision_candidates);
 }
@@ -1114,35 +1112,14 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
     ASSERT_NE(group, plan->sample_producer_groups.end());
     EXPECT_TRUE(group->has_realtime_connections);
     EXPECT_EQ(group->storage_requirements.retained_frames, 7u);
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            group->storage_requirements).kind,
         RealtimeBufferStorageKind::stack_with_persistent_carry);
 
-    auto const group_index = static_cast<std::size_t>(
-        std::distance(plan->sample_producer_groups.begin(), group));
-    EXPECT_TRUE(std::ranges::any_of(
-        plan->storage.regions,
-        [&](graph_jit::detail::ConnectionStorageRegionRequirement const& region) {
-            return region.data
-                    == graph_jit::detail::PlannedConnectionData::sample
-                && region.producer_group_index == group_index
-                && region.lifetime
-                    == graph_jit::detail::ConnectionStorageLifetime::persistent
-                && region.current_block_frames == 0u
-                && region.retained_extent == 7u
-                && region.live_interval.crosses_kernel_invocations;
-        }));
-    EXPECT_TRUE(std::ranges::any_of(
-        plan->storage.regions,
-        [&](graph_jit::detail::ConnectionStorageRegionRequirement const& region) {
-            return region.data
-                    == graph_jit::detail::PlannedConnectionData::sample
-                && region.producer_group_index == group_index
-                && region.lifetime
-                    == graph_jit::detail::ConnectionStorageLifetime::transient
-                && region.current_block_frames == 64u;
-        }));
+    EXPECT_EQ(group->storage_requirements.current_block_frames, 64u);
+    EXPECT_TRUE(group->live_interval.crosses_kernel_invocations);
 }
 
 TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDependencies)
@@ -1175,7 +1152,7 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
     classes[first_target_handle] = 1;
     classes[second_target_handle] = 1;
     auto plan = build_connection_analysis_plan(
-        configured, 64, {}, std::span<std::size_t const>{classes});
+        configured, 64, std::span<std::size_t const>{classes});
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->schedule.ready_groups.size(), 2u);
@@ -1234,7 +1211,7 @@ TEST(GraphJitConnectionPlan, GroupsCompatibleCyclicRegionsInExecutionPhaseOrder)
     classes[first_tail_handle] = 1;
     classes[second_tail_handle] = 1;
     auto plan = build_connection_analysis_plan(
-        configured, 64, {}, std::span<std::size_t const>{classes});
+        configured, 64, std::span<std::size_t const>{classes});
     ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
 
     ASSERT_EQ(plan->schedule.regions.size(), 2u);
@@ -1607,9 +1584,10 @@ TEST(GraphJitConnectionPlan, EqualizesFeedForwardSamplePathsAtConvergence)
         });
     ASSERT_NE(source_group, plan->sample_producer_groups.end());
     EXPECT_EQ(source_group->storage_requirements.retained_frames, 7u);
-    ASSERT_TRUE(source_group->storage_plan.has_value());
+    ASSERT_FALSE(source_group->external_boundary);
     EXPECT_EQ(
-        source_group->storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            source_group->storage_requirements).kind,
         RealtimeBufferStorageKind::stack_with_persistent_carry);
 }
 
@@ -1627,7 +1605,7 @@ TEST(GraphJitConnectionPlan, ConstantProducerUsesImmutableStorageAcrossInputHist
     auto configured = std::move(graph).finish();
     std::array callback_elision_candidates{source_handle};
     auto connections = build_connection_analysis_plan(
-        configured, 64, {}, {}, callback_elision_candidates);
+        configured, 64, {}, callback_elision_candidates);
     ASSERT_TRUE(connections.has_value())
         << (connections ? std::string{} : connections.error());
     ASSERT_EQ(connections->sample_connections.size(), 1u);
@@ -1708,7 +1686,7 @@ TEST(GraphJitConnectionPlan, BackgroundConsumerKeepsStaticProducerCallbackSchedu
     auto configured = std::move(graph).finish();
     std::array callback_elision_candidates{source_handle};
     auto connections = build_connection_analysis_plan(
-        configured, 64, {}, {}, callback_elision_candidates);
+        configured, 64, {}, callback_elision_candidates);
     ASSERT_TRUE(connections.has_value())
         << (connections ? std::string{} : connections.error());
     ASSERT_EQ(
@@ -1906,9 +1884,10 @@ TEST(GraphJitConnectionPlan, PropagatesAlignedLatencyAcrossMultipleConvergences)
         });
     ASSERT_NE(second_path_group, plan->sample_producer_groups.end());
     EXPECT_EQ(second_path_group->storage_requirements.retained_frames, 5u);
-    ASSERT_TRUE(second_path_group->storage_plan.has_value());
+    ASSERT_FALSE(second_path_group->external_boundary);
     EXPECT_EQ(
-        second_path_group->storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            second_path_group->storage_requirements).kind,
         RealtimeBufferStorageKind::stack_with_persistent_carry);
 }
 
@@ -2634,14 +2613,33 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     auto const& group = plan->sample_producer_groups[0];
     EXPECT_EQ(group.storage_requirements.retained_frames, 0u);
-    ASSERT_TRUE(group.storage_plan.has_value());
+    ASSERT_FALSE(group.external_boundary);
+    auto const& connections = *plan;
+    auto initial = graph_jit::detail::build_sample_storage_plan(connections, 64);
+    ASSERT_TRUE(initial) << initial.error();
+    ASSERT_TRUE(initial->producer_groups.at(0));
     EXPECT_EQ(
-        group.storage_plan->kind,
+        initial->producer_groups[0]->storage_plan.kind,
         RealtimeBufferStorageKind::transient_stack);
-    ASSERT_EQ(plan->storage.regions.size(), 1u);
+
+    // Stack pressure changes storage placement for the same schedule.
+    auto pressured = graph_jit::detail::build_sample_storage_plan(
+        connections, 64, {}, {},
+        RealtimeStorageCostModel{.stack_footprint_byte_weight = 4});
+    ASSERT_TRUE(pressured) << pressured.error();
+    ASSERT_TRUE(pressured->producer_groups.at(0));
     EXPECT_EQ(
-        plan->storage.regions.front().lifetime,
-        graph_jit::detail::ConnectionStorageLifetime::transient);
+        pressured->producer_groups[0]->storage_plan.kind,
+        RealtimeBufferStorageKind::full_node_storage);
+    EXPECT_LT(pressured->transient_arena_size, initial->transient_arena_size);
+
+    auto restored = graph_jit::detail::build_sample_storage_plan(connections, 64);
+    ASSERT_TRUE(restored) << restored.error();
+    ASSERT_TRUE(restored->producer_groups.at(0));
+    EXPECT_EQ(
+        restored->producer_groups[0]->storage_plan.kind,
+        RealtimeBufferStorageKind::transient_stack);
+    EXPECT_EQ(restored->transient_arena_size, initial->transient_arena_size);
 }
 
 TEST(GraphJitConnectionPlan, PartitionsOverlappingSamplePortUsesIntoPortAtoms)
@@ -2769,24 +2767,20 @@ TEST(GraphJitConnectionPlan, ConversionUsesTransientMaterialization)
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     auto const& group = plan->sample_producer_groups[0];
     EXPECT_EQ(group.storage_requirements.retained_frames, 0u);
-    ASSERT_TRUE(group.storage_plan.has_value());
+    ASSERT_FALSE(group.external_boundary);
     EXPECT_EQ(
-        group.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            group.storage_requirements).kind,
         RealtimeBufferStorageKind::transient_stack);
 
-    ASSERT_EQ(plan->storage.regions.size(), 1u);
-    auto const& storage = plan->storage.regions[0];
-    EXPECT_EQ(
-        storage.lifetime,
-        graph_jit::detail::ConnectionStorageLifetime::transient);
-    EXPECT_EQ(storage.current_block_frames, 128u);
+    EXPECT_EQ(group.storage_requirements.current_block_frames, 128u);
     ASSERT_TRUE(plan->schedule.bundle_execution_position[source_handle]);
     ASSERT_TRUE(plan->schedule.bundle_execution_position[sink_handle]);
     EXPECT_EQ(
-        storage.live_interval.begin,
+        group.live_interval.begin,
         *plan->schedule.bundle_execution_position[source_handle]);
     EXPECT_EQ(
-        storage.live_interval.end,
+        group.live_interval.end,
         *plan->schedule.bundle_execution_position[sink_handle]);
 }
 
@@ -2810,7 +2804,7 @@ TEST(GraphJitConnectionPlan, ExternalEventsUseBoundaryPolicy)
         graph_jit::PlannedDeliveryMechanism::tick_to_sequential);
     ASSERT_EQ(plan->event_producer_groups.size(), 1u);
     auto const& group = plan->event_producer_groups[0];
-    EXPECT_FALSE(group.storage_plan.has_value());
+    EXPECT_TRUE(group.external_boundary);
 }
 
 TEST(GraphJitConnectionPlan, BlockSliceMismatchRequiresMaterialization)
@@ -2830,9 +2824,10 @@ TEST(GraphJitConnectionPlan, BlockSliceMismatchRequiresMaterialization)
     EXPECT_TRUE(plan->sample_connections[0].requires_block_materialization);
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     auto const& group = plan->sample_producer_groups[0];
-    ASSERT_TRUE(group.storage_plan.has_value());
+    ASSERT_FALSE(group.external_boundary);
     EXPECT_EQ(
-        group.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            group.storage_requirements).kind,
         RealtimeBufferStorageKind::transient_stack);
 }
 
@@ -2861,8 +2856,6 @@ TEST(GraphJitConnectionPlan, BackgroundConnectionsDoNotUseRealtimeStoragePolicy)
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     EXPECT_FALSE(plan->sample_producer_groups[0].has_realtime_connections);
     EXPECT_TRUE(plan->sample_producer_groups[0].has_background_connections);
-    EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
-    EXPECT_TRUE(plan->storage.regions.empty());
     ASSERT_LT(source_handle, plan->schedule.bundle_execution_position.size());
     ASSERT_LT(sink_handle, plan->schedule.bundle_execution_position.size());
     EXPECT_FALSE(plan->schedule.bundle_execution_position[source_handle]);
@@ -3353,8 +3346,6 @@ TEST(GraphJitConnectionPlan, TockToSequentialUsesPreparedBackgroundDelivery)
     ASSERT_EQ(plan->sample_producer_groups.size(), 1u);
     EXPECT_FALSE(plan->sample_producer_groups[0].has_realtime_connections);
     EXPECT_TRUE(plan->sample_producer_groups[0].has_background_connections);
-    EXPECT_FALSE(plan->sample_producer_groups[0].storage_plan.has_value());
-    EXPECT_TRUE(plan->storage.regions.empty());
 
     auto const source_subset = std::ranges::find_if(
         plan->background.sample_source_subsets,
@@ -4823,11 +4814,9 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
         configured, *realization, 64, {});
     ASSERT_TRUE(topology) << topology.error();
     auto initial = *topology;
-    auto initial_plan = std::move(initial).build_analysis_plan({}, {}, {});
+    auto initial_plan = std::move(initial).build_analysis_plan({}, {});
     ASSERT_TRUE(initial_plan) << initial_plan.error();
-    auto pressure_model = RealtimeStorageCostModel{};
-    pressure_model.stack_footprint_byte_weight *= 4;
-    auto reused = std::move(*topology).build_analysis_plan(pressure_model, {}, {});
+    auto reused = std::move(*topology).build_analysis_plan({}, {});
     ASSERT_TRUE(reused) << reused.error();
     EXPECT_EQ(initial_plan->background.connections, first->background.connections);
     EXPECT_EQ(reused->background.connections, first->background.connections);

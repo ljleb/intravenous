@@ -70,11 +70,19 @@ carry buffers and rings and resolves aliases that let a group reuse its
 raw output. `layout_event_ports()` computes byte offsets and packs the
 transient buffers once.
 
-## Decisions that come after the work
+## Stack-budget retries
 
-| Current operation | Work that can be avoided | Where the decision belongs |
-| --- | --- | --- |
-| [`build_lowering_plan`](../src/intravenous/graph_jit/lowering_plan.cpp#L9732) retries `plan_realtime_ports()` when packed stack size exceeds the budget. After building declarations and imports it can reject a batch and restart planning. | Each stack trial repeats parts of connection analysis and configures background replay. A rejected batch discards declarations and imports as well. | Give storage selection stable inputs for a given callback order and reserve replanning for facts that change with that order. Check batch compatibility as soon as the necessary layouts and callback signatures are known. The packed high-water mark may still require a search. |
+`ConnectionTopology::build_analysis_plan()` prepares one
+`ConnectionAnalysisPlan` per callback order. Sample and Event storage
+planners share its schedule, delivery routes, and buffer requirements
+across trials. Each trial applies the cost model and packs the buffers
+to measure the stack usage.
+
+GraphJit plans package imports from `ConnectionTopology` before the
+trials. It fills in replay metadata, Event capture capacities, and
+port-state transfer records after it accepts the schedule and layout.
+The batch overlap check uses the packed layout. If the check rejects a
+batch, GraphJit builds the declarations again for the new order.
 
 A failed executor cutover is different. Preparation can become stale against
 the active predecessor after a candidate was eligible. The executor needs to
@@ -86,8 +94,8 @@ recordings stay with `PersistedDataStore`.
 
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
-| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L9381) | 10,052 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. Event routing is built once for each storage trial. |
-| [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L7115) | 7,338 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and selects storage and background bindings. Stack-budget retries still repeat work within this pass. |
+| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L9458) | 10,061 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. Storage trials share one connection analysis per callback order. |
+| [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L7007) | 7,228 | `ConnectionTopology::build_analysis_plan()` turns effective routes into a realtime schedule, derives compensation and in-flight requirements, and records background bindings for the schedule. |
 | [`realtime_root.cpp`](../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
 | [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1558) | 4,390 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` now owns control binding on a finished `ConfiguredGraph`. Read-model projection, edit history, and executor preparation can consume that result. |
 | [`persisted_data_store.cpp`](../src/intravenous/execution/storage/persisted_data_store.cpp#L3088) | 4,044 | `Candidate::overwrite()` and the Region replacement functions encode snapshot and recording semantics. The cache policy consumes payload costs and usage facts. The store owns payload estimates, lease release, and recording writes. |

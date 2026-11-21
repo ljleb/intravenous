@@ -5851,8 +5851,7 @@ void plan_port_atoms(
 
 std::expected<void, std::string> plan_sample_groups(
     ConnectionAnalysisPlan& plan,
-    std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model)
+    std::size_t kernel_block_size)
 {
     auto source_port_for = [](SampleOutputChannelId channel) {
         return NodeBundlePortId{
@@ -5965,10 +5964,7 @@ std::expected<void, std::string> plan_sample_groups(
         std::ranges::sort(group.connection_indices);
     }
 
-    for (std::size_t group_index = 0;
-         group_index < plan.sample_producer_groups.size(); ++group_index) {
-        auto& group = plan.sample_producer_groups[group_index];
-        bool external = false;
+    for (auto& group : plan.sample_producer_groups) {
         std::size_t retained = 0;
         for (auto const connection_index : group.connection_indices) {
             auto const& connection = plan.sample_connections[connection_index];
@@ -6032,7 +6028,8 @@ std::expected<void, std::string> plan_sample_groups(
             // Only Tick -> Sequential contributions enter realtime storage
             // planning. A mixed composition may also have background-materialized
             // source channels, but those are not represented by this buffer.
-            external = external || connection.external_boundary;
+            group.external_boundary = group.external_boundary
+                || connection.external_boundary;
             retained = std::max(retained, connection_retained);
         }
         auto const current_value_count =
@@ -6051,68 +6048,16 @@ std::expected<void, std::string> plan_sample_groups(
             .value_size_bytes = group.geometry.value_size_bytes,
         };
         if (!group.has_realtime_connections) continue;
-        if (!external) {
-            group.storage_plan = choose_sample_connection_storage_plan(
-                group.storage_requirements, cost_model);
-        }
-
-        auto live = live_interval_for_sample_group(plan, group);
-        live.crosses_kernel_invocations = live.crosses_kernel_invocations
-            || group.storage_requirements.retained_frames != 0;
-        group.live_interval = live;
-        auto append_storage = [&](ConnectionStorageLifetime lifetime,
-                                  std::size_t current_block_frames,
-                                  std::size_t retained_extent_value) {
-            plan.storage.regions.push_back(ConnectionStorageRegionRequirement{
-                .data = PlannedConnectionData::sample,
-                .producer_group_index = group_index,
-                .lifetime = lifetime,
-                .live_interval = live,
-                .current_block_frames = current_block_frames,
-                .retained_extent = retained_extent_value,
-                .channel_count = group.storage_requirements.channel_count,
-                .value_size_bytes = group.geometry.value_size_bytes,
-            });
-        };
-        if (external) {
-            append_storage(
-                ConnectionStorageLifetime::external,
-                *current_value_count,
-                group.storage_requirements.retained_frames);
-            continue;
-        }
-        switch (group.storage_plan->kind) {
-        case RealtimeBufferStorageKind::transient_stack:
-            append_storage(
-                ConnectionStorageLifetime::transient,
-                *current_value_count,
-                0);
-            break;
-        case RealtimeBufferStorageKind::stack_with_persistent_carry:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                0,
-                group.storage_requirements.retained_frames);
-            append_storage(
-                ConnectionStorageLifetime::transient,
-                *current_value_count,
-                0);
-            break;
-        case RealtimeBufferStorageKind::full_node_storage:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                *current_value_count,
-                group.storage_requirements.retained_frames);
-            break;
-        }
+        group.live_interval = live_interval_for_sample_group(plan, group);
+        group.live_interval.crosses_kernel_invocations =
+            group.live_interval.crosses_kernel_invocations || retained != 0;
     }
     return {};
 }
 
 std::expected<void, std::string> plan_event_groups(
     ConnectionAnalysisPlan& plan,
-    std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model)
+    std::size_t kernel_block_size)
 {
     for (std::size_t i = 0; i < plan.event_connections.size(); ++i) {
         auto& connection = plan.event_connections[i];
@@ -6302,10 +6247,7 @@ std::expected<void, std::string> plan_event_groups(
         }
     }
 
-    for (std::size_t group_index = 0;
-         group_index < plan.event_producer_groups.size(); ++group_index) {
-        auto& group = plan.event_producer_groups[group_index];
-        bool external = false;
+    for (auto& group : plan.event_producer_groups) {
         bool requires_invocation_aggregate = group.realtime_sources.size() > 1;
         std::size_t retained = 0;
         for (auto const source : group.realtime_sources) {
@@ -6324,7 +6266,8 @@ std::expected<void, std::string> plan_event_groups(
             // Feedback storage is branch-local: the canonical producer group
             // remains an ordinary aggregate sequence and detached branches
             // acquire their own persistent rings during storage lowering.
-            external = external || connection.external_boundary;
+            group.external_boundary = group.external_boundary
+                || connection.external_boundary;
             requires_invocation_aggregate = requires_invocation_aggregate
                 || connection.requires_conversion
                 || connection.requires_block_materialization
@@ -6365,60 +6308,9 @@ std::expected<void, std::string> plan_event_groups(
         group.storage_requirements = base_requirements;
         group.requires_invocation_aggregate = requires_invocation_aggregate;
         if (!group.has_realtime_connections) continue;
-        if (!external) {
-            // Connection analysis owns only the event-rate and retained-window
-            // requirements. Concrete per-source conversion buffers and merge
-            // operations are known only during lowering, where
-            // plan_event_ports() adds their costs before its final choice.
-            group.storage_plan = choose_event_connection_storage_plan(
-                group.storage_requirements, cost_model);
-        }
-
-        auto live = live_interval_for_event_group(plan, group);
-        live.crosses_kernel_invocations = live.crosses_kernel_invocations
-            || retained != 0;
-        group.live_interval = live;
-        auto append_storage = [&](ConnectionStorageLifetime lifetime,
-                                  std::size_t current_block_frames,
-                                  std::size_t retained_extent_value) {
-            plan.storage.regions.push_back(ConnectionStorageRegionRequirement{
-                .data = PlannedConnectionData::event,
-                .producer_group_index = group_index,
-                .lifetime = lifetime,
-                .live_interval = live,
-                .current_block_frames = current_block_frames,
-                .retained_extent = retained_extent_value,
-                .channel_count = 1,
-                .value_size_bytes = 0,
-            });
-        };
-        if (external) {
-            append_storage(
-                ConnectionStorageLifetime::external,
-                kernel_block_size,
-                retained);
-            continue;
-        }
-        switch (group.storage_plan->kind) {
-        case RealtimeBufferStorageKind::transient_stack:
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case RealtimeBufferStorageKind::stack_with_persistent_carry:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                0,
-                retained);
-            append_storage(
-                ConnectionStorageLifetime::transient, kernel_block_size, 0);
-            break;
-        case RealtimeBufferStorageKind::full_node_storage:
-            append_storage(
-                ConnectionStorageLifetime::persistent,
-                kernel_block_size,
-                retained);
-            break;
-        }
+        group.live_interval = live_interval_for_event_group(plan, group);
+        group.live_interval.crosses_kernel_invocations =
+            group.live_interval.crosses_kernel_invocations || retained != 0;
     }
     return {};
 }
@@ -7113,7 +7005,6 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
 }
 
 std::expected<ConnectionAnalysisPlan, std::string> ConnectionTopology::build_analysis_plan(
-    RealtimeStorageCostModel const& cost_model,
     std::span<std::size_t const> callback_batch_classes,
     std::span<NodeBundleHandle const> callback_elision_candidates) &&
 {
@@ -7172,11 +7063,11 @@ std::expected<ConnectionAnalysisPlan, std::string> ConnectionTopology::build_ana
     }
     plan_port_atoms(graph, port_realization, plan);
     if (auto samples = plan_sample_groups(
-            plan, kernel_block_size, cost_model); !samples) {
+            plan, kernel_block_size); !samples) {
         return std::unexpected(std::move(samples.error()));
     }
     if (auto events = plan_event_groups(
-            plan, kernel_block_size, cost_model); !events) {
+            plan, kernel_block_size); !events) {
         return std::unexpected(std::move(events.error()));
     }
     auto background_storage = build_background_storage_plan(
@@ -7213,7 +7104,6 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& port_realization,
     std::size_t kernel_block_size,
-    RealtimeStorageCostModel const& cost_model,
     std::span<std::size_t const> callback_batch_classes,
     std::span<NodeBundleHandle const> callback_elision_candidates)
 {
@@ -7221,7 +7111,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         graph, port_realization, kernel_block_size, callback_batch_classes);
     if (!topology) return std::unexpected(std::move(topology.error()));
     return std::move(*topology).build_analysis_plan(
-        cost_model, callback_batch_classes, callback_elision_candidates);
+        callback_batch_classes, callback_elision_candidates);
 }
 
 std::optional<std::string> raw_region_node_identity(

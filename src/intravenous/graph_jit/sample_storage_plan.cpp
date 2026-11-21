@@ -1018,7 +1018,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
          group_index < connections.sample_producer_groups.size(); ++group_index) {
         auto const& group = connections.sample_producer_groups[group_index];
         if (!group.has_realtime_connections) continue;
-        if (!group.storage_plan) {
+        if (group.external_boundary) {
             return std::unexpected(
                 "GraphJit sample storage plan has no internal realtime storage plan");
         }

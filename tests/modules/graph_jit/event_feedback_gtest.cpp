@@ -770,9 +770,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsUnfinalLatencyEvents)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(group->storage_requirements.retained_window_samples, 16u);
 
@@ -922,9 +923,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsUnfinalLaten
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(group->storage_requirements.retained_window_samples, 320u);
     EXPECT_GE(
@@ -1066,9 +1068,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccConvertsFanoutToAcyclicConsumer)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
 
     auto compiled = compile_graph(feedback_graph, 148);
@@ -1165,9 +1168,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccRetainsOutboundTargetHistory)
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(group->storage_requirements.retained_window_samples, 8u);
 
@@ -1319,9 +1323,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccComposesLatencyHistoryAndConversi
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     // The canonical producer timeline holds each event where it becomes final,
     // 320 positions after it was authored. It retains 320 positions of target
@@ -1471,9 +1476,10 @@ TEST_F(GraphJitRuntimeFixture, EventFeedbackSccPersistentRingRetainsOutboundTarg
                 != candidate.connection_indices.end();
         });
     ASSERT_NE(group, analysis->event_producer_groups.end());
-    ASSERT_TRUE(group->storage_plan.has_value());
+    ASSERT_FALSE(group->external_boundary);
     EXPECT_EQ(
-        group->storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group->storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(group->storage_requirements.retained_window_samples, 320u);
     EXPECT_GE(

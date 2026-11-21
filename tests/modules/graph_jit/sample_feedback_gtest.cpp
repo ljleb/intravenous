@@ -820,9 +820,10 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
     // must retain its own authored latency horizon because OutputPort::update()
     // may revise those already-authored frames on a later invocation.
     EXPECT_EQ(producer.storage_requirements.retained_frames, 2u);
-    ASSERT_TRUE(producer.storage_plan.has_value());
+    ASSERT_FALSE(producer.external_boundary);
     EXPECT_EQ(
-        producer.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            producer.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(

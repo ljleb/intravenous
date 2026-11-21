@@ -425,9 +425,10 @@ TEST_F(GraphJitRuntimeFixture, DirectEventFlow)
     ASSERT_EQ(direct_event_analysis->event_producer_groups.size(), 1u);
     auto const& direct_event_group =
         direct_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(direct_event_group.storage_plan.has_value());
+    ASSERT_FALSE(direct_event_group.external_boundary);
     EXPECT_EQ(
-        direct_event_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            direct_event_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     EXPECT_EQ(direct_event_group.sources.size(), 1u);
     EXPECT_EQ(direct_event_group.connection_indices.size(), 1u);
@@ -526,9 +527,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInMergesSlicedSourcesAndFansOu
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
     EXPECT_EQ(analysis->event_connections.front().sources.size(), 2u);
     EXPECT_TRUE(analysis->event_connections.front().requires_conversion);
-    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
+    ASSERT_FALSE(analysis->event_producer_groups.front().external_boundary);
     EXPECT_EQ(
-        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            analysis->event_producer_groups.front().storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
 
     auto compiled = compile_graph(graph, 143);
@@ -663,9 +665,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInUsesPlannedAggregateCapacity
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
+    ASSERT_FALSE(analysis->event_producer_groups.front().external_boundary);
     EXPECT_EQ(
-        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            analysis->event_producer_groups.front().storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     // Lowering selects the fan-in aggregate capacity after it creates the raw
     // EventOutputPortId sequences and merge operations.
@@ -711,12 +714,7 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInRejectsUnavoidableLocalStack
     // Connection analysis does not create raw EventOutputPortId sequences or
     // fan-in sequences. The hard stack failure belongs to lowering, where
     // those concrete allocations exist.
-    auto analysis = build_connection_analysis_plan(
-        *graph,
-        64,
-        iv::RealtimeStorageCostModel{
-            .stack_budget_bytes = 7u * sizeof(iv::TimedEvent),
-        });
+    auto analysis = build_connection_analysis_plan(*graph, 64);
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
 
@@ -807,9 +805,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInTargetHistoryUsesRetainedFan
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
     auto const& group = analysis->event_producer_groups.front();
-    ASSERT_TRUE(group.storage_plan);
+    ASSERT_FALSE(group.external_boundary);
     EXPECT_EQ(
-        group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     // Connection analysis carries only the root-call and retained event bounds.
     // Merge copies and raw callback stack buffers are costed from the concrete
@@ -1036,9 +1035,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInPersistentRingRetainsBursts)
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
+    ASSERT_FALSE(analysis->event_producer_groups.front().external_boundary);
     EXPECT_EQ(
-        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            analysis->event_producer_groups.front().storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     auto compiled = compile_graph(graph, 147);
     ASSERT_TRUE(compiled.succeeded())
@@ -1091,9 +1091,10 @@ TEST_F(GraphJitRuntimeFixture, TransientEventSlicing)
             .requires_block_materialization);
     auto const& transient_event_group =
         transient_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(transient_event_group.storage_plan.has_value());
+    ASSERT_FALSE(transient_event_group.external_boundary);
     EXPECT_EQ(
-        transient_event_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            transient_event_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     EXPECT_TRUE(transient_event_group.requires_invocation_aggregate);
 
@@ -1177,7 +1178,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     };
     auto converted_event_analysis =
         build_connection_analysis_plan(
-            *converted_event_graph, 64, cost_model);
+            *converted_event_graph, 64);
     ASSERT_TRUE(converted_event_analysis.has_value())
         << (converted_event_analysis
                 ? std::string{}
@@ -1186,9 +1187,10 @@ TEST_F(GraphJitRuntimeFixture, ConvertedEventFanout)
     ASSERT_EQ(converted_event_analysis->event_producer_groups.size(), 1u);
     auto const& converted_event_group =
         converted_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(converted_event_group.storage_plan.has_value());
+    ASSERT_FALSE(converted_event_group.external_boundary);
     EXPECT_EQ(
-        converted_event_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            converted_event_group.storage_requirements, cost_model).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_TRUE(converted_event_group.requires_invocation_aggregate);
     ASSERT_EQ(converted_event_group.connection_indices.size(), 2u);
@@ -1292,9 +1294,10 @@ TEST_F(GraphJitRuntimeFixture, CompactRetainedEvents)
     auto const& retained_event_group =
         retained_event_analysis->event_producer_groups.front();
     EXPECT_DOUBLE_EQ(retained_event_group.max_events_per_index, 0.5);
-    ASSERT_TRUE(retained_event_group.storage_plan.has_value());
+    ASSERT_FALSE(retained_event_group.external_boundary);
     EXPECT_EQ(
-        retained_event_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            retained_event_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(
         retained_event_group.storage_requirements.retained_window_samples,
@@ -1533,9 +1536,10 @@ TEST_F(GraphJitRuntimeFixture, PersistentEventRing)
     ASSERT_EQ(persistent_event_ring_analysis->event_producer_groups.size(), 1u);
     auto const& persistent_event_ring_group =
         persistent_event_ring_analysis->event_producer_groups.front();
-    ASSERT_TRUE(persistent_event_ring_group.storage_plan.has_value());
+    ASSERT_FALSE(persistent_event_ring_group.external_boundary);
     EXPECT_EQ(
-        persistent_event_ring_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            persistent_event_ring_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         persistent_event_ring_group.storage_requirements.retained_window_samples,
@@ -1687,9 +1691,10 @@ TEST_F(GraphJitRuntimeFixture, RetainedConvertedEventFanout)
         1u);
     auto const& retained_converted_event_group =
         retained_converted_event_analysis->event_producer_groups.front();
-    ASSERT_TRUE(retained_converted_event_group.storage_plan.has_value());
+    ASSERT_FALSE(retained_converted_event_group.external_boundary);
     EXPECT_EQ(
-        retained_converted_event_group.storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            retained_converted_event_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::full_node_storage);
     EXPECT_EQ(
         retained_converted_event_group.storage_requirements.retained_window_samples,

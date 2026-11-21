@@ -361,8 +361,6 @@ TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
         SampleProducerGroupPlan result;
         result.canonical_source_layout = layout;
         result.has_realtime_connections = true;
-        result.storage_plan = iv::SampleConnectionStoragePlan{
-            iv::RealtimeBufferStorageKind::transient_stack};
         result.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = end,
@@ -472,8 +470,6 @@ TEST(GraphJitSampleStoragePlan, SharesOneProducerBetweenRealtimeAndReplayConnect
     group.connection_indices = {0, 1};
     group.has_realtime_connections = true;
     group.has_background_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = {.begin = 0, .end = 1};
     connections.sample_producer_groups.push_back(group);
 
@@ -522,8 +518,6 @@ TEST(GraphJitSampleStoragePlan, LeavesBackgroundAccessBranchesUnresolved)
     };
     realtime_group.connection_indices = {0};
     realtime_group.has_realtime_connections = true;
-    realtime_group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     realtime_group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -592,8 +586,6 @@ TEST(GraphJitSampleStoragePlan, AliasesLayoutAndMonoToStereoConvertedFanout)
     group.canonical_source_layout = mono;
     group.connection_indices = {0, 1, 2};
     group.has_realtime_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 3,
@@ -657,8 +649,6 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
         .retained_frames = 7,
         .channel_count = 1,
     };
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -805,8 +795,6 @@ TEST(GraphJitSampleStoragePlan, RealizesLargeRetentionAsPersistentRing)
         .retained_frames = 5000,
         .channel_count = 1,
     };
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::full_node_storage};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -915,8 +903,6 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     group.canonical_source_layout = mono;
     group.connection_indices = {0};
     group.has_realtime_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1088,8 +1074,6 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     group.canonical_source_layout = mono;
     group.connection_indices = {0, 1, 2};
     group.has_realtime_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 3,
@@ -1273,8 +1257,6 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
         group.canonical_source_layout = mono;
         group.connection_indices = {0};
         group.has_realtime_connections = true;
-        group.storage_plan = iv::SampleConnectionStoragePlan{
-            iv::RealtimeBufferStorageKind::transient_stack};
         group.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = 2,
@@ -1462,8 +1444,6 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
         group.canonical_source_layout = mono;
         group.connection_indices = {0};
         group.has_realtime_connections = true;
-        group.storage_plan = iv::SampleConnectionStoragePlan{
-            iv::RealtimeBufferStorageKind::transient_stack};
         group.live_interval = ConnectionLiveIntervalPlan{
             .begin = begin,
             .end = 2,
@@ -1605,8 +1585,6 @@ TEST(GraphJitSampleStoragePlan, ConvertedFeedbackUsesCompactCarryTimeline)
     group.canonical_source_layout = mono;
     group.connection_indices = {0};
     group.has_realtime_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1718,8 +1696,6 @@ TEST(GraphJitSampleStoragePlan, AliasableConversionReadsRetainedProducerHistoryD
         .retained_frames = 7,
         .channel_count = 1,
     };
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1796,8 +1772,6 @@ TEST(GraphJitSampleStoragePlan, AliasableConvertedFanoutSharesRetainedProducerTi
         .retained_frames = 7,
         .channel_count = 1,
     };
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::stack_with_persistent_carry};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 2,
@@ -1896,8 +1870,6 @@ TEST(GraphJitSampleStoragePlan, GeneratedConversionReadsAffectProducerStorageCos
     // Connection analysis has not yet seen the generated conversion reads. The
     // sample-buffer planner must replace this provisional choice using the work
     // it is about to emit.
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::full_node_storage};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,
@@ -1941,8 +1913,6 @@ TEST(GraphJitSampleStoragePlan, RejectsTransientStorageThatCrossesKernelCalls)
         .sample_layout = iv::SampleStreamLayout::planar,
     };
     group.has_realtime_connections = true;
-    group.storage_plan = iv::SampleConnectionStoragePlan{
-        iv::RealtimeBufferStorageKind::transient_stack};
     group.live_interval = ConnectionLiveIntervalPlan{
         .begin = 0,
         .end = 1,

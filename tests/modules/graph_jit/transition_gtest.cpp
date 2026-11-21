@@ -2855,9 +2855,10 @@ TEST_F(GraphJitRuntimeFixture, FeedForwardEventFanInCompactCarryMigrates)
     ASSERT_TRUE(analysis.has_value())
         << (analysis ? std::string{} : analysis.error());
     ASSERT_EQ(analysis->event_producer_groups.size(), 1u);
-    ASSERT_TRUE(analysis->event_producer_groups.front().storage_plan);
+    ASSERT_FALSE(analysis->event_producer_groups.front().external_boundary);
     EXPECT_EQ(
-        analysis->event_producer_groups.front().storage_plan->kind,
+        iv::choose_event_connection_storage_plan(
+            analysis->event_producer_groups.front().storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     // Each callback output has its own retained canonical sequence. The
     // fan-in carry is a separate derived sequence for the consumer input.
@@ -3122,9 +3123,10 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
         << (history_analysis ? std::string{} : history_analysis.error());
     ASSERT_EQ(history_analysis->sample_producer_groups.size(), 1u);
     auto const& history_group = history_analysis->sample_producer_groups[0];
-    ASSERT_TRUE(history_group.storage_plan.has_value());
+    ASSERT_FALSE(history_group.external_boundary);
     EXPECT_EQ(
-        history_group.storage_plan->kind,
+        iv::choose_sample_connection_storage_plan(
+            history_group.storage_requirements).kind,
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
     EXPECT_EQ(history_group.storage_requirements.retained_frames, 7u);
 

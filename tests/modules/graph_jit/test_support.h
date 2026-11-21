@@ -72,8 +72,7 @@ bool configured_sample_connection_is_detached(
 std::expected<iv::graph_jit::detail::ConnectionAnalysisPlan, std::string>
 build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
-    std::size_t kernel_block_size,
-    iv::RealtimeStorageCostModel const& cost_model = {});
+    std::size_t kernel_block_size);
 
 extern iv::graph_jit::TickInvocationCall const empty_tick_invocation;
 
