@@ -330,13 +330,15 @@ class ProjectGraph {
     // `interaction_transactions`, when set, routes the NodeInstances and
     // GraphConnections steps through that node-message interaction's
     // transactions, opening them first if needed.
+    // `proposed_controls` replaces the authored controls when the edit is
+    // accepted, including when configuration returns a failure to display.
     RebuildResult rebuild_locked(
         NodeInstancesMutation instance_mutation,
         GraphConnectionsMutation connection_mutation,
         bool publish_execution = true,
         IvPackageDefinitionsChanged const* package_definitions = nullptr,
         InteractionTransactions* interaction_transactions = nullptr,
-        std::vector<ProjectManualControl> const* previous_controls = nullptr,
+        std::optional<std::vector<ProjectManualControl>> proposed_controls = std::nullopt,
         bool record_history = true,
         ProjectEditEffect* accepted_effect = nullptr);
     void dispatch_node_message_locked(

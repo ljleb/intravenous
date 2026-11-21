@@ -527,10 +527,20 @@ TEST_F(ObservationService, CombinedLimitRejectsTheNewScopeWithoutRetainingIt)
         for (int n = 0; n < 64; ++n) interests.push_back(interest(std::to_string(n), std::to_string(scope * 64 + n)));
         ASSERT_TRUE(reconcile("a", std::to_string(scope), std::move(interests)).error.empty());
     }
+    auto const accepted = graph.accepted;
     EXPECT_FALSE(reconcile("a", "rejected", {interest("overflow", "overflow")}).error.empty());
+    std::vector<ObservationInterest> replacement;
+    for (int n = 0; n < 64; ++n)
+        replacement.push_back(interest(std::to_string(n), std::to_string(n)));
+    replacement.push_back(interest("overflow", "overflow"));
+    EXPECT_FALSE(reconcile("a", "0", std::move(replacement)).error.empty());
     EXPECT_EQ(graph.compilations, 4u);
+    EXPECT_EQ(graph.accepted, accepted);
     EXPECT_TRUE(reconcile("a", "0", {}).error.empty());
     EXPECT_EQ(graph.accepted.probes.size(), 192u);
+    ASSERT_TRUE(reconcile("a", "next", {interest("next", "next")}).error.empty());
+    ASSERT_EQ(graph.accepted.probes.size(), 193u);
+    EXPECT_EQ(graph.accepted.probes.back().id, accepted.probes.back().id + 1);
 }
 } // namespace iv::test::observation_tests
 

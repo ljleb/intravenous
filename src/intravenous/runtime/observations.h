@@ -7,6 +7,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <tuple>
 #include <unordered_map>
@@ -27,6 +28,18 @@ class Observations {
         std::uint64_t prediction_sequence = 0;
         std::vector<InterestCapture> captures{};
         Clock::time_point expires{};
+    };
+    struct ScopeInterests {
+        std::span<ObservationInterest const> interests{};
+        std::span<ObservationInterest const> predicted_interests{};
+        std::uint64_t prediction_sequence = 0;
+    };
+    struct Reconciliation {
+        bool dispatched = false;
+        // A handled request can retain new desired requirements and report
+        // a preparation error. Its scope must follow those requirements.
+        bool accept_scope = true;
+        std::string error{};
     };
     struct WindowCapture {
         ObservationInterest interest{};
@@ -66,7 +79,7 @@ class Observations {
     std::mutex wake_mutex_;
     std::condition_variable_any wake_;
     bool execution_activation_pending_ = false;
-    bool reconcile_locked();
+    Reconciliation reconcile_locked(std::size_t replaced_scope, std::optional<ScopeInterests> replacement);
     void update_subscriptions_locked();
     struct CollectedExecution {
         std::optional<std::size_t> sample_rate{};

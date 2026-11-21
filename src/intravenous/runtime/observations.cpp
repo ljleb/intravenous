@@ -3,6 +3,7 @@
 #include <intravenous/runtime/project_connection_json.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -45,19 +46,34 @@ Json project_value(RawObservationValue const& value)
 } // namespace
 
 
-bool Observations::reconcile_locked()
+Observations::Reconciliation Observations::reconcile_locked(
+    std::size_t replaced_scope, std::optional<ScopeInterests> replacement)
 {
+    std::array<ScopeInterests, maximum_scopes> prospective;
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < scopes_.size(); ++index) {
+        if (index == replaced_scope) {
+            if (replacement) prospective[count++] = *replacement;
+        } else {
+            auto const& scope = scopes_[index];
+            prospective[count++] = {scope.interests, scope.predicted_interests, scope.prediction_sequence};
+        }
+    }
+    if (replacement && replaced_scope == scopes_.size()) prospective[count++] = *replacement;
+    auto const scopes = std::span(prospective).first(count);
+
     auto ids = active_probe_ids_;
     if (predicted_) for (auto const& probe : predicted_->probes) ids.emplace(ProbeKey{probe.source, probe.operation}, probe.id);
-    auto make_requirements = [&](Scope const* predicted_scope, std::uint64_t revision) {
+    auto next_id = next_id_;
+    auto make_requirements = [&](ScopeInterests const* predicted_scope, std::uint64_t revision) {
         ObservationRequirements plan{.revision = revision};
         std::set<std::uint64_t> used;
-        for (auto const& scope : scopes_) {
+        for (auto const& scope : scopes) {
             auto const& interests = &scope == predicted_scope ? scope.predicted_interests : scope.interests;
             for (auto const& interest : interests) {
                 if (interest.window) continue;
-                auto [entry, inserted] = ids.try_emplace({interest.source, interest.operation}, next_id_);
-                if (inserted) ++next_id_;
+                auto [entry, inserted] = ids.try_emplace({interest.source, interest.operation}, next_id);
+                if (inserted) ++next_id;
                 if (used.insert(entry->second).second)
                     plan.probes.push_back({.id = entry->second, .source = interest.source, .operation = interest.operation});
             }
@@ -72,18 +88,23 @@ bool Observations::reconcile_locked()
     bool const changed = desired.probes != accepted_.probes;
     if (!changed) desired.revision = accepted_.revision;
     std::optional<ObservationRequirements> prediction;
-    auto const owner = std::ranges::max_element(scopes_, {}, [](Scope const& scope) {
+    auto const owner = std::ranges::max_element(scopes, {}, [](ScopeInterests const& scope) {
         return scope.predicted_interests.empty() ? std::uint64_t{0} : scope.prediction_sequence;
     });
-    if (owner != scopes_.end() && !owner->predicted_interests.empty()) {
+    if (owner != scopes.end() && !owner->predicted_interests.empty()) {
+        auto const first_prediction_id = next_id;
         auto candidate = make_requirements(&*owner, desired.revision + 1);
         if (candidate.probes != desired.probes && candidate.probes.size() <= maximum_live_observation_probes)
             prediction = std::move(candidate);
+        else next_id = first_prediction_id;
     }
 
     bool const required = changed || compilation_failed_;
     bool const prediction_changed = prediction != predicted_;
-    if (!required && !prediction_changed) { last_scheduling_us_ = 0; return false; }
+    if (!required && !prediction_changed) { last_scheduling_us_ = 0; return {}; }
+    std::map<ProbeKey, std::uint64_t> accepted_ids;
+    if (required) for (auto const& probe : desired.probes)
+        accepted_ids.emplace(ProbeKey{probe.source, probe.operation}, probe.id);
     ObservationGraphRequest request{.requirements = required ? std::optional(desired) : std::nullopt,
         .prediction_changed = prediction_changed, .prediction = prediction};
     IV_INVOKE_LINKER_EVENT(iv_observations_project_graph_event, request);
@@ -92,14 +113,16 @@ bool Observations::reconcile_locked()
     // requirements are retained for the next structural rebuild or retry.
     if (required) {
         accepted_ = std::move(desired);
-        active_probe_ids_.clear();
-        for (auto const& probe : accepted_.probes) active_probe_ids_.emplace(ProbeKey{probe.source, probe.operation}, probe.id);
+        active_probe_ids_ = std::move(accepted_ids);
     }
-    predicted_ = std::move(prediction);
+    bool const accept_scope = request.error.empty() || changed;
+    if (accept_scope) {
+        predicted_ = std::move(prediction);
+        next_id_ = next_id;
+    }
     last_scheduling_us_ = request.scheduling_us;
     compilation_failed_ = required && !request.error.empty();
-    if (!request.error.empty()) throw std::runtime_error(request.error);
-    return true;
+    return {.dispatched = true, .accept_scope = accept_scope, .error = std::move(request.error)};
 }
 
 void Observations::handle_protocol(ObservationProtocolRequest& request)
@@ -150,56 +173,67 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
             return current.client == request.client_id && current.scope == request.scope_id;
         });
         auto const position = static_cast<std::size_t>(scope - scopes_.begin());
-        auto before = scope == scopes_.end() ? std::nullopt : std::optional<Scope>(*scope);
-        auto const previous_revision = accepted_.revision;
-        bool subscriptions_changed = false;
-        bool plan_changed = false;
+        auto const* before = scope == scopes_.end() ? nullptr : std::addressof(*scope);
+        bool const remove = request.interests.empty();
+        if (!remove && !before && scopes_.size() >= maximum_scopes)
+            throw std::invalid_argument("observation scope limit exceeded");
+        auto const interests = std::span<ObservationInterest const>{request.interests};
+        auto const previous_interests = before ? std::span<ObservationInterest const>{before->interests}
+                                               : std::span<ObservationInterest const>{};
+        auto const prediction = remove ? std::span<ObservationInterest const>{}
+                                       : std::span<ObservationInterest const>{request.predicted_interests};
+        auto const previous_prediction = before ? std::span<ObservationInterest const>{before->predicted_interests}
+                                                : std::span<ObservationInterest const>{};
+        bool const subscriptions_changed = !std::ranges::equal(previous_interests, interests);
+        bool const prediction_changed = !std::ranges::equal(previous_prediction, prediction);
         auto live_only = std::views::filter([](ObservationInterest const& interest) { return !interest.window; });
-        if (request.interests.empty()) {
-            if (scope != scopes_.end()) {
-                plan_changed = !std::ranges::empty(scope->interests | live_only) || !scope->predicted_interests.empty();
-                scopes_.erase(scope);
-                subscriptions_changed = true;
+        bool const plan_changed = prediction_changed || (subscriptions_changed
+            && !std::ranges::equal(previous_interests | live_only, interests | live_only));
+        if (subscriptions_changed) {
+            auto const count_windows = [](std::span<ObservationInterest const> values) {
+                return std::ranges::count_if(values, [](auto const& interest) { return interest.window.has_value(); });
+            };
+            std::size_t window_count = count_windows(interests);
+            for (auto const& current : scopes_) {
+                if (&current != before) window_count += count_windows(current.interests);
             }
-        } else {
-            if (scope == scopes_.end()) {
-                if (scopes_.size() >= maximum_scopes) throw std::invalid_argument("observation scope limit exceeded");
-                scopes_.push_back({.client = request.client_id, .scope = request.scope_id});
-                scope = std::prev(scopes_.end());
-            }
-            subscriptions_changed = scope->interests != request.interests;
-            if (subscriptions_changed) {
-                plan_changed = !std::ranges::equal(scope->interests | live_only, request.interests | live_only);
-                scope->interests = request.interests;
-            }
-            if (scope->predicted_interests != request.predicted_interests) {
-                scope->predicted_interests = request.predicted_interests;
-                scope->prediction_sequence = ++next_prediction_sequence_;
-                plan_changed = true;
-            }
-            scope->expires = Clock::now() + scope_lease;
-        }
-        try {
-            std::size_t window_count = 0;
-            for (auto const& current : scopes_) for (auto const& interest : current.interests)
-                window_count += interest.window.has_value();
             if (window_count > maximum_observation_windows)
                 throw std::invalid_argument("combined observation window limit exceeded");
-            if (plan_changed || requirements_dirty_ || compilation_failed_) reconcile_locked();
-            else last_scheduling_us_ = 0;
-        } catch (...) {
-            if (accepted_.revision == previous_revision) {
-                if (before) {
-                    if (request.interests.empty()) scopes_.insert(scopes_.begin() + position, std::move(*before));
-                    else scopes_[position] = std::move(*before);
-                } else if (!request.interests.empty()) scopes_.pop_back();
-            } else subscriptions_changed_ |= subscriptions_changed;
-            throw;
+        }
+
+        auto const expires = Clock::now() + scope_lease;
+        auto const prediction_sequence = prediction_changed ? next_prediction_sequence_ + 1
+            : (before ? before->prediction_sequence : 0);
+        std::optional<Scope> new_scope;
+        if (!remove && !before) {
+            new_scope.emplace(Scope{.client = request.client_id, .scope = request.scope_id});
+            if (scopes_.size() == scopes_.capacity())
+                scopes_.reserve(std::min(maximum_scopes, std::max(std::size_t{1}, scopes_.capacity() * 2)));
+        }
+        Reconciliation reconciliation;
+        if (plan_changed || requirements_dirty_ || compilation_failed_) {
+            reconciliation = reconcile_locked(position, remove ? std::nullopt
+                : std::optional(ScopeInterests{interests, prediction, prediction_sequence}));
+        } else last_scheduling_us_ = 0;
+        if (!reconciliation.accept_scope) throw std::runtime_error(reconciliation.error);
+
+        if (remove) {
+            if (position < scopes_.size()) scopes_.erase(scopes_.begin() + position);
+        } else {
+            if (new_scope) scopes_.push_back(std::move(*new_scope));
+            auto& committed = scopes_[position];
+            if (subscriptions_changed) committed.interests = std::move(request.interests);
+            if (prediction_changed) {
+                committed.predicted_interests = std::move(request.predicted_interests);
+                committed.prediction_sequence = ++next_prediction_sequence_;
+            }
+            committed.expires = expires;
         }
         subscriptions_changed_ |= subscriptions_changed;
         if (subscriptions_changed) {
             if (auto delivered = last_delivered_.find(request.client_id); delivered != last_delivered_.end()) delivered->second.clear();
         }
+        if (!reconciliation.error.empty()) throw std::runtime_error(reconciliation.error);
         request.result = std::make_shared<Json const>(Json{
             {"revision", std::to_string(accepted_.revision)},
             {"leaseMs", std::chrono::duration_cast<std::chrono::milliseconds>(scope_lease).count()},
@@ -307,7 +341,7 @@ bool Observations::refresh_subscriptions_locked(Clock::time_point now)
         requirements_dirty_ = false;
         // Reconciliation and window resolution both visit ProjectGraph.
         // A change to the prediction alone also uses this cause's visit.
-        try { if (reconcile_locked()) return false; } catch (...) { return false; }
+        try { if (reconcile_locked(scopes_.size(), std::nullopt).dispatched) return false; } catch (...) { return false; }
     }
     if (subscriptions_changed_) update_subscriptions_locked();
     return true;

@@ -1376,22 +1376,208 @@ void log_configuration_failure(ProjectGraphConfigurationFailure const& failure) 
 }
 } // namespace
 
+namespace {
+void configure_manual_controls(
+    ConfiguredGraph& finished_graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    std::span<ProjectManualControl const> controls,
+    std::vector<ProjectGraphGeneration::ManualControlDiagnostic>& diagnostics)
+{
+    // Authored defaults are already constants. Give eligible public inputs the
+    // same manual binding without inventing saved state or an undo action.
+    std::optional<graph_jit::ResolvedPortRealization> gain_realization;
+    bool resolved_gain_types = false;
+    auto supports_gain = [&](NodeBundlePortId output) {
+        auto const config = finished_graph.node_bundles.resolve_sample_output(output).config;
+        auto type = continuous_value_type_domain(config).sole_type();
+        if (!type) {
+            if (!resolved_gain_types) {
+                resolved_gain_types = true;
+                auto resolved = graph_jit::resolve_port_realization(finished_graph);
+                if (resolved) gain_realization.emplace(std::move(*resolved));
+            }
+            if (gain_realization) type = gain_realization->output(output.node_bundle_handle, output.port_index).value_type;
+        }
+        return type && continuous_value_type_info(*type).apply_output_gain != nullptr;
+    };
+    std::vector<ProjectManualControl> effective_controls(controls.begin(), controls.end());
+    std::unordered_map<std::string, std::vector<ManualControlId>> declared_controls;
+    for (auto const& control : controls)
+        declared_controls[control.id.node.instance_id].push_back(control.id);
+    for (auto const& [instance_id, placement] : placements) {
+        auto add_control = [&](ManualControlId id, Sample value, bool enabled) {
+            auto& declared = declared_controls[instance_id];
+            if (std::ranges::contains(declared, id)) return;
+            declared.push_back(id);
+            effective_controls.push_back({.id = std::move(id), .stored_value = value, .enabled = enabled});
+        };
+        std::unordered_set<NodeBundleHandle> seen_members;
+        auto register_scope = [&](auto const& self, NodeAddress address, ProjectNodePathMatch match,
+                                  NodeBundleHandle representative) -> void {
+            bool const is_root = address.path.empty();
+            if (match.kind == ProjectNodePathMatch::Kind::bundle) {
+                if (!seen_members.insert(representative).second) return;
+                if (!is_root) {
+                    auto path = project_member_path(finished_graph, placement.root, representative);
+                    if (!path) return;
+                    address.path = std::move(*path);
+                }
+            }
+            auto const interface = match.kind == ProjectNodePathMatch::Kind::virtual_node
+                ? read_virtual_node_interface(finished_graph.node_bundles, finished_graph.virtual_nodes.record(match.virtual_node), representative)
+                : read_node_instance_interface(finished_graph.node_bundles, representative);
+            for (auto const& port : interface.sample_inputs) {
+                if (port.name.empty() || !port.manual_defaults) continue;
+                add_control({.node = address, .port_name = port.name}, port.manual_defaults->value,
+                    match.kind == ProjectNodePathMatch::Kind::bundle && port.manual_defaults->enabled);
+            }
+            for (auto const& port : interface.sample_outputs) {
+                if (!port.name.empty() && port.index < finished_graph.node_bundles.bundle(representative).sample_output_count()
+                        && supports_gain({representative, PortKind::sample, port.index}))
+                    add_control({.node = address, .port_name = port.name, .kind = ManualControlKind::output_gain},
+                        Sample{1}, true);
+            }
+            if (is_root || interface.has_children || match.kind == ProjectNodePathMatch::Kind::virtual_node
+                || finished_graph.node_bundles.bundle(representative).is_tiled()) {
+                for (auto const& child : project_child_nodes(finished_graph, match)) {
+                    auto child_address = address;
+                    child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
+                    auto const matches = resolve_node_address(finished_graph, placements, child_address);
+                    if (matches.size() == 1) self(self, std::move(child_address), matches.front(), child.bundle);
+                }
+            }
+        };
+        register_scope(register_scope, NodeAddress{.instance_id = instance_id},
+            {.kind = ProjectNodePathMatch::Kind::bundle, .bundle = placement.root}, placement.root);
+    }
+    struct ResolvedPort {
+        std::size_t selection_index;
+        NodeBundlePortId port;
+        bool requires_preparation = false;
+    };
+    std::vector<ResolvedPort> resolved_ports;
+    for (std::size_t control_index = 0; control_index < effective_controls.size(); ++control_index) {
+        auto const& control = effective_controls[control_index];
+        auto const matches = resolve_node_address(
+            finished_graph, placements, control.id.node);
+        bool const output_gain = control.id.kind == ManualControlKind::output_gain;
+        std::vector<NodeBundleHandle> bundles;
+        if (output_gain) {
+            // A public tiled output is one multichannel output. Keep its
+            // identity rather than applying several unrelated member gains.
+            auto append = [&](NodeBundleHandle bundle) {
+                if (!std::ranges::contains(bundles, bundle)) bundles.push_back(bundle);
+            };
+            for (auto const& match : matches) {
+                if (match.kind == ProjectNodePathMatch::Kind::bundle) append(match.bundle);
+                else {
+                    auto const& members = finished_graph.virtual_nodes.record(match.virtual_node).node_bundle_handles;
+                    for (auto member : match.virtual_member_indices)
+                        if (member < members.size()) append(members[member]);
+                }
+            }
+        } else bundles = concrete_node_address_matches(finished_graph, matches);
+        if (bundles.empty()) {
+            if (!control.enabled) continue;
+            diagnostics.push_back({
+                .id = control.id,
+                .message = "manual control address does not select a concrete node",
+            });
+            continue;
+        }
+        resolved_ports.clear();
+        for (std::size_t selection_index = 0; selection_index < bundles.size(); ++selection_index) {
+            auto const bundle = bundles[selection_index];
+            auto const& selected = finished_graph.node_bundles.bundle(bundle);
+            if (output_gain) {
+                std::optional<std::size_t> port;
+                for (std::size_t index = 0; index < selected.sample_output_count(); ++index)
+                    if (finished_graph.node_bundles.resolve_sample_output({bundle, PortKind::sample, index}).config.name == control.id.port_name)
+                        port = index;
+                if (!port) {
+                    diagnostics.push_back({control.id, "gain output name is unavailable"});
+                    continue;
+                }
+                auto const source = NodeBundlePortId{bundle, PortKind::sample, *port};
+                if (!supports_gain(source)) {
+                    diagnostics.push_back({control.id, "output value type has no scalar gain operation"});
+                    continue;
+                }
+                resolved_ports.push_back({selection_index, source});
+                continue;
+            }
+            std::size_t port = 0;
+            for (; port < selected.sample_input_count(); ++port) {
+                NodeBundlePortId const input{bundle, PortKind::sample, port};
+                auto const config = finished_graph.node_bundles.resolve_sample_input(input).config;
+                if (config.name != control.id.port_name) continue;
+                if (manual_input_defaults(config)) {
+                    resolved_ports.push_back({selection_index, input, supports_coverage_manual_control(config)});
+                } else if (control.enabled) {
+                    diagnostics.push_back({control.id, "manual controls require a Sequential or windowed Coverage Sample input"});
+                }
+                break;
+            }
+            if (port == selected.sample_input_count() && control.enabled)
+                diagnostics.push_back({control.id, "manual control input name does not select a continuous input"});
+        }
+        bool const virtual_selection = std::ranges::any_of(matches, [](auto const& match) {
+            return match.kind == ProjectNodePathMatch::Kind::virtual_node;
+        });
+        if (virtual_selection && resolved_ports.size() != bundles.size()) continue;
+        for (auto const& resolved : resolved_ports) {
+            if (output_gain) {
+                finished_graph.manual_controls.push_back({.id = control.id,
+                    .concrete_selection_index = resolved.selection_index,
+                    .settled_value = control.stored_value, .output = resolved.port});
+            } else {
+                finished_graph.manual_controls.push_back({
+                    .id = control.id, .input = resolved.port,
+                    .concrete_selection_index = resolved.selection_index,
+                    .settled_value = control.stored_value,
+                    .participation = control.participation,
+                    .requires_preparation = resolved.requires_preparation,
+                    .enabled = control.enabled,
+                    .authored = control_index < controls.size(),
+                });
+            }
+        }
+    }
+    graph_jit::detail::classify_output_gain_consumers(finished_graph);
+    std::vector<ManualControlId> prepared_groups;
+    for (auto const& control : finished_graph.manual_controls)
+        if (control.requires_preparation && !control.id.node.path.empty()
+            && std::holds_alternative<ProjectVirtualNodeSelector>(control.id.node.path.back())
+            && !std::ranges::contains(prepared_groups, control.id))
+            prepared_groups.push_back(control.id);
+    for (auto& control : finished_graph.manual_controls)
+        if (std::ranges::contains(prepared_groups, control.id)) control.requires_preparation = true;
+}
+} // namespace
+
 ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     NodeInstancesMutation instance_mutation,
     GraphConnectionsMutation connection_mutation,
     bool publish_execution,
     IvPackageDefinitionsChanged const* package_definitions,
     InteractionTransactions* interaction_transactions,
-    std::vector<ProjectManualControl> const* previous_controls,
+    std::optional<std::vector<ProjectManualControl>> proposed_controls,
     bool record_history,
     ProjectEditEffect* accepted_effect)
 {
     using Clock = std::chrono::steady_clock;
     auto const rebuild_begin = Clock::now();
-    auto const controls_before = previous_controls ? *previous_controls : manual_controls_;
     bool const capture_effect = publish_execution && (record_history || accepted_effect)
         && (!std::holds_alternative<std::monostate>(instance_mutation)
-            || !std::holds_alternative<std::monostate>(connection_mutation) || previous_controls);
+            || !std::holds_alternative<std::monostate>(connection_mutation) || proposed_controls);
+    std::optional<ProjectEditEffect> effect;
+    auto commit_controls_and_history = [&] {
+        if (effect) {
+            if (accepted_effect) *accepted_effect = std::move(*effect);
+            else record_edit_locked(std::move(*effect));
+        }
+        if (proposed_controls) manual_controls_ = std::move(*proposed_controls);
+    };
     GraphBuilder root_builder;
     NodeInstancesProjectGraphRequest request{
         .snapshot = definitions_snapshot_,
@@ -1475,6 +1661,8 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         auto shared = std::make_shared<ProjectGraphConfigurationFailure const>(
             std::move(failure));
         if (publish_execution) {
+            commit_controls_and_history();
+            prune_live_interactions_locked();
             log_configuration_failure(*shared);
             configuration_failure_ = shared;
             pending_graph_compile_.reset();
@@ -1535,17 +1723,18 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         for (auto const& value : request.before.instances) {
             if (!remaining_instances.contains(value.instance_id)) removed_instances.insert(value.instance_id);
         }
-        std::erase_if(manual_controls_, [&](auto const& control) { return removed_instances.contains(control.id.node.instance_id); });
-        ProjectEditEffect effect{
+        auto const control_was_removed = [&](auto const& control) { return removed_instances.contains(control.id.node.instance_id); };
+        if (!proposed_controls && std::ranges::any_of(manual_controls_, control_was_removed))
+            proposed_controls = manual_controls_;
+        if (proposed_controls) std::erase_if(*proposed_controls, control_was_removed);
+        effect = ProjectEditEffect{
             .instances = project_record_changes(request.before.instances, request.after.instances),
             .replacements = project_record_changes(request.before.replacements, request.after.replacements),
             .connections = project_record_changes(connections_request.before, connections_request.after),
-            .manual_controls = project_record_changes(controls_before, manual_controls_),
+            .manual_controls = proposed_controls ? project_record_changes(manual_controls_, *proposed_controls)
+                                                 : std::vector<ProjectRecordChange<ProjectManualControl>>{},
         };
-        if (accepted_effect) *accepted_effect = std::move(effect);
-        else record_edit_locked(std::move(effect));
     }
-    if (publish_execution) prune_live_interactions_locked();
     if (instances_failed) {
         return fail(ProjectGraphConfigurationFailure{
             .definitions_generation = definitions_generation,
@@ -1596,177 +1785,11 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         std::move(connections_request.result.diagnostics);
     generation->node_replacements =
         std::move(request.realized_node_replacements);
-    generation->manual_controls = manual_controls_;
+    auto const& controls = proposed_controls ? *proposed_controls : manual_controls_;
+    generation->manual_controls = controls;
 
-    // Authored defaults are already constants. Give eligible public inputs the
-    // same manual binding without inventing saved state or an undo action.
-    std::optional<graph_jit::ResolvedPortRealization> gain_realization;
-    bool resolved_gain_types = false;
-    auto supports_gain = [&](NodeBundlePortId output) {
-        auto const config = finished_graph.node_bundles.resolve_sample_output(output).config;
-        auto type = continuous_value_type_domain(config).sole_type();
-        if (!type) {
-            if (!resolved_gain_types) {
-                resolved_gain_types = true;
-                auto resolved = graph_jit::resolve_port_realization(finished_graph);
-                if (resolved) gain_realization.emplace(std::move(*resolved));
-            }
-            if (gain_realization) type = gain_realization->output(output.node_bundle_handle, output.port_index).value_type;
-        }
-        return type && continuous_value_type_info(*type).apply_output_gain != nullptr;
-    };
-    auto effective_controls = manual_controls_;
-    std::unordered_map<std::string, std::vector<ManualControlId>> declared_controls;
-    for (auto const& control : manual_controls_)
-        declared_controls[control.id.node.instance_id].push_back(control.id);
-    for (auto const& [instance_id, placement] : generation->placements) {
-        auto add_control = [&](ManualControlId id, Sample value, bool enabled) {
-            auto& declared = declared_controls[instance_id];
-            if (std::ranges::contains(declared, id)) return;
-            declared.push_back(id);
-            effective_controls.push_back({.id = std::move(id), .stored_value = value, .enabled = enabled});
-        };
-        std::unordered_set<NodeBundleHandle> seen_members;
-        auto register_scope = [&](auto const& self, NodeAddress address, ProjectNodePathMatch match,
-                                  NodeBundleHandle representative) -> void {
-            bool const is_root = address.path.empty();
-            if (match.kind == ProjectNodePathMatch::Kind::bundle) {
-                if (!seen_members.insert(representative).second) return;
-                if (!is_root) {
-                    auto path = project_member_path(finished_graph, placement.root, representative);
-                    if (!path) return;
-                    address.path = std::move(*path);
-                }
-            }
-            auto const interface = match.kind == ProjectNodePathMatch::Kind::virtual_node
-                ? read_virtual_node_interface(finished_graph.node_bundles, finished_graph.virtual_nodes.record(match.virtual_node), representative)
-                : read_node_instance_interface(finished_graph.node_bundles, representative);
-            for (auto const& port : interface.sample_inputs) {
-                if (port.name.empty() || !port.manual_defaults) continue;
-                add_control({.node = address, .port_name = port.name}, port.manual_defaults->value,
-                    match.kind == ProjectNodePathMatch::Kind::bundle && port.manual_defaults->enabled);
-            }
-            for (auto const& port : interface.sample_outputs) {
-                if (!port.name.empty() && port.index < finished_graph.node_bundles.bundle(representative).sample_output_count()
-                        && supports_gain({representative, PortKind::sample, port.index}))
-                    add_control({.node = address, .port_name = port.name, .kind = ManualControlKind::output_gain},
-                        Sample{1}, true);
-            }
-            if (is_root || interface.has_children || match.kind == ProjectNodePathMatch::Kind::virtual_node
-                || finished_graph.node_bundles.bundle(representative).is_tiled()) {
-                for (auto const& child : project_child_nodes(finished_graph, match)) {
-                    auto child_address = address;
-                    child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
-                    auto const matches = resolve_node_address(finished_graph, generation->placements, child_address);
-                    if (matches.size() == 1) self(self, std::move(child_address), matches.front(), child.bundle);
-                }
-            }
-        };
-        register_scope(register_scope, NodeAddress{.instance_id = instance_id},
-            {.kind = ProjectNodePathMatch::Kind::bundle, .bundle = placement.root}, placement.root);
-    }
-    for (auto const& control : effective_controls) {
-        auto const matches = resolve_node_address(
-            finished_graph, generation->placements, control.id.node);
-        auto bundles = concrete_node_address_matches(finished_graph, matches);
-        if (control.id.kind == ManualControlKind::output_gain) {
-            // A public tiled output is one multichannel output. Keep its
-            // identity rather than applying several unrelated member gains.
-            bundles.clear();
-            auto append = [&](NodeBundleHandle bundle) {
-                if (!std::ranges::contains(bundles, bundle)) bundles.push_back(bundle);
-            };
-            for (auto const& match : matches) {
-                if (match.kind == ProjectNodePathMatch::Kind::bundle) append(match.bundle);
-                else {
-                    auto const& members = finished_graph.virtual_nodes.record(match.virtual_node).node_bundle_handles;
-                    for (auto member : match.virtual_member_indices)
-                        if (member < members.size()) append(members[member]);
-                }
-            }
-        }
-        if (bundles.empty()) {
-            if (!control.enabled) continue;
-            generation->manual_control_diagnostics.push_back({
-                .id = control.id,
-                .message = "manual control address does not select a concrete node",
-            });
-            continue;
-        }
-        auto const first_binding = finished_graph.manual_controls.size();
-        for (std::size_t selection_index = 0;
-             selection_index < bundles.size(); ++selection_index) {
-            auto const bundle = bundles[selection_index];
-            if (control.id.kind == ManualControlKind::output_gain) {
-                auto const& selected = finished_graph.node_bundles.bundle(bundle);
-                std::optional<std::size_t> port;
-                for (std::size_t index = 0; index < selected.sample_output_count(); ++index)
-                    if (finished_graph.node_bundles.resolve_sample_output({bundle, PortKind::sample, index}).config.name == control.id.port_name)
-                        port = index;
-                if (!port) {
-                    generation->manual_control_diagnostics.push_back({control.id, "gain output name is unavailable"});
-                    continue;
-                }
-                auto const source = NodeBundlePortId{bundle, PortKind::sample, *port};
-                if (!supports_gain(source)) {
-                    generation->manual_control_diagnostics.push_back({control.id, "output value type has no scalar gain operation"});
-                    continue;
-                }
-                finished_graph.manual_controls.push_back({.id = control.id,
-                    .concrete_selection_index = selection_index,
-                    .settled_value = control.stored_value, .output = source});
-                continue;
-            }
-            std::vector<ContinuousInputConfig> sample_inputs;
-            for (std::size_t port = 0; port < finished_graph.node_bundles.bundle(bundle).sample_input_count(); ++port)
-                sample_inputs.push_back(finished_graph.node_bundles.resolve_sample_input({bundle, PortKind::sample, port}).config);
-            auto const found = std::ranges::find(
-                sample_inputs, control.id.port_name, &ContinuousInputConfig::name);
-            if (found == sample_inputs.end()) {
-                if (!control.enabled) continue;
-                generation->manual_control_diagnostics.push_back({
-                    .id = control.id,
-                    .message = "manual control input name does not select a continuous input",
-                });
-                continue;
-            }
-            const bool coverage_control = supports_coverage_manual_control(*found);
-            if (!manual_input_defaults(*found)) {
-                if (!control.enabled) continue;
-                generation->manual_control_diagnostics.push_back({
-                    .id = control.id,
-                    .message = "manual controls require a Sequential or windowed Coverage Sample input",
-                });
-                continue;
-            }
-            auto const port = static_cast<std::size_t>(
-                std::distance(sample_inputs.begin(), found));
-            finished_graph.manual_controls.push_back(ConfiguredManualControl{
-                .id = control.id,
-                .input = NodeBundlePortId{bundle, PortKind::sample, port},
-                .concrete_selection_index = selection_index,
-                .settled_value = control.stored_value,
-                .participation = control.participation,
-                .requires_preparation = coverage_control,
-                .enabled = control.enabled,
-                .authored = find_manual_control_locked(control.id) != nullptr,
-            });
-        }
-        if (std::ranges::any_of(matches, [](auto const& match) {
-                return match.kind == ProjectNodePathMatch::Kind::virtual_node;
-            }) && finished_graph.manual_controls.size() - first_binding != bundles.size()) {
-            finished_graph.manual_controls.resize(first_binding);
-        }
-    }
-    graph_jit::detail::classify_output_gain_consumers(finished_graph);
-    std::vector<ManualControlId> prepared_groups;
-    for (auto const& control : finished_graph.manual_controls)
-        if (control.requires_preparation && !control.id.node.path.empty()
-            && std::holds_alternative<ProjectVirtualNodeSelector>(control.id.node.path.back())
-            && !std::ranges::contains(prepared_groups, control.id))
-            prepared_groups.push_back(control.id);
-    for (auto& control : finished_graph.manual_controls)
-        if (std::ranges::contains(prepared_groups, control.id)) control.requires_preparation = true;
+    configure_manual_controls(
+        finished_graph, generation->placements, controls, generation->manual_control_diagnostics);
 
     auto next_manual_interactions = manual_interactions_;
     auto next_hovered_controls = hovered_controls_;
@@ -1792,7 +1815,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             return !is_available(entry.second);
         });
         next_dynamic_inputs.clear();
-        for (auto const& control : effective_controls) {
+        for (auto const& control : finished_graph.manual_controls) {
             auto const required = std::ranges::any_of(
                 next_manual_interactions,
                 [&](ActiveManualControlInteraction const& interaction) {
@@ -1800,7 +1823,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
                 }) || std::ranges::any_of(next_retained_inputs, [&](auto const& entry) {
                     return entry.second == control.id;
                 });
-            if (required && manual_control_is_available(finished_graph, control.id)) {
+            if (required && !std::ranges::contains(next_dynamic_inputs, control.id)) {
                 next_dynamic_inputs.push_back(control.id);
             }
         }
@@ -1844,6 +1867,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             .finish_us = microseconds(connections_end, finished_at),
             .total_us = microseconds(rebuild_begin, finished_at),
         };
+        commit_controls_and_history();
         manual_interactions_ = std::move(next_manual_interactions);
         prune_live_interactions_locked();
         hovered_controls_ = std::move(next_hovered_controls);
@@ -2242,7 +2266,7 @@ void ProjectGraph::dispatch_root_node_message_locked(
         true,
         nullptr,
         &interaction.transactions,
-        nullptr,
+        std::nullopt,
         !gesture,
         gesture ? &effect : nullptr);
     if (gesture && !effect.empty()) {
@@ -2764,10 +2788,8 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             || !project_record_changes(before_connections, connections).empty()
             || !project_record_changes(manual_controls_, controls).empty();
         if (changed) {
-            auto previous_controls = manual_controls_;
-            manual_controls_ = std::move(controls);
             rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
-                &transactions, &previous_controls, false, &effect);
+                &transactions, std::move(controls), false, &effect);
         }
     } else if (!edit.lane_views.empty() || edit.lane_order || edit.timeline_snap_memory_json) {
         NodeInstancesProjectGraphRead instances{};
@@ -3010,35 +3032,30 @@ void ProjectGraph::handle_project_replace_graph(
     }
     {
         std::scoped_lock lock(mutex_);
-        auto previous_manual_controls = manual_controls_;
-        manual_controls_ = request.manual_controls;
-        for (auto& control : manual_controls_)
+        auto controls = request.manual_controls;
+        for (auto& control : controls)
             if (control.id.kind == ManualControlKind::output_gain) control.enabled = true;
-        try {
-            auto rebuilt = rebuild_locked(
-                NodeInstanceReplaceAllMutation{
-                    .instances = request.instances,
-                    .node_replacements = request.node_replacements,
-                },
-                GraphConnectionReplaceAllMutation{
-                    .connections = request.connections,
-                }, true, nullptr, nullptr, nullptr, false);
-            presentation_ = request.presentation;
-            std::erase_if(presentation_.lane_order, [&](auto const& address) {
-                return !instance_ids.contains(address.instance_id);
-            });
-            std::erase_if(presentation_.lane_views, [&](auto const& view) {
-                return !instance_ids.contains(view.id.address.instance_id);
-            });
-            edit_history_.clear();
-            node_message_gestures_.clear();
-            history_position_ = 0;
-            ++history_serial_;
-            builder.set_publication(std::move(rebuilt.publication));
-        } catch (...) {
-            manual_controls_ = std::move(previous_manual_controls);
-            throw;
-        }
+        auto presentation = request.presentation;
+        std::erase_if(presentation.lane_order, [&](auto const& address) {
+            return !instance_ids.contains(address.instance_id);
+        });
+        std::erase_if(presentation.lane_views, [&](auto const& view) {
+            return !instance_ids.contains(view.id.address.instance_id);
+        });
+        auto rebuilt = rebuild_locked(
+            NodeInstanceReplaceAllMutation{
+                .instances = request.instances,
+                .node_replacements = request.node_replacements,
+            },
+            GraphConnectionReplaceAllMutation{
+                .connections = request.connections,
+            }, true, nullptr, nullptr, std::move(controls), false);
+        presentation_ = std::move(presentation);
+        edit_history_.clear();
+        node_message_gestures_.clear();
+        history_position_ = 0;
+        ++history_serial_;
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
 }
@@ -3057,23 +3074,18 @@ void ProjectGraph::handle_project_upsert_manual_control(
     }
     {
         std::scoped_lock lock(mutex_);
-        auto previous_manual_controls = manual_controls_;
+        auto controls = manual_controls_;
         auto found = std::ranges::find(
-            manual_controls_, request.control.id, &ProjectManualControl::id);
+            controls, request.control.id, &ProjectManualControl::id);
         auto control = request.control;
         if (control.id.kind == ManualControlKind::output_gain) control.enabled = true;
-        if (found == manual_controls_.end()) {
-            manual_controls_.push_back(std::move(control));
+        if (found == controls.end()) {
+            controls.push_back(std::move(control));
         } else {
             *found = std::move(control);
         }
-        try {
-            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, &previous_manual_controls);
-            builder.set_publication(std::move(rebuilt.publication));
-        } catch (...) {
-            manual_controls_ = std::move(previous_manual_controls);
-            throw;
-        }
+        auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, std::move(controls));
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -3085,17 +3097,12 @@ void ProjectGraph::handle_project_delete_manual_control(
 {
     {
         std::scoped_lock lock(mutex_);
-        auto previous_manual_controls = manual_controls_;
-        std::erase_if(manual_controls_, [&](ProjectManualControl const& control) {
+        auto controls = manual_controls_;
+        std::erase_if(controls, [&](ProjectManualControl const& control) {
             return control.id == request.id;
         });
-        try {
-            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, &previous_manual_controls);
-            builder.set_publication(std::move(rebuilt.publication));
-        } catch (...) {
-            manual_controls_ = std::move(previous_manual_controls);
-            throw;
-        }
+        auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, std::move(controls));
+        builder.set_publication(std::move(rebuilt.publication));
     }
     builder.succeed();
     IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);

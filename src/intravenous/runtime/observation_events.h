@@ -20,6 +20,7 @@ struct ObservationProtocolRequest {
     std::string client_id; // Bound by the server, never parsed from the payload.
     std::string scope_id;
     std::vector<NodeAddress> nodes{};
+    // The service can take ownership of changed interests on acceptance.
     std::vector<ObservationInterest> interests{};
     std::vector<ObservationInterest> predicted_interests{};
     std::shared_ptr<nlohmann::ordered_json const> result{};
