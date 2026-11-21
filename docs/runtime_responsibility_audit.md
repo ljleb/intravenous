@@ -6,9 +6,6 @@ vendored miniaudio. The findings also cover related work across file
 boundaries. The project owner reported that all tests passed after the
 realtime root extraction.
 
-The next item is [Sample port planning](#sample-port-planning). Its goal is
-to remove work that repeats for trials with the same callback order.
-
 ## Completed work
 
 ### Scope edits, control bindings, and Event planning
@@ -85,7 +82,7 @@ definition is private to these two files.
 construction the same list of Sample and Event operations that prevent an
 acyclic batch. Root construction checks the resolved Tick and skip callback
 addresses and uses the capture flag it computed when it built each step.
-[Port operations](../src/intravenous/graph_jit/lowering_plan.h#L326) ·
+[Port operations](../src/intravenous/graph_jit/lowering_plan.h#L206) ·
 [Native batch validation](../src/intravenous/graph_jit/realtime/root_plan.cpp#L2243)
 
 ### Observation compilation
@@ -135,6 +132,22 @@ GraphJit widens the cost bounds of a shared conversion to cover every
 request.
 [Event materialization planner](../src/intravenous/graph_jit/lowering/event_port_plan.cpp#L337)
 
+### Sample port planning
+
+`graph_jit/lowering/sample_port_plan.{h,cpp}` owns the Tick Sample binding
+records and `plan_sample_ports()`. `prepare_sample_storage_connections()`
+selects the realtime part of mixed Tick and Tock routes and fills missing
+`detach()` initial values once per callback order.
+
+`SampleStorageConnections` supplies those routes by their original indices.
+`build_sample_storage_plan()` reads the producer groups, schedule, and node
+identities from the original analysis. Trials with the same callback order
+share the prepared routes. Each trial chooses and packs storage for its
+cost model.
+[Sample route preparation](../src/intravenous/graph_jit/lowering/sample_port_plan.cpp#L225) ·
+[Sample port planner](../src/intravenous/graph_jit/lowering/sample_port_plan.cpp#L284) ·
+[Sample storage planner](../src/intravenous/graph_jit/sample_storage_plan.cpp#L791)
+
 ### Stack-budget retries
 
 `ConnectionTopology::build_analysis_plan()` prepares one
@@ -146,7 +159,7 @@ the cost model, and packs the buffers to measure the stack usage.
 GraphJit plans package imports from `ConnectionTopology` before the
 trials. It fills in replay metadata, Event capture capacities, and
 port-state transfer records after it accepts the schedule and layout.
-[Stack-budget trials](../src/intravenous/graph_jit/lowering_plan.cpp#L5767)
+[Stack-budget trials](../src/intravenous/graph_jit/lowering_plan.cpp#L3950)
 
 ### Executor cutover and Tock preview
 
@@ -174,25 +187,6 @@ which object files each executable and test links. [CMake targets](../src/intrav
 
 ## Open findings and proposals
 
-### Sample port planning
-
-`plan_sample_ports()` builds the Tick Sample bindings and calls
-`build_sample_storage_plan()` to choose and pack storage. Each trial
-copies the whole `ConnectionAnalysisPlan`. It changes only the Sample
-connections in that copy. It selects the realtime part of mixed Tick and
-Tock routes and fills missing `detach()` initial values.
-[Sample port planner](../src/intravenous/graph_jit/lowering_plan.cpp#L2854) ·
-[Copy and route preparation](../src/intravenous/graph_jit/lowering_plan.cpp#L3814) ·
-[Sample storage planner](../src/intravenous/graph_jit/sample_storage_plan.cpp#L789)
-
-Extract Sample port planning from `lowering_plan.cpp` and give
-`build_sample_storage_plan()` prepared Sample connections. Let it read the
-schedule and producer groups from the original analysis. Reuse the prepared
-connections for stack-budget trials with the same callback order. Preserve
-their indices because `SampleStoragePlan` returns bindings indexed by
-connection. Each trial chooses storage and packs the resulting buffers for
-its cost model.
-
 ### Realtime batch selection
 
 `realtime_ready_group_batches()` checks callback symbols, Tick capture counts,
@@ -205,8 +199,8 @@ realtime batch classes and builds the schedule, declarations, and port plans
 again. The packed layout is required to check overlap. Check which rules can
 reject candidates earlier and which planned records can be reused after a
 rejection.
-[Batch eligibility](../src/intravenous/graph_jit/lowering_plan.cpp#L5049) ·
-[Schedule retry](../src/intravenous/graph_jit/lowering_plan.cpp#L5943)
+[Batch eligibility](../src/intravenous/graph_jit/lowering_plan.cpp#L3232) ·
+[Schedule retry](../src/intravenous/graph_jit/lowering_plan.cpp#L4136)
 
 The Front 16 probe of `simple_sine` counted 17 scalar sine specializations
 that shared one code address. It saw zero calls to `run_step_batch()` in
@@ -220,7 +214,7 @@ for the realtime path.
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
 | [`connection_plan.cpp`](../src/intravenous/graph_jit/connection_plan.cpp#L5039) | 5,275 | `ConnectionTopology::build()` resolves effective routes and validates authored routes. `build_analysis_plan()` calls the scheduling and grouping planners, inventories in-flight requirements, and records background bindings. |
-| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L5517) | 6,121 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. The Event planner owns stream binding, storage selection, and buffer packing. Storage trials share one connection analysis per callback order. Extract Sample port planning next. |
+| [`lowering_plan.cpp`](../src/intravenous/graph_jit/lowering_plan.cpp#L3700) | 4,314 | `build_lowering_plan()` coordinates connection analysis, storage trials, declarations, package imports, and execution planning. Sample and Event port planning have their own files. The outer loop still rebuilds the schedule, port plans, and declarations after a batch rejection. |
 | [`project_graph.cpp`](../src/intravenous/project/project_graph.cpp#L1592) | 4,417 | `rebuild_locked()` handles authored edits, calls instance and connection configuration, and publishes a snapshot. `configure_manual_controls()` owns control binding on a finished `ConfiguredGraph`. `handle_socket_rpc_get_graph_scope()` also builds the editor's read model, including manual controls and execution status. |
 | [`persisted_data_store.cpp`](../src/intravenous/execution/storage/persisted_data_store.cpp#L3209) | 4,044 | `Candidate::overwrite()` writes positional recordings. `replace_sample_regions()` and `replace_event_regions()` replace authored Regions in the candidate snapshot. The cache policy consumes payload costs and usage facts. The store keeps recording writes, payload estimates, and lease release. |
 

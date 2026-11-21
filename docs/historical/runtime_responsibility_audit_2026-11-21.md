@@ -210,3 +210,29 @@ batch, GraphJit builds the declarations again for the new order.
 | File | Lines | Boundary to scrutinize |
 | --- | ---: | --- |
 | [`realtime_root.cpp`](../../src/intravenous/graph_jit/realtime_root.cpp#L2871) | 5,757 | `RootPlanBuilder::build()` validates addresses and materializes primitive bindings, ready groups and region specializations. `execute_realtime_root()` consumes a completed `RealtimeRootPlan` on the audio thread. Use that plan as the boundary between cold binding and realtime execution, including the layout checks that the executor can then rely on. |
+
+
+## Sample port planning extraction proposal
+
+The runtime responsibility audit recorded this proposal on 2026-11-21.
+See the [completed Sample port planning work](../runtime_responsibility_audit.md#sample-port-planning).
+The source references describe the files before the extraction.
+
+### Sample port planning
+
+`plan_sample_ports()` builds the Tick Sample bindings and calls
+`build_sample_storage_plan()` to choose and pack storage. Each trial
+copies the whole `ConnectionAnalysisPlan`. It changes only the Sample
+connections in that copy. It selects the realtime part of mixed Tick and
+Tock routes and fills missing `detach()` initial values.
+[Sample port planner](../../src/intravenous/graph_jit/lowering_plan.cpp#L2854) ·
+[Copy and route preparation](../../src/intravenous/graph_jit/lowering_plan.cpp#L3814) ·
+[Sample storage planner](../../src/intravenous/graph_jit/sample_storage_plan.cpp#L789)
+
+Extract Sample port planning from `lowering_plan.cpp` and give
+`build_sample_storage_plan()` prepared Sample connections. Let it read the
+schedule and producer groups from the original analysis. Reuse the prepared
+connections for stack-budget trials with the same callback order. Preserve
+their indices because `SampleStoragePlan` returns bindings indexed by
+connection. Each trial chooses storage and packs the resulting buffers for
+its cost model.

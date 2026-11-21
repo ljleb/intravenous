@@ -328,7 +328,7 @@ TEST_F(GraphJitRuntimeFixture, DirectSampleStorage)
             direct_analysis->sample_producer_groups[0].storage_requirements).kind,
         iv::RealtimeBufferStorageKind::transient_stack);
     auto direct_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *direct_analysis, 64);
+        {*direct_analysis}, 64);
     ASSERT_TRUE(direct_plan.has_value())
         << (direct_plan ? std::string{} : direct_plan.error());
     ASSERT_EQ(direct_plan->producer_groups.size(), 1u);
@@ -385,7 +385,7 @@ TEST_F(GraphJitRuntimeFixture, TransientSampleStorage)
         iv::RealtimeBufferStorageKind::transient_stack);
     auto transient_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
-            *transient_analysis, 64);
+            {*transient_analysis}, 64);
     ASSERT_TRUE(transient_plan.has_value())
         << (transient_plan
                 ? std::string{}
@@ -449,7 +449,7 @@ TEST_F(GraphJitRuntimeFixture, TransientArenaReuse)
                 : reused_arena_analysis.error());
     auto reused_arena_storage =
         iv::graph_jit::detail::build_sample_storage_plan(
-            *reused_arena_analysis, 64);
+            {*reused_arena_analysis}, 64);
     ASSERT_TRUE(reused_arena_storage.has_value())
         << (reused_arena_storage
                 ? std::string{}
@@ -665,7 +665,7 @@ TEST_F(GraphJitRuntimeFixture, SampleFanoutConversion)
         iv::RealtimeBufferStorageKind::transient_stack);
 
     auto fanout_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *fanout_analysis, 64);
+        {*fanout_analysis}, 64);
     ASSERT_TRUE(fanout_plan.has_value())
         << (fanout_plan ? std::string{} : fanout_plan.error());
     ASSERT_EQ(fanout_plan->producer_groups.size(), 1u);
@@ -814,7 +814,7 @@ TEST_F(GraphJitRuntimeFixture, StereoSampleConversion)
         iv::RealtimeBufferStorageKind::transient_stack);
     auto stereo_conversion_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
-            *stereo_conversion_analysis, 64);
+            {*stereo_conversion_analysis}, 64);
     ASSERT_TRUE(stereo_conversion_plan.has_value())
         << (stereo_conversion_plan
                 ? std::string{}
@@ -911,7 +911,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateRevisesUnpublishedFrames)
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->persistent_allocations.size(), 1u);
@@ -999,7 +999,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateSurvivesPersistentRingStorage)
         iv::RealtimeBufferStorageKind::full_node_storage);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->persistent_allocations.size(), 1u);
@@ -1066,7 +1066,7 @@ TEST_F(GraphJitRuntimeFixture, SampleOutputUpdateFeedsComposedFanout)
     }
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     EXPECT_TRUE(sample_plan->compositions.empty());
@@ -1262,7 +1262,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedFanoutLatencyWindows)
 
     auto latency_conversion_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
-            *latency_conversion_analysis, 64);
+            {*latency_conversion_analysis}, 64);
     ASSERT_TRUE(latency_conversion_plan.has_value())
         << (latency_conversion_plan
                 ? std::string{}
@@ -1523,7 +1523,7 @@ TEST_F(GraphJitRuntimeFixture, ComposedSampleHistory)
 
     auto composed_history_plan =
         iv::graph_jit::detail::build_sample_storage_plan(
-            *composed_history_analysis, 64);
+            {*composed_history_analysis}, 64);
     ASSERT_TRUE(composed_history_plan.has_value())
         << (composed_history_plan
                 ? std::string{}
@@ -1691,7 +1691,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleComposition)
     EXPECT_EQ(projected_connection->target_channels[1].channel, 1u);
 
     auto projected_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *projected_analysis, 64);
+        {*projected_analysis}, 64);
     ASSERT_TRUE(projected_plan.has_value())
         << (projected_plan ? std::string{} : projected_plan.error());
     ASSERT_EQ(projected_plan->compositions.size(), 1u);

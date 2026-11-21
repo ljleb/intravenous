@@ -478,7 +478,7 @@ RealtimeStorageOperationCounts composed_feedback_buffer_operation_counts(
 }
 
 RealtimeStorageOperationCounts sample_producer_operation_counts(
-    ConnectionAnalysisPlan const& connections,
+    std::span<SampleConnectionPlan const> sample_connections,
     SampleProducerGroupPlan const& group,
     std::size_t kernel_block_size,
     bool uses_feedback_buffer_as_producer_output)
@@ -495,8 +495,8 @@ RealtimeStorageOperationCounts sample_producer_operation_counts(
     std::vector<MaterializationWindow> shared_materializations;
 
     for (auto const connection_index : group.connection_indices) {
-        if (connection_index >= connections.sample_connections.size()) continue;
-        auto const& connection = connections.sample_connections[connection_index];
+        if (connection_index >= sample_connections.size()) continue;
+        auto const& connection = sample_connections[connection_index];
         if (!is_entirely_realtime_delivery(connection)) {
             continue;
         }
@@ -669,7 +669,9 @@ constexpr std::size_t whole_connection_detach =
 // then also its latency and initial value (resolve_detach_identities()).
 class SampleDetachIdentities {
 public:
-    explicit SampleDetachIdentities(ConnectionAnalysisPlan const& connections)
+    SampleDetachIdentities(
+        ConnectionAnalysisPlan const& connections,
+        std::span<SampleConnectionPlan const> sample_connections)
     {
         std::vector<std::pair<std::size_t, std::size_t>> detaches;
         std::vector<DetachIdentityParts> parts;
@@ -680,10 +682,10 @@ public:
                 detach.loop_extra_latency, initial_value);
         };
         for (std::size_t connection_index = 0;
-             connection_index < connections.sample_connections.size();
+             connection_index < sample_connections.size();
              ++connection_index) {
             auto const& connection =
-                connections.sample_connections[connection_index];
+                sample_connections[connection_index];
             auto const& timings = connection.source_channel_timings;
             // Every detached source port with an identity, or nothing.
             auto const producer = [&](auto detached)
@@ -787,7 +789,7 @@ std::string composition_feedback_alignment_identity(
 } // namespace
 
 std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
-    ConnectionAnalysisPlan const& connections,
+    SampleStorageConnections storage_connections,
     std::size_t kernel_block_size,
     std::span<SampleSinkStorageRequest const> sinks,
     std::span<SampleConstantInputRequest const> constant_inputs,
@@ -800,11 +802,18 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             "GraphJit sample storage plan requires a non-zero power-of-two kernel block size");
     }
 
+    auto const& connections = storage_connections.analysis;
+    auto const sample_connections = storage_connections.sample_connections;
+    if (sample_connections.size() != connections.sample_connections.size()) {
+        return std::unexpected(
+            "GraphJit sample storage routes do not match the connection inventory");
+    }
+
     SampleStoragePlan plan;
-    SampleDetachIdentities const detach_identities(connections);
+    SampleDetachIdentities const detach_identities(connections, sample_connections);
     plan.producer_groups.resize(connections.sample_producer_groups.size());
-    plan.connection_representations.resize(connections.sample_connections.size());
-    plan.connection_channel_bindings.resize(connections.sample_connections.size());
+    plan.connection_representations.resize(sample_connections.size());
+    plan.connection_channel_bindings.resize(sample_connections.size());
 
     std::vector<std::vector<std::byte> const*> constant_producer_values(
         connections.sample_producer_groups.size());
@@ -1041,20 +1050,20 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         auto const has_feedback_branch = std::ranges::any_of(
             group.connection_indices,
             [&](std::size_t connection_index) {
-                return connection_index < connections.sample_connections.size()
+                return connection_index < sample_connections.size()
                     && has_detached_source(
-                        connections.sample_connections[connection_index]);
+                        sample_connections[connection_index]);
             });
 
         auto producer_position = group.source_port
             ? source_position(*group.source_port, group.live_interval)
             : group.live_interval.begin;
         for (auto const connection_index : group.connection_indices) {
-            if (connection_index >= connections.sample_connections.size()) {
+            if (connection_index >= sample_connections.size()) {
                 return std::unexpected(
                     "GraphJit sample producer group references an invalid connection");
             }
-            auto const& connection = connections.sample_connections[connection_index];
+            auto const& connection = sample_connections[connection_index];
             // One producer can have both live and replay consumers. Ownership
             // depends on the source port, not the connection's delivery domain.
             auto const belongs_to_group = !group.source_port
@@ -1077,7 +1086,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
             .crosses_kernel_invocations = false,
         };
         for (auto const connection_index : group.connection_indices) {
-            auto const& connection = connections.sample_connections[connection_index];
+            auto const& connection = sample_connections[connection_index];
             if (!connection_has_realtime_source_for_group(connection, group)) {
                 continue;
             }
@@ -1155,7 +1164,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         SampleConnectionStoragePlan home_feedback_storage{};
         if (!constant_value && group.storage_requirements.retained_frames == 0) {
             for (auto const connection_index : group.connection_indices) {
-                auto const& connection = connections.sample_connections[connection_index];
+                auto const& connection = sample_connections[connection_index];
                 if (!is_entirely_realtime_delivery(connection)
                     || !connection.detach
                     || !connection.detach_initial_value
@@ -1195,7 +1204,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
                         .channel_count = channel_count(*group.canonical_source_layout),
                         .value_size_bytes = group.geometry.value_size_bytes,
                         .operations = sample_producer_operation_counts(
-                            connections, group, *current_value_count, true),
+                            sample_connections, group, *current_value_count, true),
                     },
                     cost_model);
                 auto capacity = working_ring_capacity(
@@ -1212,7 +1221,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         producer_storage_requirements.value_size_bytes =
             group.geometry.value_size_bytes;
         producer_storage_requirements.operations = sample_producer_operation_counts(
-            connections, group, *current_value_count, false);
+            sample_connections, group, *current_value_count, false);
         auto const producer_storage_plan = has_feedback_home
             ? home_feedback_storage
             : choose_sample_connection_storage_plan(
@@ -1413,7 +1422,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         std::vector<DerivedBranch> derived;
 
         for (auto const connection_index : group.connection_indices) {
-            auto const& connection = connections.sample_connections[connection_index];
+            auto const& connection = sample_connections[connection_index];
             if (!is_entirely_realtime_delivery(connection)) {
                 continue;
             }
@@ -1582,7 +1591,7 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
         // transient target-layout windows from that ring immediately before they
         // execute, so persistent feedback state stays producer-format and stable.
         for (auto const connection_index : group.connection_indices) {
-            auto const& connection = connections.sample_connections[connection_index];
+            auto const& connection = sample_connections[connection_index];
             if (!is_entirely_realtime_delivery(connection)
                 || !connection.detach) {
                 continue;
@@ -1856,9 +1865,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     // those timelines with the connection's ordinary source channels directly
     // before the target primitive executes.
     for (std::size_t connection_index = 0;
-         connection_index < connections.sample_connections.size();
+         connection_index < sample_connections.size();
          ++connection_index) {
-        auto const& connection = connections.sample_connections[connection_index];
+        auto const& connection = sample_connections[connection_index];
         if (connection.routed_contributions.empty()) continue;
         if (!is_entirely_realtime_delivery(connection)) {
             return std::unexpected(
@@ -2359,9 +2368,9 @@ std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
     // canonical representation and retention; this synthetic transient value
     // gathers those channels only after all contributing producers have run.
     for (std::size_t connection_index = 0;
-         connection_index < connections.sample_connections.size();
+         connection_index < sample_connections.size();
          ++connection_index) {
-        auto const& connection = connections.sample_connections[connection_index];
+        auto const& connection = sample_connections[connection_index];
         if (!is_entirely_realtime_delivery(connection)
             || connection.canonical_source_port
             || connection.projection_contributions.empty()

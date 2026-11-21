@@ -376,7 +376,7 @@ TEST(GraphJitSampleStoragePlan, PacksExactTransientByteRangesAcrossLifetimes)
     connections.sample_producer_groups.push_back(group(mono, 1, 2));
     connections.sample_producer_groups.push_back(group(mono, 1, 2));
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 3u);
@@ -473,7 +473,7 @@ TEST(GraphJitSampleStoragePlan, SharesOneProducerBetweenRealtimeAndReplayConnect
     group.live_interval = {.begin = 0, .end = 1};
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value()) << storage.error();
     ASSERT_EQ(storage->connection_representations.size(), 2u);
     EXPECT_TRUE(storage->connection_representations[0].has_value());
@@ -486,7 +486,7 @@ TEST(GraphJitSampleStoragePlan, SharesOneProducerBetweenRealtimeAndReplayConnect
 
     // A background connection from a different producer remains invalid.
     connections.sample_connections[1].source_channel_timings[0].source = {4, 0, 0};
-    auto invalid = build_sample_storage_plan(connections, 64);
+    auto invalid = build_sample_storage_plan({connections}, 64);
     ASSERT_FALSE(invalid.has_value());
     EXPECT_NE(invalid.error().find("foreign source port"), std::string::npos);
 }
@@ -529,7 +529,7 @@ TEST(GraphJitSampleStoragePlan, LeavesBackgroundAccessBranchesUnresolved)
     background_group.has_background_connections = true;
     connections.sample_producer_groups.push_back(std::move(background_group));
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->connection_representations.size(), 2u);
@@ -592,7 +592,7 @@ TEST(GraphJitSampleStoragePlan, AliasesLayoutAndMonoToStereoConvertedFanout)
     };
     connections.sample_producer_groups.push_back(std::move(group));
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 1u);
@@ -660,7 +660,7 @@ TEST(GraphJitSampleStoragePlan, RealizesCompactPersistentCarryExactly)
     connections.schedule.bundle_execution_position[0] = 0;
     add_acyclic_test_regions(connections);
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 1u);
@@ -755,7 +755,7 @@ TEST(GraphJitSampleStoragePlan,
         },
     };
 
-    auto storage = build_sample_storage_plan(connections, 64, sinks);
+    auto storage = build_sample_storage_plan({connections}, 64, sinks);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->carry_operations.size(), 2u);
@@ -802,8 +802,8 @@ TEST(GraphJitSampleStoragePlan, RealizesLargeRetentionAsPersistentRing)
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto first = build_sample_storage_plan(connections, 64);
-    auto second = build_sample_storage_plan(connections, 64);
+    auto first = build_sample_storage_plan({connections}, 64);
+    auto second = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(first.has_value())
         << (first ? std::string{} : first.error());
     ASSERT_TRUE(second.has_value())
@@ -891,10 +891,11 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     feedback.target_history = 3;
     feedback.detach = iv::ConfiguredSampleConnectionDetach{
         .loop_extra_latency = 5,
-        .initial_value_override = iv::Sample{0.25f},
     };
-    feedback.detach_initial_value = sample_value_bytes(iv::Sample{0.25f});
     connections.sample_connections.push_back(feedback);
+    // Lowering resolves the neutral value for storage without modifying the
+    // semantic connection.
+    feedback.detach_initial_value = sample_value_bytes(iv::Sample{0.25f});
 
     SampleProducerGroupPlan group;
     group.source_port = source_port;
@@ -910,7 +911,10 @@ TEST(GraphJitSampleStoragePlan, RealizesDetachedBranchAsPersistentFeedbackRing)
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 8);
+    auto storage = build_sample_storage_plan({
+        .analysis = connections,
+        .sample_connections = {&feedback, 1},
+    }, 8);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 2u);
@@ -1081,7 +1085,7 @@ TEST(GraphJitSampleStoragePlan, ZeroInitializedFeedbackUsesProducerHomeAndCopies
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 8);
+    auto storage = build_sample_storage_plan({connections}, 8);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 2u);
@@ -1267,7 +1271,7 @@ TEST(GraphJitSampleStoragePlan, DetachedCompositionUsesPersistentShiftedTimeline
     append_group(left_source, 0);
     append_group(right_source, 1);
 
-    auto storage = build_sample_storage_plan(connections, 8);
+    auto storage = build_sample_storage_plan({connections}, 8);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->producer_groups.size(), 2u);
@@ -1454,7 +1458,7 @@ TEST(GraphJitSampleStoragePlan, DetachedMixingAlignsUnequalSourceLatencies)
     append_group(slow_source, 0);
     append_group(fast_source, 1);
 
-    auto storage = build_sample_storage_plan(connections, 8);
+    auto storage = build_sample_storage_plan({connections}, 8);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->feedback_timelines.size(), 1u);
@@ -1592,7 +1596,7 @@ TEST(GraphJitSampleStoragePlan, ConvertedFeedbackUsesCompactCarryTimeline)
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 2u);
@@ -1703,7 +1707,7 @@ TEST(GraphJitSampleStoragePlan, AliasableConversionReadsRetainedProducerHistoryD
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 1u);
@@ -1779,7 +1783,7 @@ TEST(GraphJitSampleStoragePlan, AliasableConvertedFanoutSharesRetainedProducerTi
     };
     connections.sample_producer_groups.push_back(group);
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->representations.size(), 1u);
@@ -1878,7 +1882,7 @@ TEST(GraphJitSampleStoragePlan, GeneratedConversionReadsAffectProducerStorageCos
     connections.sample_producer_groups.push_back(group);
 
     auto storage = build_sample_storage_plan(
-        connections,
+        {connections},
         64,
         {},
         {},
@@ -1920,7 +1924,7 @@ TEST(GraphJitSampleStoragePlan, RejectsTransientStorageThatCrossesKernelCalls)
     };
     connections.sample_producer_groups.push_back(std::move(group));
 
-    auto storage = build_sample_storage_plan(connections, 64);
+    auto storage = build_sample_storage_plan({connections}, 64);
     ASSERT_FALSE(storage.has_value());
     EXPECT_NE(
         storage.error().find("cross-kernel retained storage"),

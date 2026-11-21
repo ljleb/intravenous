@@ -3131,7 +3131,7 @@ TEST_F(GraphJitRuntimeFixture, SampleHistoryCarryAndMigration)
     EXPECT_EQ(history_group.storage_requirements.retained_frames, 7u);
 
     auto history_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *history_analysis, 64);
+        {*history_analysis}, 64);
     ASSERT_TRUE(history_plan.has_value())
         << (history_plan ? std::string{} : history_plan.error());
     ASSERT_EQ(history_plan->carry_operations.size(), 1u);

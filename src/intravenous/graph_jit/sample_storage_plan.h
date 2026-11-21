@@ -411,13 +411,21 @@ struct SampleStoragePlan {
     }
 };
 
+// The Sample routes used for storage can differ from the semantic connections
+// in the analysis. Their indices must match the original connections because
+// producer groups and the returned bindings refer to those indices.
+struct SampleStorageConnections {
+    ConnectionAnalysisPlan const& analysis;
+    std::span<SampleConnectionPlan const> sample_connections = analysis.sample_connections;
+};
+
 // Pure host-side storage-representation planning. Producer-group decisions are
 // consumed from connection analysis; derived feedback requirements are fed back
 // through choose_sample_connection_storage_plan() rather than duplicating policy.
 // Carry and full persistent storage are realized as distinct storage
 // representations while conversion remains an explicit operation.
 std::expected<SampleStoragePlan, std::string> build_sample_storage_plan(
-    ConnectionAnalysisPlan const& connections,
+    SampleStorageConnections storage_connections,
     std::size_t kernel_block_size,
     std::span<SampleSinkStorageRequest const> sinks = {},
     std::span<SampleConstantInputRequest const> constant_inputs = {},

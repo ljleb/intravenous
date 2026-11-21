@@ -694,7 +694,7 @@ TEST_F(GraphJitRuntimeFixture, MultipleSampleDetachBranchesShareProducerHomeAndF
     ASSERT_EQ(analysis->sample_producer_groups.size(), 1u);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 3u);
@@ -827,7 +827,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackPreservesSourceLatencyAndTarg
         iv::RealtimeBufferStorageKind::stack_with_persistent_carry);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 1u);
@@ -910,7 +910,7 @@ TEST_F(GraphJitRuntimeFixture, SampleDetachFeedbackRecopiesAuthoredLatencyHorizo
         2u);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 1u);
@@ -977,7 +977,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackRecomputesRevisionHo
     }
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 2u);
@@ -1050,7 +1050,7 @@ TEST_F(GraphJitRuntimeFixture, ConvertedSampleDetachFeedback)
     EXPECT_EQ(connection.target_layout.channel_type, iv::ChannelTypeId::stereo);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 1u);
@@ -1127,7 +1127,7 @@ TEST_F(GraphJitRuntimeFixture, ZeroInitializedConvertedFeedbackWritesDirectlyToP
         0u);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 1u);
@@ -1249,7 +1249,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedback)
     EXPECT_EQ(region.scc_feedback_latency, 4u);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 2u);
@@ -1388,7 +1388,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackAlignsUnequalMixingL
     EXPECT_EQ(std::max(first_latency, second_latency), 2u);
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     auto const aligned_timeline = std::ranges::find_if(
@@ -1484,7 +1484,7 @@ TEST_F(GraphJitRuntimeFixture, ProjectedSampleDetachFeedbackPermutesTargetChanne
         (std::vector<float>{1.0f, 0.0f}));
 
     auto sample_plan = iv::graph_jit::detail::build_sample_storage_plan(
-        *analysis, 64);
+        {*analysis}, 64);
     ASSERT_TRUE(sample_plan.has_value())
         << (sample_plan ? std::string{} : sample_plan.error());
     ASSERT_EQ(sample_plan->feedback_timelines.size(), 2u);

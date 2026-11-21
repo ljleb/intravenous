@@ -1287,7 +1287,7 @@ TEST(GraphJitConnectionPlan, FeedbackCarryIsScopedToItsCyclicRegion)
     // The scheduler's own SchedulePlan, not a hand-built one, must give the
     // feedback carry its region scope. Otherwise the carry silently restores
     // and commits once per one-sample slice.
-    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    auto storage = graph_jit::detail::build_sample_storage_plan({*plan}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_FALSE(storage->carry_operations.empty());
@@ -1664,7 +1664,7 @@ TEST(GraphJitConnectionPlan, ConstantProducerUsesImmutableStorageAcrossInputHist
     };
 
     auto storage = graph_jit::detail::build_sample_storage_plan(
-        *connections,
+        {*connections},
         64,
         {},
         {},
@@ -1787,7 +1787,7 @@ TEST(GraphJitConnectionPlan, EqualizesChannelsInsideComposedSampleInput)
     EXPECT_EQ(source_group->storage_requirements.retained_frames, 7u);
     EXPECT_EQ(latent_group->storage_requirements.retained_frames, 2u);
 
-    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    auto storage = graph_jit::detail::build_sample_storage_plan({*plan}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     EXPECT_TRUE(storage->compositions.empty());
@@ -2178,7 +2178,7 @@ TEST(GraphJitConnectionPlan, PreservesMixedDetachedAndOrdinaryTiledSources)
                 && dependency.target_bundle == state_handle;
         }));
 
-    auto storage = graph_jit::detail::build_sample_storage_plan(*analysis, 64);
+    auto storage = graph_jit::detail::build_sample_storage_plan({*analysis}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->feedback_timelines.size(), 1u);
@@ -2230,7 +2230,7 @@ TEST(GraphJitConnectionPlan, PreservesDifferentDetachLatenciesPerTiledChannel)
     ASSERT_LT(*region, analysis->schedule.regions.size());
     EXPECT_EQ(analysis->schedule.regions[*region].maximum_block_size, 2u);
 
-    auto storage = graph_jit::detail::build_sample_storage_plan(*analysis, 64);
+    auto storage = graph_jit::detail::build_sample_storage_plan({*analysis}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     ASSERT_EQ(storage->feedback_timelines.size(), 2u);
@@ -2640,7 +2640,7 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
     EXPECT_EQ(group.storage_requirements.retained_frames, 0u);
     ASSERT_FALSE(group.external_boundary);
     auto const& connections = *plan;
-    auto initial = graph_jit::detail::build_sample_storage_plan(connections, 64);
+    auto initial = graph_jit::detail::build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(initial) << initial.error();
     ASSERT_TRUE(initial->producer_groups.at(0));
     EXPECT_EQ(
@@ -2649,7 +2649,7 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
 
     // Stack pressure changes storage placement for the same schedule.
     auto pressured = graph_jit::detail::build_sample_storage_plan(
-        connections, 64, {}, {},
+        {connections}, 64, {}, {},
         RealtimeStorageCostModel{.stack_footprint_byte_weight = 4});
     ASSERT_TRUE(pressured) << pressured.error();
     ASSERT_TRUE(pressured->producer_groups.at(0));
@@ -2658,7 +2658,7 @@ TEST(GraphJitConnectionPlan, SimpleRealtimeSampleEdgeChoosesDirect)
         RealtimeBufferStorageKind::full_node_storage);
     EXPECT_LT(pressured->transient_arena_size, initial->transient_arena_size);
 
-    auto restored = graph_jit::detail::build_sample_storage_plan(connections, 64);
+    auto restored = graph_jit::detail::build_sample_storage_plan({connections}, 64);
     ASSERT_TRUE(restored) << restored.error();
     ASSERT_TRUE(restored->producer_groups.at(0));
     EXPECT_EQ(
@@ -3838,7 +3838,7 @@ TEST(GraphJitConnectionPlan, MixedTickAndTockSampleTilePlansPerSourceChannel)
     EXPECT_FALSE(tock_group->has_realtime_connections);
     EXPECT_TRUE(tock_group->has_background_connections);
 
-    auto storage = graph_jit::detail::build_sample_storage_plan(*plan, 64);
+    auto storage = graph_jit::detail::build_sample_storage_plan({*plan}, 64);
     ASSERT_TRUE(storage.has_value())
         << (storage ? std::string{} : storage.error());
     auto const tick_group_index = static_cast<std::size_t>(
