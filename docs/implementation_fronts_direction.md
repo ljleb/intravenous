@@ -7043,6 +7043,58 @@ approach to full spherical panning using the available datasets and research.
 No algorithm replacement or quality tradeoff is accepted yet. The associated UI
 requests remain in [the Vue follow-up list](vue_client_implementation_stages.md#owner-follow-up-list-2026-11-14).
 
+### Additional Front 16 work on `simple_sine` oscillator batching
+
+On 2026-11-21, a runtime probe loaded an isolated copy of `simple_sine` with
+the local Release server and the current cached project packages. The cached
+`saw` artifact was `iv_package_saw_a811c086d40cbece.ivpkg.bc` with SHA-256
+`1eef633e2e83114f76dd8c859ea4847f842965bca008d211017c1470867197a5`.
+Its `module_main` creates 17 independent `SineOscillator` instances. It
+supplies each with a detuned `frequency` and a `phase_offset` of `0.25`.
+[Saw module](../projects/simple_sine/packages/saw/module.cpp)
+
+GDB traced one complete 256-sample call to `execute_realtime_root` at
+48 kHz. It recorded 211 calls to `run_region_specialization` and zero to
+`run_step_batch`. The scalar sine specialization received 17 distinct
+`RootRegionSpecialization` records, each with the full block. All 17 calls
+shared a single code address. The machine code at that address loaded two
+adjacent table values from the same table address as the generated LLVM IR
+in `region-8-after.ll`.
+
+The IR folds `phase_offset` to `0.25` and still wraps and interpolates each
+sample with scalar operations. It converts the table position with
+`fptoui double %314 to i64`. On the traced host, that conversion used two
+scalar conversions plus correction for the unsigned range. The trace and IR
+were collected under `/tmp/iv-saw-batch-v4kwicnz`.
+To repeat the probe, use `IV_GRAPH_JIT_PROFILE_DIR` and
+`IV_GRAPH_JIT_DUMP_IR=1` for the IR and trace both dispatch functions for
+one block. The debugger trace gives dispatch counts only. [Realtime
+dispatch](../src/intravenous/graph_jit/realtime_root.cpp)
+
+#### Proposed optimization and measurements
+
+1. Add an authored `SineOscillator::tick_block_batch` and measure its
+   one-lane cost first. `do_tick_block` already wraps an authored batch
+   callback in one lane. Bind `frequency`, `phase_offset`, and `out` once per
+   oscillator block. Keep the anchor state local until the block ends.
+   Evaluate a bounded 32-bit table index. Compare samples and final state
+   against the current `tick` for changing frequency, backward seeks, phase
+   wrap, and different block splits. [Oscillator](../src/intravenous/basic_nodes/shaping.h)
+   and [Tick adapters](../src/intravenous/node/tick.h)
+2. If the block measurements justify grouping, prototype one specialization
+   for a compatible ready group. Today `build_region_specializations`
+   attaches code to individual regions. A grouped specialization needs
+   each lane's resolved ports and state, compatible block extents, and
+   disjoint writable storage. On the traced host, try AVX2 across four
+   oscillators at a time. Keep the one-lane path for the tail and for groups
+   that need separate dispatch. [Batch contract](batched_node_callbacks_direction.md)
+3. Compare the existing scalar specialization, the block callback in one
+   lane, and the grouped specialization. Record the actual lane counts,
+   realtime Tick cost, specialization compile cost, and scratch usage.
+   Run the comparison with constant frequency and with the project
+   automation connected. The probe established the dispatch path. Speedup
+   remains unmeasured.
+
 ## Architecture refactor follow-ups
 
 _Status notes from the 2026-11-20 source review. The existing design documents
