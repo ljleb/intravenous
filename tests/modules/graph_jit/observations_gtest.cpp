@@ -15,6 +15,17 @@ std::vector<NodeBundleHandle> concrete_bundles(ConfiguredGraph const& graph)
         if (graph.node_bundles.bundle(bundle).is_concrete()) result.push_back(bundle);
     return result;
 }
+
+bool wait_for_project_compilation(ProjectGraph& project, GraphExecutor& executor, GlobalIndex position)
+{
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    do {
+        (void)executor.activate_pending(position);
+        if (auto generation = executor.active_generation()) project.acknowledge_execution(*generation);
+        if (project.wait_for_compilation(std::chrono::milliseconds(1))) return true;
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+}
 }
 
 TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithoutChangingDsp)
@@ -105,6 +116,122 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOv
         auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
         EXPECT_EQ(level.samples, 32u);
         EXPECT_DOUBLE_EQ(level.peak, override_connections ? .25 : 34.0);
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, LiveInputObservationCanReplaceCodeWithoutChangingExecutionGeneration)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_GE(bundles.size(), 2u);
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    GraphJitCompileRequest inputs{
+        .project_generation = 761, .graph = graph, .definitions = definitions,
+        .configured_bundles = {.snapshot = 1, .size = graph->node_bundles.size()},
+    };
+    auto predecessor = jit->compile(inputs);
+    ASSERT_TRUE(predecessor.succeeded()) << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(predecessor.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.tick_block(index(0), 16);
+
+    inputs.project_generation = 762;
+    inputs.observations = {.revision = 1, .probes = {{.id = 87, .operation = &operation,
+        .kind = ObservationSourceKind::input, .bundle = bundles[1], .channels = {0}, .available = true}}};
+    ProjectGraphRealtimeObservationRequest attachment{
+        .execution_generation = 761, .update = inputs.observations,
+    };
+    EXPECT_FALSE(executor.stage_observation_update(attachment));
+
+    auto replacement = in_event_source([&] {
+        return jit->handle_project_graph_transaction({
+            .successor = inputs, .predecessor = predecessor.compiled_graph,
+        });
+    });
+    ASSERT_TRUE(replacement.succeeded()) << (replacement.diagnostics.empty() ? "" : replacement.diagnostics.front().message);
+    ASSERT_TRUE(executor.stage_observation_update({
+        .execution_generation = 761, .update = replacement.compiled_graph,
+    }));
+    EXPECT_TRUE(executor.activate_pending(index(16)));
+    EXPECT_EQ(executor.active_generation(), 761u);
+    EXPECT_EQ(executor.active_graph(), predecessor.compiled_graph);
+    executor.tick_block(index(16), 16);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 1u);
+    EXPECT_EQ(frame->project_generation, 761u);
+    EXPECT_EQ(frame->requirements_revision, 1u);
+    auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
+    EXPECT_EQ(level.samples, 16u);
+    EXPECT_DOUBLE_EQ(level.peak, 31.0);
+
+    auto& plan = std::get<CompiledObservationPlan>(attachment.update);
+    plan.revision = 2;
+    plan.probes.front().id = 88;
+    ASSERT_TRUE(executor.stage_observation_update(attachment));
+    EXPECT_FALSE(executor.activate_pending(index(32)));
+    executor.tick_block(index(32), 16);
+    frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 1u);
+    EXPECT_EQ(frame->requirements_revision, 2u);
+    EXPECT_EQ(frame->values[0].request_id, 88u);
+    EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, 47.0);
+}
+
+TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesAnonymousFeedbackThroughStorageCutover)
+{
+    auto graph = configured_unequal_latency_projected_sample_feedback_graph(*revision);
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_EQ(bundles.size(), 2u);
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    GraphJitCompileRequest inputs{
+        .project_generation = 763, .graph = graph, .definitions = definitions,
+        .configured_bundles = {.snapshot = 1, .size = graph->node_bundles.size()},
+    };
+    auto predecessor = jit->compile(inputs);
+    ASSERT_TRUE(predecessor.succeeded()) << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
+    inputs.observations = {.revision = 1, .probes = {{.id = 89, .operation = &operation,
+        .kind = ObservationSourceKind::output, .bundle = bundles[1], .channels = {0}, .available = true}}};
+    inputs.project_generation = 764;
+    auto cutover = in_event_source([&] {
+        return jit->handle_project_graph_transaction({
+            .successor = inputs, .predecessor = predecessor.compiled_graph,
+        });
+    });
+    ASSERT_TRUE(cutover.succeeded()) << (cutover.diagnostics.empty() ? "" : cutover.diagnostics.front().message);
+    auto uninterrupted = jit->compile(inputs);
+    ASSERT_TRUE(uninterrupted.succeeded()) << (uninterrupted.diagnostics.empty() ? "" : uninterrupted.diagnostics.front().message);
+    GraphExecutor reference(resources);
+    GraphExecutor observed(resources);
+    ASSERT_EQ(reference.stage(uninterrupted.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_EQ(observed.stage(predecessor.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(reference.activate_pending(index(0)));
+    ASSERT_TRUE(observed.activate_pending(index(0)));
+    reference.tick_block(index(0), 64);
+    observed.tick_block(index(0), 64);
+    ASSERT_FALSE(observed.stage_observation_update({
+        .execution_generation = 763, .update = cutover.compiled_graph,
+    }));
+    ASSERT_EQ(observed.stage(cutover.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(observed.activate_pending(index(64)));
+    EXPECT_EQ(observed.active_generation(), 764u);
+    // One sample per frame makes a dropped in-flight sample visible in the
+    // readout, even if subsequent samples would give the same block peak.
+    for (auto sample = 64; sample < 80; ++sample) {
+        SCOPED_TRACE(sample);
+        reference.tick_block(index(sample), 1);
+        observed.tick_block(index(sample), 1);
+        auto const* expected = reference.collect_observations();
+        auto const* actual = observed.collect_observations();
+        ASSERT_NE(expected, nullptr);
+        ASSERT_NE(actual, nullptr);
+        auto const expected_level = expected->values[0].value.load<observation_details::SampleLevelState>();
+        auto const actual_level = actual->values[0].value.load<observation_details::SampleLevelState>();
+        EXPECT_EQ(expected_level.samples, 1u);
+        EXPECT_EQ(actual_level.samples, 1u);
+        EXPECT_DOUBLE_EQ(actual_level.peak, expected_level.peak);
     }
 }
 
@@ -273,14 +400,12 @@ TEST_F(GraphJitRuntimeFixture, ModuleOutputMeterUsesItsResolvedSampleTypeAndPubl
             .member = "value"}, .operation = "level"}}}};
     in_event_source([&] { project.handle_observation_request(subscribe); });
     ASSERT_TRUE(subscribe.error.empty()) << subscribe.error;
-    ASSERT_TRUE(project.wait_for_compilation());
+    ASSERT_TRUE(wait_for_project_compilation(project, executor, index(0)));
     ASSERT_TRUE(project.current_generation());
     ASSERT_TRUE(project.current_generation()->compiled_graph);
-    ASSERT_EQ(project.current_generation()->compiled_graph->observations.probes.size(), 1u);
-    ASSERT_TRUE(project.current_generation()->compiled_graph->observations.probes.front().available);
     for (std::int64_t block = 0; block < 4; ++block) {
         (void)executor.activate_pending(index(block * 64));
-        ASSERT_NE(executor.active_generation(), 0u);
+        ASSERT_TRUE(executor.active_generation());
         executor.tick_block(index(block * 64), 64);
     }
     auto const* frame = executor.collect_observations();
@@ -289,6 +414,32 @@ TEST_F(GraphJitRuntimeFixture, ModuleOutputMeterUsesItsResolvedSampleTypeAndPubl
     EXPECT_EQ(frame->requirements_revision, 13u);
     EXPECT_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().samples, 64u);
     EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, .25);
+
+    auto const execution = executor.active_generation();
+    ASSERT_TRUE(execution);
+    project.acknowledge_execution(*execution);
+    auto const activation = frame->activation_id;
+    ObservationGraphRequest unsubscribe{.requirements = ObservationRequirements{.revision = 14}};
+    in_event_source([&] { project.handle_observation_request(unsubscribe); });
+    ASSERT_TRUE(unsubscribe.error.empty()) << unsubscribe.error;
+    ASSERT_TRUE(project.wait_for_compilation());
+    EXPECT_EQ(project.current_generation()->execution_generation, *execution);
+    EXPECT_FALSE(executor.activate_pending(index(256)));
+    executor.tick_block(index(256), 64);
+    frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->project_generation, *execution);
+    EXPECT_GT(frame->activation_id, activation);
+    EXPECT_EQ(frame->requirements_revision, 14u);
+    EXPECT_EQ(frame->count, 0u);
+
+    ProjectStringBuilder create_successor;
+    in_event_source([&] { project.handle_project_create_node_instance({
+        .instance_id = "another-module", .definition_id = "iv.test.graph_jit.state_context.ported_module",
+    }, create_successor); });
+    ASSERT_EQ(create_successor.build(), "another-module");
+    ASSERT_TRUE(wait_for_project_compilation(project, executor, index(320)));
+    EXPECT_EQ(project.current_generation()->execution_generation, *execution + 1);
 }
 
 TEST_F(GraphJitRuntimeFixture, StereoObservationKeepsIndependentLevelAndSignedValueResults)
@@ -771,16 +922,17 @@ TEST_F(GraphJitRuntimeFixture, ClickDetectorRetainsPlaybackHistoryAcrossMeterCha
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         do {
             (void)executor.activate_pending(index(at));
-            if (executor.active_generation() == target->generation
-                && executor.background_generation() == target->generation) {
-                project.acknowledge_execution(target->generation);
+            if (target->execution_generation
+                && executor.active_generation() == target->execution_generation
+                && executor.background_generation() == target->execution_generation) {
+                project.acknowledge_execution(*target->execution_generation);
                 return true;
             }
             std::this_thread::yield();
         } while (std::chrono::steady_clock::now() < deadline);
         return false;
     };
-    ASSERT_TRUE(project.wait_for_compilation());
+    ASSERT_TRUE(wait_for_project_compilation(project, executor, index(0)));
     ASSERT_TRUE(activate(0));
     (void)executor.set_playback_running(true);
 

@@ -491,6 +491,15 @@ consumer port, when that port has an identity and the producer port is missing o
 not tell the detach apart; then also by its latency and initial value. A detach that
 none of these tells apart has no identity.
 
+Newly settled on 2026-11-21. Observation changes can require new storage for
+the same immutable configured graph. Within that snapshot, the original
+bundle coordinate identifies an anonymous concrete node. The compiler
+matches its State and port windows using this identity. Compiler-owned
+stages use the configured port they serve and their execution role. A
+bundle coordinate cannot preserve state across a change to the configured
+graph. If an observation cutover cannot preserve the required state, the
+executor keeps the active graph.
+
 Connection analysis therefore emits one cold semantic-state requirement for every
 non-empty owned extent before storage selection:
 

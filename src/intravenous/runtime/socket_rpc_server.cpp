@@ -55,7 +55,7 @@ constexpr std::uint32_t session_protocol_version = 0;
 // Minimum spacing of relayed live manual-control values to one client. A
 // tuning value: other clients' knobs follow a gesture at this rate, while the
 // gesturing client's updates reach the audio target at full pointer rate.
-constexpr auto live_frame_interval = std::chrono::milliseconds(33);
+constexpr auto manual_control_frame_interval = std::chrono::milliseconds(33);
 
 std::string project_path_hash(std::filesystem::path const& path)
 {
@@ -240,7 +240,7 @@ struct SocketRpcServer::Impl {
         // reliable messages are always written first.
         std::map<std::string, std::string> live_frames{};
         std::optional<ObservationDelivery> pending_observations{};
-        std::chrono::steady_clock::time_point live_due{};
+        std::chrono::steady_clock::time_point manual_control_due{};
         bool closing = false;
         std::optional<std::jthread> reader{};
         std::optional<std::jthread> writer{};
@@ -570,25 +570,26 @@ struct SocketRpcServer::Impl {
             std::optional<ObservationDelivery> observations;
             {
                 std::unique_lock lock(client->mutex);
-                for (;;) {
-                    if (!client->outbound.empty() || client->closing) break;
-                    if (client->live_frames.empty() && !client->pending_observations) {
-                        client->queue_ready.wait(lock);
-                        continue;
-                    }
-                    auto const now = std::chrono::steady_clock::now();
-                    if (now >= client->live_due) break;
-                    client->queue_ready.wait_until(lock, client->live_due);
+                bool controls_due = false;
+                while (client->outbound.empty() && !client->closing) {
+                    controls_due = !client->live_frames.empty()
+                        && std::chrono::steady_clock::now() >= client->manual_control_due;
+                    if (controls_due || client->pending_observations) break;
+                    if (client->live_frames.empty()) client->queue_ready.wait(lock);
+                    else client->queue_ready.wait_until(lock, client->manual_control_due);
                 }
                 if (client->outbound.empty()) {
                     if (client->closing) return;
-                    for (auto& [key, frame] : client->live_frames) {
-                        (void)key;
-                        message.value += std::move(frame);
+                    if (controls_due) {
+                        for (auto& [key, frame] : client->live_frames) {
+                            (void)key;
+                            message.value += std::move(frame);
+                        }
+                        client->live_frames.clear();
+                        client->manual_control_due = std::chrono::steady_clock::now()
+                            + manual_control_frame_interval;
                     }
-                    client->live_frames.clear();
                     observations = std::exchange(client->pending_observations, std::nullopt);
-                    client->live_due = std::chrono::steady_clock::now() + live_frame_interval;
                 } else {
                     message = std::move(client->outbound.front());
                     client->outbound.pop_front();

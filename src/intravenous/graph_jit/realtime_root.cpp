@@ -1347,9 +1347,10 @@ void capture_sample_observation(RootFrame& frame, std::size_t slot,
     GlobalIndex index, std::size_t block_size) noexcept
 {
     if (!frame.invocation || !frame.invocation->observations) return;
-    ObservationCaptureTimer timer{*frame.invocation->observations};
-    auto& observation = frame.invocation->observations->values[slot];
-    if (!observation.operation || !observation.operation->capture_block) return;
+    auto& observations = *frame.invocation->observations;
+    auto* observation = observations.capture_value(slot);
+    if (!observation || !observation->operation || !observation->operation->capture_block) return;
+    ObservationCaptureTimer timer{observations};
     std::array<ObservationChannelView, maximum_supported_channel_count> channels{};
     auto const count = selected.empty() ? channel_count(binding.storage.channel_layout) : selected.size();
     for (std::size_t channel = 0; channel < count; ++channel) {
@@ -1358,7 +1359,7 @@ void capture_sample_observation(RootFrame& frame, std::size_t slot,
             source.value_stride_bytes, source.value_delay};
     }
     auto const projection = project_lattice(index, block_size, binding.absolute_pace_exponent);
-    observation.operation->capture_block(observation.value, {
+    observation->operation->capture_block(observation->value, {
         .channels = std::span{channels}.first(count),
         .sequential_begin_index = binding.sequential_begin_index - binding.read_latency,
         .value_count = projection.value_count,
@@ -1385,11 +1386,12 @@ void capture_input_observations(RootFrame& frame, RootPrimitive const& primitive
 void capture_observation_state(RootFrame& frame, std::size_t probe) noexcept
 {
     if (!frame.invocation || !frame.invocation->observations) return;
-    ObservationCaptureTimer timer{*frame.invocation->observations};
     auto const& selected = frame.plan.state_probes[probe];
-    auto& value = frame.invocation->observations->values[selected.slot];
-    if (value.operation && value.operation->capture_state)
-        value.operation->capture_state(value.value, frame.storage_base + selected.storage_offset);
+    auto& observations = *frame.invocation->observations;
+    auto* value = observations.capture_value(selected.slot);
+    if (!value || !value->operation || !value->operation->capture_state) return;
+    ObservationCaptureTimer timer{observations};
+    value->operation->capture_state(value->value, frame.storage_base + selected.storage_offset);
 }
 
 void mark_sample_representation(RootFrame& frame, std::size_t representation) noexcept

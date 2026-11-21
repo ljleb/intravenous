@@ -1153,8 +1153,13 @@ int main(int argc, char** argv)
             auto const begin = Clock::now();
             apply();
             auto const configured_at = Clock::now();
-            if (!project_graph.wait_for_compilation(std::chrono::minutes(5)))
-                throw std::runtime_error("timed out waiting for the edited graph executable");
+            auto const compilation_deadline = Clock::now() + std::chrono::minutes(5);
+            while (!project_graph.wait_for_compilation(std::chrono::milliseconds(1))) {
+                if (auto active = graph_executor.active_generation())
+                    project_graph.acknowledge_execution(*active);
+                if (Clock::now() >= compilation_deadline)
+                    throw std::runtime_error("timed out waiting for the edited graph executable");
+            }
             auto const end = Clock::now();
             auto const after = project_graph.current_generation();
             EditRecord record{
@@ -1175,10 +1180,12 @@ int main(int argc, char** argv)
                 // would between two user edits.
                 auto const deadline = Clock::now() + std::chrono::seconds(5);
                 while (record.accepted
-                       && graph_executor.active_generation() != after->generation
+                       && graph_executor.active_generation() != after->execution_generation
                        && Clock::now() < deadline) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
+                if (auto active = graph_executor.active_generation())
+                    project_graph.acknowledge_execution(*active);
                 // Skip the cutover block itself, then measure the generation.
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 (void)realtime.take_tick_cost();

@@ -1100,8 +1100,8 @@ TEST(PackageWatcher, RequiredNamespaceClosureBuildsBeforeCatalogAndWaitsForExecu
     };
     harness.definitions.respond = [](iv::PackageRefreshTransaction& transaction) {
         if (std::ranges::any_of(transaction.successful_revisions, [](auto const& revision) { return revision.package_id == "child"; })) {
-            transaction.project_publication.execution_generation = 10;
-            transaction.project_publication.execution_pending = true;
+            transaction.project_publication.execution_preparation =
+                iv::ExecutionPreparationProgress{.attempt = 10, .pending = true};
         }
     };
     in_event_source([&] { harness.watcher.handle_required_definitions_changed({.created = {{.definition_id = "iv.demo.fx.voice"}}}); });
@@ -1111,8 +1111,11 @@ TEST(PackageWatcher, RequiredNamespaceClosureBuildsBeforeCatalogAndWaitsForExecu
     EXPECT_EQ(package_ids(harness.jit.calls[0].declarations), (std::vector<std::string>{"child", "math"}));
     EXPECT_TRUE(harness.watcher.has_pending_refresh());
     EXPECT_FALSE(harness.watcher.prepare_refresh());
+    in_event_source([&] { harness.watcher.handle_execution_publication({
+        .execution_preparation = iv::ExecutionPreparationProgress{.attempt = 9}}); });
+    EXPECT_FALSE(harness.watcher.prepare_refresh());
     in_event_source([&] { harness.watcher.handle_execution_publication({.graph_changed = true,
-        .execution_generation = 10, .execution_pending = false}); });
+        .execution_preparation = iv::ExecutionPreparationProgress{.attempt = 10}}); });
     ASSERT_TRUE(harness.refresh());
     ASSERT_EQ(harness.jit.calls.size(), 2u);
     EXPECT_EQ(package_ids(harness.jit.calls[1].declarations), (std::vector<std::string>{"00-parent"}));

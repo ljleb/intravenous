@@ -553,7 +553,7 @@ std::optional<PackageWatcher::PreparedRefresh> PackageWatcher::prepare_refresh_l
     priority = selected;
     bool const priority_work = std::ranges::any_of(priority,
         [&](auto const& id) { return dirty_package_ids_.contains(id); });
-    if (!priority_work && !waiting_for_execution_) {
+    if (!priority_work && !waiting_for_execution_attempt_) {
         // Select one unrelated root and its dependency closure. A newly
         // required package is reconsidered before the next catalog root.
         std::vector<std::string> remaining;
@@ -676,21 +676,8 @@ bool PackageWatcher::refresh_pending_packages(
 
     {
         std::scoped_lock lock(mutex_);
-        auto const& project = transaction.project_publication;
-        if (project.execution_pending && project.execution_generation) {
-            if (*project.execution_pending) {
-                if (*project.execution_generation > completed_execution_generation_
-                    && (!waiting_for_execution_ || *project.execution_generation > *waiting_for_execution_))
-                    waiting_for_execution_ = project.execution_generation;
-            } else {
-                completed_execution_generation_ = std::max(completed_execution_generation_, *project.execution_generation);
-                if (waiting_for_execution_ && *waiting_for_execution_ <= completed_execution_generation_)
-                    waiting_for_execution_.reset();
-            }
-        }
-    }
-    {
-        std::scoped_lock lock(mutex_);
+        if (auto const& progress = transaction.project_publication.execution_preparation)
+            note_execution_preparation_locked(*progress);
         published_declarations_by_id_ = std::move(prepared->next_published);
     }
 
@@ -720,20 +707,25 @@ bool PackageWatcher::refresh_pending_packages(
     return true;
 }
 
+void PackageWatcher::note_execution_preparation_locked(ExecutionPreparationProgress const& progress)
+{
+    if (progress.pending) {
+        if (progress.attempt > completed_execution_attempt_
+            && (!waiting_for_execution_attempt_ || progress.attempt > *waiting_for_execution_attempt_))
+            waiting_for_execution_attempt_ = progress.attempt;
+        return;
+    }
+    completed_execution_attempt_ = std::max(completed_execution_attempt_, progress.attempt);
+    if (waiting_for_execution_attempt_ && *waiting_for_execution_attempt_ <= completed_execution_attempt_)
+        waiting_for_execution_attempt_.reset();
+}
+
 void PackageWatcher::handle_execution_publication(ProjectGraphPublication const& publication)
 {
-    if (!publication.execution_pending || !publication.execution_generation) return;
+    if (!publication.execution_preparation) return;
     {
         std::scoped_lock lock(mutex_);
-        if (*publication.execution_pending) {
-            if (*publication.execution_generation > completed_execution_generation_
-                && (!waiting_for_execution_ || *publication.execution_generation > *waiting_for_execution_))
-                waiting_for_execution_ = publication.execution_generation;
-        } else {
-            completed_execution_generation_ = std::max(completed_execution_generation_, *publication.execution_generation);
-            if (waiting_for_execution_ && *waiting_for_execution_ <= completed_execution_generation_)
-                waiting_for_execution_.reset();
-        }
+        note_execution_preparation_locked(*publication.execution_preparation);
     }
     IV_INVOKE_LINKER_EVENT(iv_runtime_package_watcher_work_available_event, PackageWatcherWorkAvailable{});
 }

@@ -435,29 +435,33 @@ TEST_F(ObservationService, SharesOnlyMatchingChannelsAndOperationsAcrossClients)
     EXPECT_EQ(graph.compilations, 2u);
 }
 
-TEST_F(ObservationService, CollectionKeepsThirtyHertzAcrossTheRuntimeServicesTwentyMillisecondPoll)
+TEST_F(ObservationService, DeliveryOwnsItsDeadlineAndSkipsMissedFrames)
 {
     ASSERT_TRUE(reconcile("a", "lane", {interest()}).error.empty());
-    auto const origin = now;
-    std::size_t batches = 0;
-    for (int milliseconds = 0; milliseconds <= 1000; milliseconds += 20) {
-        executor.publish(graph.accepted, 1);
-        executor.frame->values[0].value.store(static_cast<float>(milliseconds));
-        delivery.batches.clear();
-        observations.collect(origin + std::chrono::milliseconds(milliseconds));
-        batches += delivery.batches.size();
-    }
-    EXPECT_EQ(batches, 31u); // Includes the first frame at time zero.
-    // After a long delay, collect once and skip missed deadlines.
+    auto const interval = std::chrono::microseconds(33333);
+    executor.publish(graph.accepted, 1);
+    auto const deadline = observations.collect(now);
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ(deadline, now + interval);
+
+    delivery.batches.clear();
+    executor.publish(graph.accepted, 1);
+    executor.frame->values[0].value.store(1.0f);
+    EXPECT_EQ(observations.collect(deadline - std::chrono::microseconds(1)), deadline);
+    EXPECT_TRUE(delivery.batches.empty());
+    EXPECT_EQ(observations.collect(deadline), deadline + interval);
+    EXPECT_EQ(delivery.batches.size(), 1u);
+
+    auto const delayed = deadline + std::chrono::seconds(2);
     executor.publish(graph.accepted, 1);
     executor.frame->values[0].value.store(2000.0f);
     delivery.batches.clear();
-    observations.collect(origin + std::chrono::seconds(2));
+    EXPECT_EQ(observations.collect(delayed), delayed + interval);
     EXPECT_EQ(delivery.batches.size(), 1u);
     delivery.batches.clear();
     executor.publish(graph.accepted, 1);
     executor.frame->values[0].value.store(2001.0f);
-    observations.collect(origin + std::chrono::milliseconds(2001));
+    observations.collect(delayed + std::chrono::milliseconds(1));
     EXPECT_TRUE(delivery.batches.empty());
 }
 
@@ -495,6 +499,25 @@ TEST_F(ObservationService, DisconnectAndLeaseExpiryReleaseTheSharedPlanOnTheCont
     now += std::chrono::seconds(31);
     collect();
     EXPECT_TRUE(graph.accepted.probes.empty());
+}
+
+TEST_F(ObservationService, RemovingOnlyAPredictionDefersTheNextGraphRead)
+{
+    auto const current = interest("current");
+    ASSERT_TRUE(reconcile("a", "lane", {current}, {interest("next", "row-2")}).error.empty());
+    ASSERT_TRUE(reconcile("b", "lane", {current}).error.empty());
+    ASSERT_TRUE(graph.prediction);
+
+    SocketRpcClientDisconnectedRequest disconnect{.client_id = "a"};
+    observations.handle_disconnect(disconnect);
+    collect();
+    EXPECT_FALSE(graph.prediction);
+    EXPECT_EQ(graph.compilations, 1u);
+
+    executor.publish(graph.accepted, 1);
+    collect();
+    ASSERT_EQ(delivery.batches.size(), 1u);
+    EXPECT_EQ(delivery.batches.front().client_id, "b");
 }
 
 TEST_F(ObservationService, CombinedLimitRejectsTheNewScopeWithoutRetainingIt)
@@ -740,7 +763,7 @@ TEST_F(ObservationService, PrefetchRefreshesLessOftenThanVisibleWindows)
     EXPECT_EQ(graph.compilations, 0u);
 }
 
-TEST_F(ObservationService, ANewExecutionReplacesAnInflightWindowInTheSameCollection)
+TEST_F(ObservationService, ExecutionActivationReplacesInflightWindowsBeforeTheDeliveryDeadline)
 {
     auto window = interest("wave");
     window.operation = "waveform";
@@ -749,12 +772,14 @@ TEST_F(ObservationService, ANewExecutionReplacesAnInflightWindowInTheSameCollect
     graph.active_generation = 4;
     graph.execution_generation = 8;
     ASSERT_TRUE(reconcile("a", "lane", {window}).error.empty());
-    collect();
+    auto const deadline = observations.collect(now);
     ASSERT_EQ(executor.windows.size(), 1u);
     auto const previous = executor.windows.front();
 
     graph.execution_generation = 9;
-    collect();
+    delivery.batches.clear();
+    EXPECT_EQ(observations.collect(now + std::chrono::milliseconds(1), true), deadline);
+    EXPECT_TRUE(delivery.batches.empty());
     ASSERT_EQ(executor.windows.size(), 2u);
     EXPECT_TRUE(previous->canceled.load());
     auto const current = executor.windows.back();
@@ -763,7 +788,7 @@ TEST_F(ObservationService, ANewExecutionReplacesAnInflightWindowInTheSameCollect
     current->result.status = ObservationWindowResult::Status::ready;
     current->result.execution_generation = 9;
     current->complete.store(true, std::memory_order_release);
-    collect();
+    observations.collect(deadline);
     ASSERT_FALSE(delivery.batches.empty());
     auto const& frame = *delivery.batches.back().payload;
     EXPECT_EQ(frame["generation"], "4");

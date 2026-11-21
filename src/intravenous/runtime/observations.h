@@ -3,8 +3,11 @@
 #include <intravenous/runtime/observation_events.h>
 #include <intravenous/runtime/socket_rpc_requests.h>
 #include <chrono>
+#include <condition_variable>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <stop_token>
 #include <tuple>
 #include <unordered_map>
 
@@ -60,13 +63,27 @@ class Observations {
     std::unordered_map<std::uint64_t, std::size_t> live_capture_indices_{};
     std::unordered_map<std::string, std::string> last_delivered_;
     Clock::time_point next_collection_{};
+    std::mutex wake_mutex_;
+    std::condition_variable_any wake_;
+    bool execution_activation_pending_ = false;
     bool reconcile_locked();
     void update_subscriptions_locked();
+    struct CollectedExecution {
+        std::optional<std::size_t> sample_rate{};
+        bool live_available = false;
+    };
+    bool refresh_subscriptions_locked(Clock::time_point now);
+    CollectedExecution collect_execution_locked(Clock::time_point now);
+    nlohmann::ordered_json const& window_payload_locked(WindowCapture& capture);
+    void publish_deliveries_locked(CollectedExecution const& execution);
 public:
     void handle_protocol(ObservationProtocolRequest& request);
     void handle_disconnect(SocketRpcClientDisconnectedRequest& request);
-    // Called by the existing runtime service on the control path. It is a
-    // separate event cause, with no audio-thread callbacks into app modules.
-    void collect(Clock::time_point now = Clock::now(), bool execution_activated = false);
+    // Collects on a control thread and owns the observation delivery deadline.
+    void run(std::stop_token stop);
+    // Rebind windows promptly when the runtime acknowledges an activation.
+    void notify_execution_activation();
+    // One control-thread collection step, with explicit time for tests.
+    Clock::time_point collect(std::optional<Clock::time_point> time, bool execution_activated = false);
 };
 } // namespace iv

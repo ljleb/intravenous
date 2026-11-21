@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -152,7 +153,8 @@ bool source_is_intrinsically_replayable(
 
 std::optional<StableConcreteNodeId> stable_concrete_node_identity(
     ConfiguredGraph const& graph,
-    NodeBundleHandle bundle)
+    NodeBundleHandle bundle,
+    ConfiguredBundleInventory configured_bundles)
 {
     auto const& configured_bundle = graph.node_bundles.bundle(bundle);
     if (auto const leaf = graph.project_leaf_instances.find(bundle);
@@ -182,6 +184,12 @@ std::optional<StableConcreteNodeId> stable_concrete_node_identity(
                     selected->virtual_node, selected->direct_member)) {
             selected = std::move(candidate);
         }
+    }
+    if (!selected && configured_bundles.snapshot && bundle < configured_bundles.size) {
+        selected = StableConcreteNodeId{
+            .direct_member = bundle,
+            .configuration_snapshot = configured_bundles.snapshot,
+        };
     }
     return selected;
 }
@@ -319,7 +327,8 @@ void inventory_realtime_port_states(
 std::expected<void, std::string> inventory_nodes(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
-    ConnectionAnalysisPlan& plan)
+    ConnectionAnalysisPlan& plan,
+    ConfiguredBundleInventory configured_bundles)
 {
     plan.boundary_bundle = graph.public_ports.boundary_handle();
     // A default-constructed ConfiguredGraph is the shell's semantic empty
@@ -329,6 +338,11 @@ std::expected<void, std::string> inventory_nodes(
     bool root_boundary_seen = false;
     std::size_t bundle = 0;
     std::string error;
+    std::unordered_map<NodeBundleHandle, NodeBundlePortId> coverage_control_inputs;
+    if (configured_bundles.snapshot) {
+        for (auto const& control : graph.manual_controls)
+            if (control.coverage_source) coverage_control_inputs.emplace(*control.coverage_source, control.input);
+    }
     graph.node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
             auto const current = bundle++;
@@ -389,13 +403,21 @@ std::expected<void, std::string> inventory_nodes(
                     "Tock primitives declare only Region or Coverage outputs";
                 return;
             }
-            auto stable_identity = stable_concrete_node_identity(graph, current);
+            auto stable_identity = stable_concrete_node_identity(graph, current, configured_bundles);
+            if (auto control = coverage_control_inputs.find(current); control != coverage_control_inputs.end()) {
+                auto const& input = control->second;
+                stable_identity = StableConcreteNodeId{
+                    .graph = "compiler.coverage_manual_control:" + std::to_string(input.port_index),
+                    .direct_member = input.node_bundle_handle,
+                    .configuration_snapshot = configured_bundles.snapshot,
+                };
+            }
             if (view.output_gain_source) {
                 auto const source = *view.output_gain_source;
-                if (auto owner = stable_concrete_node_identity(graph, source.node_bundle_handle)) {
+                if (auto owner = stable_concrete_node_identity(graph, source.node_bundle_handle, configured_bundles)) {
                     auto const name = graph.node_bundles.resolve_sample_output(source).config.name;
                     stable_identity = StableConcreteNodeId{
-                        .graph = std::string(has_tick_callback ? "compiler.output_gain.sequential:" : "compiler.output_gain.random:")
+                        .graph = std::string(graph.node_bundles.bundle(current).type_identity()) + ':'
                             + migration_identity_fields(*owner),
                         .virtual_node = name, .direct_member = source.port_index};
                 }
@@ -403,13 +425,20 @@ std::expected<void, std::string> inventory_nodes(
             std::optional<StableInputPortId> module_input;
             if (view.resolved_module_input) {
                 auto const origin = *view.resolved_module_input;
-                auto owner = stable_concrete_node_identity(graph, origin.node_bundle_handle);
+                auto owner = stable_concrete_node_identity(graph, origin.node_bundle_handle, configured_bundles);
                 if (owner) module_input = StableInputPortId{
                     .node = std::move(*owner), .kind = origin.port_kind,
                     .port_name = origin.port_kind == PortKind::sample
                         ? view.ports->sample_input(0).name : view.ports->event_input(0).name,
                     .port_index = origin.port_index,
                 };
+                if (module_input && configured_bundles.snapshot) {
+                    stable_identity = StableConcreteNodeId{
+                        .graph = "compiler.module_input:" + migration_identity_fields(module_input->node),
+                        .virtual_node = module_input->kind == PortKind::sample ? "sample" : "event",
+                        .direct_member = module_input->port_index,
+                    };
+                }
             }
             plan.nodes.push_back(PlannedGraphNode{
                 .bundle = current,
@@ -6860,7 +6889,8 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
     std::size_t kernel_block_size,
     RealtimeStorageCostModel const& cost_model,
     std::span<std::size_t const> callback_batch_classes,
-    std::span<NodeBundleHandle const> callback_elision_candidates)
+    std::span<NodeBundleHandle const> callback_elision_candidates,
+    ConfiguredBundleInventory configured_bundles)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -6907,7 +6937,7 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
 
     ConnectionTopology topology(graph, port_realization, kernel_block_size);
     auto& plan = topology.plan_;
-    if (auto inventory = inventory_nodes(graph, port_realization, plan); !inventory) {
+    if (auto inventory = inventory_nodes(graph, port_realization, plan, configured_bundles); !inventory) {
         return std::unexpected(std::move(inventory.error()));
     }
     auto routed_samples = [&]()

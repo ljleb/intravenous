@@ -2,12 +2,10 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
-import { presentationNodeEvent } from "../../src/nodeEvents";
-import type { NodeEventGesture } from "../../src/nodeEventMessaging";
-import { PresentationEdits, type PresentationEdit } from "../../src/presentationEdits";
+import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
-import { PresentationPluginSession } from "../../src/presentationPluginSession";
+import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
 import { sampleTimeSpan, sampleWindow } from "../../src/sampleWaveform";
 import { recordedEventTimestampsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
@@ -80,10 +78,8 @@ const observations = computed(() => Object.fromEntries(observed.map(({ id, view 
     const spans = observation.spans.map(({ begin, end, result }) => ({ begin: String(begin), end: String(end), result }));
     return [id, { ...observation, spans }];
 })));
-const gestures = new Map<string, NodeEventGesture>();
 const acceptedRevision = ref(0);
-let wakeTimer: ReturnType<typeof setTimeout> | undefined;
-let wakeAt = Infinity;
+const wake = new PresentationWake(() => session.input({ type: "wake" }));
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
 let cursorReply: { input: PresentationGestureInput; resolve: (point: PresentationPoint | undefined) => void } | undefined;
@@ -93,58 +89,20 @@ function settleCursorReply(point?: PresentationPoint) {
     cursorReply = undefined;
 }
 
-const edits = new PresentationEdits(sendEdit, () => { editsPending.value = edits.pending; }, (reason) => {
-    editError.value = String(reason).slice(0, 512);
-    cancelDrag?.();
-    closeGestures();
+const laneEdits = new PresentationLaneEdits({
+    editable: () => editable.value,
+    gesture: () => node.value.gesture(),
+    accepted: (revision) => { acceptedRevision.value = Math.max(acceptedRevision.value, revision); },
+    input: (input) => session.input(input),
+    setError: (message) => { editError.value = message; },
+    changed: () => { editsPending.value = laneEdits.queue.pending; },
+    fail: (reason) => {
+        editError.value = String(reason).slice(0, 512);
+        cancelDrag?.();
+    },
 });
+const edits = laneEdits.queue;
 
-async function sendEdit(command: PresentationEdit): Promise<void> {
-    try {
-        const acceptedRevision = await sendNodeEdit(command);
-        if (command.requestId) session.input({ type: "editResult", requestId: command.requestId, acceptedRevision });
-    } catch (reason) {
-        if (!command.requestId) throw reason;
-        const detail = reason instanceof Error ? reason.message : String(reason);
-        session.input({ type: "editResult", requestId: command.requestId, error: detail.slice(0, 512) });
-        if (command.type === "edit" && command.gesture) {
-            const gesture = gestures.get(command.gesture);
-            gestures.delete(command.gesture);
-            void gesture?.finish().catch(() => {});
-        }
-    }
-}
-
-async function sendNodeEdit(command: PresentationEdit): Promise<number | undefined> {
-    if (command.type === "finish") {
-        const gesture = gestures.get(command.gesture);
-        if (gesture) {
-            gestures.delete(command.gesture);
-            await gesture.finish();
-            return gesture.acceptedRevision?.();
-        }
-        return;
-    }
-    if (!editable.value) throw new Error("The presentation node is no longer editable");
-    editError.value = "";
-    const key = command.gesture;
-    let gesture = key ? gestures.get(key) : undefined;
-    if (!gesture) {
-        if (key && gestures.size >= 8) throw new Error("Too many open presentation gestures");
-        gesture = node.value.gesture();
-        if (key) gestures.set(key, gesture);
-    }
-    try {
-        await gesture.send(presentationNodeEvent(command.event));
-        acceptedRevision.value = Math.max(acceptedRevision.value, gesture.acceptedRevision?.() ?? 0);
-        return gesture.acceptedRevision?.();
-    } finally { if (!key) await gesture.finish(); }
-}
-
-function closeGestures() {
-    for (const gesture of gestures.values()) void gesture.finish().catch(() => {});
-    gestures.clear();
-}
 function fail(reason: unknown) {
     if (disposed) return;
     error.value = String(reason).slice(0, 512);
@@ -152,7 +110,7 @@ function fail(reason: unknown) {
     session.dispose();
     edits.dispose();
     cancelDrag?.();
-    closeGestures();
+    laneEdits.closeGestures();
     worker?.stop();
 }
 function accept(next: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) {
@@ -160,27 +118,14 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
     const continuing = inputs.length > 0 || waking.value;
     const deferredState = !!present && inputs.length > 0
         && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
-    if (continuing) for (const command of next.commands ?? []) {
-        if (command.type === "state") {
-            if (!editor?.scope.value?.editable || !node.value.address) continue;
-            state.value = command.value;
-            save(!deferredState);
-        } else if (command.type === "finish" || editable.value || command.requestId) edits.enqueue(command);
-    }
+    if (continuing) laneEdits.accept(next, (value) => {
+        if (!editor?.scope.value?.editable || !node.value.address) return;
+        state.value = value;
+        save(!deferredState);
+    });
     if (active.value && draw) frame.value = next;
-    if (continuing && next.wakeAfterMs !== undefined) {
-        const delay = Math.max(8, next.wakeAfterMs);
-        const deadline = performance.now() + delay;
-        if (deadline < wakeAt) {
-            clearTimeout(wakeTimer);
-            wakeAt = deadline;
-            wakeTimer = setTimeout(() => {
-                wakeAt = Infinity;
-                session.input({ type: "wake" });
-            }, delay);
-        }
-    }
-    waking.value = wakeAt !== Infinity;
+    if (continuing && next.wakeAfterMs !== undefined) wake.request(next.wakeAfterMs);
+    waking.value = wake.pending;
     if (next.cancelDrag) cancelDrag?.();
     if (dragging.value) editor?.refreshPointerHint();
     if (draw && menu.key.value !== null && !next.contextMenu) menu.close(true);
@@ -379,12 +324,12 @@ onBeforeUnmount(() => {
     settleCursorReply();
     unregisterInterrupt?.();
     clearTimeout(idleTimer);
-    clearTimeout(wakeTimer);
+    wake.cancel();
     session.dispose();
     edits.dispose();
     cancelDrag?.();
     worker?.stop();
-    closeGestures();
+    laneEdits.closeGestures();
 });
 </script>
 

@@ -15,6 +15,7 @@
 
 namespace iv {
 struct IvModuleRequiredDefinitionsChanged;
+struct ExecutionPreparationProgress;
 
 [[nodiscard]] std::vector<IvPackageDeclaration>
 discover_iv_package_declarations(
@@ -24,8 +25,8 @@ discover_iv_package_declarations(
 class PackageWatcher {
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::filesystem::path> required_definitions_;
-    std::optional<std::uint64_t> waiting_for_execution_{};
-    std::uint64_t completed_execution_generation_ = 0;
+    std::optional<std::uint64_t> waiting_for_execution_attempt_{};
+    std::uint64_t completed_execution_attempt_ = 0;
     std::unordered_map<std::string, IvPackageDeclaration>
         retained_package_declarations_by_id_;
     std::unordered_map<std::string, IvPackageDeclaration>
@@ -55,6 +56,7 @@ class PackageWatcher {
     void install_effective_declarations_locked(
         std::unordered_map<std::string, IvPackageDeclaration> next);
     void refresh_watched_dependencies_locked();
+    void note_execution_preparation_locked(ExecutionPreparationProgress const& progress);
     [[nodiscard]] std::optional<PreparedRefresh> prepare_refresh_locked();
     [[nodiscard]] bool refresh_pending_packages(
         PackageWatcherRefreshRequest& request);

@@ -143,6 +143,7 @@ struct LoweringInput {
     // it every cyclic region runs through the interpreter.
     RegionSpecializationProvider* region_specializations = nullptr;
     CompiledObservationPlan const* observations = nullptr;
+    ConfiguredBundleInventory configured_bundles{};
 };
 
 // Names of the generated project-module operations. The realtime root is not
@@ -171,6 +172,7 @@ struct LoweringOutput {
     ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
     TockStateLayout tock_state_layout{};
+    std::vector<RealtimeObservationState> observable_tick_states{};
     BackgroundEvaluationPlan background_evaluation_plan{};
     RealtimePortStateRequirements realtime_port_state_requirements{};
     RealtimePortStateRealizations realtime_port_state_realizations{};

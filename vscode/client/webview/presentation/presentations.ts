@@ -3,12 +3,9 @@ import { markRaw, shallowRef, type Component } from "vue";
 import GenericPresentation from "./GenericPresentation.vue";
 import PluginLane from "./PluginLane.vue";
 import { PresentationRegistry } from "./registry";
-import { beatsPresentationManifest, createBeatsPresentation } from "../../src/beatsPresentationPlugin";
-import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../../src/clickDetectorPresentation";
-import { automationCurvePresentationManifest, createAutomationCurvePresentation } from "../../src/automationCurvePresentation";
-import type { PresentationProgram, PresentationScript } from "../../src/presentationPlugin";
-
-export const genericPresentationId = "iv.generic";
+import { builtinPresentationPrograms, genericPresentationId, projectProgramsByDefinition } from "../../src/presentationPrograms";
+import type { PresentationScript } from "../../src/presentationPlugin";
+export { genericPresentationId };
 
 // The client's presentation registry. Specialized presentations bundled with
 // the client register here by stable leaf or module definition ID.
@@ -22,33 +19,24 @@ presentations.register({ presentationId: "builtin.timeline", displayName: "Timel
     icon: "M2 5h12v7H2zm3 0v3m3-3v4m3-4v3" });
 
 const hosted = markRaw(PluginLane);
-const builtinPrograms = new Map<string, PresentationProgram>([
-    ["builtin.beats", { manifest: beatsPresentationManifest, create: createBeatsPresentation }],
-    ["builtin.click_detector", { manifest: clickDetectorPresentationManifest, create: createClickDetectorPresentation }],
-    ["builtin.automation.curve", { manifest: automationCurvePresentationManifest, create: createAutomationCurvePresentation }],
-]);
 const projectPrograms = shallowRef(new Map<string, { program: PresentationScript; serial: number }>());
 let nextSerial = 0;
 
 export function replaceProjectPresentations(plugins: PresentationScript[]): void {
     const next = new Map<string, { program: PresentationScript; serial: number }>();
     const previous = projectPrograms.value;
-    for (const plugin of [...plugins].sort((a, b) => a.manifest.id.localeCompare(b.manifest.id))) {
-        if (plugin.manifest.id.startsWith("builtin.") || plugin.manifest.id === genericPresentationId) continue;
-        for (const id of plugin.manifest.definitionIds) {
-            if (next.has(id)) continue;
-            const existing = previous.get(id);
-            next.set(id, existing && existing.program.source === plugin.source
-                && JSON.stringify(existing.program.manifest) === JSON.stringify(plugin.manifest)
-                ? existing : { program: plugin, serial: ++nextSerial });
-        }
+    for (const [id, plugin] of projectProgramsByDefinition(plugins)) {
+        const existing = previous.get(id);
+        next.set(id, existing && existing.program.source === plugin.source
+            && JSON.stringify(existing.program.manifest) === JSON.stringify(plugin.manifest)
+            ? existing : { program: plugin, serial: ++nextSerial });
     }
     projectPrograms.value = next;
 }
 
 export function selectPresentation(definitionId: string) {
     const project = projectPrograms.value.get(definitionId);
-    const program = project?.program ?? builtinPrograms.get(definitionId);
+    const program = project?.program ?? builtinPresentationPrograms.get(definitionId);
     if (program) {
         const manifest = program.manifest;
         const configuration = manifest.initialConfiguration;

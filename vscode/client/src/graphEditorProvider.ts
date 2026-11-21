@@ -1,4 +1,7 @@
 import * as crypto from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { isGeneratedSnapConnection, isTimelineSnapNode } from "./timelineSnap";
 import { addressKey, graphScopeNodeLabel, graphScopeWithChildren, type GraphScope, type NodeAddress } from "./graphScope";
@@ -6,11 +9,12 @@ import { nodeDebugDetails } from "./nodeDebugDetails";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
 import { observationInterestReport } from "./observationProfile";
 import { GraphUiTimings, graphUiProfileReport } from "./graphUiProfile";
-import type { ObservationResponse } from "./observations";
+import { answerObservationRequest } from "./observationEndpoint";
+import { isInteractionSend, type ClientInput, type ClientInteractionTrace, type InteractionRecording, type Timed } from "./clientInteractionTrace";
 import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage, TraceDetails } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
-import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
+import { answerNodeEventRequest, isNodeEventRequest, isNodeEventGestureRequest } from "./nodeEventMessaging";
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase, type PlaybackOutputProfileResult,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 import { PlaybackProfile } from "./playbackProfile";
@@ -31,6 +35,11 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly observationsChanged: vscode.Disposable;
     private readonly observations = new ObservationDeliveryState();
     private readonly panelObservations = new Map<vscode.WebviewPanel, number>();
+    private clientTrace?: {
+        id: string; panel: vscode.WebviewPanel; started: number; stop: () => void;
+        timer: ReturnType<typeof setTimeout>; events: Timed<ClientInput>[];
+        trace: Omit<ClientInteractionTrace, keyof InteractionRecording>;
+    };
     private nextObservationSequence = 0;
     private readonly ready = new Set<vscode.WebviewPanel>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
@@ -246,6 +255,9 @@ export class GraphEditorProvider implements vscode.Disposable {
             { label: "Profile Observation Updates", description: "Records lane requests and replies for 10 seconds",
                 request: { type: "startObservationProfile", durationMs: profileDurationMs },
                 status: "Recording observation updates for 10 seconds. See Intravenous output for the report.", durationMs: profileDurationMs },
+            { label: "Record Client Interaction Trace", description: "Saves viewport, knob, and RPC activity for headless replay",
+                request: { type: "startClientInteractionTrace", traceId, durationMs: profileDurationMs },
+                status: "Recording client interactions for 10 seconds. Pan to reproduce the problem.", durationMs: profileDurationMs },
             { label: "Profile Project Graph UI", description: "Measures frame stalls, webview work, and server waits for 10 seconds",
                 request: { type: "startGraphUiProfile", profileId: traceId, durationMs: profileDurationMs },
                 status: "Recording project graph UI for 10 seconds. Reproduce the slowdown, then check Intravenous output.",
@@ -272,7 +284,10 @@ export class GraphEditorProvider implements vscode.Disposable {
             ? { id: action.request.profileId, waits: new GraphUiTimings() } : undefined;
         if (profile) this.graphUiProfiles.set(panel, profile);
         try {
+            if (action.request.type === "startClientInteractionTrace")
+                this.startClientTrace(panel, action.request.traceId, action.request.durationMs);
             if (!await panel.webview.postMessage(action.request)) {
+                if (action.request.type === "startClientInteractionTrace") this.stopClientTrace(panel);
                 if (profile && this.graphUiProfiles.get(panel) === profile) this.graphUiProfiles.delete(panel);
                 void vscode.window.showInformationMessage("The Intravenous Graph editor could not start the diagnostic.");
                 return;
@@ -284,9 +299,68 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
             vscode.window.setStatusBarMessage(action.status, action.durationMs);
         } catch (error) {
+            if (action.request.type === "startClientInteractionTrace") this.stopClientTrace(panel);
             if (profile && this.graphUiProfiles.get(panel) === profile) this.graphUiProfiles.delete(panel);
             void vscode.window.showErrorMessage(`Cannot start the Intravenous diagnostic: ${error}`);
         }
+    }
+
+    private startClientTrace(panel: vscode.WebviewPanel, id: string, durationMs: number): void {
+        const owner = this.controlOwners.get(panel);
+        if (!owner || this.session.graphSessionStatus !== "running") throw new Error("The project session is unavailable");
+        this.stopClientTrace();
+        const started = performance.now();
+        const playback = this.playbackSnapshot;
+        const trace: Omit<ClientInteractionTrace, keyof InteractionRecording> = { version: 1, durationMs, owner,
+            view: { active: panel.active, visible: panel.visible }, expanded: this.expandedByPanel.get(panel) ?? [],
+            playback: playback && { running: playback.running, position: playback.running
+                ? playback.executionIndex ?? playback.position : playback.position }, sent: [] };
+        const stop = this.session.observeRpcSends((value) => {
+            const atMs = performance.now() - started;
+            if (trace.sent.length < 8192 && isInteractionSend(value, owner))
+                trace.sent.push({ atMs, value });
+        });
+        if (!stop) throw new Error("The project session is unavailable");
+        this.clientTrace = { id, panel, started, stop, trace, events: [],
+            timer: setTimeout(() => {
+                this.stopClientTrace(panel);
+                this.outputChannel.appendLine("Client interaction trace stopped before the webview returned its recording.");
+            }, durationMs + 5000) };
+    }
+
+    private stopClientTrace(panel?: vscode.WebviewPanel) {
+        const trace = this.clientTrace;
+        if (!trace || (panel && trace.panel !== panel)) return;
+        this.clientTrace = undefined;
+        clearTimeout(trace.timer);
+        trace.stop();
+        return trace;
+    }
+
+    private recordClientView(panel: vscode.WebviewPanel, value: ClientInput): void {
+        const trace = this.clientTrace;
+        if (trace?.panel === panel && trace.events.length < 8192)
+            trace.events.push({ atMs: performance.now() - trace.started, value });
+    }
+
+    private async saveClientTrace(panel: vscode.WebviewPanel, id: string, recording: InteractionRecording): Promise<void> {
+        if (this.clientTrace?.id !== id) return;
+        const capture = this.stopClientTrace(panel);
+        if (!capture) return;
+        try {
+            const path = join(await mkdtemp(join(tmpdir(), "intravenous-client-trace-")), "trace.json");
+            const offset = performance.timeOrigin + capture.started - recording.startedAtMs;
+            const align = <T,>(entries: Timed<T>[]): Timed<T>[] => entries
+                .map(({ atMs, value }) => ({ atMs: atMs + offset, value }))
+                .filter(({ atMs }) => atMs >= 0 && atMs <= capture.trace.durationMs);
+            const trace: ClientInteractionTrace = { ...capture.trace, ...recording,
+                truncated: recording.truncated || capture.trace.sent.length >= 8192 || capture.events.length >= 8192,
+                sent: align(capture.trace.sent),
+                events: [...recording.events, ...align(capture.events)].sort((a, b) => a.atMs - b.atMs) };
+            await writeFile(path, JSON.stringify(trace, null, 2) + "\n", { mode: 0o600 });
+            this.outputChannel.appendLine(`Client interaction trace saved to ${path}`);
+            this.notifyProfileFinished("client interaction trace");
+        } catch (error) { void vscode.window.showErrorMessage(`Cannot save the client interaction trace: ${error}`); }
     }
 
     private startPlaybackProfile(panel: vscode.WebviewPanel, id: string, durationMs: number): void {
@@ -412,6 +486,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
         const viewState = panel.onDidChangeViewState(() => {
+            this.recordClientView(panel, { type: "view", visible: panel.visible, active: panel.active });
             void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
             if (!panel.visible) {
                 this.panelObservations.delete(panel);
@@ -430,18 +505,13 @@ export class GraphEditorProvider implements vscode.Disposable {
             if (message?.type === "observationDescribe" || message?.type === "observationReconcile") {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
-                try {
-                    const read = (): Promise<ObservationResponse["result"]> => message.type === "observationDescribe"
-                        ? this.session.describeObservations(message.nodes)
-                        : this.session.reconcileObservations(owner, panel.visible ? message.interests : [],
-                            panel.active && panel.visible ? message.predictedInterests : undefined);
-                    const waits = this.graphUiProfiles.get(panel)?.waits;
-                    const result = await (waits ? waits.measureAsync(message.type === "observationDescribe"
-                        ? "Describe observations" : "Reconcile observation interests", read) : read());
-                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, result });
-                } catch (error) {
-                    if (this.panels.has(panel)) void panel.webview.postMessage({ type: "observationResponse", requestId: message.requestId, error: String(error) });
-                }
+                const read = () => answerObservationRequest(this.session, panel, owner, message);
+                const waits = this.graphUiProfiles.get(panel)?.waits;
+                const reply = await (waits ? waits.measureAsync(message.type === "observationDescribe"
+                    ? "Describe observations" : "Reconcile observation interests", read) : read());
+                if (this.panels.has(panel)) void panel.webview.postMessage(reply);
+            } else if (message?.type === "clientInteractionTrace") {
+                await this.saveClientTrace(panel, message.traceId, message.recording);
             } else if (message?.type === "observationResync") {
                 this.postObservationSnapshot(panel);
             } else if (message?.type === "cursorReturnTrace") {
@@ -472,10 +542,8 @@ export class GraphEditorProvider implements vscode.Disposable {
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 const owner = this.controlOwners.get(panel);
                 if (!owner) return;
-                const response = message.type === "sendNodeEvent"
-                    ? await replyToNodeEvent(message, (target, event, id) => this.session.nodeEvents.send(owner, target, event, id))
-                    : await replyToNodeEventGesture(message, (target, id, begin) => begin
-                        ? this.session.nodeEvents.begin(owner, target, id) : this.session.nodeEvents.end(owner, target, id));
+                this.recordClientView(panel, { type: "nodeEvent", request: message });
+                const response = await answerNodeEventRequest(this.session.nodeEvents, owner, message);
                 if (this.panels.has(panel)) void panel.webview.postMessage(response);
                 if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
@@ -592,6 +660,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (this.panels.has(panel)) void panel.webview.postMessage(reply);
                 });
             } else if (message?.type === "setExpandedModules" && Array.isArray(message.modules)) {
+                this.recordClientView(panel, { type: "expanded", nodes: message.modules });
                 this.expandedByPanel.set(panel, message.modules);
                 await this.refresh();
             } else if (message?.type === "copyNodeDebugDetails") {
@@ -682,6 +751,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             this.panelObservations.delete(panel);
             this.interactionHints.delete(panel);
             messages.dispose(); viewState.dispose(); this.panels.delete(panel); this.ready.delete(panel);
+            this.stopClientTrace(panel);
             this.graphUiProfiles.delete(panel);
             this.expandedByPanel.delete(panel);
             this.updateInteractionStatus();
@@ -784,6 +854,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     }
 
     dispose(): void {
+        this.stopClientTrace();
         this.disposed = true;
         this.presentationWatcher?.dispose();
         clearInterval(this.playbackTimer);

@@ -33,6 +33,7 @@ struct StableRealtimePortStateIdHash {
         hash_combine(result, std::hash<std::size_t>{}(id.node.direct_member));
         hash_combine(result, hash_string(id.node.project_instance));
         hash_combine(result, hash_string(id.node.project_leaf_type));
+        hash_combine(result, std::hash<std::uint64_t>{}(id.node.configuration_snapshot));
         hash_combine(
             result,
             std::hash<unsigned>{}(static_cast<unsigned>(id.direction)));

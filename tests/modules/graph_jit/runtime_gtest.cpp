@@ -1302,7 +1302,7 @@ TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
 
     auto const generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_EQ(generation->configured_generation, 1u);
     EXPECT_EQ(generation->definitions_generation, 1u);
     EXPECT_TRUE(generation->graph_jit_attempted);
     ASSERT_TRUE(generation->compiled_graph);
@@ -1310,7 +1310,8 @@ TEST(GraphJitProjectGraphBridge, EmptyRootGenerationCompilesSuccessfully)
     EXPECT_TRUE(generation->graph_executor_attempted);
     EXPECT_TRUE(generation->graph_executor_accepted);
     EXPECT_EQ(graph_executor.pending_generation(), 1u);
-    EXPECT_EQ(generation->compiled_graph->project_generation, generation->generation);
+    ASSERT_TRUE(generation->execution_generation);
+    EXPECT_EQ(generation->compiled_graph->project_generation, *generation->execution_generation);
     EXPECT_EQ(
         generation->compiled_graph->definitions_generation,
         generation->definitions_generation);

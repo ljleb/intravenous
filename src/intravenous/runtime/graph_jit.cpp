@@ -1945,6 +1945,7 @@ class GraphJit::Impl {
     std::shared_ptr<SharedProjectJit> shared_jit_{};
     // Accessed only under compile_mutex_.
     RegionSpecializationCache region_specializations_{};
+    std::uint64_t next_candidate_serial_ = 1;
     std::mutex compile_mutex_{};
 
 public:
@@ -2223,8 +2224,10 @@ public:
             return result;
         }
 
-        auto output = std::make_unique<llvm::Module>(
-            "iv.project." + std::to_string(request.project_generation), *context);
+        auto const graph_label = request.project_generation != 0
+            ? "g" + std::to_string(request.project_generation)
+            : "candidate-" + std::to_string(next_candidate_serial_++);
+        auto output = std::make_unique<llvm::Module>("iv.project." + graph_label, *context);
         output->setDataLayout(shared_jit_->jit->getDataLayout());
         output->setTargetTriple(shared_jit_->jit->getTargetTriple());
 
@@ -2430,6 +2433,7 @@ public:
             .region_specializations =
                 specialize_regions_ ? &region_specializations : nullptr,
             .observations = &request.observations,
+            .configured_bundles = request.configured_bundles,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {
@@ -2456,8 +2460,7 @@ public:
                 if (!function.isDeclaration()) ++timings.functions;
             }
             timings.instructions_before_optimization = output->getInstructionCount();
-            auto const inventory_stem = "g" + std::to_string(request.project_generation)
-                + (transition ? "-transition" : "-steady");
+            auto const inventory_stem = graph_label + (transition ? "-transition" : "-steady");
             write_function_inventory(*output, inventory_stem + "-before");
             write_module_ir(*output, inventory_stem + "-before");
             auto const optimization_begin = Clock::now();
@@ -2545,11 +2548,13 @@ public:
                 .definitions_generation = request.definitions->generation,
                 .specialization = specialization_,
                 .configured_graph = request.graph,
+                .configured_bundles = request.configured_bundles,
                 .resolved_sample_input_views = std::move(resolved_sample_input_views),
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),
                 .node_layout = std::move(lowering->node_layout),
                 .tock_state_layout = std::move(lowering->tock_state_layout),
+                .observable_tick_states = std::move(lowering->observable_tick_states),
                 .background_evaluation_plan = std::move(lowering->background_evaluation_plan),
                 .realtime_port_state_requirements =
                     std::move(lowering->realtime_port_state_requirements),
@@ -2593,7 +2598,8 @@ public:
         GraphJitCompileRequest const& successor,
         std::shared_ptr<CompiledGraph const> const& predecessor)
     {
-        if (predecessor->project_generation >= successor.project_generation) {
+        if (successor.project_generation != 0
+            && predecessor->project_generation >= successor.project_generation) {
             GraphJitCompileResult result{.attempted = true};
             result.diagnostics.push_back(diagnostic(
                 GraphJitDiagnosticStage::input_capture,

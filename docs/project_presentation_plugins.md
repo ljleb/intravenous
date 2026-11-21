@@ -147,3 +147,37 @@ lane navigation, and the connected min and max traces. Beats also has a
 built-in seek reader for extrapolating past the viewport. The
 [rendering review](historical/project_presentation_rendering_review.md#automation-curve-during-the-pilot)
 records the earlier pilot status.
+
+## Test a presentation scenario
+
+The headless client runs the same built-in and project presentation programs.
+It validates frames and uses the shared edit queue to send node events.
+Use a copy of a trusted project because the server can save these edits.
+
+Create a scenario JSON file with a `snapshot` and an `inputs` array. Use
+`snapshot.node.address` to select a node in the test project. Use `inspect`
+to find the address. Supply `expanded` alongside `snapshot` if the target is
+inside an expanded module. The runner reads accepted arguments from that
+node and uses the viewport and observations in the scenario file.
+
+Each entry in `inputs` contains `atMs` and `value`. The time is relative to
+the start of the scenario. The value is a `PresentationInput`. For example,
+these two inputs move and release the Beats BPM knob.
+
+```json
+[
+  { "atMs": 20, "value": { "type": "control", "id": "bpm", "phase": "preview", "value": 150 } },
+  { "atMs": 80, "value": { "type": "control", "id": "bpm", "phase": "finish" } }
+]
+```
+
+Run the scenario with the [headless client](./development_run.md#replay-graph-editor-interactions).
+The report includes frames, accepted revisions, and the last snapshot.
+The scenario keeps presentation state in memory. It routes node edits
+through the server and uses the snapshot data for layout and observations.
+
+```sh
+node build-release/vscode/client/dist/headlessClient.js present \
+  --server "$IV_TEST_SERVER" --project "$IV_TEST_PROJECT" \
+  --scenario /path/to/scenario.json
+```

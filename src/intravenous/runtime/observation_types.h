@@ -62,6 +62,12 @@ struct CompiledObservationPlan {
     std::vector<ResolvedObservationProbe> probes{};
 };
 
+struct RealtimeObservationState {
+    NodeBundleHandle bundle = 0;
+    std::size_t offset = 0;
+    std::size_t size = 0;
+};
+
 enum class ObservationValueStatus : std::uint8_t { unavailable, available };
 struct RawObservationValue {
     std::uint64_t request_id = 0;
@@ -80,6 +86,15 @@ struct LiveObservationFrame {
     bool measure_capture = false;
     std::uint64_t capture_ns = 0;
     std::array<RawObservationValue, maximum_live_observation_probes> values{};
+    // Realtime only. Embedded captures name a slot in the code's original
+    // plan. The active publication can select a different slot or omit it.
+    std::array<std::size_t, maximum_live_observation_probes> const* capture_slots = nullptr;
+
+    [[nodiscard]] RawObservationValue* capture_value(std::size_t compiled_slot) noexcept
+    {
+        auto const slot = capture_slots ? (*capture_slots)[compiled_slot] : compiled_slot;
+        return slot < count ? &values[slot] : nullptr;
+    }
 };
 
 inline constexpr std::size_t maximum_observation_window_points = 1024;
@@ -162,6 +177,7 @@ public:
         frame.count = plan.probes.size();
         frame.capture_ns = 0;
         frame.measure_capture = false;
+        frame.capture_slots = nullptr;
         for (std::size_t slot = 0; slot < frame.count; ++slot) {
             auto const& probe = plan.probes[slot];
             frame.values[slot] = {

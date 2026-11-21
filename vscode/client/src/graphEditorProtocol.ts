@@ -12,6 +12,7 @@ import type { StatusHint } from "./statusBarText";
 import type { TimelineGridMode } from "./timelineSnap";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 import type { PresentationScript } from "./presentationPlugin";
+import type { InteractionRecording } from "./clientInteractionTrace";
 
 export type CursorWarp = {
     originX: number; originY: number;
@@ -48,6 +49,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "observationVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
+    | { type: "startClientInteractionTrace"; traceId: string; durationMs: number }
     | { type: "startGraphUiProfile"; profileId: string; durationMs: number }
     | { type: "startPlaybackProfile"; profileId: string; durationMs: number }
     | { type: "startCursorReturnTrace"; traceId: string }
@@ -69,6 +71,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | ObservationHostRequest
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
+    | { type: "clientInteractionTrace"; traceId: string; recording: InteractionRecording }
     | { type: "graphUiProfile"; profileId: string; summary: GraphUiProfileSummary }
     | { type: "playbackProfileClick"; profileId: string }
     | { type: "cursorReturnTrace"; traceId: string; step: string; details?: TraceDetails }

@@ -2680,6 +2680,17 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     llvm::Module& output_module)
 {
     auto const realtime_storage = summarize_realtime_storage(plan);
+    std::vector<RealtimeObservationState> observable_tick_states;
+    for (std::size_t primitive = 0; primitive < plan.imports.primitive_callbacks.size(); ++primitive) {
+        auto const& callback = plan.imports.primitive_callbacks[primitive];
+        if (callback.tick_block.empty()) continue;
+        auto const& node =
+            plan.declarations.node_layout.nodes[plan.declarations.primitive_layout_nodes[primitive]];
+        if (node.state_size != 0)
+            observable_tick_states.push_back({callback.bundle,
+                static_cast<std::size_t>(node.state_offset), node.state_size});
+    }
+    std::ranges::sort(observable_tick_states, {}, &RealtimeObservationState::bundle);
     // Executor-side manual-control metadata is read before the realtime root
     // takes ownership of sample_ports.
     std::vector<ManualControlRuntimeBinding> manual_controls;
@@ -2759,6 +2770,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
         .port_realization = std::move(plan.port_realization),
         .node_layout = std::move(plan.declarations.node_layout),
         .tock_state_layout = std::move(plan.declarations.tock_state_layout),
+        .observable_tick_states = std::move(observable_tick_states),
         .background_evaluation_plan = std::move(plan.connections.background),
         .realtime_port_state_requirements =
             std::move(plan.connections.realtime_port_states),

@@ -1,6 +1,7 @@
 #include <intravenous/node/layout.h>
 
 #include <algorithm>
+#include <utility>
 #include <cstring>
 #include <deque>
 #include <new>
@@ -463,11 +464,26 @@ namespace iv {
             storage_size = align_up(storage_size, region.alignment);
             region.storage_offset = storage_size;
             storage_size += region.size;
+            if (region.owner_node != NodeLayout::no_owner_node)
+                ++layout.nodes.at(region.owner_node).owned_region_count;
 
             if (region.kind == NodeLayout::Region::Kind::state) {
                 layout.nodes[region.owner_node].state_offset =
                     static_cast<ptrdiff_t>(region.storage_offset);
             }
+        }
+
+        size_t owned_region_count = 0;
+        for (auto& node : layout.nodes) {
+            node.owned_region_begin = owned_region_count;
+            owned_region_count += std::exchange(node.owned_region_count, 0);
+        }
+        layout.owned_region_indices.resize(owned_region_count);
+        for (size_t index = 0; index < layout.regions.size(); ++index) {
+            auto const owner = layout.regions[index].owner_node;
+            if (owner == NodeLayout::no_owner_node) continue;
+            auto& node = layout.nodes[owner];
+            layout.owned_region_indices[node.owned_region_begin + node.owned_region_count++] = index;
         }
 
         layout.storage_size = storage_size;
@@ -671,20 +687,13 @@ namespace iv {
         {
             // NodeStorage::can_move_from() accepted this pair only when their
             // owned regions match one to one, in layout order.
-            auto const& regions = storage.layout->regions;
-            auto const& previous_regions = previous_storage.layout->regions;
-            size_t previous_index = 0;
-            for (auto const& region : regions) {
-                if (region.owner_node != node_index) continue;
-                while (previous_index < previous_regions.size()
-                    && previous_regions[previous_index].owner_node
-                        != previous_node_index) {
-                    ++previous_index;
-                }
-                IV_ASSERT(
-                    previous_index < previous_regions.size(),
-                    "implicit move lost a region of its predecessor");
-                auto const& previous_region = previous_regions[previous_index++];
+            auto const owned = storage.layout->owned_regions(node_index);
+            auto const previous_owned = previous_storage.layout->owned_regions(previous_node_index);
+            IV_ASSERT(owned.size() == previous_owned.size(),
+                "implicit move lost a region of its predecessor");
+            for (size_t index = 0; index < owned.size(); ++index) {
+                auto const& region = storage.layout->regions[owned[index]];
+                auto const& previous_region = previous_storage.layout->regions[previous_owned[index]];
                 if ((region.kind != NodeLayout::Region::Kind::local_array
                         && region.kind
                             != NodeLayout::Region::Kind::nested_node_states)
@@ -948,49 +957,19 @@ namespace iv {
             return false;
         }
 
-        auto next_region = [](NodeLayout const& layout_ref, size_t owner_node, size_t start_index) -> size_t {
-            for (size_t i = start_index; i < layout_ref.regions.size(); ++i) {
-                if (layout_ref.regions[i].owner_node == owner_node) {
-                    return i;
-                }
-            }
-            return layout_ref.regions.size();
-        };
-
-        size_t current_index = next_region(*layout, node_index, 0);
-        size_t previous_index = next_region(*previous.layout, previous_node_index, 0);
-
-        while (current_index < layout->regions.size() && previous_index < previous.layout->regions.size()) {
-            auto const& current_region = layout->regions[current_index];
-            auto const& previous_region = previous.layout->regions[previous_index];
-
-            if (current_region.owner_node != node_index || previous_region.owner_node != previous_node_index) {
-                break;
-            }
-
-            if (
-                current_region.kind != previous_region.kind ||
-                current_region.state_field_offset != previous_region.state_field_offset ||
-                current_region.size != previous_region.size ||
-                current_region.alignment != previous_region.alignment ||
-                current_region.element_count != previous_region.element_count ||
-                (current_region.element_type != previous_region.element_type &&
-                 (!current_region.element_type_name ||
-                  !previous_region.element_type_name ||
-                  std::strcmp(
-                      current_region.element_type_name,
-                      previous_region.element_type_name) != 0))
-            ) {
-                return false;
-            }
-
-            current_index = next_region(*layout, node_index, current_index + 1);
-            previous_index = next_region(*previous.layout, previous_node_index, previous_index + 1);
-        }
-
-        return
-            (current_index == layout->regions.size() || layout->regions[current_index].owner_node != node_index) &&
-            (previous_index == previous.layout->regions.size() || previous.layout->regions[previous_index].owner_node != previous_node_index);
+        return std::ranges::equal(layout->owned_regions(node_index),
+            previous.layout->owned_regions(previous_node_index), [&](size_t current, size_t prior) {
+                auto const& region = layout->regions[current];
+                auto const& before = previous.layout->regions[prior];
+                return region.kind == before.kind
+                    && region.state_field_offset == before.state_field_offset
+                    && region.size == before.size
+                    && region.alignment == before.alignment
+                    && region.element_count == before.element_count
+                    && (region.element_type == before.element_type
+                        || (region.element_type_name && before.element_type_name
+                            && std::strcmp(region.element_type_name, before.element_type_name) == 0));
+            });
     }
 
     template<class OwnerIsConstructed>
@@ -1191,7 +1170,7 @@ namespace iv {
     }
 
     NodeStorage::Migration
-    NodeStorage::prepare_migration_from(NodeStorage& previous)
+    NodeStorage::prepare_migration_from(NodeStorage& previous, bool preserve_state)
     {
         if (!layout || !resources || !previous.layout || !previous.resources) {
             throw std::logic_error("node storage migration requires two valid storages");
@@ -1245,6 +1224,17 @@ namespace iv {
             }
             migration.previous_node_for_current[node] = previous_node;
             migration.previous_nodes_consumed[previous_node] = true;
+        }
+
+        if (preserve_state) {
+            for (size_t node = 0; node < layout->nodes.size(); ++node) {
+                auto const& record = layout->nodes[node];
+                if (record.state_size != 0
+                    && migration.previous_node_for_current[node] == Migration::no_node) {
+                    throw std::runtime_error("observation cutover cannot preserve Tick State for "
+                        + record.migration_identity);
+                }
+            }
         }
 
         // Initialization runs here, outside the audio thread, unless it needs

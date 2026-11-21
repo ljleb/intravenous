@@ -1,5 +1,6 @@
 import * as net from "net";
 import { Duplex } from "stream";
+import type { JsonRpcSend } from "./clientInteractionTrace";
 
 export type JsonRpcNotificationHandler =
     ((method: string, params: Record<string, unknown>) => void) | null;
@@ -22,6 +23,12 @@ export class JsonRpcSocketClient {
     private buffer = "";
     private socketInitialized = false;
     private disconnectReported = false;
+    private readonly sendObservers = new Set<(send: JsonRpcSend) => void>();
+
+    observeSends(observe: (send: JsonRpcSend) => void): () => void {
+        this.sendObservers.add(observe);
+        return () => { this.sendObservers.delete(observe); };
+    }
 
     constructor(
         socketPathOrSocket: string | Duplex,
@@ -96,6 +103,7 @@ export class JsonRpcSocketClient {
         return await new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             this.socket!.write(payload, "utf8");
+            for (const observe of this.sendObservers) observe({ method, params, notification: false });
         });
     }
 
@@ -106,6 +114,7 @@ export class JsonRpcSocketClient {
             throw new Error("JSON-RPC client is not connected");
         }
         this.socket.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n", "utf8");
+        for (const observe of this.sendObservers) observe({ method, params, notification: true });
     }
 
     private onData(chunk: string): void {

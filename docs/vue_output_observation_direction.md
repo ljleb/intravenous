@@ -355,12 +355,34 @@ queries, client delivery cadence, and purely presentational resolution settings
 do not enter that snapshot. `ProjectGraph` must not independently modify its
 accepted requirements; it resolves their availability against each new graph.
 
-An interest change that alters executable requirements goes through the same
-coordinated `ProjectGraph`/`GraphJit`/`GraphExecutor` pipeline. Aggregate-interest
-equality and coalescing avoid redundant builds. If requirements change during
-an already running compilation, another compile may still be necessary; the
-single-compile guarantee applies to a structural edit with unchanged accepted
-requirements, not to arbitrary concurrent changes.
+Newly settled on 2026-11-21. `ProjectGraph` coordinates each change in executable
+requirements with `GraphExecutor`. If running code exposes the requested
+sources, the executor can publish observation bindings at a Tick block
+boundary without compiling. The bindings can reuse sample capture points
+and read resident Tick State fields. Removing a binding stops its capture.
+The compiled capture point can remain available for a later request.
+
+If the running code lacks a required capture point, `GraphJit` compiles a
+candidate. The executor can publish the candidate's steady Tick code in the
+active generation when it can use the same state layout and invocation
+workspace. Otherwise, the executor prepares a successor and transfers the
+state of the same configured graph. If preparation cannot preserve that
+state, the active generation stays in use. This applies to Tick State and
+retained port data. A preview can start with a fresh Tock cache under the
+[Tock State contract](./graph_jit_direction.md#domain-owned-state-realtime-packed-storage-or-background-sidecar).
+
+`ProjectGraph` reports preparation progress by attempt. An attempt can finish
+by attaching bindings, replacing code in the active generation, staging a
+successor, or producing an error. Predictive compilation has no execution
+generation. `ProjectGraph` assigns one when a compiled candidate needs
+`GraphExecutor` to prepare an ordered cutover. A configured snapshot can be
+published before it has an accepted execution generation.
+
+Aggregate-interest equality and coalescing avoid redundant builds. If
+requirements change during compilation, the latest request can require
+another compile. The one-compile guarantee still applies to a structural
+edit with unchanged accepted requirements. See the [former compilation
+rule](./historical/observation_compilation_path_2026-11-21.md).
 
 **All compilation paths must use a coherent requirement snapshot.** This includes
 `ProjectGraph::control_compile_worker()` for hover/dynamic-control and settled
@@ -411,8 +433,8 @@ contracts invalidate that history; an actual unavailable result still clears it.
 **Routing needs actual activation identity.** The identity used to validate
 collected values and source invalidations must distinguish the compiled
 execution/probe bindings that actually became active, including control-code
-replacements within one structural project generation. A structural
-`ProjectGraphGeneration::generation` is not enough. The observation service
+replacements within one structural project generation. Routing needs the
+activation identity in addition to the execution generation. The observation service
 must also be able to learn that activation occurred **without receiving a
 nonempty observation update**: a successor can remove the last observable
 source, leaving no value to publish. Activation status may accompany an empty
@@ -466,6 +488,14 @@ bounded **tuning parameters**, not architectural constants. Choose and measure
 initial defaults in the working Vue host and server; do not hardcode invented
 protocol guarantees or trigger plan rebuilds for changes that affect only
 result reduction/network cadence.
+
+`Observations` owns the server's collection deadline, window retry
+intervals, and scope leases. Its worker waits for the next deadline or an
+execution activation. Activation can rebind windows early. Delivery still
+follows the same deadline. The runtime reports activation as part of
+execution supervision. The socket writes eligible observation batches and
+keeps the newest unsent batch for each client. The frontend schedules its
+own viewport interest changes.
 
 **Live updates** are maximum-rate, replaceable/coalesced, per-client batches.
 If a value hasn't changed according to its operation semantics, no update is

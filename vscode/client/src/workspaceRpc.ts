@@ -4,7 +4,8 @@ import { JsonRpcSocketClient } from "./rpcClient";
 import { VirtualNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
-import type { NodeEventProtocol, SerializedNodeEvent } from "./nodeEvents";
+import { validateNodeEventTarget, type NodeEventProtocol, type SerializedNodeEvent } from "./nodeEvents";
+import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 
@@ -22,6 +23,36 @@ export type AudioDevicesSnapshot = {
     selectedOutput: AudioDeviceSelection; selectedInput: AudioDeviceSelection;
 };
 
+export function workspaceNodeEvents(current: () => WorkspaceRpc | null, revision: () => number,
+    report: (error: unknown) => void): NodeEventInteractions {
+    const requireSession = () => {
+        const rpc = current();
+        if (!rpc) throw new Error("The server is unavailable");
+        return rpc;
+    };
+    const gesture = async (target: NodeAddress, id: string, begin: boolean) => {
+        await requireSession().nodeEventGesture(target, id, begin);
+        return revision();
+    };
+    return new NodeEventInteractions({
+        begin: (target, id) => gesture(target, id, true),
+        end: (target, id) => gesture(target, id, false),
+        send: async (target, event, interactionId) => {
+            const rpc = requireSession(), expected = revision();
+            const protocol = await rpc.getNodeEventProtocol();
+            if (current() !== rpc) throw new Error("The session changed before event dispatch");
+            validateNodeEventTarget(protocol, target, event);
+            // Standalone edits use the revision before the protocol read.
+            // An open gesture uses the server's target and history checks.
+            const result = await rpc.dispatchNodeEvent(target, event, expected, interactionId);
+            if (!result.ok || result.diagnostics.length)
+                throw new Error(result.diagnostics.map((entry) => entry.message).join("\n") || "Node event was not accepted");
+            return result.sessionRevision ?? revision();
+        },
+        report,
+    });
+}
+
 
 export class WorkspaceRpc {
     getPlayback(diagnostics = false, outputProfile?: PlaybackOutputProfileRequest): Promise<PlaybackSnapshot> {
@@ -31,6 +62,7 @@ export class WorkspaceRpc {
         });
     }
     togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
+    setPlaybackRunning(running: boolean): Promise<PlaybackSnapshot> { return this.client.request("playback.setRunning", { running }); }
     seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }
     dragPlayback(position: string, drag: PlaybackDrag): Promise<PlaybackSnapshot> {
         return this.client.request("playback.drag", { position, ...drag });

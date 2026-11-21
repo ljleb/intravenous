@@ -61,7 +61,7 @@ void expect_same_configuration(
     if (!expected) { EXPECT_FALSE(actual); return; }
     ASSERT_TRUE(actual);
     EXPECT_EQ(actual->configured_generation, expected->configured_generation);
-    EXPECT_EQ(actual->generation, expected->generation);
+    EXPECT_EQ(actual->execution_generation, expected->execution_generation);
     EXPECT_EQ(actual->graph, expected->graph);
     EXPECT_EQ(actual->definitions, expected->definitions);
 }
@@ -1127,6 +1127,7 @@ public:
         compiled->project_generation = request.successor.project_generation;
         compiled->configured_generation = request.successor.configured_generation;
         compiled->configured_graph = request.successor.graph;
+        compiled->configured_bundles = request.successor.configured_bundles;
         compiled->observations = request.successor.observations;
         compiled->node_layout.storage_size = needs_storage ? 8 : 0;
         compiled->node_layout.steady_storage_size = compiled->node_layout.storage_size;
@@ -1183,6 +1184,12 @@ public:
     {
         std::scoped_lock lock(mutex_);
         return structural_stages_.size();
+    }
+
+    std::uint64_t latest_structural_generation() const
+    {
+        std::scoped_lock lock(mutex_);
+        return structural_stages_.back().project_generation;
     }
 
     bool wait_for_structural_stages(std::size_t count)
@@ -1527,7 +1534,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_EQ(generation->configured_generation, 1u);
     EXPECT_EQ(generation->definitions_generation, 1u);
     EXPECT_TRUE(generation->placements.empty());
 
@@ -1542,7 +1549,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
 
     generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 2u);
+    EXPECT_EQ(generation->configured_generation, 2u);
     ASSERT_EQ(generation->placements.size(), 1u);
     EXPECT_TRUE(generation->placements.contains("instance:a"));
     EXPECT_FALSE(project_graph.configuration_failure());
@@ -1556,7 +1563,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
         update_builder); });
     EXPECT_NO_THROW(update_builder.build());
     generation = project_graph.current_generation();
-    EXPECT_EQ(generation->generation, 3u);
+    EXPECT_EQ(generation->configured_generation, 3u);
     EXPECT_EQ(generation->placements.size(), 1u);
     // Same definitions generation + same typed value tuple reuses configuration.
     EXPECT_EQ(configure_calls.load(), 1);
@@ -1564,7 +1571,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
     publish_definitions_snapshot(project_graph, 
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(2)});
     generation = project_graph.current_generation();
-    EXPECT_EQ(generation->generation, 4u);
+    EXPECT_EQ(generation->configured_generation, 4u);
     EXPECT_EQ(generation->definitions_generation, 2u);
     EXPECT_EQ(generation->placements.size(), 1u);
     EXPECT_EQ(configure_calls.load(), 2);
@@ -1575,7 +1582,7 @@ TEST_F(ProjectGraphFixture, DefinitionAndMutationTransactionsBuildWholeRootGener
         delete_builder); });
     EXPECT_NO_THROW(delete_builder.build());
     generation = project_graph.current_generation();
-    EXPECT_EQ(generation->generation, 5u);
+    EXPECT_EQ(generation->configured_generation, 5u);
     EXPECT_TRUE(generation->placements.empty());
     EXPECT_TRUE(instances.list_instances().empty());
 }
@@ -1725,7 +1732,7 @@ TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArgum
     EXPECT_TRUE(result.project_state_changed);
     auto const replaced = project_graph.current_generation();
     ASSERT_TRUE(replaced);
-    EXPECT_GT(replaced->generation, before->generation);
+    EXPECT_GT(replaced->configured_generation, before->configured_generation);
     ASSERT_EQ(replaced->node_replacements.size(), 1u);
     EXPECT_EQ(
         replaced->node_replacements[0].definition_id,
@@ -1782,7 +1789,7 @@ TEST_F(ProjectGraphFixture, EventProtocolListsPackageSchemasAndActiveAddressSupp
     EXPECT_EQ(protocol.definitions_generation, 9u);
     EXPECT_EQ(
         protocol.project_graph_generation,
-        project_graph.current_generation()->generation);
+        project_graph.current_generation()->configured_generation);
     ASSERT_EQ(protocol.event_types.size(), 1u);
     auto const& event = protocol.event_types.front();
     EXPECT_EQ(event.id.nominal_id, protocol_event_nominal_id);
@@ -2127,7 +2134,7 @@ TEST_F(ProjectGraphFixture, StaleDefinitionsSnapshotCannotRollBackRootGeneration
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto const after_stale = project_graph.current_generation();
     ASSERT_TRUE(after_stale);
-    EXPECT_EQ(after_stale->generation, current->generation);
+    EXPECT_EQ(after_stale->configured_generation, current->configured_generation);
     EXPECT_EQ(after_stale->definitions_generation, 2u);
 }
 
@@ -2209,7 +2216,7 @@ TEST_F(ProjectGraphFixture, InvalidUpdateBatchDoesNotPartiallyMutateDesiredState
     auto listed = instances.list_instances();
     ASSERT_EQ(listed.size(), 1u);
     EXPECT_EQ(listed.front().display_name, "Original");
-    EXPECT_EQ(project_graph.current_generation()->generation, before->generation);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, before->configured_generation);
 }
 
 TEST_F(ProjectGraphFixture, LaneNameOverridesAreDurableAndUndoRestoresTheAuthoredDefault)
@@ -2778,7 +2785,7 @@ TEST_F(ProjectGraphFixture, GraphScopeListsInstancesWithRealizedPortsAndConnecti
     EXPECT_NO_THROW(connect_builder.build());
 
     auto scope = read_graph_scope(project_graph);
-    EXPECT_EQ(scope.at("generation"), project_graph.current_generation()->generation);
+    EXPECT_EQ(scope.at("generation"), project_graph.current_generation()->configured_generation);
     EXPECT_TRUE(scope.at("editable").get<bool>());
     ASSERT_EQ(scope.at("nodes").size(), 2u);
     auto const& source = scope_node(scope, "instance:source");
@@ -3060,7 +3067,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
         iv::NodeDefinitionsSnapshotChanged{.snapshot = make_snapshot(1)});
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->generation, 1u);
+    EXPECT_EQ(generation->configured_generation, 1u);
     EXPECT_EQ(generation->placements.size(), 2u);
     EXPECT_EQ(
         generation->applied_connection_ids,
@@ -3073,7 +3080,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
     EXPECT_NO_THROW(replacement_builder.build());
     EXPECT_TRUE(instances.desired_instances().empty());
     EXPECT_TRUE(connections.desired_connections().empty());
-    EXPECT_EQ(project_graph.current_generation()->generation, 2u);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, 2u);
 }
 
 TEST_F(ProjectGraphFixture,
@@ -3214,12 +3221,16 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
         {interaction, controls[0], .25f}, begin); });
     ASSERT_NO_THROW(begin.build());
     ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
+    ASSERT_TRUE(project_graph.wait_for_compilation());
     auto const live = project_graph.current_generation();
     ASSERT_TRUE(live);
-    EXPECT_GT(live->generation, initial->generation);
-    ASSERT_EQ(live->graph->manual_controls.size(), 1u);
-    EXPECT_TRUE(live->graph->manual_controls[0].override_connections);
-    EXPECT_EQ(live->graph->manual_controls[0].participation,
+    EXPECT_GT(live->execution_generation, initial->execution_generation);
+    EXPECT_EQ(live->graph, initial->graph);
+    ASSERT_TRUE(live->compiled_graph);
+    auto const& live_controls = live->compiled_graph->configured_graph->manual_controls;
+    ASSERT_EQ(live_controls.size(), 1u);
+    EXPECT_TRUE(live_controls[0].override_connections);
+    EXPECT_EQ(live_controls[0].participation,
         iv::ManualControlParticipation::disconnected_only);
     EXPECT_TRUE(probe.compilations().back().has_predecessor);
     EXPECT_TRUE(probe.stages().empty());
@@ -3229,12 +3240,16 @@ TEST_F(ProjectGraphManualControlSchedulingFixture,
         {interaction, .5f}, end); });
     ASSERT_NO_THROW(end.build());
     ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 2));
+    ASSERT_TRUE(project_graph.wait_for_compilation());
     auto const restored = project_graph.current_generation();
     ASSERT_TRUE(restored);
-    EXPECT_GT(restored->generation, live->generation);
-    EXPECT_FALSE(restored->graph->manual_controls[0].dynamic);
-    EXPECT_FALSE(restored->graph->manual_controls[0].override_connections);
-    EXPECT_FLOAT_EQ(restored->graph->manual_controls[0].settled_value.value, .5f);
+    EXPECT_GT(restored->execution_generation, live->execution_generation);
+    ASSERT_TRUE(restored->compiled_graph);
+    auto const& restored_controls = restored->compiled_graph->configured_graph->manual_controls;
+    ASSERT_EQ(restored_controls.size(), 1u);
+    EXPECT_FALSE(restored_controls[0].dynamic);
+    EXPECT_FALSE(restored_controls[0].override_connections);
+    EXPECT_FLOAT_EQ(restored_controls[0].settled_value.value, .5f);
     EXPECT_EQ(restored->graph->connections.configured_sample_connections().size(),
         initial->graph->connections.configured_sample_connections().size());
     EXPECT_TRUE(probe.compilations().back().has_predecessor);
@@ -3895,7 +3910,7 @@ TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectio
     auto const before_controls = project_graph.manual_controls();
     auto const before_connections = connections.desired_connections();
     ASSERT_EQ(before_connections.size(), 4u);
-    auto const generation = project_graph.current_generation()->generation;
+    auto const generation = project_graph.current_generation()->configured_generation;
     iv::ProjectEditBatch remove;
     remove.instances = {{"a", std::nullopt}, {"manual", std::nullopt}};
     iv::ProjectAckBuilder deleted;
@@ -3904,7 +3919,7 @@ TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectio
     in_event_source([&] { project_graph.handle_project_apply_edit(remove, deleted); });
     ASSERT_NO_THROW(deleted.build());
     EXPECT_TRUE(deleted.take_publication().graph_changed);
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 1);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, generation + 1);
     ASSERT_EQ(instances.desired_instances().size(), 2u);
     EXPECT_TRUE(instances.desired_node_replacements().empty());
     EXPECT_TRUE(project_graph.manual_controls().empty());
@@ -3916,7 +3931,7 @@ TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectio
     in_event_source([&] { project_graph.handle_project_undo(undo); });
     ASSERT_NO_THROW(undo.build());
     EXPECT_TRUE(undo.take_publication().graph_changed);
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 2);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, generation + 2);
     EXPECT_EQ(instances.desired_instances(), before_nodes);
     EXPECT_EQ(instances.desired_node_replacements(), before_replacements);
     EXPECT_EQ(project_graph.manual_controls(), before_controls);
@@ -3925,7 +3940,7 @@ TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectio
     iv::ProjectAckBuilder redo;
     in_event_source([&] { project_graph.handle_project_redo(redo); });
     ASSERT_NO_THROW(redo.build());
-    EXPECT_EQ(project_graph.current_generation()->generation, generation + 3);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, generation + 3);
     EXPECT_EQ(instances.desired_instances().size(), 2u);
     EXPECT_TRUE(project_graph.manual_controls().empty());
     EXPECT_EQ(connections.desired_connections(), after_connections);
@@ -4298,12 +4313,12 @@ TEST_F(ProjectGraphFixture, SuccessiveProvisionalReplacementsCommitOnlyOneHistor
         .instance_id = "replaceable", .definition_id = replacing_definition_id,
         .configuration_source = "30"}, create); });
     ASSERT_EQ(create.build(), "replaceable");
-    auto const before = project_graph.current_generation()->generation;
+    auto const before = project_graph.current_generation()->configured_generation;
     auto result = in_event_source([&] { return project_graph.dispatch_node_message(
         {.instance_id = "replaceable"}, iv::OwnedNodeMessage(ReplaceTwice{.value = 70})); });
     ASSERT_TRUE(result.project_state_changed);
     EXPECT_TRUE(result.publication.graph_changed);
-    EXPECT_EQ(project_graph.current_generation()->generation, before + 1);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, before + 1);
     EXPECT_EQ(nlohmann::ordered_json::parse(instances.desired_node_replacements()[0].configuration_arguments_json),
         nlohmann::ordered_json::array({71}));
     iv::ProjectAckBuilder undo;
@@ -4519,12 +4534,14 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingObservationPrediction
     auto const base_compiles = probe.compilations().size();
     auto const base_stages = probe.structural_stage_count();
     iv::ObservationRequirements viewport{.revision = 1,
-        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "instance:manual:0"},
+            .kind = iv::ObservationSourceKind::input, .member = "gain"}, .operation = "level"}}};
     iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
     in_event_source([&] { project_graph.handle_observation_request(predict); });
     ASSERT_TRUE(predict.error.empty()) << predict.error;
     ASSERT_TRUE(project_graph.wait_for_compilation());
     ASSERT_EQ(probe.compilations().size(), base_compiles + 1);
+    EXPECT_EQ(probe.compilations().back().project_generation, 0u);
     EXPECT_EQ(probe.compilations().back().observation_revision, viewport.revision);
     EXPECT_EQ(probe.structural_stage_count(), base_stages);
 
@@ -4542,12 +4559,13 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, DifferentObservationProbeSetU
     auto const base_compiles = probe.compilations().size();
     auto const base_stages = probe.structural_stage_count();
     iv::ObservationRequirements viewport{.revision = 1,
-        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "instance:manual:0"},
+            .kind = iv::ObservationSourceKind::input, .member = "gain"}, .operation = "level"}}};
     iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
     in_event_source([&] { project_graph.handle_observation_request(predict); });
     ASSERT_TRUE(project_graph.wait_for_compilation());
 
-    viewport.probes.front().source.node.instance_id = "different";
+    viewport.probes.front().operation = "value";
     iv::ObservationGraphRequest visible{.requirements = viewport, .prediction_changed = true};
     in_event_source([&] { project_graph.handle_observation_request(visible); });
     ASSERT_TRUE(visible.error.empty()) << visible.error;
@@ -4563,7 +4581,8 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingViewportPromotesAnInf
     auto const base_stages = probe.structural_stage_count();
     probe.block_next_compilation();
     iv::ObservationRequirements viewport{.revision = 1,
-        .probes = {{.id = 1, .source = {.node = {.instance_id = "next"}, .member = "out"}, .operation = "level"}}};
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "instance:manual:0"},
+            .kind = iv::ObservationSourceKind::input, .member = "gain"}, .operation = "level"}}};
     iv::ObservationGraphRequest predict{.prediction_changed = true, .prediction = viewport};
     in_event_source([&] { project_graph.handle_observation_request(predict); });
     ASSERT_TRUE(probe.wait_for_blocked_compilation());
@@ -4769,7 +4788,9 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     ASSERT_NO_THROW(edit.get());
     auto const configured = project_graph.current_generation();
     ASSERT_TRUE(configured);
-    EXPECT_GT(configured->generation, blocked->generation);
+    EXPECT_GT(configured->configured_generation, blocked->configured_generation);
+    EXPECT_FALSE(blocked->execution_generation);
+    EXPECT_FALSE(configured->execution_generation);
     EXPECT_TRUE(configured->placements.contains("queued:latest"));
     EXPECT_FALSE(configured->placements.contains("queued:first"));
     EXPECT_FALSE(configured->compiled_graph);
@@ -4778,7 +4799,7 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     ASSERT_TRUE(metadata.error.empty()) << metadata.error;
     ASSERT_TRUE(metadata.capabilities);
     EXPECT_EQ(metadata.configured_generation, configured->configured_generation);
-    EXPECT_EQ(metadata.window_execution_generation, initial->generation);
+    EXPECT_EQ(metadata.window_execution_generation, initial->execution_generation);
     auto const inputs = iv::read_node_instance_interface(configured->graph->node_bundles,
         configured->placements.at("queued:latest").root).sample_inputs;
     ASSERT_EQ(inputs.size(), 1u);
@@ -4788,27 +4809,29 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, ConfigurationCommitsAndCoales
     ASSERT_TRUE(probe.wait_for_structural_stages(baseline + 1));
     iv::ObservationGraphRequest before_activation;
     in_event_source([&] { project_graph.handle_observation_request(before_activation); });
-    EXPECT_EQ(before_activation.window_execution_generation, initial->generation);
+    EXPECT_EQ(before_activation.window_execution_generation, initial->execution_generation);
     EXPECT_EQ(probe.structural_stage_count(), baseline + 1);
-    EXPECT_EQ(project_graph.current_generation()->generation, configured->generation);
+    EXPECT_EQ(project_graph.current_generation()->configured_generation, configured->configured_generation);
 
-    project_graph.acknowledge_execution(blocked->generation);
+    auto const intermediate_execution = probe.latest_structural_generation();
+    project_graph.acknowledge_execution(intermediate_execution);
     iv::ObservationGraphRequest intermediate;
     in_event_source([&] { project_graph.handle_observation_request(intermediate); });
     EXPECT_EQ(intermediate.configured_generation, configured->configured_generation);
     EXPECT_EQ(intermediate.window_configured_generation, blocked->configured_generation);
-    EXPECT_EQ(intermediate.window_execution_generation, blocked->generation);
+    EXPECT_EQ(intermediate.window_execution_generation, intermediate_execution);
 
     ASSERT_TRUE(project_graph.wait_for_compilation());
     auto const ready = project_graph.current_generation();
     ASSERT_TRUE(ready->compiled_graph);
-    EXPECT_EQ(ready->compiled_graph->project_generation, configured->generation);
+    ASSERT_TRUE(ready->execution_generation);
+    EXPECT_EQ(ready->execution_generation, intermediate_execution + 1);
     EXPECT_TRUE(ready->graph_executor_accepted);
     EXPECT_EQ(probe.structural_stage_count(), baseline + 2);
-    project_graph.acknowledge_execution(ready->generation);
+    project_graph.acknowledge_execution(*ready->execution_generation);
     iv::ObservationGraphRequest settled;
     in_event_source([&] { project_graph.handle_observation_request(settled); });
-    EXPECT_EQ(settled.window_execution_generation, ready->generation);
+    EXPECT_EQ(settled.window_execution_generation, ready->execution_generation);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsBeforeEditsArrivingDuringRecovery)
@@ -4833,9 +4856,9 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsB
     ASSERT_TRUE(first->compiled_graph && failed->compiled_graph && third->compiled_graph && fourth->compiled_graph);
 
     auto recompile = [](iv::ProjectGraphGeneration const& generation) -> iv::GraphJitCompileRequest {
-        return {.project_generation = generation.generation, .graph = generation.compiled_graph->configured_graph,
+        return {.project_generation = *generation.execution_generation, .graph = generation.compiled_graph->configured_graph,
             .definitions = generation.definitions, .observations = generation.compiled_graph->observations,
-            .configured_generation = generation.configured_generation};
+            .configured_generation = generation.configured_generation, .configured_bundles = generation.configured_bundles};
     };
     auto const before = probe.compilations().size();
     probe.reject_execution({.failed = failed->compiled_graph, .predecessor = first->compiled_graph,
@@ -4857,15 +4880,15 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, RecompilesAcceptedSuccessorsB
 
     auto const compilations = probe.compilations();
     ASSERT_EQ(compilations.size(), before + 3);
-    EXPECT_EQ(compilations[before].project_generation, third->generation);
+    EXPECT_EQ(compilations[before].project_generation, third->execution_generation);
     EXPECT_EQ(compilations[before].predecessor, first->compiled_graph);
-    EXPECT_EQ(compilations[before + 1].project_generation, fourth->generation);
+    EXPECT_EQ(compilations[before + 1].project_generation, fourth->execution_generation);
     ASSERT_TRUE(compilations[before + 1].predecessor);
-    EXPECT_EQ(compilations[before + 1].predecessor->project_generation, third->generation);
+    EXPECT_EQ(compilations[before + 1].predecessor->project_generation, third->execution_generation);
     EXPECT_NE(compilations[before + 1].predecessor, third->compiled_graph);
-    EXPECT_EQ(compilations[before + 2].project_generation, fifth->generation);
+    EXPECT_EQ(compilations[before + 2].project_generation, 0u);
     ASSERT_TRUE(compilations[before + 2].predecessor);
-    EXPECT_EQ(compilations[before + 2].predecessor->project_generation, fourth->generation);
+    EXPECT_EQ(compilations[before + 2].predecessor->project_generation, fourth->execution_generation);
     EXPECT_NE(compilations[before + 2].predecessor, fourth->compiled_graph);
     EXPECT_EQ(project_graph.current_generation()->graph, fifth->graph);
     EXPECT_TRUE(project_graph.current_generation()->graph_executor_accepted);

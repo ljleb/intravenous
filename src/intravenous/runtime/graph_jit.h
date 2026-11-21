@@ -193,11 +193,13 @@ struct CompiledGraph {
     std::uint64_t definitions_generation = 0;
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
+    graph_jit::ConfiguredBundleInventory configured_bundles{};
     std::vector<std::pair<NodeBundlePortId, NodeBundlePortId>> resolved_sample_input_views{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     graph_jit::ResolvedPortRealization port_realization{};
     NodeLayout node_layout{};
     TockStateLayout tock_state_layout{};
+    std::vector<RealtimeObservationState> observable_tick_states{};
     graph_jit::BackgroundEvaluationPlan background_evaluation_plan{};
     // Cold graph-revision metadata. The realtime root never consults
     // this inventory; execution-generation preparation uses it to reconcile
@@ -212,11 +214,13 @@ struct CompiledGraph {
 };
 
 struct GraphJitCompileRequest {
+    // Zero builds an artifact without assigning it to an execution generation.
     std::uint64_t project_generation = 0;
     std::shared_ptr<ConfiguredGraph const> graph{};
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     CompiledObservationPlan observations{};
     std::optional<std::uint64_t> configured_generation{};
+    graph_jit::ConfiguredBundleInventory configured_bundles{};
 };
 
 // A transition specialization augments an already compiled steady successor.
@@ -308,7 +312,8 @@ struct GraphJitCompileResult {
     // False only for an unbound singleton bridge. Once GraphJit receives a
     // request, expected compiler failures are represented by diagnostics.
     bool attempted = false;
-    std::shared_ptr<CompiledGraph const> compiled_graph{};
+    // The caller can assign an execution generation before publishing this artifact.
+    std::shared_ptr<CompiledGraph> compiled_graph{};
     std::vector<GraphJitDiagnostic> diagnostics{};
     // One entry per compilation this request ran, in order. A project
     // transaction with a predecessor runs a steady and then a transition one.

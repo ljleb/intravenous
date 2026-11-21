@@ -5,8 +5,6 @@ import { ControlCompilationProgress, type ControlCompileStatus } from "./control
 import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress } from "./graphScope";
 import type { GraphPresentationPatch } from "./graphEditorProtocol";
 import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
-import { validateNodeEventTarget, type SerializedNodeEvent } from "./nodeEvents";
-import { NodeEventInteractions } from "./nodeEventInteractions";
 import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
 import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 import * as vscode from "vscode";
@@ -35,11 +33,13 @@ import { LiveGraphControlMessage, LiveGraphSessionStatus } from "./liveGraphProt
 import { Duplex } from "stream";
 
 import { JsonRpcSocketClient } from "./rpcClient";
+import type { JsonRpcSend } from "./clientInteractionTrace";
+import { spawnWorkspaceServer } from "./workspaceServerProcess";
 import { connectionEndMutation, connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
-import { WorkspaceRpc } from "./workspaceRpc";
+import { WorkspaceRpc, workspaceNodeEvents } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
 import { statusBarText } from "./statusBarText";
 import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, readTimelineSnapMemory,
@@ -132,24 +132,18 @@ export class WorkspaceSession {
     }
     private readonly observationChanges = new vscode.EventEmitter<ObservationDelivery>();
     readonly onDidChangeObservations = this.observationChanges.event;
+    observeRpcSends(observe: (send: JsonRpcSend) => void): (() => void) | undefined {
+        return this.client?.observeSends(observe);
+    }
     private readonly graphChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeGraph = this.graphChanges.event;
     graphSessionStatus: LiveGraphSessionStatus = "starting";
     private readonly manualChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeManualControls = this.manualChanges.event;
     readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
-    readonly nodeEvents = new NodeEventInteractions({
-        begin: (target, id) => this.nodeEventGesture(target, id, true),
-        send: (target, event, id) => this.sendNodeEvent(target, event, id),
-        end: (target, id) => this.nodeEventGesture(target, id, false),
-        report: (error) => this.outputChannel.appendLine(`Node gesture cleanup failed: ${String(error)}`),
-    });
-
-    private async nodeEventGesture(target: NodeAddress, id: string, begin: boolean): Promise<number> {
-        if (this.graphSessionStatus !== "running" || !this.rpc) return Promise.reject(new Error("The server is unavailable"));
-        await this.rpc.nodeEventGesture(target, id, begin);
-        return this.lastSessionRevision;
-    }
+    readonly nodeEvents = workspaceNodeEvents(() => this.graphSessionStatus === "running" ? this.rpc : null,
+        () => this.lastSessionRevision,
+        (error) => this.outputChannel.appendLine(`Node gesture cleanup failed: ${String(error)}`));
 
     get projectFolder(): vscode.Uri { return this.workspaceFolder.uri; }
 
@@ -212,24 +206,6 @@ export class WorkspaceSession {
         if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
         if (descriptor.enabled === enabled) return;
         await rpc.setManualInputEnabled(control, descriptor.value, enabled, descriptor.participation, scope.sessionRevision);
-    }
-
-    async sendNodeEvent(target: NodeAddress, event: SerializedNodeEvent, interactionId?: string): Promise<number> {
-        // A semantic edit belongs to the running session that received it.
-        // Do not hold it across startup/restart and apply it to a later graph.
-        if (this.graphSessionStatus !== "running" || !this.rpc) throw new Error("The server is unavailable");
-        const rpc = this.rpc;
-        const revision = this.lastSessionRevision;
-        const protocol = await rpc.getNodeEventProtocol();
-        if (this.rpc !== rpc) throw new Error("The session changed before event dispatch");
-        validateNodeEventTarget(protocol, target, event);
-        // Standalone edits still use the revision from before the protocol
-        // read. An open gesture instead uses the server's conflict check for
-        // its target and history group. Never retry a rejected event.
-        const result = await rpc.dispatchNodeEvent(target, event, revision, interactionId);
-        if (!result.ok || result.diagnostics.length)
-            throw new Error(result.diagnostics.map((entry) => entry.message).join("\n") || "Node event was not accepted");
-        return result.sessionRevision ?? this.lastSessionRevision;
     }
 
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[]): Promise<void> {
@@ -929,17 +905,8 @@ export class WorkspaceSession {
 
         const binary = this.serverBinaryPath();
         if (this.shuttingDown) return false;
-        const serverDir = path.dirname(binary);
-        const args = [
-            "--server",
-            "--workspace-root",
-            this.workspaceRoot(),
-            "--rpc-fd",
-            "3",
-        ];
         const childEnv: NodeJS.ProcessEnv = {
             ...process.env,
-            INTRAVENOUS_DIR: serverDir,
             IV_LOG_FILE: this.serverDiagnosticLogPath,
         };
 
@@ -968,11 +935,7 @@ export class WorkspaceSession {
         const processLog = fs.openSync(this.serverDiagnosticLogPath, "a");
         let spawnedProcess: childProcess.ChildProcess;
         try {
-            spawnedProcess = childProcess.spawn(binary, args, {
-                cwd: this.workspaceRoot(),
-                env: childEnv,
-                stdio: ["ignore", processLog, processLog, "pipe"],
-            });
+            spawnedProcess = spawnWorkspaceServer(binary, this.workspaceRoot(), processLog, childEnv);
         } finally {
             fs.closeSync(processLog);
         }

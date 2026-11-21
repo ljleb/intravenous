@@ -767,6 +767,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             .inputs = inputs,
             .outputs = outputs,
         };
+        auto const first_declared_node = layout_builder.node_count();
         auto const node_index = implementation.declare_node(
             implementation.node_data,
             implementation.state_structures,
@@ -774,8 +775,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             reflected_ports);
         declared_node_indices.push_back(node_index);
 
-        // Authored State migrates between graph revisions by the concrete
-        // node's stable identity. Anonymous nodes have none and start fresh.
+        // Authored identity can span configurations. A configured bundle
+        // coordinate, including its owned declarations, is snapshot-local.
         auto const planned = std::ranges::find(
             connections.nodes, bundle, &PlannedGraphNode::bundle);
         if (planned == connections.nodes.end()) {
@@ -783,10 +784,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
                 "GraphJit declaration lost its planned concrete node");
         }
         if (planned->stable_identity) {
+            auto const identity = "graphjit.node:" + migration_identity_fields(*planned->stable_identity);
             layout_builder.set_node_migration_identity(
-                node_index,
-                "graphjit.node:"
-                    + migration_identity_fields(*planned->stable_identity));
+                node_index, identity);
+            if (input.configured_bundles.snapshot) {
+                for (auto child = first_declared_node; child < layout_builder.node_count(); ++child) {
+                    if (child == node_index) continue;
+                    layout_builder.set_node_migration_identity(child, identity
+                        + ":snapshot=" + std::to_string(input.configured_bundles.snapshot)
+                        + ":declaration=" + std::to_string(child - first_declared_node));
+                }
+            }
         }
     }
 
@@ -9935,7 +9943,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto const& configured_cost_model = input.realtime_storage_cost_model;
     auto topology = ConnectionTopology::build(
         input.graph, *port_realization, input.specialization.block_size,
-        configured_cost_model, callback_batch_classes, callback_elision_candidates);
+        configured_cost_model, callback_batch_classes, callback_elision_candidates,
+        input.configured_bundles);
     if (!topology) return std::unexpected(std::move(topology.error()));
     std::vector<std::size_t> realtime_batch_classes = callback_batch_classes;
     auto const no_batch_class = std::numeric_limits<std::size_t>::max();

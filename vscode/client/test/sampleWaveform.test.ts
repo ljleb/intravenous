@@ -194,7 +194,7 @@ test("the retained payload budget evicts history while preserving current readin
     assert.equal(values.readyWindowsForDisplay([interests.at(-1)!.id], data.window).length, 1);
 });
 test("viewport Tock interests carry windows and panning never requests live observation operations", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
     const scope = new PresentationObservations((request) => {
         requests.push(request);

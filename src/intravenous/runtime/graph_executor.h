@@ -25,6 +25,7 @@
 #include <optional>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace iv {
@@ -107,6 +108,13 @@ struct ProjectGraphGraphExecutorControlsRequest {
     bool target_applied = false;
     GraphExecutorStageResult realtime_code_result =
         GraphExecutorStageResult::ignored_stale;
+};
+
+struct ProjectGraphRealtimeObservationRequest {
+    std::uint64_t execution_generation = 0;
+    // Bind new probes to the running program or stage compiled Tick code that
+    // adds the required capture points. Both target the current generation.
+    std::variant<CompiledObservationPlan, std::shared_ptr<CompiledGraph const>> update{};
 };
 
 struct GraphExecutorReclaimedSnapshots {
@@ -247,12 +255,24 @@ class GraphExecutor {
             std::shared_ptr<CompiledGraph const> graph{};
             std::vector<LiveTargetBinding> live_targets{};
         };
+        struct RealtimeObservations {
+            std::uint64_t publication_id = 0;
+            CompiledObservationPlan plan{};
+            std::array<std::size_t, maximum_live_observation_probes> capture_slots{};
+            std::vector<std::pair<std::size_t, std::size_t>> state_captures{}; // frame slot, storage offset
+        };
         std::atomic<RealtimeCode*> realtime_code{nullptr};
         std::unique_ptr<RealtimeCode> active_realtime_code_owner{};
         std::unique_ptr<RealtimeCode> pending_realtime_code_owner{};
         // Activation only moves owners. The next cold staging operation (or
         // generation reclamation) destroys the previous code and binding list.
         std::unique_ptr<RealtimeCode> retired_realtime_code_owner{};
+        std::unique_ptr<RealtimeObservations> active_observation_override{};
+        std::unique_ptr<RealtimeObservations> pending_observation_override{};
+        std::unique_ptr<RealtimeObservations> retired_observation_override{};
+        // Cold staging reads and replaces these owners under the chain guard.
+        [[nodiscard]] RealtimeCode const& latest_realtime_code() const noexcept;
+        void stage_realtime_code(std::unique_ptr<RealtimeCode> code);
         RealtimeGeneration realtime;
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
@@ -298,12 +318,14 @@ class GraphExecutor {
 
         void initialize_first_generation();
         void initialize_first_background_generation();
-        void prepare_realtime_migration_from(ExecutionGeneration& previous);
+        void prepare_realtime_migration_from(ExecutionGeneration& previous, bool preserve_state);
         void prepare_background_migration_from(
             ExecutionGeneration& previous,
             PersistedDataStore& data);
         void commit_realtime_migration(GlobalIndex sample_index) noexcept;
-        void commit_background_migration(ExecutionGeneration const* drained_predecessor = nullptr);
+        void initialize_background_for_playback_preview();
+        void adopt_background_after_drain(ExecutionGeneration const& predecessor);
+        void install_migrated_background_coverage();
         void update_realtime_phase(
             std::size_t event_samples_advanced = 0) noexcept;
         void attach_successor(
@@ -521,6 +543,13 @@ class GraphExecutor {
         ManualControlId const& id);
     [[nodiscard]] std::unique_ptr<ExecutionGeneration::RealtimeCode>
     prepare_realtime_code(std::shared_ptr<CompiledGraph const> graph);
+    [[nodiscard]] static std::unique_ptr<ExecutionGeneration::RealtimeObservations>
+    prepare_realtime_observations(CompiledGraph const& code, CompiledObservationPlan const& plan);
+    bool stage_realtime_observations(std::uint64_t project_generation,
+        CompiledObservationPlan const& plan);
+    bool stage_observation_code(std::uint64_t project_generation,
+        std::shared_ptr<CompiledGraph const> code);
+    [[nodiscard]] ExecutionGeneration* observation_update_target(std::uint64_t generation) const noexcept;
     // Writes value into every accepted generation that binds id. The caller
     // holds the accepted-chain guard.
     bool set_manual_control_target_in_accepted_chain(
@@ -575,9 +604,8 @@ public:
     GraphExecutorStageResult stage(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
-    // Keeps the accepted structural generation and its NodeStorage. The
-    // replacement must have the same project generation and canonical layout;
-    // a newer compatible request replaces an older unactivated request.
+    // Keeps the accepted generation and its NodeStorage. Manual-control code
+    // names that generation itself.
     GraphExecutorStageResult stage_realtime_code(
         std::shared_ptr<CompiledGraph const> compiled_graph);
 
@@ -586,6 +614,10 @@ public:
     [[nodiscard]] static bool can_replace_realtime_code(
         CompiledGraph const& structural,
         CompiledGraph const& replacement) noexcept;
+    // Cold preflight for viewport predictions. Stage checks the running code
+    // again before it publishes the requested bindings.
+    [[nodiscard]] static bool can_attach_realtime_observations(
+        CompiledGraph const& code, CompiledObservationPlan const& plan);
 
     // Atomically changes target_bits in the accepted generation selected by
     // project_generation. One semantic ManualControlId can update several
@@ -612,6 +644,7 @@ public:
 
     void handle_project_graph_controls(
         ProjectGraphGraphExecutorControlsRequest& request);
+    bool stage_observation_update(ProjectGraphRealtimeObservationRequest const& request);
 
     // At the caller-provided quiescent boundary, commits the prepared realtime
     // migration at the first successor sample, closes the predecessor's

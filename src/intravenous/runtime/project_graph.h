@@ -92,13 +92,14 @@ struct ProjectGraphRebuildTimings {
 // The same configured_generation can acquire newer worker-result publications;
 // existing readers keep the snapshot they obtained.
 struct ProjectGraphGeneration {
-    // generation identifies the requested executable target; probe/control
-    // realization can change it without changing configured interfaces.
-    std::uint64_t generation = 0;
+    // The executor has accepted this generation for the configured graph.
+    // An in-place code or probe publication leaves it intact.
+    std::optional<std::uint64_t> execution_generation{};
     std::uint64_t configured_generation = 0;
     std::uint64_t definitions_generation = 0;
     std::shared_ptr<NodeDefinitionsSnapshot const> definitions{};
     std::shared_ptr<ConfiguredGraph const> graph{};
+    graph_jit::ConfiguredBundleInventory configured_bundles{};
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
     std::size_t source_sample_connection_count = 0;
     std::size_t source_event_connection_count = 0;
@@ -216,10 +217,12 @@ class ProjectGraph {
         GraphJitCompileResult result{};
     };
     struct GraphCompileRequest {
+        std::uint64_t attempt = 0;
         std::shared_ptr<ProjectGraphGeneration const> configured{};
         GraphJitCompileRequest inputs{};
         std::shared_ptr<ControlCompileTrace> trace{};
         std::shared_ptr<ObservationCompileCandidate> observation_candidate{};
+        bool observation_update = false;
     };
     struct ExecutionCheckpoint {
         std::shared_ptr<ProjectGraphGeneration const> configured;
@@ -232,11 +235,17 @@ class ProjectGraph {
     bool observation_prediction_pending_ = false;
     std::optional<GraphCompileRequest> pending_graph_compile_{};
     bool execution_recovery_requested_ = false;
-    std::uint64_t last_scheduled_execution_generation_ = 0;
+    std::uint64_t next_execution_attempt_ = 1;
+    std::optional<std::uint64_t> latest_execution_attempt_{};
     bool compile_inflight_ = false;
-    void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {});
-    [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked();
+    void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {},
+        bool observation_update = false, std::shared_ptr<ConfiguredGraph const> graph = {});
+    [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked(
+        std::span<ManualControlId const> dynamic_inputs);
     [[nodiscard]] bool can_compile_observation_prediction_locked() const;
+    bool stage_observation_update_locked(GraphCompileRequest const& request,
+        std::shared_ptr<CompiledGraph const> const& predecessor,
+        GraphJitCompileResult const* compiled);
     void compile_graph(GraphCompileRequest request, std::stop_token stop);
     void recover_failed_execution(std::stop_token stop);
     struct ControlCompileTrace {
@@ -312,7 +321,7 @@ class ProjectGraph {
     std::condition_variable control_compile_changed_{};
     std::uint64_t next_control_compile_request_ = 1;
     std::uint64_t latest_control_compile_request_ = 0;
-    std::uint64_t next_generation_ = 1;
+    std::uint64_t next_execution_generation_ = 1;
     std::uint64_t next_configured_generation_ = 1;
     std::jthread compile_worker_{};
 
@@ -355,7 +364,7 @@ class ProjectGraph {
     void compile_control_storage_change(std::uint64_t request_id,
         std::shared_ptr<ControlCompileTrace> const& trace);
     [[nodiscard]] GraphJitCompileRequest capture_compile_inputs_locked(
-        std::shared_ptr<ConfiguredGraph const> graph) const;
+        std::shared_ptr<ConfiguredGraph const> graph, std::uint64_t execution_generation = 0) const;
     [[nodiscard]] bool compile_inputs_are_current_locked(
         std::uint64_t project_generation, std::uint64_t observation_revision) const;
     [[nodiscard]] bool control_code_matches_locked(std::span<ManualControlId const> inputs) const;

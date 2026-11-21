@@ -1,3 +1,4 @@
+import type { NodeEventInteractions } from "./nodeEventInteractions";
 import type { NodeAddress } from "./graphScope";
 import { serializeNodeEvent, type NodeEvent, type SerializedNodeEvent } from "./nodeEvents";
 
@@ -118,4 +119,12 @@ export async function replyToNodeEvent(request: NodeEventRequest,
         return { type: "nodeEventResult", requestId: request.requestId,
             error: error instanceof Error ? error.message : String(error) };
     }
+}
+
+export function answerNodeEventRequest(interactions: NodeEventInteractions, owner: string,
+    request: NodeEventHostRequest): Promise<NodeEventResponse> {
+    return request.type === "sendNodeEvent"
+        ? replyToNodeEvent(request, (target, event, id) => interactions.send(owner, target, event, id))
+        : replyToNodeEventGesture(request, (target, id, begin) => begin
+            ? interactions.begin(owner, target, id) : interactions.end(owner, target, id));
 }

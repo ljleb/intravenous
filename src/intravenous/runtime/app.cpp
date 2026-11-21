@@ -244,10 +244,10 @@ public:
                 if (activated) {
                     project_graph_->acknowledge_execution(*execution.active_project_generation);
                     reported_execution = execution.active_project_generation;
+                    observations_->notify_execution_activation();
                 }
                 if (executor_->has_failed_pending_generation()) project_graph_->request_execution_recovery();
                 auto const now = std::chrono::steady_clock::now();
-                observations_->collect(now, activated);
                 if (now >= next_underrun_report) {
                     auto const underruns = executor_->playback_underrun_blocks();
                     if (underruns != reported_underruns) {
@@ -453,8 +453,9 @@ int run_server_mode(int argc, char** argv)
     auto rpc_autosave_scope =
         socket_rpc_project_autosave_bridge::bind(server, project_autosave);
 
-    // Stop collection before its bridge bindings are destroyed, including
-    // when startup exits through an exception.
+    // Join the worker before its bridges are destroyed, including on an
+    // exception during startup.
+    std::jthread observation_worker;
     RuntimeExecutionService runtime_execution_service(
         system_audio_devices,
         graph_executor,
@@ -476,6 +477,7 @@ int run_server_mode(int argc, char** argv)
     }
     flush_diagnostic_stream();
     project_autosave_service.start();
+    observation_worker = std::jthread([&](std::stop_token stop) { observations.run(stop); });
     runtime_execution_service.start();
 
     startup_log("starting socket rpc server");
@@ -498,6 +500,8 @@ int run_server_mode(int argc, char** argv)
     package_watcher_service.request_shutdown();
     project_autosave_service.stop();
     runtime_execution_service.stop();
+    observation_worker.request_stop();
+    observation_worker.join();
     graph_executor_audio_attachment.stop();
     runtime_execution_service.throw_if_failed();
     return 0;

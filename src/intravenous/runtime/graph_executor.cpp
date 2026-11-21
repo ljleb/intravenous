@@ -24,6 +24,16 @@ namespace iv {
 
 namespace {
 
+bool same_audio_configuration(CompiledGraph const& lhs, CompiledGraph const& rhs)
+{
+    return lhs.configured_bundles.snapshot && lhs.configured_bundles == rhs.configured_bundles
+        && lhs.definitions_generation == rhs.definitions_generation
+        && lhs.specialization.sample_rate == rhs.specialization.sample_rate
+        && lhs.specialization.block_size == rhs.specialization.block_size
+        && lhs.configured_graph && rhs.configured_graph
+        && lhs.configured_graph->manual_controls == rhs.configured_graph->manual_controls;
+}
+
 std::optional<std::string> unavailable_sample_cutover(
     graph_jit::RealtimePortStateTransitionPlan const& plan,
     CompiledGraph const& previous, CompiledGraph const& current)
@@ -116,38 +126,71 @@ ProducerCapacityPolicy producer_capacity_policy(
     };
 }
 
-// A replacement changes only the steady Tick operations, which run after the
-// structural generation's transition phase and address only its steady
-// NodeStorage prefix. So it is compared with that prefix: the structural
-// generation's transition-only regions, a suffix of its layout, are not part of
-// the canonical layout that dynamic and constant code share.
-bool compatible_realtime_code(
+bool prepared_controls_match(
     CompiledGraph const& structural,
     CompiledGraph const& replacement) noexcept
 {
-    if (replacement.configured_graph) {
-        for (auto const& control : replacement.configured_graph->manual_controls) {
-            if (!control.requires_preparation) continue;
-            if (!structural.configured_graph) return false;
-            auto const previous = std::ranges::find(structural.configured_graph->manual_controls, control.id, &ConfiguredManualControl::id);
-            if (previous == structural.configured_graph->manual_controls.end()
-                || previous->settled_value != control.settled_value) return false;
-        }
+    if (!replacement.configured_graph) return true;
+    for (auto const& control : replacement.configured_graph->manual_controls) {
+        if (!control.requires_preparation) continue;
+        if (!structural.configured_graph) return false;
+        auto const& previous_controls = structural.configured_graph->manual_controls;
+        auto const previous = std::ranges::find(previous_controls, control.id, &ConfiguredManualControl::id);
+        if (previous == previous_controls.end() || previous->settled_value != control.settled_value)
+            return false;
     }
+    return true;
+}
+
+// The running generation keeps both its TickInvocationWorkspace and its
+// background playback selection when new steady code takes effect.
+bool can_reuse_background_workspace(
+    graph_jit::BackgroundEvaluationPlan const& previous,
+    graph_jit::BackgroundEvaluationPlan const& replacement) noexcept
+{
+    if (previous.tick_runtime != replacement.tick_runtime
+        || previous.requires_live_tick_coverage != replacement.requires_live_tick_coverage
+        || previous.nodes.size() != replacement.nodes.size()
+        || previous.connections != replacement.connections) return false;
+    return std::ranges::equal(previous.ports, replacement.ports, [](auto const& before, auto const& after) {
+        return before.configured_port == after.configured_port
+            && before.direction == after.direction
+            && before.input_access == after.input_access
+            && before.content_access == after.content_access
+            && before.full_live_tick_coverage == after.full_live_tick_coverage
+            && before.sample_fallback_value == after.sample_fallback_value
+            && before.sample_manual_contribution == after.sample_manual_contribution
+            && before.accumulators.input_change == after.accumulators.input_change
+            && before.accumulators.output_change == after.accumulators.output_change
+            && before.incoming_connections == after.incoming_connections
+            && before.outgoing_connections == after.outgoing_connections;
+    });
+}
+
+// Steady Tick code addresses the canonical NodeStorage prefix. Each graph can
+// also have a transition-only suffix that its steady code never uses.
+bool compatible_steady_realtime_code(
+    CompiledGraph const& structural,
+    CompiledGraph const& replacement) noexcept
+{
+    if (!prepared_controls_match(structural, replacement)
+        || !can_reuse_background_workspace(
+            structural.background_evaluation_plan, replacement.background_evaluation_plan))
+        return false;
+
     auto const steady_regions = static_cast<std::size_t>(std::ranges::count_if(
         structural.node_layout.regions,
         [](NodeLayout::Region const& region) { return !region.transition_only; }));
-    if (replacement.cutover
-        || replacement.project_generation != structural.project_generation
-        || replacement.configured_generation != structural.configured_generation
+    auto const replacement_steady_regions = static_cast<std::size_t>(std::ranges::count_if(
+        replacement.node_layout.regions,
+        [](NodeLayout::Region const& region) { return !region.transition_only; }));
+    if (replacement.configured_generation != structural.configured_generation
         || replacement.definitions_generation
             != structural.definitions_generation
         || replacement.specialization.sample_rate
             != structural.specialization.sample_rate
         || replacement.specialization.block_size
             != structural.specialization.block_size
-        || replacement.node_layout.storage_size
-            != replacement.node_layout.steady_storage_size
         || replacement.node_layout.steady_storage_size
             != structural.node_layout.steady_storage_size
         // A transition-only region may raise the structural alignment; storage
@@ -162,7 +205,7 @@ bool compatible_realtime_code(
             != structural.node_layout.default_silence_ttl_samples
         || replacement.node_layout.nodes.size()
             != structural.node_layout.nodes.size()
-        || replacement.node_layout.regions.size() != steady_regions
+        || replacement_steady_regions != steady_regions
         || replacement.node_layout.imported_arrays.size()
             != structural.node_layout.imported_arrays.size()
         || replacement.node_layout.exported_arrays.size()
@@ -171,38 +214,8 @@ bool compatible_realtime_code(
             != structural.node_layout.initialize_order
         || replacement.manual_controls.size()
             != structural.manual_controls.size()
-        // TickInvocationWorkspace keeps these slots and capture reserves for
-        // the structural generation. A source replacement may change them
-        // even when its NodeStorage happens to have the same byte extent.
-        || replacement.background_evaluation_plan.tick_runtime
-            != structural.background_evaluation_plan.tick_runtime
         || !replacement.root_operations.valid()) {
         return false;
-    }
-    // Code-only replacement keeps the structural generation's background
-    // workspace and immutable playback selection. A different fallback or
-    // coverage inventory needs an ordinary prepared transition, even when the
-    // NodeStorage byte extent happens to match.
-    auto const& old_background = structural.background_evaluation_plan;
-    auto const& new_background = replacement.background_evaluation_plan;
-    if (old_background.requires_live_tick_coverage != new_background.requires_live_tick_coverage
-        || old_background.nodes.size() != new_background.nodes.size()
-        || old_background.ports.size() != new_background.ports.size()
-        || old_background.connections != new_background.connections) return false;
-    for (std::size_t port = 0; port < old_background.ports.size(); ++port) {
-        auto const& old_port = old_background.ports[port];
-        auto const& new_port = new_background.ports[port];
-        if (old_port.configured_port != new_port.configured_port
-            || old_port.direction != new_port.direction
-            || old_port.input_access != new_port.input_access
-            || old_port.content_access != new_port.content_access
-            || old_port.full_live_tick_coverage != new_port.full_live_tick_coverage
-            || old_port.sample_fallback_value != new_port.sample_fallback_value
-            || old_port.sample_manual_contribution != new_port.sample_manual_contribution
-            || old_port.accumulators.input_change != new_port.accumulators.input_change
-            || old_port.accumulators.output_change != new_port.accumulators.output_change
-            || old_port.incoming_connections != new_port.incoming_connections
-            || old_port.outgoing_connections != new_port.outgoing_connections) return false;
     }
     for (std::size_t i = 0; i < structural.node_layout.nodes.size(); ++i) {
         auto const& lhs = structural.node_layout.nodes[i];
@@ -294,6 +307,15 @@ bool compatible_realtime_code(
         }
     }
     return true;
+}
+
+bool same_realtime_port_state(CompiledGraph const& previous, CompiledGraph const& successor)
+{
+    auto const& before = previous.realtime_port_state_realizations;
+    auto const& after = successor.realtime_port_state_realizations;
+    return previous.realtime_port_state_requirements.states == successor.realtime_port_state_requirements.states
+        && before.sample_states == after.sample_states
+        && before.event_states == after.event_states;
 }
 
 bool write_manual_control_target(
@@ -647,7 +669,7 @@ void GraphExecutor::ExecutionGeneration::initialize_first_background_generation(
 }
 
 void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
-    ExecutionGeneration& previous)
+    ExecutionGeneration& previous, bool preserve_state)
 {
     if (realtime_initialized || background_initialized
         || realtime_migration
@@ -688,6 +710,18 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
         throw std::runtime_error(
             "GraphExecutor could not prepare realtime port-state cutover: " + *unavailable);
     }
+    if (preserve_state) {
+        auto const loses_retained_state = [](graph_jit::RealtimePortStateTransition const& state) {
+            using Realization = graph_jit::InheritedRealtimePortStateRealization;
+            return state.has_predecessor && state.inherited_end != state.inherited_begin
+                && (state.inherited_state_realization == Realization::fresh_state
+                    || state.inherited_state_realization == Realization::predecessor_state_unavailable);
+        };
+        if (std::ranges::any_of(transition->sample_states, loses_retained_state)
+            || std::ranges::any_of(transition->event_states, loses_retained_state)) {
+            throw std::runtime_error("observation cutover cannot preserve the previous Sequential port state");
+        }
+    }
     auto prepared_transition =
         graph_jit::prepare_realtime_port_state_transfers(
             std::move(*transition),
@@ -723,7 +757,7 @@ void GraphExecutor::ExecutionGeneration::prepare_realtime_migration_from(
     realtime_port_state_transition.emplace(
         std::move(*prepared_transition));
     realtime_migration.emplace(
-        realtime.storage.prepare_migration_from(previous.realtime.storage));
+        realtime.storage.prepare_migration_from(previous.realtime.storage, preserve_state));
 }
 
 void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
@@ -818,25 +852,59 @@ void GraphExecutor::ExecutionGeneration::update_realtime_phase(
     }
 }
 
-void GraphExecutor::ExecutionGeneration::commit_background_migration(
-    ExecutionGeneration const* drained_predecessor)
+void GraphExecutor::ExecutionGeneration::initialize_background_for_playback_preview()
 {
-    if (background_initialized) return; // The successor may already own its prepared selection.
+    if (!preparation_predecessor) {
+        initialize_first_background_generation();
+        return;
+    }
+    // A preview can be discarded while the predecessor still runs. Its Tock
+    // callbacks get private state and its coverage begins with migrated metadata.
+    background.tock_states.initialize();
+    install_migrated_background_coverage();
+}
+
+void GraphExecutor::ExecutionGeneration::adopt_background_after_drain(
+    ExecutionGeneration const& predecessor)
+{
+    if (background_initialized) {
+        // Keep the preview state and results. Reconcile against the recording
+        // roots to account for anything committed during the drain.
+        background.reconciliation_required = true;
+        return;
+    }
+    background.tock_states.initialize(&predecessor.background.tock_states);
+    install_migrated_background_coverage();
+}
+
+void GraphExecutor::ExecutionGeneration::install_migrated_background_coverage()
+{
     if (!background_coverage_migration) {
         throw std::logic_error(
             "GraphExecutor background generation migration is not prepared");
     }
-    // Private successor preparation must not consume an active predecessor's
-    // cache. Only advance_generation(), after draining predecessor work, can
-    // offer it to an authored move. Other preparation starts fresh.
-    background.tock_states.initialize(drained_predecessor
-        ? &drained_predecessor->background.tock_states : nullptr);
     background_coverage_migration->commit();
     background.reconciliation_roots =
         background_coverage_migration->take_reconciliation_roots();
     background_coverage_migration.reset();
     background.reconciliation_required = true;
     background_initialized = true;
+}
+
+GraphExecutor::ExecutionGeneration::RealtimeCode const&
+GraphExecutor::ExecutionGeneration::latest_realtime_code() const noexcept
+{
+    return pending_realtime_code_owner ? *pending_realtime_code_owner : *active_realtime_code_owner;
+}
+
+void GraphExecutor::ExecutionGeneration::stage_realtime_code(std::unique_ptr<RealtimeCode> code)
+{
+    // The audio thread only retires owners. The next cold publication reclaims
+    // them and discards any pending bindings that target the replaced code.
+    retired_realtime_code_owner.reset();
+    pending_realtime_code_owner = std::move(code);
+    retired_observation_override.reset();
+    pending_observation_override.reset();
 }
 
 void GraphExecutor::ExecutionGeneration::attach_successor(
@@ -1336,11 +1404,13 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
         PreparedSubmission{std::unique_lock(generation_submission_mutex_)});
     IndexCoverage playback_demand;
     ExecutionGeneration* predecessor = nullptr;
+    std::shared_ptr<CompiledGraph const> predecessor_code;
     {
         lock_accepted_chain();
         Unlock unlock{this};
         playback_demand = tick_materialization_demand_;
         predecessor = pending_tail_ ? pending_tail_ : realtime_active_;
+        if (predecessor) predecessor_code = predecessor->latest_realtime_code().graph;
     }
     if (!compiled_graph) {
         throw std::invalid_argument("GraphExecutor cannot stage an empty compiled graph");
@@ -1376,6 +1446,7 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
             "GraphExecutor successor does not carry its predecessor cutover");
     }
 
+    bool const preserve_state = predecessor_code && same_audio_configuration(*predecessor_code, *compiled_graph);
     auto prepared = std::make_unique<ExecutionGeneration>(
         std::move(compiled_graph),
         resources_,
@@ -1398,7 +1469,7 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
     if (!predecessor) {
         prepared->initialize_first_generation();
     } else {
-        prepared->prepare_realtime_migration_from(*predecessor);
+        prepared->prepare_realtime_migration_from(*predecessor, preserve_state);
         background_executor_.prepare_background_migration(
             *prepared, *predecessor);
     }
@@ -1443,7 +1514,10 @@ bool GraphExecutor::can_replace_realtime_code(
     CompiledGraph const& structural,
     CompiledGraph const& replacement) noexcept
 {
-    return compatible_realtime_code(structural, replacement);
+    return !replacement.cutover
+        && replacement.project_generation == structural.project_generation
+        && replacement.node_layout.storage_size == replacement.node_layout.steady_storage_size
+        && compatible_steady_realtime_code(structural, replacement);
 }
 
 GraphExecutorStageResult GraphExecutor::stage_realtime_code(
@@ -1459,19 +1533,106 @@ GraphExecutorStageResult GraphExecutor::stage_realtime_code(
         throw std::invalid_argument(
             "GraphExecutor cannot stage an empty realtime-code replacement");
     }
-    auto* target = find_accepted_generation(
-        compiled_graph->project_generation);
+    auto* target = find_accepted_generation(compiled_graph->project_generation);
     if (!target) return GraphExecutorStageResult::ignored_stale;
-    if (!compatible_realtime_code(*target->graph, *compiled_graph)) {
+    if (!can_replace_realtime_code(*target->graph, *compiled_graph)) {
         throw std::invalid_argument(
             "GraphExecutor realtime-code replacement is not layout-compatible");
     }
-    auto prepared = prepare_realtime_code(std::move(compiled_graph));
-    // Activation has finished using the previous code before retiring it.
-    // Reclamation belongs to this control path, never the audio callback.
-    target->retired_realtime_code_owner.reset();
-    target->pending_realtime_code_owner = std::move(prepared);
+    target->stage_realtime_code(prepare_realtime_code(std::move(compiled_graph)));
     return GraphExecutorStageResult::accepted;
+}
+
+GraphExecutor::ExecutionGeneration* GraphExecutor::observation_update_target(
+    std::uint64_t generation) const noexcept
+{
+    if (!realtime_active_ || pending_head_
+        || realtime_active_->graph->project_generation != generation) return nullptr;
+    return realtime_active_;
+}
+
+bool GraphExecutor::stage_observation_code(std::uint64_t project_generation,
+    std::shared_ptr<CompiledGraph const> code)
+{
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
+    auto* target = observation_update_target(project_generation);
+    if (!target || !code) return false;
+    if (!same_audio_configuration(*target->latest_realtime_code().graph, *code)
+        || !same_realtime_port_state(*target->graph, *code)
+        || !compatible_steady_realtime_code(*target->graph, *code)) return false;
+
+    target->stage_realtime_code(prepare_realtime_code(std::move(code)));
+    return true;
+}
+
+bool GraphExecutor::stage_realtime_observations(std::uint64_t project_generation,
+    CompiledObservationPlan const& plan)
+{
+    struct Unlock {
+        GraphExecutor* executor;
+        ~Unlock() { executor->unlock_accepted_chain(); }
+    };
+    lock_accepted_chain();
+    Unlock unlock{this};
+    auto* target = observation_update_target(project_generation);
+    if (!target) return false;
+
+    auto prepared = prepare_realtime_observations(*target->latest_realtime_code().graph, plan);
+    if (!prepared) return false;
+    prepared->publication_id = next_observation_publication_++;
+    target->retired_observation_override.reset();
+    target->pending_observation_override = std::move(prepared);
+    return true;
+}
+
+bool GraphExecutor::can_attach_realtime_observations(
+    CompiledGraph const& code, CompiledObservationPlan const& plan)
+{
+    return static_cast<bool>(prepare_realtime_observations(code, plan));
+}
+
+std::unique_ptr<GraphExecutor::ExecutionGeneration::RealtimeObservations>
+GraphExecutor::prepare_realtime_observations(CompiledGraph const& code, CompiledObservationPlan const& plan)
+{
+    if (plan.probes.size() > maximum_live_observation_probes) return {};
+    auto const& captures = code.observations.probes;
+    if (captures.size() > maximum_live_observation_probes) return {};
+    auto prepared = std::make_unique<ExecutionGeneration::RealtimeObservations>();
+    prepared->plan = plan;
+    prepared->capture_slots.fill(maximum_live_observation_probes);
+    for (std::size_t slot = 0; slot < plan.probes.size(); ++slot) {
+        auto const& probe = plan.probes[slot];
+        if (!probe.available) continue;
+        if (probe.kind == ObservationSourceKind::state_field) {
+            auto const& states = code.observable_tick_states;
+            auto const state = std::ranges::lower_bound(states, probe.bundle, {}, &RealtimeObservationState::bundle);
+            auto const storage_size = code.node_layout.steady_storage_size;
+            if (state == states.end() || state->bundle != probe.bundle
+                || !probe.operation || !probe.operation->capture_state
+                || state->offset > storage_size || state->size > storage_size - state->offset
+                || probe.state_field_offset > state->size
+                || probe.state_field_size > state->size - probe.state_field_offset) return {};
+            prepared->state_captures.emplace_back(slot, state->offset + probe.state_field_offset);
+            continue;
+        }
+        if (!probe.operation || !probe.operation->capture_block) return {};
+        std::size_t code_slot = 0;
+        for (; code_slot < captures.size(); ++code_slot) {
+            auto const& candidate = captures[code_slot];
+            if (prepared->capture_slots[code_slot] == maximum_live_observation_probes
+                && candidate.available && candidate.kind == probe.kind
+                && candidate.bundle == probe.bundle && candidate.port == probe.port
+                && candidate.channels == probe.channels && candidate.output_sources == probe.output_sources) break;
+        }
+        if (code_slot == captures.size()) return {};
+        prepared->capture_slots[code_slot] = slot;
+    }
+    return prepared;
 }
 
 bool GraphExecutor::set_manual_control_target(
@@ -1652,6 +1813,14 @@ void GraphExecutor::handle_project_graph_controls(
     }
 }
 
+bool GraphExecutor::stage_observation_update(ProjectGraphRealtimeObservationRequest const& request)
+{
+    if (auto const* plan = std::get_if<CompiledObservationPlan>(&request.update))
+        return stage_realtime_observations(request.execution_generation, *plan);
+    return stage_observation_code(request.execution_generation,
+        std::get<std::shared_ptr<CompiledGraph const>>(request.update));
+}
+
 bool GraphExecutor::activate_pending(GlobalIndex sample_index)
 {
     return activate_pending_at({sample_index, {sample_index, 0}});
@@ -1711,21 +1880,26 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     };
     auto activate_realtime_code = [&](ExecutionGeneration& generation) {
         generation.update_realtime_phase();
-        if (!generation.pending_realtime_code_owner
-            || generation.realtime_phase.load(std::memory_order_relaxed)
+        if (generation.realtime_phase.load(std::memory_order_relaxed)
                 != CompiledGraphRealtimePhase::steady) {
             return false;
         }
-        IV_ASSERT(!generation.retired_realtime_code_owner,
-            "cold code staging must reclaim previously retired code");
-        generation.retired_realtime_code_owner =
-            std::move(generation.active_realtime_code_owner);
-        generation.active_realtime_code_owner =
-            std::move(generation.pending_realtime_code_owner);
-        generation.realtime_code.store(
-            generation.active_realtime_code_owner.get(),
-            std::memory_order_release);
-        return true;
+        auto const code_changed = static_cast<bool>(generation.pending_realtime_code_owner);
+        if (code_changed) {
+            IV_ASSERT(!generation.retired_realtime_code_owner,
+                "cold code staging must reclaim previously retired code");
+            generation.retired_realtime_code_owner = std::move(generation.active_realtime_code_owner);
+            generation.active_realtime_code_owner = std::move(generation.pending_realtime_code_owner);
+            generation.realtime_code.store(
+                generation.active_realtime_code_owner.get(), std::memory_order_release);
+        }
+        if (code_changed || generation.pending_observation_override) {
+            IV_ASSERT(!generation.retired_observation_override,
+                "cold observation staging must reclaim previously retired observations");
+            generation.retired_observation_override = std::move(generation.active_observation_override);
+            generation.active_observation_override = std::move(generation.pending_observation_override);
+        }
+        return code_changed;
     };
     if (!pending_head_ || rebuilding_pending_suffix_) {
         return realtime_active_
@@ -1839,7 +2013,8 @@ std::optional<FailedExecutionGeneration> GraphExecutor::reject_failed_pending_ge
             auto const& graph = replacement ? *replacement->graph : *successor->graph;
             result.successors.push_back({.project_generation = graph.project_generation,
                 .graph = graph.configured_graph, .definitions = successor->definitions_for_pending_recompile,
-                .observations = graph.observations, .configured_generation = graph.configured_generation});
+                .observations = graph.observations, .configured_generation = graph.configured_generation,
+                .configured_bundles = graph.configured_bundles});
         }
         if (!result.successors.empty()) {
             result.publish_rebuilt_suffix = [this] {
@@ -2014,13 +2189,7 @@ bool GraphExecutor::BackgroundExecutor::advance_generation()
         throw std::logic_error(
             "GraphExecutor could not retire drained producer queues");
     }
-    if (!successor->background_initialized) successor->commit_background_migration(&previous);
-    else {
-        // Its private metadata/result pages remain reusable. Recording-root
-        // identity comparisons in the transaction invalidate the finite tail
-        // committed after that preview, without discarding unchanged results.
-        successor->background.reconciliation_required = true;
-    }
+    successor->adopt_background_after_drain(previous);
 
     auto retired = std::move(generation_chain_);
     generation_chain_ = std::move(retired->successor_owner);
@@ -2037,8 +2206,7 @@ GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
     PlaybackPreparationMetrics::Interval preparation{PlaybackPreparationPhase::prepare_playback};
     auto& background = target.background;
     if (!target.background_initialized) {
-        if (target.preparation_predecessor) target.commit_background_migration();
-        else target.initialize_first_background_generation();
+        target.initialize_background_for_playback_preview();
         // A prepared migration may reuse metadata from a previously unused
         // Tock producer. Refresh it without inventing a local semantic change.
         for (graph_jit::BackgroundNodeIndex node = 0; node < target.graph->background_evaluation_plan.nodes.size(); ++node) {
@@ -2459,16 +2627,21 @@ void GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
     }
     auto* const realtime_code = generation.realtime_code.load(std::memory_order_acquire);
     if (profile) profile->code_publication = realtime_code->publication_id;
+    auto const* observation_override = generation.active_observation_override.get();
+    auto const& observation_plan = observation_override
+        ? observation_override->plan : realtime_code->graph->observations;
+    auto const publication = observation_override
+        ? observation_override->publication_id : realtime_code->publication_id;
     auto begin_observation_frame = [&]() -> LiveObservationFrame* {
-        auto const changed = last_observation_publication_ != realtime_code->publication_id;
-        if (!changed && realtime_code->graph->observations.probes.empty()) return nullptr;
+        auto const changed = last_observation_publication_ != publication;
+        if (!changed && observation_plan.probes.empty()) return nullptr;
         if (changed) {
-            last_observation_publication_ = realtime_code->publication_id;
+            last_observation_publication_ = publication;
             ++observation_activation_;
         }
         // Code can be prepared in a different order from activation while a
         // successor waits for background data. Stamp the actual realtime order.
-        auto& frame = observations_.begin(realtime_code->graph->observations,
+        auto& frame = observations_.begin(observation_plan,
             observation_activation_, generation.graph->project_generation, sample_index, block_size);
         frame.configured_generation = realtime_code->graph->configured_generation
             .value_or(generation.graph->project_generation);
@@ -2515,12 +2688,28 @@ void GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
     auto call = invocation.call();
     call.observations = begin_observation_frame();
     if (call.observations) call.observations->measure_capture = measure_observation_capture_;
+    if (call.observations && observation_override)
+        call.observations->capture_slots = &observation_override->capture_slots;
     tick(
         generation.realtime.storage.buffer().data(),
         &call,
         sample_index,
         block_size);
-    if (call.observations) observations_.publish();
+    if (auto* frame = call.observations) {
+        frame->capture_slots = nullptr;
+        if (observation_override) {
+            auto const started = frame->measure_capture ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
+            for (auto const& [slot, offset] : observation_override->state_captures) {
+                auto& value = frame->values[slot];
+                value.operation->capture_state(value.value, storage_base + offset);
+            }
+            if (frame->measure_capture && !observation_override->state_captures.empty())
+                frame->capture_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count());
+        }
+        observations_.publish();
+    }
     generation.update_realtime_phase(block_size);
 }
 

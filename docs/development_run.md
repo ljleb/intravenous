@@ -61,6 +61,53 @@ path. A run of at least 30 seconds resets that budget. Use
 `INTRAVENOUS_DIR` and `intravenous.intravenousDir` still select an explicit
 server directory when you run the extension separately.
 
+## Replay graph editor interactions
+
+The client build produces `headlessClient.js` in the same directory as
+`extension.js`. The headless client opens one server session without VS Code.
+Use the server executable from the same development bundle as the extension.
+
+Before recording, save a copy of the project with the starting graph and knob
+values. Keep the same node IDs. Run **Intravenous: Debug** in the graph editor
+and select **Record Client Interaction Trace**. Reproduce the pan or knob
+gesture during the next ten seconds. Find the trace path in the Intravenous
+output channel. Use one graph panel for the recording so the trace captures
+only its requests.
+
+From the repository root, run these commands in the development shell. Set
+`IV_TEST_SERVER` to the server executable from the development bundle.
+Set `IV_TEST_PROJECT` to the project copy. Set `IV_CLIENT_TRACE` to the saved
+trace path. The server can save knob changes during replay.
+
+```sh
+node build-release/vscode/client/dist/headlessClient.js inspect \
+  --server "$IV_TEST_SERVER" --project "$IV_TEST_PROJECT"
+
+node build-release/vscode/client/dist/headlessClient.js replay \
+  --server "$IV_TEST_SERVER" --project "$IV_TEST_PROJECT" \
+  --trace "$IV_CLIENT_TRACE" > replay.json
+```
+
+The report gives the first request that differs, the timing difference for
+matching requests, and playback diagnostics. The runner restores observation
+interests before it starts replay. It schedules inputs at their recorded times
+while the server replies in its own time. To compare with a fixed viewport,
+restore the project copy and repeat with `--steady`. This keeps the initial
+viewport interests while replaying edits.
+
+If the recorded viewport observes a Click Detector, `recordedEvents` lists
+the sample indices returned by that port. `playback.outputProfile` contains
+the stereo samples around graph switches. To compare detector events with
+switches, use the indices in the same replay. The recording starts from the
+saved graph. Changes by other panels and browser pointer handling need a live
+graph editor test.
+
+See [Audio continuity during observation changes](./observation_cutover_continuity_status.md)
+for the paused Saw replay and its port-state diagnosis.
+
+The headless client can also run a presentation scenario. See
+[Project presentation plugins](./project_presentation_plugins.md#test-a-presentation-scenario).
+
 ## Use the managed CMake tree
 
 The Nix development shell provides `ivctl` for cache inspection and cleanup.

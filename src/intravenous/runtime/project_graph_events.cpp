@@ -23,6 +23,11 @@ std::optional<FailedExecutionGeneration> ignore_execution_recovery()
 void ignore_graph_executor_controls_request(
     ProjectGraphGraphExecutorControlsRequest&)
 {}
+
+bool ignore_realtime_observation_request(ProjectGraphRealtimeObservationRequest const&)
+{
+    return false;
+}
 } // namespace
 IV_DEFINE_LINKER_EVENT(ProjectGraphAudioSelectionRequestedEvent, iv_runtime_project_graph_audio_selection_requested_event)
 IV_DEFINE_LINKER_EVENT(ProjectGraphToolchainRequestedEvent, iv_runtime_project_graph_toolchain_requested_event)
@@ -51,6 +56,10 @@ IV_DEFINE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorControlsRequestedEvent,
     iv_runtime_project_graph_graph_executor_controls_requested_event,
     &ignore_graph_executor_controls_request)
+IV_DEFINE_SINGLETON_EVENT(
+    ProjectGraphRealtimeObservationRequestedEvent,
+    iv_runtime_project_graph_realtime_observation_requested_event,
+    &ignore_realtime_observation_request)
 IV_DEFINE_LINKER_EVENT(
     ProjectGraphNodeInstancesReadEvent,
     iv_runtime_project_graph_node_instances_read_event)

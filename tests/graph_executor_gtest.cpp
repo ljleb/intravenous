@@ -2162,7 +2162,7 @@ TEST_F(GraphExecutorFixture, BackgroundStateMovesOnlyAfterOrderedCutoverOnTheBac
     EXPECT_FALSE(Probe::wrong_thread);
 }
 
-TEST_F(GraphExecutorFixture, PrivateSuccessorPreparationStartsBackgroundStateFresh)
+TEST_F(GraphExecutorFixture, SameConfigurationPlaybackPreviewStartsTockCacheFresh)
 {
     using Probe = BackgroundLifecycleProbe;
     Probe::control_thread = std::this_thread::get_id();
@@ -2172,9 +2172,15 @@ TEST_F(GraphExecutorFixture, PrivateSuccessorPreparationStartsBackgroundStateFre
     allow_initial_playback = true;
     {
         iv::GraphExecutor executor;
-        ASSERT_EQ(stage_graph(executor, background_lifecycle_graph(1)), iv::GraphExecutorStageResult::accepted);
+        auto first = background_lifecycle_graph(1);
+        first->configured_graph = std::make_shared<iv::ConfiguredGraph const>();
+        first->configured_bundles = {.snapshot = 1};
+        ASSERT_EQ(stage_graph(executor, first), iv::GraphExecutorStageResult::accepted);
         ASSERT_TRUE(executor.activate_pending(index(0)));
         auto next = background_lifecycle_graph(2);
+        next->configured_graph = first->configured_graph;
+        next->configured_bundles = first->configured_bundles;
+        next->observations.revision = 1;
         next->background_evaluation_plan.requires_live_tick_coverage = true;
         next->background_operations = {
             .propagate_forward = &no_op_background_evaluate,

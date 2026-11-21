@@ -13,7 +13,7 @@ test("viewport prediction moves farther for a fast pan and respects the graph bo
 });
 
 test("viewport observations preserve pending detail and replace it with an empty or unavailable result", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     const scope = new PresentationObservations(() => {});
     const source = { node: { instanceId: "timeline" }, kind: "input" as const, member: "beats", portKind: "event" as const };
     const actual = { begin: "11", length: "32", points: 64, maxDepth: 255 };
@@ -45,7 +45,7 @@ test("viewport observations preserve pending detail and replace it with an empty
 });
 
 test("a viewport reader reuses nearby interests on promotion and small zooms", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
     context.mock.timers.enable({ apis: ["setTimeout"] });
     const requests: Reconcile[] = [];
@@ -83,7 +83,7 @@ test("a viewport reader reuses nearby interests on promotion and small zooms", a
 });
 
 test("the next viewport sends a probe batch separately and preserves its IDs when it becomes visible", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     context.mock.timers.enable({ apis: ["setTimeout"] });
     type Request = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
     const reconciles: Request[] = [];
@@ -156,7 +156,7 @@ test("observation source identity distinguishes channels, inputs, outputs, and s
 });
 
 test("input observations use explicit interests alongside automatic output meters", { timeout: 5000 }, async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
     let publish: (request: Reconcile) => void;
     const scope = new PresentationObservations((request) => {
@@ -199,7 +199,7 @@ test("input observations use explicit interests alongside automatic output meter
 });
 
 test("moving the viewport submits window updates before the gesture stops", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = import("../src/observations").ObservationHostRequest;
     type Reconcile = Extract<Request, { type: "observationReconcile" }>;
     context.mock.timers.enable({ apis: ["setTimeout"] });
@@ -257,7 +257,7 @@ test("moving the viewport submits window updates before the gesture stops", asyn
 });
 
 test("lane visibility changes keep the current discovery deadline and reuse known lane descriptions", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = import("../src/observations").ObservationHostRequest;
     context.mock.timers.enable({ apis: ["setTimeout"] });
     const requests: Request[] = [];
@@ -309,7 +309,7 @@ test("lane visibility changes keep the current discovery deadline and reuse know
 });
 
 test("default lane observations subscribe only to the requested first input, with its channels intact", { timeout: 5000 }, async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Reconcile = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
     let publish: (request: Reconcile) => void;
     const stereo = [{ index: 0, name: "left" }, { index: 1, name: "right" }];
@@ -350,7 +350,7 @@ test("default lane observations subscribe only to the requested first input, wit
 });
 
 test("explicit viewport windows coalesce and send before capability discovery", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = import("../src/observations").ObservationHostRequest;
     let firstRequest!: (request: Request) => void;
     const first = new Promise<Request>((resolve) => { firstRequest = resolve; });
@@ -372,7 +372,7 @@ test("explicit viewport windows coalesce and send before capability discovery", 
 });
 
 test("recorded event timestamps request exactly the visible range", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = Extract<import("../src/observations").ObservationHostRequest, { type: "observationReconcile" }>;
     let received!: (request: Request) => void;
     const first = new Promise<Request>((resolve) => { received = resolve; });
@@ -391,7 +391,7 @@ test("recorded event timestamps request exactly the visible range", async () => 
 });
 
 test("viewport observations clone reactive addresses and survive presentation changes", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
     let revision = 0;
     const scope = new PresentationObservations((request) => {
@@ -435,7 +435,7 @@ test("viewport observations clone reactive addresses and survive presentation ch
 
 
 test("stereo meters keep their capture interests and readings across visual scale changes", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
     let revision = 0;
     const scope = new PresentationObservations((request) => {
@@ -487,7 +487,7 @@ test("stereo meters keep their capture interests and readings across visual scal
 
 
 test("compatible meter schemas retain identities across graph revisions while incompatible schemas clear old readings", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     let fieldType: "float32" | "float64" = "float64";
     let rightName = "right";
     const scope = new PresentationObservations((request) => {
@@ -533,7 +533,7 @@ test("compatible meter schemas retain identities across graph revisions while in
 });
 
 test("viewport probe budget keeps complete stereo pairs", async () => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     const requests: import("../src/observations").ObservationHostRequest[] = [];
     const scope = new PresentationObservations((request) => {
         requests.push(request);
@@ -556,7 +556,7 @@ test("viewport probe budget keeps complete stereo pairs", async () => {
 });
 
 test("generic lanes get a port before extra ports elsewhere and state fields require an explicit interest", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = import("../src/observations").ObservationHostRequest;
     type Reconcile = Extract<Request, { type: "observationReconcile" }>;
     context.mock.timers.enable({ apis: ["setTimeout"] });
@@ -596,7 +596,7 @@ test("generic lanes get a port before extra ports elsewhere and state fields req
 });
 
 test("a dense viewport can discover and observe more than 64 lanes", async (context) => {
-    const { PresentationObservations } = await import("../webview/presentation/observationContext");
+    const { PresentationObservations } = await import("../src/presentationObservations");
     type Request = import("../src/observations").ObservationHostRequest;
     context.mock.timers.enable({ apis: ["setTimeout"] });
     const requests: Request[] = [];
@@ -623,7 +623,7 @@ test("meter display choices persist as frontend preferences without project muta
     const key = observationSourceKey(source);
     let saved: Record<string, import("../src/observations").MeterMode> = {};
     // Construction/disposal do not issue RPC requests without visible interests.
-    return import("../webview/presentation/observationContext").then(({ PresentationObservations }) => {
+    return import("../src/presentationObservations").then(({ PresentationObservations }) => {
         const scope = new PresentationObservations(() => assert.fail("no visible sources"), {
             initial: { [key]: "value" }, save: (modes) => { saved = modes; },
         });

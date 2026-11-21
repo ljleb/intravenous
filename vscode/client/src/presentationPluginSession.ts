@@ -2,6 +2,26 @@ import { readPresentationFrame, type PresentationFrame, type PresentationInput, 
 
 type Run = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame | Promise<unknown>;
 
+export class PresentationWake {
+    private timer?: ReturnType<typeof setTimeout>;
+    private deadline = Infinity;
+    constructor(private readonly wake: () => void) {}
+    get pending(): boolean { return this.deadline !== Infinity; }
+    request(afterMs: number): void {
+        const delay = Math.max(8, afterMs);
+        const deadline = performance.now() + delay;
+        if (deadline >= this.deadline) return;
+        this.cancel();
+        this.deadline = deadline;
+        this.timer = setTimeout(() => { this.cancel(); this.wake(); }, delay);
+    }
+    cancel(): void {
+        clearTimeout(this.timer);
+        this.timer = undefined;
+        this.deadline = Infinity;
+    }
+}
+
 /** Coalesces redraws while delivering gestures in their original order. */
 export class PresentationPluginSession {
     private snapshot: PresentationSnapshot | undefined;
@@ -14,6 +34,8 @@ export class PresentationPluginSession {
     constructor(private readonly run: Run, private readonly schedule: () => void,
         private readonly accept: (frame: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) => void,
         private readonly fail: (error: unknown) => void) {}
+
+    get pending(): boolean { return !this.closed && (this.dirty || this.running || this.inputs.length > 0); }
 
     update(snapshot: PresentationSnapshot, pacing: "frame" | "immediate" = "frame"): void {
         this.snapshot = snapshot;

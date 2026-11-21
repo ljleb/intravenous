@@ -32,6 +32,8 @@ using ProjectGraphGraphExecutorRequestedEvent =
 using ProjectGraphExecutionRecoveryEvent = std::optional<FailedExecutionGeneration> (*)();
 using ProjectGraphGraphExecutorControlsRequestedEvent =
     void (*)(ProjectGraphGraphExecutorControlsRequest&);
+using ProjectGraphRealtimeObservationRequestedEvent =
+    bool (*)(ProjectGraphRealtimeObservationRequest const&);
 using ProjectGraphNodeInstancesReadEvent = void (*)(NodeInstancesProjectGraphRead&);
 using ProjectGraphConnectionsReadEvent = void (*)(GraphConnectionsProjectGraphRead&);
 using ProjectGraphPackagesReadEvent = void (*)(PackageDefinitionsProjectGraphRead&);
@@ -61,6 +63,9 @@ IV_DECLARE_SINGLETON_EVENT(
 IV_DECLARE_SINGLETON_EVENT(
     ProjectGraphGraphExecutorControlsRequestedEvent,
     iv_runtime_project_graph_graph_executor_controls_requested_event);
+IV_DECLARE_SINGLETON_EVENT(
+    ProjectGraphRealtimeObservationRequestedEvent,
+    iv_runtime_project_graph_realtime_observation_requested_event);
 // Reads of the desired instances and connections for one graph scope read.
 IV_DECLARE_LINKER_EVENT(
     ProjectGraphNodeInstancesReadEvent,

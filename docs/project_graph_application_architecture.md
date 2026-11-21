@@ -1084,7 +1084,7 @@ sources, not per-client subscription handles; `Observations` maps those sources
 to its own subscriptions. Invalidation and live delivery must respect actual
 generation activation, and unsuccessful staging must not discard valid current
 bindings. The active compiled execution/probe identity must distinguish
-control-code replacements that reuse `ProjectGraphGeneration::generation`.
+control-code replacements that reuse `ProjectGraphGeneration::execution_generation`.
 `Observations` must be able to detect the actual cutover even if the successor
 produces no observation values (for example, when its last source disappears).
 How `GraphExecutor` exposes that activation status is an implementation choice;

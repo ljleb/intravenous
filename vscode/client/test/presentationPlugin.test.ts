@@ -32,7 +32,7 @@ test("Click Detector displays observed events at their sample positions during p
         observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", result }] } },
     }, []));
     assert.equal(frame.status, "4 recorded clicks in view");
-    assert.deepEqual(frame.marks?.filter(({ type }) => type === "rect").map(({ x }) => x), [125, 250, 250, 48002 * (500 / 96000)]);
+    assert.deepEqual(frame.marks?.filter((mark) => mark.type === "rect").map(({ x }) => x), [125, 250, 250, 48002 * (500 / 96000)]);
 });
 
 test("the presentation host accepts one mark for every event in a dense recording", async () => {

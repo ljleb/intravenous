@@ -95,13 +95,15 @@ namespace iv {
             // Identity of this concrete node across graph revisions, assigned
             // by whoever declares the layout (GraphJit uses the node's
             // StableConcreteNodeId). NodeStorage migrates State only between
-            // records with equal non-empty identities; an anonymous node
-            // starts fresh.
+            // records with equal non-empty identities. An anonymous node can
+            // have a migration identity scoped to one configured snapshot.
             std::string migration_identity{};
             std::optional<NodeStateStructure> state_structure {};
             ptrdiff_t state_offset = 0;
             size_t state_size = 0;
             size_t state_alignment = 1;
+            size_t owned_region_begin = 0;
+            size_t owned_region_count = 0;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
         };
@@ -115,9 +117,17 @@ namespace iv {
         size_t default_silence_ttl_samples = std::numeric_limits<size_t>::max();
         std::vector<NodeRecord> nodes;
         std::vector<Region> regions;
+        std::vector<size_t> owned_region_indices;
         std::vector<ArrayBinding> imported_arrays;
         std::vector<ArrayBinding> exported_arrays;
         std::vector<size_t> initialize_order;
+
+        [[nodiscard]] std::span<size_t const> owned_regions(size_t node) const noexcept
+        {
+            auto const& record = nodes[node];
+            return std::span{owned_region_indices}.subspan(
+                record.owned_region_begin, record.owned_region_count);
+        }
 
         NodeStorage create_storage(
             ResourceContext const& resources,
@@ -187,6 +197,7 @@ namespace iv {
 
         // See NodeLayout::NodeRecord::migration_identity.
         void set_node_migration_identity(size_t node_index, std::string identity);
+        [[nodiscard]] size_t node_count() const noexcept { return _nodes.size(); }
 
         template<typename A>
         bool has_import_array(std::string const& id) const
@@ -323,7 +334,7 @@ namespace iv {
             NodeStorage const& previous,
             size_t node_index,
             size_t previous_node_index) const;
-        Migration prepare_migration_from(NodeStorage& previous);
+        Migration prepare_migration_from(NodeStorage& previous, bool preserve_state = false);
         void initialize(NodeStorage const* previous = nullptr);
         void release();
         void destroy_constructed_states();

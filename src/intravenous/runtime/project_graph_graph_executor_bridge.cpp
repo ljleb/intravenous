@@ -19,4 +19,8 @@ IV_SUBSCRIBE_SINGLETON_BRIDGE(
     project_graph_graph_executor_bridge,
     iv_runtime_project_graph_graph_executor_controls_requested_event,
     &GraphExecutor::handle_project_graph_controls)
+IV_SUBSCRIBE_SINGLETON_BRIDGE(
+    project_graph_graph_executor_bridge,
+    iv_runtime_project_graph_realtime_observation_requested_event,
+    &GraphExecutor::stage_observation_update)
 } // namespace iv

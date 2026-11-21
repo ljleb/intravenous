@@ -71,6 +71,7 @@ struct RealtimePortStateRequirement {
     // Execution port 0 of an internal resolution stage is owned by this
     // authored public input, whose semantic port index can differ from 0.
     std::optional<StableInputPortId> resolved_module_input{};
+    bool operator==(RealtimePortStateRequirement const&) const = default;
 };
 
 struct RealtimePortStateRequirements {
@@ -161,6 +162,7 @@ struct SampleRealtimePortStateStorageView {
     // agrees (plan_fresh_sample_storage_values()). Other producer storage
     // starts at zero bytes and declares none.
     std::optional<std::vector<std::byte>> initial_value{};
+    bool operator==(SampleRealtimePortStateStorageView const&) const = default;
 };
 
 struct SampleRealtimePortStateMaterialization {
@@ -168,6 +170,7 @@ struct SampleRealtimePortStateMaterialization {
     ChannelLayout target_layout{};
     std::size_t retained_before = 0;
     std::size_t latest_read_latency = 0;
+    bool operator==(SampleRealtimePortStateMaterialization const&) const = default;
 };
 
 struct SampleRealtimePortStateCompositionSource {
@@ -177,6 +180,7 @@ struct SampleRealtimePortStateCompositionSource {
     // finalized in-flight frames at cutover. Its timing still matters when
     // the successor changes the read delay or producer latency.
     bool owns_samples = true;
+    bool operator==(SampleRealtimePortStateCompositionSource const&) const = default;
 };
 
 struct SampleRealtimePortStateRealization {
@@ -201,6 +205,7 @@ struct SampleRealtimePortStateRealization {
     // One value of a Sequential input's geometry: its neutral_value. Empty for
     // an output.
     std::vector<std::byte> neutral_value{};
+    bool operator==(SampleRealtimePortStateRealization const&) const = default;
 };
 
 enum class EventRealtimePortStateStorage : std::uint8_t {
@@ -264,6 +269,7 @@ struct EventRealtimePortStateStorageView {
     // delayed stream hold each event at the position the input reads it, so
     // their views use zero.
     std::int64_t timeline_offset = 0;
+    bool operator==(EventRealtimePortStateStorageView const&) const = default;
 };
 
 // How a Sequential event input reads one of its sources: the Tick output it
@@ -280,6 +286,7 @@ struct EventRealtimePortStateSourceTiming {
     // The source's semantic position in its connection: its index in a
     // fan-in stream's source-index sidecar.
     std::size_t source_index = 0;
+    bool operator==(EventRealtimePortStateSourceTiming const&) const = default;
 };
 
 // One Tick event output whose events a retained input stream (a producer
@@ -297,6 +304,7 @@ struct EventRealtimePortStateOutputSource {
     std::size_t latency = 0;
     std::size_t stream_delay = 0;
     std::optional<std::size_t> target_source_index{};
+    bool operator==(EventRealtimePortStateOutputSource const&) const = default;
 };
 
 struct EventRealtimePortStateRealization {
@@ -325,6 +333,7 @@ struct EventRealtimePortStateRealization {
     // The outputs whose latency positions the input's retained stream also
     // holds. A cutover seeds them there from each output's own state.
     std::vector<EventRealtimePortStateOutputSource> retained_output_sources{};
+    bool operator==(EventRealtimePortStateRealization const&) const = default;
 };
 
 struct RealtimePortStateRealizations {

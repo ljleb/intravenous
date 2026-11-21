@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { PresentationObservations, provideObservations } from "../presentation/observationContext";
+import { provideObservations } from "../presentation/observationContext";
+import { ClientInteractionRecorder, observationConfiguration } from "../../src/clientInteractionTrace";
+import { PresentationObservations } from "../../src/presentationObservations";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
     GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
@@ -58,9 +60,11 @@ const elementStatus = useElementStatusHint();
 onBeforeUnmount(() => playback.dispose());
 const observations = new PresentationObservations((request) => webviewApi.postMessage(request), {
     initial: webviewApi.getState()?.meterModes,
-    save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) });
+    save: (meterModes) => webviewApi.setState({ ...webviewApi.getState(), meterModes }) }, { cell: shallowRef, map: shallowReactive });
 provideObservations(observations);
-let observationConfiguration: string | undefined;
+let configuredObservations: string | undefined;
+let clientTrace: ClientInteractionRecorder | undefined;
+let clientTraceTimer: ReturnType<typeof setTimeout> | undefined;
 const observationDelivery = new ObservationDeliverySequence();
 let observationProfile: ObservationProfile | undefined;
 let observationProfileTimer: ReturnType<typeof setTimeout> | undefined;
@@ -126,7 +130,10 @@ let knobClipboardStatus: StatusHint | null = null;
 let knobClipboardStatusTimer: ReturnType<typeof setTimeout> | undefined;
 
 const manualGestures = new ManualControlGestures(
-    (action) => webviewApi.postMessage({ type: "manualControlAction", action }),
+    (action) => {
+        clientTrace?.record({ type: "manual", action });
+        webviewApi.postMessage({ type: "manualControlAction", action });
+    },
     () => crypto.randomUUID(), () => { ++manualVersion.value; publishInteractionHint(); }, {
         initial: webviewApi.getState()?.outputInversions,
         save: (outputInversions) => webviewApi.setState({ ...webviewApi.getState(), outputInversions }),
@@ -1215,6 +1222,19 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         }, event.data.durationMs);
         return;
     }
+    if (event.data?.type === "startClientInteractionTrace") {
+        clearTimeout(clientTraceTimer);
+        clientTrace?.stop();
+        const { traceId, durationMs } = event.data;
+        const recording = new ClientInteractionRecorder(observations);
+        clientTrace = recording;
+        clientTraceTimer = setTimeout(() => {
+            clientTrace = undefined;
+            const message: GraphEditorWebviewMessage = { type: "clientInteractionTrace", traceId, recording: recording.stop() };
+            webviewApi.postMessage(message);
+        }, durationMs);
+        return;
+    }
     if (event.data?.type === "observationUpdate") {
         const { update, sequence, previousSequence } = event.data;
         const delivery = observationDelivery.receive(update, sequence, previousSequence);
@@ -1266,16 +1286,14 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     if (!state.value.scope?.editable && pickerOpen.value) closeNodePicker();
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);
     const scope = state.value.scope;
-    const generation = scope?.execution?.phase === "configurationFailed" ? null : scope?.generation ?? null;
     if (state.value.sessionStatus === "running") {
-        const prepared = generation !== null && scope?.execution?.preparedGeneration === generation;
-        const configuration = JSON.stringify([generation, prepared]);
-        if (configuration !== observationConfiguration) {
-            observationConfiguration = configuration;
+        const configuration = observationConfiguration(scope);
+        if (configuration !== configuredObservations) {
+            configuredObservations = configuration;
             observations.refresh();
         }
     } else {
-        observationConfiguration = undefined;
+        configuredObservations = undefined;
         observations.disconnect();
         for (const interrupt of presentationInterrupts) interrupt("disconnected");
     }
@@ -1345,6 +1363,8 @@ onBeforeUnmount(() => {
     clearTimeout(knobClipboardStatusTimer);
     pendingKnobPastes.clear();
     clearTimeout(cursorReturnTraceTimer);
+    clearTimeout(clientTraceTimer);
+    clientTrace?.stop();
     clearTimeout(observationProfileTimer);
     observationProfile = undefined;
     observations.stopProfile();
