@@ -51,11 +51,21 @@ feedback, `detach()`, replay dependencies, Region inputs, and complete-buffer
 inputs. The effective routes drive the background schedule, the realtime
 schedule, and physical storage planning.
 
+## Observation compilation
+
+`ProjectGraph::compile_graph()` first tries to attach observation bindings to
+the active code. When it needs new code, GraphJit builds one steady lowering
+plan and compares its layout with the active execution generation. A
+compatible plan skips Sequential state-transfer planning. An incompatible
+plan supplies the steady layout for the cutover specialization in the same
+compilation. The executor checks compatibility again when publishing the
+artifact. If it declines and the observation request is still current,
+`ProjectGraph` compiles a structural cutover.
+
 ## Decisions that come after the work
 
 | Current operation | Work that can be avoided | Where the decision belongs |
 | --- | --- | --- |
-| [`ProjectGraph::compile_graph`](../src/intravenous/project/project_graph.cpp#L712) requests compilation with a predecessor when bindings alone cannot satisfy a probe change. [`GraphJit`](../src/intravenous/graph_jit/graph_jit.cpp#L2234) derives transition inputs before the executor checks if the compiled code fits the active layout. | Compatible observation code can leave a state-transfer plan unused. The attempt-ID change avoids reserving an execution generation in this case. | Check compatibility against the steady lowering result first, then build the transition only when the check calls for a cutover. Reuse the steady result in either path. |
 | [`plan_event_ports()`](../src/intravenous/graph_jit/lowering_plan.cpp#L8592) binds the connected streams again if exact operation costs change a storage kind. | The second binding uses the same node inventory. It still rebuilds the connected operations and their callback slots if the first binding used a different raw output alias, carry buffer, or sequence capacity. | Give each operation a logical stream identity and record how its capacity depends on the source streams. Resolve aliases, capacity, and storage after choosing the storage kinds. Keep one record for shared conversions so the new plan counts each conversion once. |
 | [`build_lowering_plan`](../src/intravenous/graph_jit/lowering_plan.cpp#L9903) retries `plan_realtime_ports()` when packed stack size exceeds the budget. After building declarations and imports it can reject a batch and restart planning. | Each stack trial repeats parts of connection analysis and configures background replay. A rejected batch discards declarations and imports as well. | Give storage selection stable inputs for a given callback order and reserve replanning for facts that change with that order. Check batch compatibility as soon as the necessary layouts and callback signatures are known. The packed high-water mark may still require a search. |
 

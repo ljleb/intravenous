@@ -356,6 +356,7 @@ add_library(intravenous_graph_jit OBJECT
     graph_jit/lowering_plan.cpp
     graph_jit/port_realization.cpp
     graph_jit/realtime_root.cpp
+    graph_jit/realtime_code_compatibility.cpp
     graph_jit/realtime_port_state_transition.cpp
     graph_jit/region_specialization.cpp
     graph_jit/region_specialization_emit.cpp

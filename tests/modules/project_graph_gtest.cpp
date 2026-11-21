@@ -1075,6 +1075,7 @@ class ManualControlSchedulerProbe {
     std::vector<iv::ProjectControlCompileStatus> control_statuses_{};
     std::optional<iv::FailedExecutionGeneration> recovery_{};
     bool dynamic_controls_need_storage_ = false;
+    bool reuse_observation_layout_ = false;
     bool defer_activation_ = false;
     bool block_next_compilation_ = false;
     bool compilation_is_blocked_ = false;
@@ -1098,6 +1099,7 @@ public:
             ? dynamic_inputs(request.successor.graph->manual_controls)
             : std::vector<iv::ManualControlId>{};
         bool needs_storage = false;
+        bool reuses_observation_layout = false;
         {
             std::unique_lock lock(mutex_);
             compilations_.push_back({
@@ -1110,6 +1112,8 @@ public:
                 .predecessor = request.predecessor,
             });
             needs_storage = dynamic_controls_need_storage_ && !inputs.empty();
+            reuses_observation_layout = reuse_observation_layout_
+                && static_cast<bool>(request.active_observation_predecessor_code);
             auto const block = std::exchange(block_next_compilation_, false);
             if (block) {
                 compilation_is_blocked_ = true;
@@ -1149,7 +1153,14 @@ public:
         return {
             .attempted = true,
             .compiled_graph = std::move(compiled),
+            .reuses_observation_layout = reuses_observation_layout,
         };
+    }
+
+    void reuse_observation_layout()
+    {
+        std::scoped_lock lock(mutex_);
+        reuse_observation_layout_ = true;
     }
 
     iv::ProjectGraphGraphExecutorResult accept_structural_graph(
@@ -4551,6 +4562,26 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingObservationPrediction
     ASSERT_TRUE(project_graph.wait_for_compilation());
     EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
     EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, RejectedSteadyObservationArtifactRetriesWithACutover)
+{
+    realize_controls(1);
+    probe.reuse_observation_layout();
+    auto const base_compiles = probe.compilation_count();
+    auto const base_stages = probe.structural_stage_count();
+    iv::ObservationGraphRequest visible{.requirements = iv::ObservationRequirements{.revision = 1,
+        .probes = {{.id = 1, .source = {.node = {.instance_id = "instance:manual:0"},
+            .kind = iv::ObservationSourceKind::input, .member = "gain"}, .operation = "level"}}}};
+    // The fixture has a structural staging handler but rejects same-generation
+    // observation updates. A steady artifact must be compiled with a cutover
+    // before ProjectGraph submits it to the structural handler.
+    in_event_source([&] { project_graph.handle_observation_request(visible); });
+    ASSERT_TRUE(visible.error.empty()) << visible.error;
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    EXPECT_EQ(probe.compilation_count(), base_compiles + 2);
+    EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+    EXPECT_EQ(probe.compilations().back().observation_revision, 1u);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, DifferentObservationProbeSetUsesRequiredCompilation)

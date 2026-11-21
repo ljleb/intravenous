@@ -235,10 +235,10 @@ struct GraphJitTransitionCompileRequest {
 };
 
 // One ProjectGraph child request. Without a predecessor GraphJit compiles the
-// steady artifact. With one, it runs a single compilation specialized from
-// that predecessor's steady realization: the module defines the transition
-// root and the steady root that follows it, and the steady plan it builds
-// first is the predecessor-independent analysis.
+// steady artifact. With one, it builds one steady plan. A compatible
+// observation update can publish that code on the active layout. Otherwise
+// the compilation specializes a cutover against the predecessor's steady
+// realization using the same plan.
 //
 // initial_generation marks the request for the executor's first generation.
 // Without a predecessor, GraphJit then compiles a cutover from the empty graph
@@ -249,6 +249,9 @@ struct ProjectGraphGraphJitRequest {
     GraphJitCompileRequest successor{};
     std::shared_ptr<CompiledGraph const> predecessor{};
     bool initial_generation = false;
+    // For an observation-only update, compare the steady successor with the
+    // predecessor's storage and the latest code staged on that generation.
+    std::shared_ptr<CompiledGraph const> active_observation_predecessor_code{};
 };
 
 // Wall-clock microseconds spent in each phase of one compilation, plus the
@@ -315,9 +318,11 @@ struct GraphJitCompileResult {
     // The caller can assign an execution generation before publishing this artifact.
     std::shared_ptr<CompiledGraph> compiled_graph{};
     std::vector<GraphJitDiagnostic> diagnostics{};
-    // One entry per compilation this request ran, in order. A project
-    // transaction with a predecessor runs a steady and then a transition one.
+    // One entry per compilation this request ran, in order.
     std::vector<GraphJitCompileTimings> timings{};
+    // A successful observation artifact that attaches to the active layout
+    // has no cutover program and cannot be submitted as a new generation.
+    bool reuses_observation_layout = false;
 
     [[nodiscard]] bool succeeded() const noexcept
     {

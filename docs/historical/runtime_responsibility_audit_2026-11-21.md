@@ -68,3 +68,11 @@ This row appeared in the runtime responsibility audit on 2026-11-21. The [curren
 | Current operation | Work that can be avoided | Where the decision belongs |
 | --- | --- | --- |
 | [`ConnectionTopology::build`](../../src/intravenous/graph_jit/connection_plan.cpp#L6886) copies the `ConfiguredGraph` and clears `override_connections` for authored validation. It then builds the graph with the override in effect. | The authored validation calls `build_connection_analysis_plan()` and discards a result that includes scheduling and physical storage decisions. | Preserve the normalized authored routes and the temporal cuts that justify `detach()`. Apply the override to those routes and run physical planning on the effective graph. Keep authored validation independent so a live override cannot conceal an invalid authored graph. |
+
+## Observation compilation before checking the steady layout
+
+This row appeared in the runtime responsibility audit on 2026-11-21. The [current audit](../runtime_responsibility_audit.md#observation-compilation) records where the compiler now checks the active layout.
+
+| Current operation | Work that can be avoided | Where the decision belongs |
+| --- | --- | --- |
+| [`ProjectGraph::compile_graph`](../../src/intravenous/project/project_graph.cpp#L712) requests compilation with a predecessor when bindings alone cannot satisfy a probe change. [`GraphJit`](../../src/intravenous/graph_jit/graph_jit.cpp#L2234) derives transition inputs before the executor checks if the compiled code fits the active layout. | Compatible observation code can leave a state-transfer plan unused. The attempt-ID change avoids reserving an execution generation in this case. | Check compatibility against the steady lowering result first, then build the transition only when the check calls for a cutover. Reuse the steady result in either path. |

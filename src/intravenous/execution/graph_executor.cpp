@@ -2,6 +2,7 @@
 
 #include <intravenous/node/layout.h>
 #include <intravenous/graph_jit/background_storage_plan.h>
+#include <intravenous/graph_jit/realtime_code_compatibility.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include <intravenous/observations/observation_window.h>
 #include <intravenous/observations/event_observation_window.h>
@@ -23,16 +24,6 @@
 namespace iv {
 
 namespace {
-
-bool same_audio_configuration(CompiledGraph const& lhs, CompiledGraph const& rhs)
-{
-    return lhs.configured_bundles.snapshot && lhs.configured_bundles == rhs.configured_bundles
-        && lhs.definitions_generation == rhs.definitions_generation
-        && lhs.specialization.sample_rate == rhs.specialization.sample_rate
-        && lhs.specialization.block_size == rhs.specialization.block_size
-        && lhs.configured_graph && rhs.configured_graph
-        && lhs.configured_graph->manual_controls == rhs.configured_graph->manual_controls;
-}
 
 std::optional<std::string> unavailable_sample_cutover(
     graph_jit::RealtimePortStateTransitionPlan const& plan,
@@ -124,198 +115,6 @@ ProducerCapacityPolicy producer_capacity_policy(
         .high_watermark = maximum_blocks_per_callback
             * config.high_watermark_callbacks,
     };
-}
-
-bool prepared_controls_match(
-    CompiledGraph const& structural,
-    CompiledGraph const& replacement) noexcept
-{
-    if (!replacement.configured_graph) return true;
-    for (auto const& control : replacement.configured_graph->manual_controls) {
-        if (!control.requires_preparation) continue;
-        if (!structural.configured_graph) return false;
-        auto const& previous_controls = structural.configured_graph->manual_controls;
-        auto const previous = std::ranges::find(previous_controls, control.id, &ConfiguredManualControl::id);
-        if (previous == previous_controls.end() || previous->settled_value != control.settled_value)
-            return false;
-    }
-    return true;
-}
-
-// The running generation keeps both its TickInvocationWorkspace and its
-// background playback selection when new steady code takes effect.
-bool can_reuse_background_workspace(
-    graph_jit::BackgroundEvaluationPlan const& previous,
-    graph_jit::BackgroundEvaluationPlan const& replacement) noexcept
-{
-    if (previous.tick_runtime != replacement.tick_runtime
-        || previous.requires_live_tick_coverage != replacement.requires_live_tick_coverage
-        || previous.nodes.size() != replacement.nodes.size()
-        || previous.connections != replacement.connections) return false;
-    return std::ranges::equal(previous.ports, replacement.ports, [](auto const& before, auto const& after) {
-        return before.configured_port == after.configured_port
-            && before.direction == after.direction
-            && before.input_access == after.input_access
-            && before.content_access == after.content_access
-            && before.full_live_tick_coverage == after.full_live_tick_coverage
-            && before.sample_fallback_value == after.sample_fallback_value
-            && before.sample_manual_contribution == after.sample_manual_contribution
-            && before.accumulators.input_change == after.accumulators.input_change
-            && before.accumulators.output_change == after.accumulators.output_change
-            && before.incoming_connections == after.incoming_connections
-            && before.outgoing_connections == after.outgoing_connections;
-    });
-}
-
-// Steady Tick code addresses the canonical NodeStorage prefix. Each graph can
-// also have a transition-only suffix that its steady code never uses.
-bool compatible_steady_realtime_code(
-    CompiledGraph const& structural,
-    CompiledGraph const& replacement) noexcept
-{
-    if (!prepared_controls_match(structural, replacement)
-        || !can_reuse_background_workspace(
-            structural.background_evaluation_plan, replacement.background_evaluation_plan))
-        return false;
-
-    auto const steady_regions = static_cast<std::size_t>(std::ranges::count_if(
-        structural.node_layout.regions,
-        [](NodeLayout::Region const& region) { return !region.transition_only; }));
-    auto const replacement_steady_regions = static_cast<std::size_t>(std::ranges::count_if(
-        replacement.node_layout.regions,
-        [](NodeLayout::Region const& region) { return !region.transition_only; }));
-    if (replacement.configured_generation != structural.configured_generation
-        || replacement.definitions_generation
-            != structural.definitions_generation
-        || replacement.specialization.sample_rate
-            != structural.specialization.sample_rate
-        || replacement.specialization.block_size
-            != structural.specialization.block_size
-        || replacement.node_layout.steady_storage_size
-            != structural.node_layout.steady_storage_size
-        // A transition-only region may raise the structural alignment; storage
-        // aligned for it is aligned for the replacement too.
-        || replacement.node_layout.storage_alignment == 0
-        || structural.node_layout.storage_alignment
-                % replacement.node_layout.storage_alignment
-            != 0
-        || replacement.node_layout.max_block_size
-            != structural.node_layout.max_block_size
-        || replacement.node_layout.default_silence_ttl_samples
-            != structural.node_layout.default_silence_ttl_samples
-        || replacement.node_layout.nodes.size()
-            != structural.node_layout.nodes.size()
-        || replacement_steady_regions != steady_regions
-        || replacement.node_layout.imported_arrays.size()
-            != structural.node_layout.imported_arrays.size()
-        || replacement.node_layout.exported_arrays.size()
-            != structural.node_layout.exported_arrays.size()
-        || replacement.node_layout.initialize_order
-            != structural.node_layout.initialize_order
-        || replacement.manual_controls.size()
-            != structural.manual_controls.size()
-        || !replacement.root_operations.valid()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < structural.node_layout.nodes.size(); ++i) {
-        auto const& lhs = structural.node_layout.nodes[i];
-        auto const& rhs = replacement.node_layout.nodes[i];
-        if (lhs.node_type != rhs.node_type
-            || lhs.migration_identity != rhs.migration_identity
-            || lhs.state_structure != rhs.state_structure
-            || lhs.state_offset != rhs.state_offset
-            || lhs.state_size != rhs.state_size
-            || lhs.state_alignment != rhs.state_alignment
-            || lhs.dependencies != rhs.dependencies
-            || lhs.lifecycle.move_fn != rhs.lifecycle.move_fn
-            || lhs.lifecycle.initialize_fn != rhs.lifecycle.initialize_fn
-            || lhs.lifecycle.release_fn != rhs.lifecycle.release_fn
-            || lhs.lifecycle.default_construct_state_fn
-                != rhs.lifecycle.default_construct_state_fn
-            || lhs.lifecycle.destroy_state_fn
-                != rhs.lifecycle.destroy_state_fn) {
-            return false;
-        }
-    }
-    auto owns_manual_control_state = [](
-        CompiledGraph const& graph,
-        NodeLayout::Region const& region) {
-        return region.kind == NodeLayout::Region::Kind::raw
-            && region.size == sizeof(ManualControlRuntimeState)
-            && std::ranges::any_of(
-                graph.manual_controls,
-                [&](ManualControlRuntimeBinding const& binding) {
-                    return binding.state_storage_offset
-                        == region.storage_offset;
-                });
-    };
-    // NodeLayoutTransitionBuilder appends transition-only regions after the
-    // steady ones, so the steady regions are the first steady_regions entries.
-    for (std::size_t i = 0; i < steady_regions; ++i) {
-        auto const& lhs = structural.node_layout.regions[i];
-        auto const& rhs = replacement.node_layout.regions[i];
-        auto const lhs_manual = owns_manual_control_state(structural, lhs);
-        auto const rhs_manual = owns_manual_control_state(replacement, rhs);
-        if (lhs.kind != rhs.kind
-            || lhs.owner_node != rhs.owner_node
-            || lhs.storage_offset != rhs.storage_offset
-            || lhs.size != rhs.size
-            || lhs.alignment != rhs.alignment
-            || lhs.state_field_offset != rhs.state_field_offset
-            || lhs.element_count != rhs.element_count
-            || lhs.transition_only != rhs.transition_only
-            || lhs.migration_identity != rhs.migration_identity
-            || lhs.raw_initialize_fn != rhs.raw_initialize_fn
-            || lhs.element_type != rhs.element_type
-            || lhs.assign_span_fn != rhs.assign_span_fn
-            || lhs.nested_node_indices != rhs.nested_node_indices
-            || lhs_manual != rhs_manual
-            || (!lhs_manual
-                && lhs.raw_initialize_data != rhs.raw_initialize_data)) {
-            return false;
-        }
-    }
-    auto arrays_match = [](auto const& lhs, auto const& rhs) {
-        return lhs.owner_node == rhs.owner_node
-            && lhs.id == rhs.id
-            && lhs.state_field_offset == rhs.state_field_offset
-            && lhs.element_type == rhs.element_type
-            && lhs.element_size == rhs.element_size
-            && lhs.assign_span_fn == rhs.assign_span_fn
-            && lhs.read_span_fn == rhs.read_span_fn;
-    };
-    if (!std::ranges::equal(
-            structural.node_layout.imported_arrays,
-            replacement.node_layout.imported_arrays,
-            arrays_match)
-        || !std::ranges::equal(
-            structural.node_layout.exported_arrays,
-            replacement.node_layout.exported_arrays,
-            arrays_match)) {
-        return false;
-    }
-    for (std::size_t i = 0; i < structural.manual_controls.size(); ++i) {
-        auto const& lhs = structural.manual_controls[i];
-        auto const& rhs = replacement.manual_controls[i];
-        if (lhs.configured.id != rhs.configured.id
-            || lhs.configured.input != rhs.configured.input
-            || lhs.configured.concrete_selection_index
-                != rhs.configured.concrete_selection_index
-            || lhs.configured.participation != rhs.configured.participation
-            || lhs.state_storage_offset != rhs.state_storage_offset) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool same_realtime_port_state(CompiledGraph const& previous, CompiledGraph const& successor)
-{
-    auto const& before = previous.realtime_port_state_realizations;
-    auto const& after = successor.realtime_port_state_realizations;
-    return previous.realtime_port_state_requirements.states == successor.realtime_port_state_requirements.states
-        && before.sample_states == after.sample_states
-        && before.event_states == after.event_states;
 }
 
 bool write_manual_control_target(
@@ -1446,7 +1245,8 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
             "GraphExecutor successor does not carry its predecessor cutover");
     }
 
-    bool const preserve_state = predecessor_code && same_audio_configuration(*predecessor_code, *compiled_graph);
+    bool const preserve_state = predecessor_code && graph_jit::same_audio_configuration(
+        *predecessor_code, graph_jit::realtime_code_configuration(*compiled_graph));
     auto prepared = std::make_unique<ExecutionGeneration>(
         std::move(compiled_graph),
         resources_,
@@ -1517,7 +1317,8 @@ bool GraphExecutor::can_replace_realtime_code(
     return !replacement.cutover
         && replacement.project_generation == structural.project_generation
         && replacement.node_layout.storage_size == replacement.node_layout.steady_storage_size
-        && compatible_steady_realtime_code(structural, replacement);
+        && replacement.root_operations.valid()
+        && graph_jit::compatible_steady_realtime_layout(structural, graph_jit::realtime_code_layout(replacement));
 }
 
 GraphExecutorStageResult GraphExecutor::stage_realtime_code(
@@ -1562,9 +1363,9 @@ bool GraphExecutor::stage_observation_code(std::uint64_t project_generation,
     Unlock unlock{this};
     auto* target = observation_update_target(project_generation);
     if (!target || !code) return false;
-    if (!same_audio_configuration(*target->latest_realtime_code().graph, *code)
-        || !same_realtime_port_state(*target->graph, *code)
-        || !compatible_steady_realtime_code(*target->graph, *code)) return false;
+    if (!code->root_operations.valid() || !graph_jit::can_reuse_observation_layout(
+            *target->graph, *target->latest_realtime_code().graph, graph_jit::realtime_code_layout(*code)))
+        return false;
 
     target->stage_realtime_code(prepare_realtime_code(std::move(code)));
     return true;

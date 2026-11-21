@@ -9,6 +9,7 @@
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/node/layout.h>
 #include <intravenous/graph_jit/graph_jit.h>
+#include <intravenous/graph_jit/realtime_code_compatibility.h>
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -122,6 +123,12 @@ struct LoweringTransitionInput {
     RealtimePortStateRealizations const& predecessor_realizations;
 };
 
+struct ObservationLayoutReuseInput {
+    CompiledGraph const& structural_predecessor;
+    CompiledGraph const& active_code;
+    RealtimeCodeConfiguration successor;
+};
+
 // Everything the difficult compiler core is allowed to see. In particular,
 // there is no PackageJit/ModuleLoader/live NodeDefinitions dependency here, and
 // no package LLVM: node code is already compiled, and lowering imports its
@@ -144,6 +151,7 @@ struct LoweringInput {
     RegionSpecializationProvider* region_specializations = nullptr;
     CompiledObservationPlan const* observations = nullptr;
     ConfiguredBundleInventory configured_bundles{};
+    ObservationLayoutReuseInput const* observation_layout_reuse = nullptr;
 };
 
 // Names of the generated project-module operations. The realtime root is not

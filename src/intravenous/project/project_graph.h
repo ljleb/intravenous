@@ -243,6 +243,8 @@ class ProjectGraph {
     [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked(
         std::span<ManualControlId const> dynamic_inputs);
     [[nodiscard]] bool can_compile_observation_prediction_locked() const;
+    [[nodiscard]] std::shared_ptr<CompiledGraph const> observation_predecessor_code_locked(
+        GraphJitCompileRequest const& inputs, std::shared_ptr<CompiledGraph const> const& predecessor) const;
     bool stage_observation_update_locked(GraphCompileRequest const& request,
         std::shared_ptr<CompiledGraph const> const& predecessor,
         GraphJitCompileResult const* compiled);

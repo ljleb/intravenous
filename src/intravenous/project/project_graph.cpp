@@ -661,20 +661,28 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
     control_compile_changed_.notify_all();
 }
 
+std::shared_ptr<CompiledGraph const> ProjectGraph::observation_predecessor_code_locked(
+    GraphJitCompileRequest const& inputs, std::shared_ptr<CompiledGraph const> const& predecessor) const
+{
+    if (!predecessor || !active_execution_
+        || active_execution_->compiled != predecessor || !current_generation_
+        || current_generation_->configured_bundles != predecessor->configured_bundles)
+        return {};
+    // A knob edit may have joined the pending work. A probe-only publication
+    // may use the same audio program but cannot consume that knob edit.
+    if (!staged_control_graph_ || !staged_control_graph_->configured_graph || !inputs.graph
+        || staged_control_graph_->configured_graph->manual_controls != inputs.graph->manual_controls
+        || !control_configuration_matches_locked(*inputs.graph, desired_dynamic_inputs_locked(false)))
+        return {};
+    return staged_control_graph_;
+}
+
 bool ProjectGraph::stage_observation_update_locked(GraphCompileRequest const& request,
     std::shared_ptr<CompiledGraph const> const& predecessor, GraphJitCompileResult const* compiled)
 {
-    if (!request.observation_update || !predecessor || !active_execution_
-        || active_execution_->compiled != predecessor || !current_generation_
-        || latest_execution_attempt_ != request.attempt
-        || current_generation_->configured_bundles != predecessor->configured_bundles
-        || observation_requirements_.revision != request.inputs.observations.revision)
-        return false;
-    // A knob edit may have joined the pending work. A probe-only publication
-    // may use the same audio program but cannot consume that knob edit.
-    if (!staged_control_graph_ || !staged_control_graph_->configured_graph || !request.inputs.graph
-        || staged_control_graph_->configured_graph->manual_controls != request.inputs.graph->manual_controls
-        || !control_configuration_matches_locked(*request.inputs.graph, desired_dynamic_inputs_locked(false)))
+    if (!request.observation_update || latest_execution_attempt_ != request.attempt
+        || observation_requirements_.revision != request.inputs.observations.revision
+        || !observation_predecessor_code_locked(request.inputs, predecessor))
         return false;
     if (compiled && !compiled->compiled_graph) return false;
 
@@ -764,14 +772,29 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
     };
     GraphJitCompileResult compiled;
     ProjectGraphPublication publication;
+    auto compile_for_predecessor = [&](std::shared_ptr<CompiledGraph const> observation_code) {
+        GraphJitCompileResult result;
+        IV_EVENT_SOURCE(ProjectGraph, "graph compilation") {
+            result = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
+                ProjectGraphGraphJitRequest{
+                    .successor = request.inputs,
+                    .predecessor = predecessor, .initial_generation = !predecessor,
+                    .active_observation_predecessor_code = std::move(observation_code),
+                });
+        }
+        return result;
+    };
     try {
         if (stage_observation_update(nullptr)) {
             completion_published = true;
             return;
         }
+        std::shared_ptr<CompiledGraph const> observation_code;
         {
             std::scoped_lock lock(mutex_);
             if (desired()) {
+                if (request.observation_update)
+                    observation_code = observation_predecessor_code_locked(request.inputs, predecessor);
                 auto state = std::make_shared<ProjectGraphGeneration>(*current_generation_);
                 state->execution_phase = "compiling";
                 current_generation_ = std::move(state);
@@ -785,20 +808,27 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
         auto const& candidate = request.observation_candidate;
         if (candidate && candidate->predecessor == predecessor && candidate->result.compiled_graph)
             compiled = std::move(candidate->result);
-        else {
-            IV_EVENT_SOURCE(ProjectGraph, "graph compilation") {
-                compiled = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
-                    ProjectGraphGraphJitRequest{
-                        .successor = request.inputs,
-                        .predecessor = predecessor, .initial_generation = !predecessor,
-                    });
-            }
-        }
-        auto const compiled_at = Clock::now();
+        else
+            compiled = compile_for_predecessor(std::move(observation_code));
         if (stage_observation_update(&compiled)) {
             completion_published = true;
             return;
         }
+        if (compiled.reuses_observation_layout) {
+            {
+                std::scoped_lock lock(mutex_);
+                if (!eligible() || !desired()) return;
+            }
+            // A steady-only artifact cannot start a new generation. If its
+            // active target changed, prepare the still-current request as a cutover.
+            auto cutover = compile_for_predecessor({});
+            compiled.timings.insert(compiled.timings.end(),
+                std::make_move_iterator(cutover.timings.begin()),
+                std::make_move_iterator(cutover.timings.end()));
+            cutover.timings = std::move(compiled.timings);
+            compiled = std::move(cutover);
+        }
+        auto const compiled_at = Clock::now();
         IV_EVENT_SOURCE(ProjectGraph, "prepare execution generation") {
             {
                 std::scoped_lock lock(mutex_);
@@ -1150,6 +1180,7 @@ void ProjectGraph::compile_worker(std::stop_token stop)
             continue;
         }
         if (observation_prediction) {
+            std::shared_ptr<CompiledGraph const> observation_code;
             {
                 std::scoped_lock lock(mutex_);
                 auto const claimed = pending_graph_compile_
@@ -1160,12 +1191,15 @@ void ProjectGraph::compile_worker(std::stop_token stop)
                     observation_prediction_pending_ = true;
                     continue;
                 }
+                observation_code = observation_predecessor_code_locked(
+                    observation_prediction->inputs, observation_prediction->predecessor);
             }
             try {
                 IV_EVENT_SOURCE(ProjectGraph, "predictive observation compilation") {
                     observation_prediction->result = IV_INVOKE_SINGLETON_EVENT(iv_runtime_project_graph_graph_jit_requested_event,
                         ProjectGraphGraphJitRequest{.successor = observation_prediction->inputs,
-                            .predecessor = observation_prediction->predecessor});
+                            .predecessor = observation_prediction->predecessor,
+                            .active_observation_predecessor_code = std::move(observation_code)});
                 }
             } catch (...) {
                 // The required compilation reports its own diagnostics if

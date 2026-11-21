@@ -1936,6 +1936,7 @@ class GraphJit::Impl {
         std::shared_ptr<CompiledGraph const> active_predecessor{};
         CompiledGraphRealtimePhase active_predecessor_phase =
             CompiledGraphRealtimePhase::steady;
+        std::shared_ptr<CompiledGraph const> active_observation_predecessor_code{};
     };
 
     GraphJitKernelSpecialization specialization_{};
@@ -2023,7 +2024,7 @@ public:
                     Clock::now() - begin).count());
         };
         auto const compile_begin = Clock::now();
-        GraphJitCompileTimings timings{.transition = transition != nullptr};
+        GraphJitCompileTimings timings{};
         GraphJitCompileResult result{.attempted = true};
         if (!request.graph || !request.definitions) {
             auto missing = capture_inputs(request);
@@ -2422,6 +2423,17 @@ public:
                 .host_initialize_sequential_input = operations.initialize_sequential_input,
             });
         }
+        std::optional<graph_jit::ObservationLayoutReuseInput> observation_layout_reuse;
+        if (transition && transition->active_predecessor && transition->active_observation_predecessor_code) {
+            observation_layout_reuse.emplace(graph_jit::ObservationLayoutReuseInput{
+                .structural_predecessor = *transition->active_predecessor,
+                .active_code = *transition->active_observation_predecessor_code,
+                .successor = {
+                    request.configured_generation, request.definitions->generation,
+                    specialization_, request.graph.get(), request.configured_bundles,
+                },
+            });
+        }
         graph_jit::LoweringInput lowering_input{
             .graph = resolved_graph,
             .specialization = specialization_,
@@ -2434,6 +2446,7 @@ public:
                 specialize_regions_ ? &region_specializations : nullptr,
             .observations = &request.observations,
             .configured_bundles = request.configured_bundles,
+            .observation_layout_reuse = observation_layout_reuse ? &*observation_layout_reuse : nullptr,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {
@@ -2443,6 +2456,7 @@ public:
             return result;
         }
 
+        timings.transition = lowering->transition.has_value();
         timings.lowering_plan_us = lowering->plan_us;
         timings.lowering_transition_us = lowering->transition_us;
         timings.lowering_emit_us = lowering->emit_us;
@@ -2460,7 +2474,7 @@ public:
                 if (!function.isDeclaration()) ++timings.functions;
             }
             timings.instructions_before_optimization = output->getInstructionCount();
-            auto const inventory_stem = graph_label + (transition ? "-transition" : "-steady");
+            auto const inventory_stem = graph_label + (timings.transition ? "-transition" : "-steady");
             write_function_inventory(*output, inventory_stem + "-before");
             write_module_ir(*output, inventory_stem + "-before");
             auto const optimization_begin = Clock::now();
@@ -2566,6 +2580,7 @@ public:
                 .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),
             });
+            result.reuses_observation_layout = observation_layout_reuse.has_value() && !timings.transition;
         } catch (GraphJitCompileError const& error) {
             result.diagnostics.push_back(diagnostic(error.stage, error.what()));
         }
@@ -2590,13 +2605,11 @@ public:
         return compile_impl(request, &from_empty_graph);
     }
 
-    // The ProjectGraph edit path with an accepted predecessor: one compilation
-    // whose module defines both the transition root and the steady root that
-    // follows it. A separate steady compilation would be discarded; its layout
-    // equals the steady plan this compilation builds first.
-    GraphJitCompileResult compile_cutover(
+    // Both publication paths start from the same steady lowering plan.
+    GraphJitCompileResult compile_with_predecessor(
         GraphJitCompileRequest const& successor,
-        std::shared_ptr<CompiledGraph const> const& predecessor)
+        std::shared_ptr<CompiledGraph const> const& predecessor,
+        std::shared_ptr<CompiledGraph const> const& active_observation_predecessor_code)
     {
         if (successor.project_generation != 0
             && predecessor->project_generation >= successor.project_generation) {
@@ -2609,6 +2622,7 @@ public:
         TransitionCompilation transition{
             .active_predecessor = predecessor,
             .active_predecessor_phase = CompiledGraphRealtimePhase::steady,
+            .active_observation_predecessor_code = active_observation_predecessor_code,
         };
         return compile_impl(successor, &transition);
     }
@@ -2693,6 +2707,7 @@ GraphJitCompileResult GraphJit::handle_project_graph_transaction(
             ? impl_->compile_initial_generation(request.successor)
             : compile(request.successor);
     }
-    return impl_->compile_cutover(request.successor, request.predecessor);
+    return impl_->compile_with_predecessor(
+        request.successor, request.predecessor, request.active_observation_predecessor_code);
 }
 } // namespace iv

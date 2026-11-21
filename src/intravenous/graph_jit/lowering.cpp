@@ -2677,6 +2677,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     LoweringInput& input,
     detail::LoweringPlan&& plan,
     std::optional<TransitionLoweringPlan>&& transition,
+    std::vector<ManualControlRuntimeBinding> manual_controls,
     llvm::Module& output_module)
 {
     auto const realtime_storage = summarize_realtime_storage(plan);
@@ -2691,18 +2692,6 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
                 static_cast<std::size_t>(node.state_offset), node.state_size});
     }
     std::ranges::sort(observable_tick_states, {}, &RealtimeObservationState::bundle);
-    // Executor-side manual-control metadata is read before the realtime root
-    // takes ownership of sample_ports.
-    std::vector<ManualControlRuntimeBinding> manual_controls;
-    manual_controls.reserve(plan.sample_ports.manual_controls.size());
-    for (auto const& control : plan.sample_ports.manual_controls) {
-        manual_controls.push_back(ManualControlRuntimeBinding{
-            .configured = control.configured,
-            .state_storage_offset = control.state_storage_offset,
-            .participates = control.participates,
-        });
-    }
-
     // Building a realtime root validates every plan invariant it relies on,
     // so both roots are built before output LLVM is mutated. The transition
     // root consumes the whole transition plan, which nothing else reads.
@@ -2829,17 +2818,44 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     auto plan = detail::build_lowering_plan(input);
     if (!plan) return std::unexpected(std::move(plan.error()));
 
+    // Executor-side manual-control metadata is read before the realtime root
+    // takes ownership of sample_ports.
+    std::vector<ManualControlRuntimeBinding> manual_controls;
+    manual_controls.reserve(plan->sample_ports.manual_controls.size());
+    for (auto const& control : plan->sample_ports.manual_controls) {
+        manual_controls.push_back(ManualControlRuntimeBinding{
+            .configured = control.configured,
+            .state_storage_offset = control.state_storage_offset,
+            .participates = control.participates,
+        });
+    }
+
+    auto const* transition_input = input.transition;
+    if (auto const* observation = input.observation_layout_reuse;
+        observation && can_reuse_observation_layout(
+            observation->structural_predecessor, observation->active_code,
+            RealtimeCodeLayout{
+                .configuration = observation->successor,
+                .node_layout = plan->declarations.node_layout,
+                .background_evaluation_plan = plan->connections.background,
+                .realtime_port_state_requirements = plan->connections.realtime_port_states,
+                .realtime_port_state_realizations = plan->realtime_port_state_realizations,
+                .manual_controls = manual_controls,
+            })) {
+        transition_input = nullptr;
+    }
+
     auto const transition_begin = Clock::now();
-    auto transition = specialize_transition_plan(*plan, input.transition);
+    auto transition = specialize_transition_plan(*plan, transition_input);
     if (!transition) return std::unexpected(std::move(transition.error()));
 
     auto const emit_begin = Clock::now();
     auto output = emit_lowering_plan(
-        input, std::move(*plan), std::move(*transition), output_module);
+        input, std::move(*plan), std::move(*transition), std::move(manual_controls), output_module);
     auto const emit_end = Clock::now();
     if (output) {
         output->plan_us = microseconds(plan_begin, transition_begin);
-        output->transition_us = microseconds(transition_begin, emit_begin);
+        output->transition_us = transition_input ? microseconds(transition_begin, emit_begin) : 0;
         output->emit_us = microseconds(emit_begin, emit_end);
     }
     return output;

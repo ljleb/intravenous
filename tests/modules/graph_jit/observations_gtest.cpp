@@ -148,9 +148,15 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationCanReplaceCodeWithoutChanging
     auto replacement = in_event_source([&] {
         return jit->handle_project_graph_transaction({
             .successor = inputs, .predecessor = predecessor.compiled_graph,
+            .active_observation_predecessor_code = predecessor.compiled_graph,
         });
     });
     ASSERT_TRUE(replacement.succeeded()) << (replacement.diagnostics.empty() ? "" : replacement.diagnostics.front().message);
+    EXPECT_TRUE(replacement.reuses_observation_layout);
+    EXPECT_FALSE(replacement.compiled_graph->cutover);
+    ASSERT_EQ(replacement.timings.size(), 1u);
+    EXPECT_FALSE(replacement.timings.front().transition);
+    EXPECT_EQ(replacement.timings.front().lowering_transition_us, 0u);
     ASSERT_TRUE(executor.stage_observation_update({
         .execution_generation = 761, .update = replacement.compiled_graph,
     }));
@@ -204,9 +210,14 @@ TEST_F(GraphJitRuntimeFixture, AddingAnOutputProbePreservesFeedbackAndSystemAudi
     auto cutover = in_event_source([&] {
         return jit->handle_project_graph_transaction({
             .successor = inputs, .predecessor = predecessor.compiled_graph,
+            .active_observation_predecessor_code = predecessor.compiled_graph,
         });
     });
     ASSERT_TRUE(cutover.succeeded()) << (cutover.diagnostics.empty() ? "" : cutover.diagnostics.front().message);
+    EXPECT_FALSE(cutover.reuses_observation_layout);
+    ASSERT_TRUE(cutover.compiled_graph->cutover);
+    ASSERT_EQ(cutover.timings.size(), 1u);
+    EXPECT_TRUE(cutover.timings.front().transition);
     auto uninterrupted = jit->compile(inputs);
     ASSERT_TRUE(uninterrupted.succeeded()) << (uninterrupted.diagnostics.empty() ? "" : uninterrupted.diagnostics.front().message);
 
