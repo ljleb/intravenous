@@ -513,9 +513,7 @@ public:
         ConfiguredGraph const& graph,
         ResolvedPortRealization const& port_realization,
         std::size_t kernel_block_size,
-        RealtimeStorageCostModel const& cost_model,
         std::span<std::size_t const> callback_batch_classes,
-        std::span<NodeBundleHandle const> callback_elision_candidates,
         ConfiguredBundleInventory configured_bundles = {});
 
     std::expected<ConnectionAnalysisPlan, std::string> build_analysis_plan(

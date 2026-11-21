@@ -1927,6 +1927,19 @@ TEST(GraphJitConnectionPlan, RejectsImplicitCycles)
     ASSERT_FALSE(plan.has_value());
     EXPECT_NE(plan.error().find("implicit cycle"), std::string::npos);
 
+    // The effective Sample routes would be acyclic with the cable replaced.
+    // The authored feedback still requires an explicit detach.
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "first"}, .port_name = "in"},
+        .input = {first.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .25f,
+        .dynamic = true,
+        .override_connections = true,
+    });
+    auto overridden = build_connection_analysis_plan(configured, 64);
+    ASSERT_FALSE(overridden);
+    EXPECT_EQ(overridden.error(), plan.error());
+
     GraphBuilder event_graph;
     auto event_first = details::configure_concrete_node<PlainEventPass>(event_graph);
     auto event_second = details::configure_concrete_node<PlainEventPass>(event_graph);
@@ -4807,7 +4820,7 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     auto realization = graph_jit::resolve_port_realization(configured);
     ASSERT_TRUE(realization) << realization.error();
     auto topology = graph_jit::detail::ConnectionTopology::build(
-        configured, *realization, 64, {}, {}, {});
+        configured, *realization, 64, {});
     ASSERT_TRUE(topology) << topology.error();
     auto initial = *topology;
     auto initial_plan = std::move(initial).build_analysis_plan({}, {}, {});

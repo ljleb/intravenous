@@ -60,3 +60,11 @@ Actual package source files grouped by behavior can still share one built
 artifact and the current workspace lock.
 
 In `PersistedDataStore::prepare_cache()`, victim ranking, payload byte estimates, and lease release shared the same implementation. The store also held the rules for overwriting recordings and retaining pinned snapshots.
+
+## Manual override validation before the planning split
+
+This row appeared in the runtime responsibility audit on 2026-11-21. The [current audit](../runtime_responsibility_audit.md#manual-overrides-and-authored-connections) records how authored connection validation uses shared routing facts.
+
+| Current operation | Work that can be avoided | Where the decision belongs |
+| --- | --- | --- |
+| [`ConnectionTopology::build`](../../src/intravenous/graph_jit/connection_plan.cpp#L6886) copies the `ConfiguredGraph` and clears `override_connections` for authored validation. It then builds the graph with the override in effect. | The authored validation calls `build_connection_analysis_plan()` and discards a result that includes scheduling and physical storage decisions. | Preserve the normalized authored routes and the temporal cuts that justify `detach()`. Apply the override to those routes and run physical planning on the effective graph. Keep authored validation independent so a live override cannot conceal an invalid authored graph. |

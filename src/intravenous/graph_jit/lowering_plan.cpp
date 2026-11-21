@@ -9902,8 +9902,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto const& configured_cost_model = input.realtime_storage_cost_model;
     auto topology = ConnectionTopology::build(
         input.graph, *port_realization, input.specialization.block_size,
-        configured_cost_model, callback_batch_classes, callback_elision_candidates,
-        input.configured_bundles);
+        callback_batch_classes, input.configured_bundles);
     if (!topology) return std::unexpected(std::move(topology.error()));
     std::vector<std::size_t> realtime_batch_classes = callback_batch_classes;
     auto const no_batch_class = std::numeric_limits<std::size_t>::max();
