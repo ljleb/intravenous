@@ -50,4 +50,15 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
 std::expected<void, std::string> validate_tick_runtime_plan(
     BackgroundEvaluationPlan const& plan);
 
+// Locates the Sequential Tick input slot through which background
+// evaluation supplies this Sequential input in the realtime root's
+// TickInvocationCall, as an index in the kind-specific TickRuntimePlan array.
+// Invalid retained ranges are plan corruption, not evidence of an external
+// binding.
+std::expected<std::optional<std::size_t>, std::string> external_tick_sequential_slot(
+    BackgroundEvaluationPlan const& background,
+    NodeBundleHandle bundle,
+    PortKind kind,
+    std::size_t input_index);
+
 } // namespace iv::graph_jit::detail

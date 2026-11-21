@@ -551,6 +551,17 @@ std::string raw_region_node_identity_text(
     NodeBundleHandle bundle);
 std::string owned_raw_region_identity(std::string identity);
 
+// A retained input timeline may combine several channel-specific semantic
+// state requirements in one raw region. Its raw migration identity therefore
+// names the stable input port and role, while the storage planner appends the
+// current physical shape. Anonymous inputs and zero-history inputs deliberately
+// return no identity: their generation-local bundle/port coordinate must never
+// become cross-generation identity.
+std::expected<std::string, std::string> input_timeline_migration_identity(
+    RealtimePortStateRequirements const& requirements,
+    NodeBundlePortId configured_port,
+    std::string_view prefix);
+
 // The parts that can identify one detach() across graph revisions. A detach
 // is not a node: it is identified by its producer port when that tells it
 // apart from the graph's other detaches, then also by its consumer port, then

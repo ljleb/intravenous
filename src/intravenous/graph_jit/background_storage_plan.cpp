@@ -2625,4 +2625,55 @@ std::expected<void, std::string> finalize_tick_runtime_plan(
     return validate_tick_runtime_plan(plan);
 }
 
+std::expected<std::optional<std::size_t>, std::string> external_tick_sequential_slot(
+    BackgroundEvaluationPlan const& background,
+    NodeBundleHandle bundle,
+    PortKind kind,
+    std::size_t input_index)
+{
+    if (kind != PortKind::sample && kind != PortKind::event) {
+        return std::unexpected(
+            "GraphJit Tick invocation Sequential input has an invalid port kind");
+    }
+    if (bundle >= background.bundle_to_background_node.size()
+        || !background.bundle_to_background_node[bundle]) {
+        return std::optional<std::size_t>{};
+    }
+    auto const node = *background.bundle_to_background_node[bundle];
+    if (node >= background.tick_runtime.nodes.size()) {
+        return std::unexpected(
+            "GraphJit background bundle references a missing Tick invocation");
+    }
+    auto const& invocation = background.tick_runtime.nodes[node];
+    auto const find_slot = [&](auto const& inputs, std::size_t begin, std::size_t count)
+        -> std::expected<std::optional<std::size_t>, std::string> {
+        if (begin > inputs.size() || count > inputs.size() - begin) {
+            return std::unexpected(
+                "GraphJit Tick invocation has an invalid Sequential input range");
+        }
+        std::optional<std::size_t> found;
+        for (std::size_t slot = begin; slot < begin + count; ++slot) {
+            auto const& binding = inputs[slot];
+            if (binding.port >= background.ports.size()) {
+                return std::unexpected(
+                    "GraphJit Tick invocation references a missing Sequential port");
+            }
+            auto const& port = background.ports[binding.port];
+            if (port.node != node) {
+                return std::unexpected(
+                    "GraphJit Tick invocation Sequential port belongs to another node");
+            }
+            if (port.kind == kind && port.configured_port.port_index == input_index) {
+                found = slot;
+            }
+        }
+        return found;
+    };
+    return kind == PortKind::sample
+        ? find_slot(background.tick_runtime.sequential_sample_inputs,
+            invocation.sequential_sample_begin, invocation.sequential_sample_count)
+        : find_slot(background.tick_runtime.sequential_event_inputs,
+            invocation.sequential_event_begin, invocation.sequential_event_count);
+}
+
 } // namespace iv::graph_jit::detail

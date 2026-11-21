@@ -7114,6 +7114,64 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
         callback_batch_classes, callback_elision_candidates);
 }
 
+std::expected<std::string, std::string> input_timeline_migration_identity(
+    RealtimePortStateRequirements const& requirements,
+    NodeBundlePortId configured_port,
+    std::string_view prefix)
+{
+    std::optional<StableRealtimePortStateId> selected;
+    bool found_anonymous = false;
+    for (auto const& requirement : requirements.states) {
+        if (requirement.configured_port != configured_port
+            || requirement.direction != PortDirection::input
+            || requirement.role
+                != RealtimePortStateRole::sequential_input_history) {
+            continue;
+        }
+        if (!requirement.stable_identity) {
+            found_anonymous = true;
+            continue;
+        }
+        auto const& identity = *requirement.stable_identity;
+        if (identity.direction != PortDirection::input
+            || identity.kind != configured_port.port_kind
+            || identity.port_index != (requirement.resolved_module_input
+                ? requirement.resolved_module_input->port_index : configured_port.port_index)
+            || identity.role
+                != RealtimePortStateRole::sequential_input_history) {
+            return std::unexpected(
+                "GraphJit input timeline has inconsistent stable port identity");
+        }
+        if (selected
+            && (selected->node != identity.node
+                || selected->direction != identity.direction
+                || selected->kind != identity.kind
+                || selected->port_name != identity.port_name
+                || selected->port_index != identity.port_index
+                || selected->role != identity.role)) {
+            return std::unexpected(
+                "GraphJit input timeline combines different stable ports");
+        }
+        selected = identity;
+    }
+    if (found_anonymous && selected) {
+        return std::unexpected(
+            "GraphJit input timeline mixes stable and anonymous state identities");
+    }
+    if (!selected) return std::string{};
+
+    auto const& identity = *selected;
+    std::ostringstream out;
+    out << prefix << ':' << migration_identity_fields(identity.node)
+        << ":direction=" << static_cast<unsigned>(identity.direction)
+        << ":kind=" << static_cast<unsigned>(identity.kind)
+        << ":port_name=" << identity.port_name.size() << ':'
+        << identity.port_name
+        << ":port_index=" << identity.port_index
+        << ":role=" << static_cast<unsigned>(identity.role);
+    return std::move(out).str();
+}
+
 std::optional<std::string> raw_region_node_identity(
     ConnectionAnalysisPlan const& connections,
     NodeBundleHandle bundle)

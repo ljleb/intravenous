@@ -115,3 +115,27 @@ described the path from connection analysis to packed stack allocation as follow
   remaining mandatory conversion/merge buffers exceed the budget. The default
   weights preserve the landed block-relative/rate-derived crossover until
   topology-specific costs justify an earlier full-persistent choice;
+
+## Event port planner extraction proposal
+
+The [runtime responsibility audit](../runtime_responsibility_audit.md#event-port-planning)
+recorded this proposal on 2026-11-21 before the source moved. The line
+reference describes the file at that time.
+
+### Event port planning
+
+About 3,800 lines in `lowering_plan.cpp` produce one
+`EventPortBindingPlan`. The planner has a single caller,
+`build_lowering_plan()`. The proposed first split moves
+`bind_event_ports()`, `realize_event_storage()`, `layout_event_ports()`,
+and their plan records to `graph_jit/lowering/event_port_plan.{h,cpp}`.
+This split keeps the Event planning behavior intact and leaves
+`build_lowering_plan()` in charge of the stack budget for Sample and Event
+storage.
+[Event port planner](../../src/intravenous/graph_jit/lowering_plan.cpp#L4610)
+
+The large-file inventory described the same boundary as follows.
+
+| File | Lines | Boundary to scrutinize |
+| --- | ---: | --- |
+| [`lowering_plan.cpp`](../../src/intravenous/graph_jit/lowering_plan.cpp#L9458) | 10,061 | `build_lowering_plan()` coordinates connection analysis, storage choice, package imports and scheduling. Event delivery, storage requirements and callback binding have different inputs and can be tested separately. The split between `select_event_storage()` and `layout_event_ports()` makes those responsibilities explicit. Storage trials share one connection analysis per callback order. |

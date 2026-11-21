@@ -353,6 +353,7 @@ add_library(intravenous_graph_jit OBJECT
     graph_jit/connection_plan.cpp
     graph_jit/background_storage_plan.cpp
     graph_jit/lowering.cpp
+    graph_jit/lowering/event_port_plan.cpp
     graph_jit/lowering_plan.cpp
     graph_jit/port_realization.cpp
     graph_jit/realtime_root.cpp
