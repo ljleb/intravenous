@@ -30,7 +30,7 @@ import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow,
 import { editableHeightPx, formatPlaybackSeconds, initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
     panTimeline, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor,
     zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineHorizontally,
-    stepTimelineVerticalZoom, timelineLaneBorderPx, verticalWheelStepPixels,
+    stepTimelineVerticalZoom, timelineLaneBorderPx, verticalWheelStepPixels, viewportTimelineSamples,
     type MiddleClick, type MiddleDrag, type MiddleZoomPickup, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
 import { useGraphEditor } from "./context";
 import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
@@ -38,7 +38,7 @@ import { usePlayback } from "../timeline/playbackContext";
 import { useObservations, usePortObservationViewport } from "../presentation/observationContext";
 import { predictedObservationRows } from "../../src/observationWindows";
 import { sameObservationWindow, type ObservationWindow } from "../../src/observations";
-import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
+import { projectSampleRateFallback, timelineObservationSpan, timelineSampleOffset, type PresentationTime, type TimelineSamples } from "../../src/timelineSamples";
 import { webviewApi } from "../host";
 
 const node = useNode();
@@ -212,11 +212,15 @@ function resizeTimelineHeaders(event: PointerEvent) {
     })) event.preventDefault();
 }
 const timeWidth = computed(() => timeRegionSize.value?.width ?? 0);
-const timeWindow = computed(() => {
-    const { beginSeconds, secondsPerPixel } = viewport.value;
-    const spanSeconds = Math.max(1, timeWidth.value) * secondsPerPixel;
-    return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds, sampleRate: scope.value.sampleRate,
-        gridMode: gridMode.value };
+const timeAxis = computed(() => ({ width: timeWidth.value, sampleRate: scope.value.sampleRate ?? projectSampleRateFallback }));
+const sampleView = computed<TimelineSamples>((previous) => {
+    const next = viewportTimelineSamples(viewport.value, timeAxis.value);
+    return previous?.origin === next.origin && previous.span === next.span ? previous : next;
+});
+const timeWindow = computed<PresentationTime>(() => {
+    const { origin, span } = sampleView.value;
+    return { beginSample: String(origin.index), beginFraction: origin.fraction, spanSamples: span,
+        sampleRate: scope.value.sampleRate ?? undefined, gridMode: gridMode.value };
 });
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
@@ -224,11 +228,9 @@ const observedTimeline = computed(() => scope.value.timelineNodes?.find(isTimeli
 type ProjectedBeatMark = TimelineMark & Pick<ObservedRulerMark, "bar">;
 const decodedBeatMarks = new WeakMap<readonly ObservedRulerMark[], Array<Omit<ProjectedBeatMark, "x">>>();
 const beatViewport = computed(() => {
-    const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
-    if (gridMode.value === "seconds" || !sampleRate || timeWidth.value <= 0) return undefined;
-    const first = automationSampleIndex(beginSeconds, sampleRate);
-    const last = automationSampleIndex(beginSeconds, sampleRate, spanSeconds);
-    return first === undefined || last === undefined || last < first ? undefined : { first, length: last - first + 1n };
+    if (gridMode.value === "seconds" || !timeWindow.value.sampleRate || timeWidth.value <= 0) return undefined;
+    const { begin, length } = timelineObservationSpan(sampleView.value);
+    return { first: BigInt(begin), length: BigInt(length) };
 });
 const visibleBeatWindow = computed<ObservationWindow | undefined>((previous) => {
     const visible = beatViewport.value;
@@ -257,8 +259,8 @@ const previewGrid = computed<BeatGrid | undefined>((previous) => {
     if (draft) return draft;
     // Scope can acknowledge the edit before the receiving port delivers the
     // new window. Keep displaying the accepted preview over retained old data.
-    const observed = beatWindows.value?.result;
-    if (previous && sameBeatGrid(previous, accepted) && (!observed || observed.status === "pending" || observed.outdated))
+    const observed = beatWindows.value;
+    if (previous && sameBeatGrid(previous, accepted) && (observed?.status === "pending" || !observed?.result || observed.result.outdated))
         return previous;
     return undefined;
 });
@@ -268,14 +270,13 @@ const observedBeatMarks = computed<readonly ObservedRulerMark[]>((previous) => {
     const origin = BigInt(window.begin);
     const marks = observation.spans.flatMap(({ result, begin, end }) =>
         beatObservationMarks(result).filter(({ index }) => {
-            const offset = BigInt.asIntN(64, BigInt(index) - origin);
+            const offset = BigInt.asUintN(64, BigInt(index) - origin);
             return begin <= offset && offset < end;
         }));
     if (previous?.length === marks.length && marks.every((mark, index) => mark === previous[index])) return previous;
     return marks;
 });
-function projectBeatMarks(raw: readonly ObservedRulerMark[], first: bigint,
-    pixelsPerSample: number, width: number, originX = 0) {
+function projectBeatMarks(raw: readonly ObservedRulerMark[], view: TimelineSamples, width: number) {
     let marks = decodedBeatMarks.get(raw);
     if (!marks) {
         marks = raw.map(({ index, depth, bar }) => ({ index: BigInt(index), depth, bar }));
@@ -284,7 +285,7 @@ function projectBeatMarks(raw: readonly ObservedRulerMark[], first: bigint,
     const candidates: ProjectedBeatMark[] = [];
     const barMarks = new Map<bigint, ProjectedBeatMark>();
     for (const mark of marks) {
-        const x = originX + Number(BigInt.asIntN(64, mark.index - first)) * pixelsPerSample;
+        const x = timelineSampleOffset(view, mark.index) / view.span * width;
         if (x < -minimumBeatMarkSpacing || x > width + minimumBeatMarkSpacing) continue;
         const candidate = { ...mark, x };
         if (mark.depth === 0) {
@@ -301,20 +302,18 @@ function projectBeatMarks(raw: readonly ObservedRulerMark[], first: bigint,
 }
 const timelineMarks = computed<readonly ProjectedBeatMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
     if (gridMode.value === "seconds") return [];
-    const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
+    const { spanSamples, beginSample, beginFraction, sampleRate } = timeWindow.value;
     const visible = beatViewport.value;
     const width = timeWidth.value;
     if (!sampleRate || !visible) return [];
     const draft = previewGrid.value;
     let displayed: ProjectedBeatMark[];
     if (draft) {
-        displayed = beatGridTicks(draft, { beginSeconds, spanSeconds }, sampleRate, width)
+        displayed = beatGridTicks(draft, { beginSample: BigInt(beginSample), beginFraction, spanSeconds: spanSamples / sampleRate }, sampleRate, width)
             .map(({ sample, depth, x }) => ({ index: sample, depth, x }));
     } else {
         if (!observedTimeline.value) return [];
-        const pixelsPerSample = width / (spanSeconds * sampleRate);
-        const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
-        displayed = projectBeatMarks(observedBeatMarks.value, visible.first, pixelsPerSample, width, originX);
+        displayed = projectBeatMarks(observedBeatMarks.value, sampleView.value, width);
     }
     if (previous?.length === displayed.length && displayed.every(({ index, depth, x, bar }, i) =>
         index === previous[i].index && depth === previous[i].depth && x === previous[i].x && bar === previous[i].bar)) return previous;
@@ -362,7 +361,7 @@ function openBeatReader(): SeekBeatReader | undefined {
         const raw = result?.status === "ready" ? result.marks : observedBeatMarks.value;
         if (!raw) return result?.status === "ready" || result?.status === "unavailable" ? [] : undefined;
         if (cache?.raw !== raw || cache.first !== first || cache.length !== length) {
-            const targets = projectBeatMarks(raw, first, width / Number(length), width).map(({ index }) => index);
+            const targets = projectBeatMarks(raw, { origin: { index: first, fraction: 0 }, span: Number(length) }, width).map(({ index }) => index);
             cache = { raw, first, length, targets };
         }
         return result?.status === "ready" || cache.targets.length ? cache.targets : undefined;
@@ -486,8 +485,8 @@ function applyWheel(event: WheelEvent) {
     if (action === "horizontalScroll") {
         const axis = timeRegion.value.getBoundingClientRect();
         const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-        viewport.value = { ...viewport.value, beginSeconds: viewport.value.beginSeconds
-            + wheelPixels(horizontal, event.deltaMode, axis.width) * viewport.value.secondsPerPixel };
+        viewport.value = panTimeline(viewport.value, { x: -wheelPixels(horizontal, event.deltaMode, axis.width), y: 0 },
+            false, timeAxis.value);
     } else {
         const delta = wheelPixels(event.deltaY || event.deltaX, event.deltaMode, root.value.clientHeight);
         if (action === "laneValueZoom") {
@@ -496,7 +495,7 @@ function applyWheel(event: WheelEvent) {
         }
         const horizontal = action !== "verticalZoom", vertical = action !== "horizontalZoom";
         if (horizontal)
-            viewport.value = zoomTimelineHorizontally(viewport.value, zoomAnchor("horizontalZoom", event.clientX, event.clientY), delta);
+            viewport.value = zoomTimelineHorizontally(viewport.value, zoomAnchor("horizontalZoom", event.clientX, event.clientY), delta, timeAxis.value);
         if (vertical) {
             verticalWheelRemainder += delta;
             const steps = Math.trunc(verticalWheelRemainder / verticalWheelStepPixels);
@@ -544,7 +543,7 @@ function beginMiddleDrag(event: PointerEvent) {
     middleDrag.value = action === "bothZoom" ? { ...pointer, action, zoomPickup: middleZoomPickup(viewport.value, {
         x: zoomAnchor("horizontalZoom", cursor.x, cursor.y),
         y: zoomAnchor("verticalZoom", cursor.x, cursor.y),
-    }, cursor) } : { ...pointer, action };
+    }, cursor, timeAxis.value) } : { ...pointer, action };
     middlePointerLockError = "";
     const cursorAnchor = cursorWarpAnchor(event, window.devicePixelRatio);
     middleCursorAnchor = cursorAnchor ? { ...cursorAnchor, moved: false } : null;
@@ -568,7 +567,7 @@ function updateMiddleDrag(event: PointerEvent) {
     const anchor = { x: action === "horizontalZoom" ? zoomAnchor(action, event.clientX, event.clientY) : 0,
         y: action === "verticalZoom" ? zoomAnchor(action, event.clientX, event.clientY) : 0 };
     const moved = moveMiddleDrag(pendingMiddleViewport ?? viewport.value, drag, event.buttons, event.clientX, event.clientY, anchor,
-        laneValueGesture !== null);
+        timeAxis.value, laneValueGesture !== null);
     if (moved && laneValueGesture?.gesture.mode !== "zoom") queueMiddleViewport(moved);
     moveLaneValueDrag(delta, event.clientY);
 }
@@ -578,7 +577,7 @@ function applyCombinedMiddleZoom(delta: Point, pickup: MiddleZoomPickup) {
     if (delta.y && laneVertical?.mode === "zoom") laneVertical.zoom(middleDragZoomFactor(delta.y), pickup.cursor.y);
     queueMiddleViewport(zoomMiddleDragAtPickup(pendingMiddleViewport ?? viewport.value, delta, pickup, {
         horizontal: !laneHorizontalZoom, vertical: laneVertical?.mode !== "zoom",
-    }));
+    }, timeAxis.value));
 }
 function showMiddleZoomHint(action: MiddleDrag["action"], screens: Point) {
     const valueZoom = laneValueGesture?.gesture.mode === "zoom";
@@ -646,7 +645,7 @@ function applyLockedMiddleDrag(drag: MiddleDrag, delta: Point) {
     if (action === "pan") {
         const { visible } = wrappedPosition(latestWrappedCursor ?? drag, delta);
         moveWrappedCursor({ ...visible, action });
-        queueMiddleViewport(panTimeline(pendingMiddleViewport ?? viewport.value, delta, laneValueGesture !== null));
+        queueMiddleViewport(panTimeline(pendingMiddleViewport ?? viewport.value, delta, laneValueGesture !== null, timeAxis.value));
         moveLaneValueDrag(delta, visible.y);
         return;
     }
@@ -662,7 +661,7 @@ function applyLockedMiddleDrag(drag: MiddleDrag, delta: Point) {
     // the glyph wraps. Neither zoom anchor is calculated from the glyph.
     showMiddleZoomHint(action, screens);
     const anchor = zoomAnchor(action, virtual.x, virtual.y, true);
-    queueMiddleViewport(zoomMiddleDrag(pendingMiddleViewport ?? viewport.value, action, delta, anchor));
+    queueMiddleViewport(zoomMiddleDrag(pendingMiddleViewport ?? viewport.value, action, delta, anchor, timeAxis.value));
 }
 function applyViewport(moved: TimelineViewport) {
     const current = viewport.value;
@@ -684,7 +683,7 @@ function completeMiddleClick() {
     }
     const axis = click.mode;
     applyViewport(axis === "view" ? { ...initialTimelineViewport }
-        : resetTimelineZoom(viewport.value, axis, zoomAnchor(axis, click.x, click.y)));
+        : resetTimelineZoom(viewport.value, axis, zoomAnchor(axis, click.x, click.y), timeAxis.value));
 }
 function endMiddleDrag(event?: PointerEvent) {
     const pointerId = middleDrag.value?.pointerId;

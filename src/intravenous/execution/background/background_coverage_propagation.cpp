@@ -5,6 +5,7 @@
 #include <intravenous/graph_jit/sequential_coverage.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -312,6 +313,31 @@ IndexCoverage derive_input_coverage(
     return result;
 }
 
+void append_event_regions(
+    std::vector<BackgroundInputRegion>& regions, GlobalIndexRange source_range,
+    IndexCoverage const& complete, graph_jit::BackgroundConnectionIndex connection,
+    BackgroundInputRegionSource source)
+{
+    auto append = [&](GlobalIndexRange range) {
+        regions.push_back({.range = range, .connection = connection, .sources = {source}});
+    };
+    // IndexCoverage canonicalizes at the signed seam. A fully available
+    // logical Region keeps the range that its storage reader exposes.
+    if (complete.contains(source_range)) {
+        append(source_range);
+        return;
+    }
+    auto const first = regions.size();
+    for (auto const available : complete)
+        for_each_range_intersection(source_range, available, append);
+    // A clipped Region can also straddle the seam. The first and last
+    // pieces are adjacent in circular order when they meet at that seam.
+    if (regions.size() > first + 1 && regions.back().range.end() == regions[first].range.begin) {
+        regions.back().range.extent += regions[first].range.extent;
+        regions.erase(regions.begin() + static_cast<std::ptrdiff_t>(first));
+    }
+}
+
 std::vector<BackgroundInputRegion> derive_input_regions(
     graph_jit::BackgroundEvaluationPlan const& plan,
     std::span<std::vector<GlobalIndexRange> const> output_regions,
@@ -371,16 +397,8 @@ std::vector<BackgroundInputRegion> derive_input_regions(
             }
             for (auto const& source : sources) {
                 for (std::size_t index = 0; index < source.regions.size(); ++index) {
-                    for (auto const available : *complete) {
-                        for_each_range_intersection(
-                            source.regions[index], available, [&](GlobalIndexRange part) {
-                                connection_regions.push_back({
-                                    .range = part,
-                                    .connection = connection_index,
-                                    .sources = {source_ref(source.output, index, source.delivery)},
-                                });
-                            });
-                    }
+                    append_event_regions(connection_regions, source.regions[index], *complete,
+                        connection_index, source_ref(source.output, index, source.delivery));
                 }
             }
         } else if (connection.kind == PortKind::sample) {

@@ -90,6 +90,53 @@ TEST_F(GraphJitRuntimeFixture, SparseTockPointsComputeOnlyTheRequestedCurveWindo
     EXPECT_FLOAT_EQ(static_cast<float>(region->at(index(3), 0)), .6f);
 }
 
+TEST_F(GraphJitRuntimeFixture, ObservesConnectedAutomationMaxAcrossTheSignedSeam)
+{
+    auto compiled = compile("iv.test.automation.wrap_bound", 714);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& inputs = graph.background_evaluation_plan.public_coverage_inputs;
+    auto const input = std::ranges::find_if(inputs, [&](auto const& port) {
+        return port.reconstructible && !port.projections.empty()
+            && graph.configured_graph->node_bundles.resolve_sample_input(port.port).config.name == "max";
+    });
+    ASSERT_NE(input, inputs.end());
+    auto const operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
+    auto const waveform = std::ranges::find(operations, "waveform", &ObservationOperation::id);
+    ASSERT_NE(waveform, operations.end());
+    auto query = std::make_shared<ObservationWindowQuery>();
+    query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+    query->kind = ObservationSourceKind::input;
+    query->port = input->port;
+    query->operation = &*waveform;
+    query->window = {index(INT64_MAX - 4), 10, 10};
+
+    GraphExecutor executor{resources};
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool activated = false;
+    while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(activated);
+
+    ObservationCollectRequest collection{.windows = {query}};
+    executor.handle_observation_collect(collection);
+    while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
+    ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
+    std::vector<std::uint64_t> offsets;
+    for (auto const& region : query->result.regions)
+        for (auto const& [position, captured] : region.values) {
+            ASSERT_TRUE(captured.captured);
+            EXPECT_FLOAT_EQ(captured.load<float>(), .5f);
+            offsets.push_back(query->window.begin.forward_distance_to(position));
+        }
+    std::ranges::sort(offsets);
+    EXPECT_EQ(offsets, (std::vector<std::uint64_t>{2, 3, 4, 5, 6, 7}));
+}
+
 TEST_F(GraphJitRuntimeFixture, TransformedCurvePointsDetermineCoverageBeforeSequentialManualFallback)
 {
     for (bool empty : {false, true}) {

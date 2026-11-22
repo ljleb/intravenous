@@ -3,8 +3,8 @@ import { addressFromKey, addressKey } from "./graphScope";
 import type { ObservationProfile } from "./observationProfile";
 import type { ObservationDelivery } from "./observationDelivery";
 import { observationSpans, observationWindowId,
-    observationWindowIds, observationWindowRequests, type ObservationTier } from "./observationWindows";
-import { ObservationValues, observationSourceKey, recordedEventTimestampsOperation, type ObservationCapability, type ObservationHostRequest,
+    observationWindowIds, observationWindowRequests, visibleObservationRequests, type ObservationTier } from "./observationWindows";
+import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationTimeSpan,
     type MeterMode, type ObservationWindow, sameObservationWindow } from "./observations";
 
@@ -238,10 +238,7 @@ export class PresentationObservations {
         const next = new Set<string>();
         if (observation && tier) {
             const { source, operation, window, consumer } = observation;
-            const requests: ReturnType<typeof observationWindowRequests> = operation === recordedEventTimestampsOperation
-                ? tier === "visible" ? [{ slot: "visible", window, prefetch: false }] : []
-                : observationWindowRequests(window, tier);
-            for (const { slot, ...request } of requests) {
+            for (const { slot, ...request } of observationWindowRequests(window, tier)) {
                 const key = observationWindowId(id, slot);
                 this.observePort(key, { source, operation, ...request }, tier === "visible" ? "viewport" : undefined, consumer);
                 next.add(key);
@@ -268,13 +265,17 @@ export class PresentationObservations {
         return this.values.windowForDisplay(id, visible);
     }
     viewportWindow(id: string, visible: ObservationTimeSpan, requested: ObservationWindow, completeOnly: boolean) {
-        const current = this.values.currentWindow(id, requested);
+        const fine = visibleObservationRequests(requested);
+        const current = fine.map(({ slot, window }) => this.values.currentWindow(observationWindowId(id, slot), window));
         const ready = this.values.readyWindowsForDisplay(observationWindowIds(id), visible, completeOnly);
-        const results = current?.status === "unavailable" ? [current, ...ready] : ready;
-        const spans = observationSpans(results, visible, requested);
-        const result = current?.status === "unavailable" || (current?.status === "ready" && (!completeOnly || !current.truncated))
-            ? current : spans[0]?.result ?? current;
-        return { result, spans, status: current?.status ?? "pending", error: current?.error };
+        const unavailable = current.flatMap((result) => result?.status === "unavailable" ? [result] : []);
+        const spans = observationSpans([...unavailable, ...ready], visible, fine.map(({ window }) => window));
+        const preferred = current.find((result) => result?.status === "ready" && (!completeOnly || !result.truncated));
+        const result = preferred ?? spans[0]?.result ?? current.find((result) => result);
+        const failure = current.find((result) => result?.status === "failed");
+        const status = failure ? "failed" as const : current.some((result) => !result || result.status === "pending") ? "pending" as const
+            : unavailable.length === current.length ? "unavailable" as const : "ready" as const;
+        return { result, spans, status, error: failure?.error };
     }
     refresh(): void {
         this.recording?.sink({ type: "refresh" });

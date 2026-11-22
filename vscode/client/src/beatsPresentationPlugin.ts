@@ -4,9 +4,10 @@ import { SetBeatGrid } from "./generated/beatsEvents";
 import { serializeNodeEvent } from "./nodeEvents";
 import { gridGuideStrengths } from "./gridGuideStrength";
 import type { Present, PresentationCommand, PresentationControl, PresentationFrame, PresentationInput, PresentationManifest, PresentationMark } from "./presentationPlugin";
+import { presentationPluginVersion } from "./presentationPlugin";
 
 export const beatsPresentationManifest: PresentationManifest = {
-    version: 1, id: "builtin.beats", title: "Beats", definitionIds: ["builtin.beats"], timeline: true,
+    version: presentationPluginVersion, id: "builtin.beats", title: "Beats", definitionIds: ["builtin.beats"], timeline: true,
     icon: "M2 3v10m4-7v7m4-4v4m4-7v7",
 };
 
@@ -90,7 +91,8 @@ export function createBeatsPresentation(): Present {
         if (pending) commands.push(pending);
         displayed = grid;
         const { width, height } = snapshot.viewport;
-        const ticks = time?.sampleRate ? beatGridTicks(grid, time, time.sampleRate, width) : [];
+        const ticks = time?.sampleRate ? beatGridTicks(grid, { beginSample: BigInt(time.beginSample),
+            beginFraction: time.beginFraction, spanSeconds: time.spanSamples / time.sampleRate }, time.sampleRate, width) : [];
         const strengths = gridGuideStrengths(ticks, ({ x }) => x);
         const marks: PresentationMark[] = [];
         let nextLabelX = 0;

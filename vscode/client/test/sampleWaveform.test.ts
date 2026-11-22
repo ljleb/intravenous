@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sampleWindow, sampleWaveform } from "../src/sampleWaveform";
 import { ObservationValues, type ObservationWindowResult } from "../src/observations";
+import { observationSpans, observationWindowRequests } from "../src/observationWindows";
+import { timelineSampleCount, timelineSamples } from "../src/timelineSamples";
 
 function result(): ObservationWindowResult {
     return { id: "wave", window: { begin: "0", length: "10", points: 10 }, status: "ready",
@@ -17,10 +19,11 @@ function result(): ObservationWindowResult {
         ] }] };
 }
 test("waveform requests quantize to project samples and bound the representative point count", () => {
-    assert.deepEqual(sampleWindow(-.5, .5, 48000, 2000), { begin: "-24000", length: "48000", points: 1024 });
-    assert.equal(sampleWindow(0, 1, null, 512), undefined);
-    assert.equal(sampleWindow(1, 0, 48000, 512), undefined);
-    assert.equal(sampleWindow(Infinity, 0, 48000, 512), undefined);
+    const time = { beginSample: "-24000", beginFraction: 0, spanSamples: 48000, sampleRate: 48000 };
+    assert.deepEqual(sampleWindow(time, 2000), { begin: "-24000", length: "48000", points: 1024 });
+    assert.equal(sampleWindow({ ...time, sampleRate: undefined }, 512), undefined);
+    assert.equal(sampleWindow({ ...time, spanSamples: -1 }, 512), undefined);
+    assert.equal(sampleWindow({ ...time, spanSamples: Infinity }, 512), undefined);
 });
 test("waveforms keep separate paths for gaps, unavailable points and overlapping Regions", () => {
     const data = result();
@@ -75,7 +78,8 @@ test("window previews reproject the last ready result while an overlapping viewp
     receive({ ...data, window: next, status: "pending", regions: [] });
     const preview = values.windowForDisplay("wave");
     assert.equal(preview?.outdated, true);
-    assert.equal(sampleWaveform(preview, undefined, next).paths[1], "M100.000,72.500L200.000,50.000");
+    assert.equal(sampleWaveform(preview, undefined, { origin: { index: 6n, fraction: 0 }, span: 10 }, -6n).paths[1],
+        "M100.000,72.500L200.000,50.000");
     assert.equal(values.windowForDisplay("wave", { ...next, begin: "10" }), undefined);
     receive({ ...data, window: next, regions: [] });
     assert.deepEqual(values.windowForDisplay("wave")?.regions, []);
@@ -242,4 +246,43 @@ test("downsampled waveform positions retain their phase relative to the project 
         { index: "2", available: true, value: { value: .5 } },
     ] }];
     assert.deepEqual(sampleWaveform(data).paths, ["M250.000,50.000L750.000,27.500"]);
+});
+
+test("full-circle observations share one budget across legal, ordered RPC windows", () => {
+    const time = { beginSample: "71", beginFraction: .25, spanSamples: Number(timelineSampleCount), sampleRate: 48000 };
+    const visible = sampleWindow(time, 1024)!;
+    assert.equal(visible.begin, "72");
+    const requests = observationWindowRequests(visible, "visible");
+    assert.equal(requests.length, 3);
+    assert.deepEqual(observationWindowRequests({ ...visible, points: 0 }, "visible").map(({ window }) => window.points), [0, 0, 0]);
+    assert.equal(requests.reduce((total, { window }) => total + window.points, 0), 1024);
+    let offset = 0n;
+    const results = requests.map(({ slot, window }) => {
+        assert.equal(BigInt(window.begin), BigInt.asIntN(64, BigInt(visible.begin) + offset));
+        const length = BigInt(window.length);
+        assert.ok(length <= (1n << 63n) - 1n);
+        offset += length;
+        const index = String(BigInt.asIntN(64, BigInt(window.begin) + length / 2n));
+        return { ...result(), id: slot, window, regions: [
+            { begin: index, length: "1", points: [{ index, available: true, value: { value: 0 } }] },
+        ] };
+    });
+    assert.equal(offset, timelineSampleCount);
+    const spans = observationSpans(results.reverse(), visible, requests.map(({ window }) => window));
+    assert.equal(spans[0].begin, 0n);
+    assert.equal(spans.at(-1)?.end, timelineSampleCount);
+    for (const [index, span] of spans.entries()) {
+        assert.equal(span.begin, span.windowOffset);
+        if (index > 0) assert.equal(span.begin, spans[index - 1].end);
+        const geometry = sampleWaveform(span.result, undefined, timelineSamples(time), span.windowOffset);
+        const x = Number(/^M([\d.]+)/.exec(geometry.paths[0])?.[1]);
+        assert.ok(x > index * 1000 / 3 && x < (index + 1) * 1000 / 3);
+    }
+});
+
+test("retained windows intersect a full-circle viewport at both edges", () => {
+    const data = { ...result(), window: { begin: "-4", length: "10", points: 10 } };
+    const spans = observationSpans([data], { begin: "0", length: String(timelineSampleCount) });
+    assert.deepEqual(spans.map(({ begin, end, windowOffset }) => [begin, end, windowOffset]),
+        [[0n, 6n, -4n], [timelineSampleCount - 4n, timelineSampleCount, timelineSampleCount - 4n]]);
 });

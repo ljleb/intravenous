@@ -43,8 +43,8 @@ const { panel: menuRoot, key: menuKey, open: openContext, close: closeMenu, togg
 const timeline = useTimelineWindow();
 const size = usePresentationSize(root);
 const width = computed(() => size.value?.width ?? 0);
-const observationWindow = computed(() => timeline ? sampleWindow(timeline.value.beginSeconds,
-    timeline.value.endSeconds, timeline.value.sampleRate, props.mode === "nano" ? 2 : Math.min(512, width.value)) : undefined);
+const observationWindow = computed(() => timeline ? sampleWindow(timeline.value,
+    props.mode === "nano" ? 2 : Math.min(512, width.value)) : undefined);
 const tier = useObservationTier();
 const visible = ref(false);
 let current: NodeAddress | undefined;

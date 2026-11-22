@@ -5,21 +5,28 @@ import type { ObservationWindow } from "../../src/observations";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import { useNode } from "./nodeContext";
 import { useObservations, useObservationTier } from "./observationContext";
+import { useTimelineWindow } from "../timeline/timelineContext";
+import { timelineObservationOffset, timelineSamples } from "../../src/timelineSamples";
 const props = defineProps<{ bounds?: { min: number; max: number }; mode?: string; inputMember?: string; window?: ObservationWindow }>();
 const node = useNode();
 const observations = useObservations();
 const tier = useObservationTier();
+const time = useTimelineWindow();
 const waveforms = computed(() => {
     const address = node.value.address;
     const visible = props.window;
-    if (tier.value !== "visible" || !address || !observations || !visible) return [];
+    if (tier.value !== "visible" || !address || !observations || !visible || !time) return [];
+    const view = timelineSamples(time.value);
+    const visibleOffset = timelineObservationOffset(view);
     return observations.forNode(address).filter((entry) => entry.delivery === "window"
         && (props.inputMember === undefined ? entry.kind === "output" : entry.kind === "input" && entry.member === props.inputMember)).map((entry) => {
         const { result, spans, status, error } = observations.viewportWindow(entry.id, visible, visible, false);
-        const layers = spans.map(({ result, begin, end }) => {
-            const scale = 1000 / Number(visible.length);
-            return { x: Number(begin) * scale, width: Number(end - begin) * scale,
-                geometry: sampleWaveform(result, props.bounds, visible) };
+        const layers = spans.flatMap(({ result, begin, end, windowOffset }) => {
+            const scale = 1000 / view.span;
+            const from = Math.max(0, (Number(begin) + visibleOffset) * scale);
+            const to = Math.min(1000, (Number(end) + visibleOffset) * scale);
+            return to > from ? [{ x: from, width: to - from,
+                geometry: sampleWaveform(result, props.bounds, view, windowOffset) }] : [];
         });
         const port = node.value.ports.find((port) => port.direction === entry.kind && port.name === entry.member);
         const label = port?.displayName ?? (entry.kind === "input" ? `Input ${entry.member}` : entry.member);
@@ -51,7 +58,7 @@ function waveformStatus(item: (typeof waveforms.value)[number]): string {
                     <path v-for="(path, i) in layer.geometry.paths" :key="`path-${i}`" :d="path"
                         fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" vector-effect="non-scaling-stroke" />
                 </svg>
-                <TimelinePlayhead :sample-window="window ?? item.result?.window" />
+                <TimelinePlayhead />
             </svg>
             <span class="label">{{ item.label }}<template v-if="item.channels && item.channels.length > 1"> · {{ item.channelName }}</template></span>
         </div>

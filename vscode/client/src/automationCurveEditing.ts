@@ -7,6 +7,7 @@ import { ScrubSensitivity } from "./scrubSensitivity";
 import { automationTimeDrag, initialGapAttachment, placeAutomationPoint, pointInsertionIndex,
     type GapAttachment, type PointTime } from "./automationPointPlacement";
 import { updateSelection } from "./selection";
+import { timelineSampleAt, type TimelineSamples } from "./timelineSamples";
 
 import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
     automationValueGuides, clampAutomationValue, compareAutomationPoints,
@@ -16,6 +17,7 @@ export { automationCycleSeconds, automationWindow } from "./automationCurveGeome
 export type { AutomationCurve, AutomationPoint, CurveInterpolation } from "./automationCurveGeometry";
 export type CurveAxes = { left: number; top: number; width: number; height: number;
     begin: number; end: number; spanSeconds?: number; ruler?: AutomationValueRuler;
+    timeline?: TimelineSamples;
     timeDetents?: readonly bigint[]; snapTime?: (index: bigint) => bigint } & AutomationValueAxis;
 export type CurveDragKind = "point" | "tension";
 export const automationTensionLimits = { min: 0, max: 1, defaultValue: 1 } as const;
@@ -72,9 +74,10 @@ export function curvePointAt(axes: CurveAxes, position: ScreenPoint, sampleRate?
     // the inverse arctangent scale stays finite.
     const inset = axes.display === "cropped" ? 0 : Math.min(.5, .5 / axes.height);
     const fraction = Math.max(inset, Math.min(1 - inset, 1 - (position.y - axes.top) / axes.height));
-    const index = sampleRate ? automationSampleIndex(axes.begin, sampleRate, offset) : undefined;
+    const index = axes.timeline ? timelineSampleAt(axes.timeline, (position.x - axes.left) / axes.width)
+        : sampleRate ? automationSampleIndex(axes.begin, sampleRate, offset) : undefined;
     const sampleIndex = index === undefined ? undefined : axes.snapTime?.(index) ?? index;
-    return { seconds: sampleIndex !== index && sampleIndex !== undefined && sampleRate
+    return { seconds: (axes.timeline || sampleIndex !== index) && sampleIndex !== undefined && sampleRate
         ? Number(sampleIndex) / sampleRate : axes.begin + offset, sampleIndex,
         value: automationValueAtFraction(fraction, axes) };
 }
@@ -270,13 +273,13 @@ export class AutomationCurveEditing {
         const gapAttachment = adding ? "nearest" : initialGapAttachment(neighbors, initial, initialSlot);
         const placed = adding ? placeAutomationPoint(neighbors, null, initial, initialSlot, gapAttachment) : null;
         const desired = placed?.point ?? initial;
-        const secondsPerPixel = (axes.spanSeconds ?? axes.end - axes.begin) / axes.width;
+        const spanSamples = axes.timeline?.span ?? (axes.spanSeconds ?? axes.end - axes.begin) * (curve.sampleRate ?? 0);
         const pointDrag: PointDrag | undefined = kind === "point" ? {
             neighbors, byId: visiblePoints, base: desired, adding, appeared: !adding && curve.points.some(({ id }) => id === initial.id),
             placing: !shift && !companions.length, deleteOnClick: !adding && shift, moved: false,
             initialSlot, gapAttachment,
             timeAt: position ? automationTimeDrag(companions.length ? [] : neighbors, initial,
-                secondsPerPixel, curve.sampleRate!, axes.timeDetents) : undefined,
+                { spanSamples, width: axes.width }, axes.timeDetents) : undefined,
             snappedTime: adding && axes.timeDetents?.includes(initial.sampleIndex!) ? initial.sampleIndex : undefined,
             sentOrder: [],
             limits: companions.length ? orderedTimeLimits(points, new Set([initial.id, ...companions.map((point) => point.id)])) : {},

@@ -1,10 +1,10 @@
 import { onBeforeUnmount, type Ref } from "vue";
-import { automationSampleIndex } from "../../src/automationCurveGeometry";
 import { playheadTimeDrag } from "../../src/timelineTimeDrag";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
 import { webviewApi } from "../host";
 import { seekBeatWindow, snapTimelineSample, timelineSampleFraction, timelineSnapRadiusPx, type SeekBeatWindow } from "../../src/timelineGeometry";
+import { projectSampleRateFallback, timelineObservationSpan, timelineSampleAt, timelineSamples } from "../../src/timelineSamples";
 import { usePlayback } from "./playbackContext";
 import type { PresentationTimeWindow } from "./timelineContext";
 import { usePresentationFrame } from "../presentation/presentationFrames";
@@ -29,31 +29,31 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
         if (event.button !== 0 || !editor || !element || !time || cancel) return;
         const trace = editor.takeCursorReturnTrace();
         const bounds = element.getBoundingClientRect();
-        const span = time.spanSeconds ?? time.endSeconds - time.beginSeconds;
+        const view = timelineSamples(time);
+        const sampleRate = time.sampleRate ?? state.value?.sampleRate ?? projectSampleRateFallback;
+        const span = view.span / sampleRate;
         trace?.log("Playhead press", { surface: element.classList.contains("time-ruler") ? "ruler" : "lane",
             pointerType: event.pointerType, pointerId: event.pointerId, buttons: event.buttons,
             client: { x: event.clientX, y: event.clientY }, screen: { x: event.screenX, y: event.screenY },
-            scale: window.devicePixelRatio, beginSeconds: time.beginSeconds, spanSeconds: span, width: bounds.width });
+            scale: window.devicePixelRatio, beginSample: time.beginSample, spanSeconds: span, width: bounds.width });
         if (!(bounds.width > 0 && span > 0)) return;
-        const sampleRate = state.value?.sampleRate ?? time.sampleRate ?? 48000;
         const secondsPerPixel = span / bounds.width;
+        const samplesPerPixel = view.span / bounds.width;
         const pressX = event.clientX, pressY = event.clientY;
-        const anchor = automationSampleIndex(time.beginSeconds, sampleRate, (pressX - bounds.left) * secondsPerPixel);
-        if (anchor === undefined) return;
+        const anchor = timelineSampleAt(view, (pressX - bounds.left) / bounds.width);
         const snapTargets = marks();
         trace?.log("Seek mapping", { anchor: anchor.toString(), sampleRate, secondsPerPixel, detents: snapTargets.length,
             currentPlayhead: backgroundPlayhead.value?.toString(), running: state.value?.running });
-        const first = automationSampleIndex(time.beginSeconds, sampleRate);
-        const last = automationSampleIndex(time.beginSeconds, sampleRate, span);
-        const reader = first !== undefined && last !== undefined ? openBeatReader?.() : undefined;
-        const visible = first !== undefined && last !== undefined ? { first, length: last - first + 1n } : undefined;
+        const { begin, length } = timelineObservationSpan(view);
+        const reader = openBeatReader?.();
+        const visible = { first: BigInt(begin), length: BigInt(length) };
         closeReader = reader?.close;
         let readTargets: readonly bigint[] | undefined;
         let outsideTargets: readonly bigint[] = [];
-        const atTravel = playheadTimeDrag(anchor, secondsPerPixel, sampleRate, snapTargets, reader && visible ? (sample, forward) => {
+        const atTravel = playheadTimeDrag(anchor, { spanSamples: view.span, width: bounds.width }, snapTargets, reader ? (sample, forward) => {
             const window = seekBeatWindow(visible, sample, forward);
             if (!window) return;
-            const width = Number(window.length) / (secondsPerPixel * sampleRate);
+            const width = Number(window.length) / samplesPerPixel;
             const targets = reader.marks(window, sampleRate, width);
             if (!targets) return;
             if (targets !== readTargets) {
@@ -99,7 +99,7 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
                 if (finalPosition === null) {
                     if (point) {
                         const index = BigInt.asIntN(64, anchor);
-                        const snapped = snapTimelineSample(index, snapTargets, timelineSnapRadiusPx * secondsPerPixel * sampleRate);
+                        const snapped = snapTimelineSample(index, snapTargets, timelineSnapRadiusPx * samplesPerPixel);
                         webviewApi.postMessage({ type: "playbackSeek", position: snapped.toString() });
                     }
                     return;
@@ -115,7 +115,7 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
                         return null;
                     }
                     const rect = element.getBoundingClientRect();
-                    const fraction = timelineSampleFraction(displayed, currentTime, state.value?.sampleRate ?? sampleRate);
+                    const fraction = timelineSampleFraction(displayed, currentTime);
                     const requested = { x: rect.left + fraction * rect.width, y: pressY };
                     const destination = visibleCursorDestination(element, requested);
                     trace?.log("Resolved playhead destination", { displayed: displayed.toString(),

@@ -636,6 +636,23 @@ void automation_window_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.automation.window_module", automation_window_module, "Window module");
 
+void automation_wrap_bound(iv::GraphBuilder& graph) {
+    using namespace iv;
+    using automation::Point;
+    using automation::SampleIndex;
+    auto bound = graph.node<"builtin.automation.curve">(std::vector<Point>{
+        {.id = 1, .value = .5f, .interpolation = CurveInterpolation::hold, .sample_index = SampleIndex{"9223372036854775805"}},
+        {.id = 2, .interpolation = CurveInterpolation::empty, .sample_index = SampleIndex{"-9223372036854775805"}},
+    });
+    auto curve = graph.node<"builtin.automation.curve">(std::vector<Point>{
+        {.id = 1, .value = 1, .interpolation = CurveInterpolation::hold, .sample_index = SampleIndex{"9223372036854775803"}},
+        {.id = 2, .interpolation = CurveInterpolation::empty, .sample_index = SampleIndex{"-9223372036854775803"}},
+    });
+    curve("max"_P = bound);
+    graph.outputs();
+}
+IV_MODULE("iv.test.automation.wrap_bound", automation_wrap_bound, "Wrap bound");
+
 // Replayable pointwise Tick nodes whose only input is Sequential. Both compute
 // a value at every position; an input position without upstream coverage
 // resolves to the input's neutral value. Their declared TickReplayMode decides

@@ -119,7 +119,16 @@ test("visible destinations keep their exact position, including near a surface e
     const window = Object.getOwnPropertyDescriptor(globalThis, "window");
     const document = Object.getOwnPropertyDescriptor(globalThis, "document");
     Object.defineProperty(globalThis, "window", { configurable: true, value: { innerWidth: 200, innerHeight: 100 } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: () => surface } });
+    const resizeHandle = { getBoundingClientRect: () => ({ left: 16, right: 24 }) };
+    const rulerSettings = { getBoundingClientRect: () => ({ left: 104, right: 120 }) };
+    const dialog = { getBoundingClientRect: () => ({ left: 13, right: 130 }) };
+    let covered = false;
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: (x: number, y: number) => {
+        if (covered) return dialog;
+        if (y === 21 && x < 24) return resizeHandle;
+        if (y === 21 && x >= 104) return rulerSettings;
+        return surface;
+    } } });
     t.after(() => {
         if (window) Object.defineProperty(globalThis, "window", window);
         else Reflect.deleteProperty(globalThis, "window");
@@ -128,4 +137,8 @@ test("visible destinations keep their exact position, including near a surface e
     });
     assert.deepEqual(visibleCursorDestination(surface, { x: 20.5, y: 20 }), { x: 20.5, y: 20 });
     assert.deepEqual(visibleCursorDestination(surface, { x: 180, y: 20 }), { x: 118, y: 20 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 0, y: 21 }), { x: 26, y: 21 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 180, y: 21 }), { x: 102, y: 21 });
+    covered = true;
+    assert.equal(visibleCursorDestination(surface, { x: 180, y: 21 }), null);
 });

@@ -23,7 +23,7 @@ package directory that contains only presentations works without an
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "id": "example.marker",
   "title": "Marker",
   "definitionIds": ["builtin.beats"],
@@ -76,12 +76,20 @@ through the normal node creation route.
 
 ## Frame and input contract
 
+Version 2 supplies the time axis in samples.
+[Version 1 time coordinates](historical/project_presentation_time_v1_2026-11-22.md)
+
 - `present(snapshot, inputs)` returns a frame synchronously. The snapshot
   includes accepted construction arguments, port metadata, the viewport,
   display mode, edit availability, declared observations, and the lane's
   saved JSON state. `clockMs` gives the host's current monotonic time in
   milliseconds. Use it with `wakeAfterMs` in a frame to request another
   update during an edit, even when the user stops moving the pointer.
+- When `viewport.time` is present, `beginSample` is a signed decimal index.
+  `beginFraction` is the fraction of a sample after that index.
+  `spanSamples` is the forward distance across the viewport in samples.
+  At one lap, the span is `2^64` and both edges represent the same position.
+  `sampleRate` gives the rate for converting distances to seconds.
 - Coordinates are measured in logical pixels from the top left of the
   content area. Sample indices are decimal strings. A frame may include
   polylines, rectangles, circles, text, and rectangular hit targets. Keep
@@ -128,6 +136,13 @@ through the normal node creation route.
   Use `whenConnected` to observe only a connected port. Use
   `completeOnly` if a partial result should leave the previous complete
   spans in view.
+- The host can split one viewport observation into several server requests.
+  A span's `begin` and `end` are offsets from the start of the viewport's
+  observation window, in project samples. The interval includes `begin`.
+  It excludes `end`. `windowOffset` gives the offset of the result window
+  from that same start. It can be negative when a retained window overlaps
+  the left edge. The observation window starts at `beginSample`. For a
+  full lap with a nonzero `beginFraction`, it starts at the next sample.
 - An output observation can set `"operation": "event-timestamps"` to read
   a concrete node's buffered sequential event output. Omit `points` for this
   operation. Each ready span's `result.eventIndices` contains every signed

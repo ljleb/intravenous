@@ -1,26 +1,17 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { ObservationWindow } from "../../src/observations";
 import { rulerMarkerPoints, timelineSampleFraction } from "../../src/timelineGeometry";
 import { usePlayback } from "./playbackContext";
 import { useTimelineWindow, type PresentationTimeWindow } from "./timelineContext";
 
-const props = defineProps<{ window?: PresentationTimeWindow; sampleWindow?: ObservationWindow; ruler?: boolean }>();
+const props = defineProps<{ window?: PresentationTimeWindow; ruler?: boolean }>();
 const playback = usePlayback();
 const timeline = useTimelineWindow();
 function markerX(position: bigint | null) {
     const window = props.window ?? timeline?.value;
     if (position === null || !window) return null;
 
-    let fraction: number;
-    if (props.sampleWindow) {
-        const offset = BigInt.asUintN(64, position - BigInt(props.sampleWindow.begin));
-        fraction = Number(offset) / Number(props.sampleWindow.length);
-    } else {
-        const rate = playback.state.value?.sampleRate ?? window.sampleRate;
-        if (!rate) return null;
-        fraction = timelineSampleFraction(position, window, rate);
-    }
+    const fraction = timelineSampleFraction(position, window);
     return fraction >= 0 && fraction <= 1 ? `${fraction * 100}%` : null;
 }
 const backgroundX = computed(() => markerX(playback.backgroundPlayhead.value));

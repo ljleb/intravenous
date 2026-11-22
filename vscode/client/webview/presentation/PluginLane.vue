@@ -6,7 +6,8 @@ import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
-import { sampleTimeSpan, sampleWindow } from "../../src/sampleWaveform";
+import { sampleWindow } from "../../src/sampleWaveform";
+import { timelineObservationSpan, timelineSamples } from "../../src/timelineSamples";
 import { recordedEventTimestampsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
@@ -64,10 +65,8 @@ const observed = (props.program.manifest.observations ?? []).map((need) => ({ id
     const event = need.operation === recordedEventTimestampsOperation;
     const port = ports.find((port) => port.direction === need.direction && port.name === need.port
         && port.kind === (event ? "event" : "continuous"));
-    if (!address || !timeline || !port || (need.whenConnected && port.connectivity !== "connected")) return;
-    const span = event ? sampleTimeSpan(timeline.beginSeconds, timeline.endSeconds, timeline.sampleRate) : undefined;
-    const window = event ? span && { ...span, points: 0 }
-        : sampleWindow(timeline.beginSeconds, timeline.endSeconds, timeline.sampleRate, need.points);
+    if (!address || !timeline?.sampleRate || !port || (need.whenConnected && port.connectivity !== "connected")) return;
+    const window = event ? { ...timelineObservationSpan(timelineSamples(timeline)), points: 0 } : sampleWindow(timeline, need.points);
     if (window) return { source: { node: address, kind: need.direction, member: need.port, portKind: event ? "event" : undefined },
         operation: need.operation ?? "waveform", window,
         completeOnly: need.completeOnly };
@@ -75,7 +74,8 @@ const observed = (props.program.manifest.observations ?? []).map((need) => ({ id
 const observations = computed(() => Object.fromEntries(observed.map(({ id, view }): [string, PresentationObservation | null] => {
     const observation = view.value;
     if (!observation) return [id, null];
-    const spans = observation.spans.map(({ begin, end, result }) => ({ begin: String(begin), end: String(end), result }));
+    const spans = observation.spans.map(({ begin, end, windowOffset, result }) =>
+        ({ begin: String(begin), end: String(end), windowOffset: String(windowOffset), result }));
     return [id, { ...observation, spans }];
 })));
 const acceptedRevision = ref(0);
@@ -148,9 +148,7 @@ watch((): PresentationSnapshot | undefined => {
             } : {}) })) },
         revision, editable: editable.value, mode: props.mode, editsPending: editsPending.value || revision < acceptedRevision.value,
         editError: editError.value || undefined,
-        viewport: { ...size.value, ...(timeline ? { time: { beginSeconds: timeline.beginSeconds,
-            spanSeconds: timeline.spanSeconds ?? timeline.endSeconds - timeline.beginSeconds, sampleRate: timeline.sampleRate ?? undefined,
-            gridMode: timeline.gridMode } } : {}) },
+        viewport: { ...size.value, time: timeline },
         observations: observations.value,
         state: state.value };
 }, (snapshot) => {

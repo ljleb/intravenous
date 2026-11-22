@@ -7242,6 +7242,19 @@ presentations. The client discovers those files directly. The native
 package loader skips this directory when it fingerprints and watches
 package source files. See the [project presentation guide](project_presentation_plugins.md).
 
+The project graph can show one full lap. The client divides a wide
+observation into legal RPC windows and shares the point budget among them.
+The presentation host projects all returned spans from a single sample
+origin. The presentation data schema for these coordinates is version 2.
+
+An existing backend limit still applies to waveform windows on fast ports.
+`GraphExecutor::BackgroundExecutor::process_window` projects a request into
+the port's sample lattice before choosing sparse positions.
+`FractionalGlobalIndexRange::try_project_onto_lattice` rejects a window if
+its native sample count exceeds the integer representation. Removing
+this limit requires a sparse projection that preserves project sample
+positions through the port's lattice.
+
 Package discovery still needs to publish a catalog from the resolved
 packages. The lane selector and the timeline overlay must use the same
 selection. Keep node creation defaults attached to the defining package so

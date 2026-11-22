@@ -12,7 +12,7 @@ const points = [
 const snapshot: PresentationSnapshot = {
     node: { definitionId: "builtin.automation.curve", address: { instanceId: "curve" }, arguments: [points], ports: [] },
     mode: "editable", editable: true, clockMs: 0, revision: 1, state: null, observations: {},
-    viewport: { width: 100, height: 100, time: { beginSeconds: 0, spanSeconds: 10, sampleRate: 48000 } },
+    viewport: { width: 100, height: 100, time: { beginSample: "0", beginFraction: 0, spanSamples: 480000, sampleRate: 48000 } },
 };
 const modifiers = { shift: false, alt: false, control: false, meta: false };
 function gesture(id: string, phase: PresentationGestureInput["phase"], x: number, y: number,
@@ -132,7 +132,7 @@ test("a connected bound uses the retained spans while its replacement is pending
             { index: "479999", available: true, value: { value: 1 } },
         ] }],
     };
-    const spans = [{ begin: "0", end: "480000", result }];
+    const spans = [{ begin: "0", end: "480000", windowOffset: "0", result }];
     const maxTrace = (frame: PresentationFrame) => {
         const mark = frame.marks?.find(({ id }) => id === "max:0");
         assert.equal(mark?.type, "polyline");
@@ -143,6 +143,27 @@ test("a connected bound uses the retained spans while its replacement is pending
     assert.equal(first.at(-1)?.y, 25);
     const pending = { ...result, status: "pending" as const, regions: [] };
     assert.deepEqual(maxTrace(present([], { observations: { max: { status: "pending", result: pending, spans } } })), first);
+});
+
+test("automation points and interpolation follow the same view through the signed seam", () => {
+    const seam = 1n << 63n;
+    const pointsAcross = [
+        { ...points[0], id: 21, sample_index: String(seam - 2n), value: 0, interpolation: "bezier", tension: 0 },
+        { ...points[0], id: 22, sample_index: String(-seam + 2n), value: 1, interpolation: "empty" },
+    ];
+    const time = { beginSample: String(seam - 5n), beginFraction: 0, spanSamples: 10, sampleRate: 48000 };
+    const present = harness({ ...snapshot, viewport: { ...snapshot.viewport, time },
+        node: { ...snapshot.node, arguments: [pointsAcross] } });
+    const frame = present();
+    const first = frame.targets?.find(({ id }) => id === "point:21");
+    const second = frame.targets?.find(({ id }) => id === "point:22");
+    assert.ok(first && second);
+    assert.ok(first.x < 50 && second.x > 50);
+    const traces = frame.marks?.flatMap((mark) => mark.type === "polyline" && mark.id.startsWith("authored:") ? [mark.points] : []) ?? [];
+    assert.ok(Math.abs(traces[0][0].x - 30) < 1e-9);
+    assert.ok(Math.abs(traces.at(-1)!.at(-1)!.x - 70) < 1e-9);
+    const midpoint = traces.flat().filter(({ x }) => Math.abs(x - 50) < 1e-9);
+    assert.ok(midpoint.length && midpoint.every(({ y }) => Math.abs(y - midpoint[0].y) < 1e-9));
 });
 
 test("a densely authored curve fits the bounded frame and retains points across the viewport", () => {

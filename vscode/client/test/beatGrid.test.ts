@@ -8,6 +8,7 @@ import type { GraphScope } from "../src/graphScope";
 import { KnobScrub } from "../src/knobScrub";
 import { parseKnobValue } from "../src/knobValueEntry";
 import { serializeNodeEvent, type JsonValue } from "../src/nodeEvents";
+import { timelineSampleCount } from "../src/timelineSamples";
 
 test("the Beats preview draws the default hierarchy from accepted empty arguments", () => {
     const grid = readBeatGrid([])!;
@@ -243,4 +244,14 @@ test("a rejected settings event restores accepted settings and closes its undo g
     assert.equal(beatBpm(editing.view(address)!), 120);
     assert.equal(editing.error(address), "Settings conflict");
     assert.equal(closed, 1);
+});
+
+test("a full lap keeps the beat preview bounded and includes both sides of the signed seam", () => {
+    const rate = 48000;
+    const grid = readBeatGrid([120, 4, [2]])!;
+    const ticks = beatGridTicks(grid, { beginSample: 0n, spanSeconds: Number(timelineSampleCount) / rate }, rate, 1000);
+    assert.ok(ticks.some(({ sample, x }) => sample > 0n && x < 500));
+    assert.ok(ticks.some(({ sample, x }) => sample < 0n && x >= 500));
+    assert.ok(ticks.length <= 126);
+    assert.equal(new Set(ticks.map(({ sample }) => sample)).size, ticks.length);
 });

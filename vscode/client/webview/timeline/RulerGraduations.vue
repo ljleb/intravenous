@@ -5,7 +5,7 @@ defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number; hideLa
 
 <template>
     <div class="ruler-graduations" :class="{ compact }" aria-hidden="true">
-        <div v-for="tick in ticks" :key="tick.key" class="ruler-tick" :class="{ minor: tick.minor }"
+        <div v-for="tick in ticks" :key="tick.key" class="ruler-tick" :class="{ minor: tick.minor, seam: tick.seam }"
             :style="{ left: `${tick.x}px`, '--label-offset': `${Math.max(0, (labelInset ?? 0) - tick.x)}px` }">
             <template v-if="!hideLabels">
                 <span v-if="!tick.minor" :class="{ edge: compact && tick === ticks[ticks.length - 1] }">{{ tick.label }}</span>
@@ -24,4 +24,5 @@ defineProps<{ ticks: RulerTick[]; compact?: boolean; labelInset?: number; hideLa
 .compact .ruler-tick span { padding: 2px 3px; font-size: 9px; line-height: 11px; color: var(--vscode-descriptionForeground); }
 .compact .ruler-tick .sample-label { padding-top: 0; }
 .compact .ruler-tick.minor { border-color: color-mix(in srgb, var(--vscode-foreground) 9%, transparent); }
+.ruler-tick.seam { border-left-style: dashed; color: var(--vscode-descriptionForeground); }
 </style>

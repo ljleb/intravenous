@@ -1,7 +1,7 @@
 import { automationBoundTracksForSpans, automationBoundVisiblePositions, sampleAutomationPreview } from "./automationBoundInputs";
 import { AutomationCurveEditing, automationTensionLimits, readAutomationCurve, type CurveAxes, type CurveDragKind } from "./automationCurveEditing";
 import {
-    automationSampleOffset, automationValueFraction, automationValueGuides, automationWindow, compareAutomationTime,
+    automationSampleOffset, automationTimelineWindow, automationValueFraction, automationValueGuides, automationWindow, compareAutomationTime,
     panAutomationValueAxis, panCurvedAutomationValueZoom, rankAutomationValueGuides, readAutomationCurveView, zoomAutomationValueAxis,
     type AutomationCurve, type AutomationCurveView, type AutomationPointPosition, type CurveInterpolation,
 } from "./automationCurveGeometry";
@@ -11,13 +11,14 @@ import type {
     Present, PresentationCommand, PresentationControl, PresentationFrame, PresentationGestureInput, PresentationInk,
     PresentationManifest, PresentationMark, PresentationPoint, PresentationSavedState, PresentationSnapshot, PresentationTarget,
 } from "./presentationPlugin";
-import { sampleWindow } from "./sampleWaveform";
+import { presentationPluginVersion } from "./presentationPlugin";
 import { scrubSensitivityShortcut } from "./scrubSensitivity";
 import { automationTimelineTicks, snapTimelineSample, timelineSnapRadiusPx } from "./timelineGeometry";
+import { timelineSampleOffset, timelineSamples } from "./timelineSamples";
 
 const definitionId = "builtin.automation.curve";
 export const automationCurvePresentationManifest: PresentationManifest = {
-    version: 1, id: definitionId, title: "Automation curve", definitionIds: [definitionId], timeline: true, timelineSnapping: true,
+    version: presentationPluginVersion, id: definitionId, title: "Automation curve", definitionIds: [definitionId], timeline: true, timelineSnapping: true,
     icon: "M2 12C5 12 5 4 14 4M2 10v4m12-12v4",
     observations: (["min", "max"] as const).map((port) => ({
         id: port, direction: "input", port, points: automationBoundVisiblePositions, whenConnected: true, completeOnly: true,
@@ -41,9 +42,10 @@ function pointStatus(point: AutomationPointPosition): string {
 function windowFor(curve: AutomationCurve, viewport: PresentationSnapshot["viewport"]) {
     const first = curve.points[0]?.seconds ?? 0;
     const last = curve.points.at(-1)?.seconds ?? first;
-    const beginSeconds = viewport.time?.beginSeconds ?? (last > first ? first : first - .5);
-    const spanSeconds = viewport.time?.spanSeconds ?? (last > first ? last - first : 1);
-    return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds };
+    const view = viewport.time && curve.sampleRate ? timelineSamples(viewport.time) : undefined;
+    const beginSeconds = view ? Number(view.origin.index) / curve.sampleRate! : (last > first ? first : first - .5);
+    const spanSeconds = view ? view.span / curve.sampleRate! : (last > first ? last - first : 1);
+    return { beginSeconds, endSeconds: beginSeconds + spanSeconds, spanSeconds, view };
 }
 
 function traceMarks(marks: PresentationMark[], name: string, tracks: readonly { seconds: number; value: number }[][],
@@ -74,8 +76,9 @@ function traceMarks(marks: PresentationMark[], name: string, tracks: readonly { 
 function axisGeometry(curve: AutomationCurve, snapshot: PresentationSnapshot, axes: CurveAxes) {
     const { width, height } = snapshot.viewport;
     const x = (offset: number) => offset / (axes.spanSeconds ?? 1) * width;
-    const sampleX = (index: bigint) => curve.sampleRate === undefined ? undefined
-        : x(automationSampleOffset(index, axes.begin, curve.sampleRate));
+    const sampleX = (index: bigint) => curve.sampleRate === undefined ? undefined : x(axes.timeline
+        ? timelineSampleOffset(axes.timeline, index) / curve.sampleRate
+        : automationSampleOffset(index, axes.begin, curve.sampleRate));
     const pointX = (point: AutomationPointPosition) => (point.sampleIndex === undefined ? undefined : sampleX(point.sampleIndex))
         ?? x(point.seconds - axes.begin);
     const y = (value: number) => (1 - automationValueFraction(value, axes)) * height;
@@ -136,10 +139,15 @@ export function createAutomationCurvePresentation(): Present {
             // Hold the value scale while edits are pending. Time still follows the viewport.
             const frozen = address && edits.axes(address);
             return { left: 0, top: 0, width, height, begin: window.beginSeconds, end: window.endSeconds, spanSeconds: window.spanSeconds,
+                timeline: window.view,
                 pan: frozen ? frozen.pan : view.pan, zoom: frozen ? frozen.zoom : view.zoom,
                 display: frozen?.display ?? view.display, ruler: frozen ? frozen.ruler : view.ruler };
         };
-        const pointView = () => automationWindow(curve, 0, window.spanSeconds, address ? edits.drafts(address) : [], window.beginSeconds);
+        const pointView = () => {
+            const drafts = address ? edits.drafts(address) : [];
+            return window.view ? automationTimelineWindow(curve, window.view, drafts)
+                : automationWindow(curve, 0, window.spanSeconds, drafts, window.beginSeconds);
+        };
         const geometry = () => axisGeometry(curve, snapshot, axes());
         const visible = (points: ReturnType<typeof pointView>["points"], axis: CurveAxes) => points.filter((point) => {
             if (axis.display !== "cropped" && !axis.zoom) return true;
@@ -270,11 +278,10 @@ export function createAutomationCurvePresentation(): Present {
 
         const axis = axes();
         const { x, y, sampleX, marker } = axisGeometry(curve, snapshot, axis);
-        const tile = sampleWindow(window.beginSeconds, window.endSeconds, rate, automationBoundVisiblePositions);
         const track = (port: "min" | "max") => {
             const spans = snapshot.observations[port]?.spans;
-            return tile && rate && spans ? automationBoundTracksForSpans(spans.map(({ begin, end, result }) =>
-                ({ begin: BigInt(begin), end: BigInt(end), result })), tile, window.beginSeconds, window.spanSeconds, rate) : [];
+            return window.view && rate && spans ? automationBoundTracksForSpans(spans.map(({ begin, end, windowOffset, result }) =>
+                ({ begin: BigInt(begin), end: BigInt(end), windowOffset: BigInt(windowOffset), result })), window.view, rate) : [];
         };
         const manual = (port: string) => snapshot.node.ports.find((p) => p.direction === "input" && p.name === port && !p.connected)?.manualValue;
         const geometryInView = pointView();
@@ -291,8 +298,8 @@ export function createAutomationCurvePresentation(): Present {
         const strengths = gridGuideStrengths(guides, ({ y }) => y);
         const inset = labels && guides.length ? 9 + 6 * Math.max(...guides.map(({ value }) => String(value).length)) : 0;
         const guideLabelY = (position: number) => position >= 12 ? position - 3 : Math.min(height - 1, position + 10);
-        if (!time?.gridMode || time.gridMode === "seconds") {
-            const ticks = automationTimelineTicks(window, width, rate);
+        if (time && (!time.gridMode || time.gridMode === "seconds")) {
+            const ticks = automationTimelineTicks(time, width);
             const count = Math.min(240, ticks.length);
             for (let i = 0; i < count; ++i) {
                 const index = count > 1 ? Math.round(i * (ticks.length - 1) / (count - 1)) : 0;

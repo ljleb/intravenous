@@ -668,15 +668,15 @@ test("a tension drag updates its draft, clamps at both ends and closes one typed
 });
 
 test("automation labels share the timeline ticks and sample subdivisions follow the point transform", () => {
-    const window = { beginSeconds: -.0002, endSeconds: .0002 };
     const rate = 48000, width = 400;
-    const ticks = automationTimelineTicks(window, width, rate);
+    const window = { beginSample: "-10", beginFraction: .4, spanSamples: 19.2, sampleRate: rate };
+    const ticks = automationTimelineTicks(window, width);
     assert.deepEqual(ticks.filter((tick) => !tick.minor).map(({ x, label }) => ({ x, label })),
         timelineTicks(window, width).map(({ x, label }) => ({ x, label })));
     assert.equal(ticks.find((tick) => tick.label === "0 s")?.sampleLabel, "0 smp");
-    const expected = automationSampleOffset(1n, window.beginSeconds, rate) * width / .0004;
+    const expected = automationSampleOffset(1n, -.0002, rate) * width / .0004;
     assert.ok(ticks.some((tick) => tick.minor && Math.abs(tick.x - expected) < 1e-8));
-    assert.ok(automationTimelineTicks({ beginSeconds: 0, endSeconds: 2 }, width, rate).every((tick) => !tick.minor));
+    assert.ok(automationTimelineTicks({ ...window, beginSample: "0", beginFraction: 0, spanSamples: 96000 }, width).every((tick) => !tick.minor));
 });
 
 test("value panning shifts the center in either display mode", () => {
@@ -753,7 +753,8 @@ test("automation bounds keep their fine outline during successive edits of the c
     const retained = () => values.readyWindowsForDisplay(requests.map(({ id }) => id), visible, true);
     const tracksFor = (begin: number, length: number, fine?: ObservationWindow) => {
         const visible = { begin: String(begin), length: String(length) };
-        return automationBoundTracksForSpans(observationSpans(retained(), visible, fine), visible, begin, length, 1);
+        return automationBoundTracksForSpans(observationSpans(retained(), visible, fine ? [fine] : []),
+            { origin: { index: BigInt(begin), fraction: 0 }, span: length }, 1);
     };
     values.expectWindows(requests);
     publish("7", coarse, fine, empty);
@@ -789,7 +790,7 @@ test("bound tracks keep unavailable samples and separate Coverage Regions out of
                 { index: "1", available: true, value: { value: 4 } },
             ] },
             { begin: "4", length: "2", points: [{ index: "4", available: true, value: { value: 8 } }] },
-        ] }, -2, 1);
+        ] }, 0n, 1);
     const preview = sampleAutomationPreview([], [], tracks, {}, 8, 16);
     assert.deepEqual(preview.max.map((run) => [run[0].seconds, run.at(-1)?.seconds]), [[0, 2], [3, 5], [6, 8]]);
     assert.equal(preview.max[0].find(({ seconds }) => seconds === .5)?.value, 1);
@@ -805,7 +806,7 @@ test("the automation preview combines bounds with the authored curve before proj
                 { index: "3", available: true, value: { value: 14 } },
             ] },
             { begin: "2", length: "1", points: [{ index: "2", available: true, value: { value: 30 } }] },
-        ] }, 0, 1);
+        ] }, 0n, 1);
     const paths = [{ begin: { seconds: 0, value: 0 }, end: { seconds: 6, value: 6 }, first: 2, second: 4 }];
     const preview = sampleAutomationPreview(paths, tracks, [], { max: 4 }, 8, 16);
     assert.equal(preview.min[0][0].value, 10);

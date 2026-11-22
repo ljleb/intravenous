@@ -7,7 +7,7 @@ import { runInNewContext } from "node:vm";
 import { createBeatsPresentation } from "../src/beatsPresentationPlugin";
 import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../src/clickDetectorPresentation";
 import { PresentationEdits, type PresentationEdit } from "../src/presentationEdits";
-import { readPresentationFrame, readPresentationManifest,
+import { presentationPluginVersion, readPresentationFrame, readPresentationManifest,
     type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
 import { PresentationPluginSession } from "../src/presentationPluginSession";
 import { readProjectPresentations } from "../src/projectPresentationPlugins";
@@ -15,7 +15,7 @@ import { readProjectPresentations } from "../src/projectPresentationPlugins";
 const snapshot: PresentationSnapshot = {
     node: { definitionId: "builtin.beats", arguments: [120, 4, [2]], ports: [] },
     revision: 1, mode: "editable", editable: true, viewport: { width: 500, height: 80,
-        time: { beginSeconds: 0, spanSeconds: 2, sampleRate: 48000 } }, observations: {}, state: null,
+        time: { beginSample: "0", beginFraction: 0, spanSamples: 96000, sampleRate: 48000 } }, observations: {}, state: null,
 };
 
 test("Click Detector displays observed events at their sample positions during pending refresh", () => {
@@ -29,7 +29,7 @@ test("Click Detector displays observed events at their sample positions during p
     const frame = readPresentationFrame(detect({
         ...snapshot, node: { definitionId: "builtin.click_detector", arguments: [],
             ports: [{ name: "audio", direction: "input", kind: "continuous", connected: false }] },
-        observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", result }] } },
+        observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
     }, []));
     assert.equal(frame.status, "4 recorded clicks in view");
     assert.deepEqual(frame.marks?.filter((mark) => mark.type === "rect").map(({ x }) => x), [125, 250, 250, 48002 * (500 / 96000)]);
@@ -43,7 +43,7 @@ test("the presentation host accepts one mark for every event in a dense recordin
     let frame: PresentationFrame | undefined;
     const session = new PresentationPluginSession(present, () => {}, (value) => { frame = value; }, (error) => { throw error; });
     session.update({ ...snapshot,
-        observations: { clicks: { status: "ready", result, spans: [{ begin: "0", end: "96000", result }] } },
+        observations: { clicks: { status: "ready", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
     });
     await session.flush();
     assert.equal(frame?.marks?.filter(({ type }) => type === "rect").length, eventIndices.length);
@@ -156,7 +156,7 @@ test("a synchronous presentation draws each new viewport without waiting for ano
     assert.deepEqual(first.points.at(-1), { x: 125, y: 80 });
 
     session.update({ ...snapshot, viewport: { ...snapshot.viewport, height: 160,
-        time: { beginSeconds: 0, spanSeconds: 1, sampleRate: 48000 } } }, "immediate");
+        time: { beginSample: "0", beginFraction: 0, spanSamples: 48000, sampleRate: 48000 } } }, "immediate");
     assert.equal(accepted.length, 2);
     const zoomed = beat(accepted[1]);
     assert.equal(zoomed?.type, "polyline");
@@ -222,7 +222,7 @@ test("a project script can be discovered and run with the same input data in a h
     const other = join(packages, "other", "presentations");
     try {
         await mkdir(directory, { recursive: true });
-        const manifest = { version: 1, id: "example.marker", title: "Marker", definitionIds: ["builtin.beats"] };
+        const manifest = { version: presentationPluginVersion, id: "example.marker", title: "Marker", definitionIds: ["builtin.beats"] };
         const script = `function present(snapshot, inputs) {
             const move = inputs.findLast((input) => input.type === "gesture" && input.phase === "move");
             const x = move?.point.x ?? snapshot.state?.x ?? 10;
@@ -231,7 +231,7 @@ test("a project script can be discovered and run with the same input data in a h
         }`;
         await writeFile(join(directory, "marker.json"), JSON.stringify(manifest));
         await writeFile(join(directory, "marker.js"), script);
-        await writeFile(join(directory, "unsupported.json"), JSON.stringify({ ...manifest, version: 2 }));
+        await writeFile(join(directory, "unsupported.json"), JSON.stringify({ ...manifest, version: presentationPluginVersion + 1 }));
         await writeFile(join(directory, "linked.json"), JSON.stringify({ ...manifest, id: "example.linked" }));
         await symlink("marker.js", join(directory, "linked.js"));
         await mkdir(other, { recursive: true });

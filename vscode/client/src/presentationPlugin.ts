@@ -1,8 +1,9 @@
 import type { JsonValue, SerializedNodeEvent } from "./nodeEvents";
 import { recordedEventTimestampsOperation, type ObservationWindowResult } from "./observations";
 import type { NodeAddress } from "./graphScope";
+import type { PresentationTime } from "./timelineSamples";
 
-export const presentationPluginVersion = 1;
+export const presentationPluginVersion = 2;
 
 export type PresentationManifest = {
     version: typeof presentationPluginVersion;
@@ -23,8 +24,8 @@ export type PresentationModifiers = { shift: boolean; alt: boolean; control: boo
 export type PresentationObservation = {
     status: ObservationWindowResult["status"];
     error?: string;
-    result: ObservationWindowResult;
-    spans: Array<{ begin: string; end: string; result: ObservationWindowResult }>;
+    result?: ObservationWindowResult;
+    spans: Array<{ begin: string; end: string; windowOffset: string; result: ObservationWindowResult }>;
 };
 export type PresentationSavedState = { [key: string]: JsonValue } | null;
 export type PresentationSnapshot = {
@@ -37,8 +38,7 @@ export type PresentationSnapshot = {
     editable: boolean;
     editsPending?: boolean;
     editError?: string;
-    viewport: { width: number; height: number; time?: { beginSeconds: number; spanSeconds: number; sampleRate?: number;
-        gridMode?: "seconds" | "beats" | "custom" } };
+    viewport: { width: number; height: number; time?: PresentationTime };
     observations: Record<string, PresentationObservation | null>;
     state: PresentationSavedState;
 };

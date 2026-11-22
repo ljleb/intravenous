@@ -4156,45 +4156,49 @@ TEST_F(BackgroundCoveragePropagationFixture,
             },
         },
     }};
-    sorted_source_region_shapes = {{
-        {range(0, 10), range(2, 6)},
-        {range(4, 12), range(4, 8)},
-    }};
+    for (auto const origin : {index(0), index(INT64_MAX - 5)}) {
+        SCOPED_TRACE(origin.signed_value());
+        auto at = [&](std::uint64_t begin, std::uint64_t end) {
+            return iv::GlobalIndexRange{origin.advanced_by(begin), end - begin};
+        };
+        sorted_source_region_shapes = {{
+            {at(0, 10), at(2, 6)},
+            {at(4, 12), at(4, 8)},
+        }};
 
-    iv::BackgroundCoverageState coverage(
-        plan.accumulators.output_change_count);
-    iv::BackgroundPropagationWorkspace workspace(plan, 48000);
-    auto prepared = workspace.prepare(
-        {
-            .propagate_forward = &propagate_sorted_source_event_regions,
-            .propagate_reverse = &no_op_background_evaluate,
-            .evaluate = &no_op_background_evaluate,
-        },
-        coverage,
-        {.locally_changed_nodes = {0, 1}});
+        iv::BackgroundCoverageState coverage(
+            plan.accumulators.output_change_count);
+        iv::BackgroundPropagationWorkspace workspace(plan, 48000);
+        auto prepared = workspace.prepare(
+            {
+                .propagate_forward = &propagate_sorted_source_event_regions,
+                .propagate_reverse = &no_op_background_evaluate,
+                .evaluate = &no_op_background_evaluate,
+            },
+            coverage,
+            {.locally_changed_nodes = {0, 1}});
 
-    // The merged event stream is authoritative only on [4, 10), where both
-    // sources are complete. Each source Region remains an independent Region
-    // after clipping to that common completeness, including the duplicate
-    // [4, 10) contribution.
-    EXPECT_EQ(
-        std::ranges::to<std::vector>(
-            prepared.input_regions(2) | std::views::transform(&iv::BackgroundInputRegion::range)),
-        (std::vector<iv::GlobalIndexRange>{
-            range(4, 10),
-            range(4, 10),
-            range(4, 8),
-            range(4, 6),
-        }));
-    auto const regions = prepared.input_regions(2);
-    ASSERT_EQ(regions.size(), 4u);
-    ASSERT_EQ(regions[0].sources.size(), 1u);
-    ASSERT_EQ(regions[1].sources.size(), 1u);
-    EXPECT_EQ(regions[0].sources.front(), (iv::BackgroundInputRegionSource{
-        .output = 0, .region_index = 0, .route_index = 0}));
-    EXPECT_EQ(regions[1].sources.front(), (iv::BackgroundInputRegionSource{
-        .output = 1, .region_index = 0, .route_index = 1}));
-    workspace.discard(std::move(prepared));
+        // Every contribution retains its own Region inside the common coverage.
+        // A signed seam inside that coverage does not divide a contribution.
+        EXPECT_EQ(
+            std::ranges::to<std::vector>(
+                prepared.input_regions(2) | std::views::transform(&iv::BackgroundInputRegion::range)),
+            (std::vector<iv::GlobalIndexRange>{
+                at(4, 10),
+                at(4, 10),
+                at(4, 8),
+                at(4, 6),
+            }));
+        auto const regions = prepared.input_regions(2);
+        ASSERT_EQ(regions.size(), 4u);
+        ASSERT_EQ(regions[0].sources.size(), 1u);
+        ASSERT_EQ(regions[1].sources.size(), 1u);
+        EXPECT_EQ(regions[0].sources.front(), (iv::BackgroundInputRegionSource{
+            .output = 0, .region_index = 0, .route_index = 0}));
+        EXPECT_EQ(regions[1].sources.front(), (iv::BackgroundInputRegionSource{
+            .output = 1, .region_index = 0, .route_index = 1}));
+        workspace.discard(std::move(prepared));
+    }
 }
 
 TEST_F(

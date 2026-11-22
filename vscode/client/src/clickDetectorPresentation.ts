@@ -1,9 +1,10 @@
 import type { Present, PresentationManifest, PresentationMark } from "./presentationPlugin";
+import { presentationPluginVersion } from "./presentationPlugin";
 import { recordedEventTimestampsOperation } from "./observations";
-import { sampleTimeSpan } from "./sampleWaveform";
+import { timelineObservationOffset, timelineObservationSpan, timelineSamples } from "./timelineSamples";
 
 export const clickDetectorPresentationManifest: PresentationManifest = {
-    version: 1,
+    version: presentationPluginVersion,
     id: "builtin.click_detector",
     title: "Click Detector",
     definitionIds: ["builtin.click_detector"],
@@ -19,12 +20,10 @@ export function createClickDetectorPresentation(): Present {
         const observation = observations.clicks;
         const waiting = connected ? "Waiting for click observations" : "Connect the audio to inspect";
         if (!time || !rate || !observation) return { status: waiting };
-        const end = time.beginSeconds + time.spanSeconds;
-        const window = sampleTimeSpan(time.beginSeconds, end, rate);
-        if (!window) return {};
-        const origin = BigInt(window.begin);
-        const subSampleOffset = Number(origin) - time.beginSeconds * rate;
-        const pixelsPerSample = width / (time.spanSeconds * rate);
+        const view = timelineSamples(time);
+        const origin = BigInt(timelineObservationSpan(view).begin);
+        const visibleOffset = timelineObservationOffset(view);
+        const pixelsPerSample = width / view.span;
         const marks: PresentationMark[] = [];
         for (const span of observation.spans) {
             if (span.result.status !== "ready") continue;
@@ -32,13 +31,14 @@ export function createClickDetectorPresentation(): Present {
             let previousIndex: string | undefined;
             let occurrence = 0;
             for (const index of span.result.eventIndices ?? []) {
-                const offset = BigInt.asIntN(64, BigInt(index) - origin);
+                const offset = BigInt.asUintN(64, BigInt(index) - origin);
                 if (offset < begin || offset >= end) continue;
-                const x = (Number(offset) + subSampleOffset) * pixelsPerSample;
-                if (x < 0 || x >= width) continue;
+                const x = (Number(offset) + visibleOffset) * pixelsPerSample;
+                if (x < 0 || x > width) continue;
                 occurrence = previousIndex === index ? occurrence + 1 : 0;
                 previousIndex = index;
-                marks.push({ id: `click:${index}:${occurrence}`, type: "rect", ink: "warning", x, y: 0, width: 1, height });
+                marks.push({ id: `click:${index}:${occurrence}`, type: "rect", ink: "warning",
+                    x: x === width ? Math.max(0, width - 1) : x, y: 0, width: 1, height });
             }
         }
         const count = marks.length;

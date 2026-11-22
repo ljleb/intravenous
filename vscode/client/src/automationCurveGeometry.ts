@@ -1,4 +1,5 @@
 import { valueScaleFraction } from "./knobPresentation";
+import { signedTimelineSpans, timelineSampleCount, timelineSampleExtent, type SamplePosition, type TimelineSamples } from "./timelineSamples";
 
 export type CurveInterpolation = "empty" | "hold" | "bezier";
 export type AutomationPointPosition = { id: number; seconds: number; value: number; sampleIndex?: bigint;
@@ -213,12 +214,16 @@ export function rankAutomationValueGuides(guides: ReturnType<typeof automationVa
 // Only the viewport and its neighboring point groups are visited. Extra end
 // groups supply tangents across the cyclic seam; drafts replace point identity.
 export function automationWindow(curve: AutomationCurve, begin: number, end: number,
-    drafts: readonly AutomationPointPosition[] = [], origin?: number) {
+    drafts: readonly AutomationPointPosition[] = [], origin?: number | SamplePosition) {
     // The clip uses a local time coordinate so it can distinguish samples even
     // when adding one sample to an absolute seconds value would round away.
-    const time = (point: AutomationPoint) => origin === undefined ? point.seconds
-        : point.sampleIndex !== undefined && curve.sampleRate ? automationSampleOffset(point.sampleIndex, origin, curve.sampleRate)
-            : point.seconds - origin;
+    const time = (point: AutomationPoint, cycle = 0) => {
+        if (typeof origin === "object") return (Number(point.sampleIndex! - origin.index + BigInt(cycle) * timelineSampleCount)
+            - origin.fraction) / curve.sampleRate!;
+        const seconds = origin === undefined ? point.seconds : point.sampleIndex !== undefined && curve.sampleRate
+            ? automationSampleOffset(point.sampleIndex, origin, curve.sampleRate) : point.seconds - origin;
+        return cycle ? seconds + cycle * curve.cycleSeconds : seconds;
+    };
     const boundary = (seconds: number, after: boolean) => {
         let first = 0, last = curve.points.length;
         while (first < last) {
@@ -280,21 +285,21 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
             if (next.last.interpolation === "bezier" && after.value === next.last.value && Number.isFinite(nextLength))
                 endDelta = curveTangent(slope, (following.value - after.value) / nextLength, length, nextLength) * length;
         }
-        const ratios = (seconds: number) => {
-            const elapsed = forward(beforeTime, seconds), remaining = forward(seconds, afterTime);
-            return { elapsed, remaining, t: Number.isFinite(elapsed) ? elapsed / length : 1,
-                u: Number.isFinite(remaining) ? remaining / length : 1 };
-        };
-        const sample = (seconds: number) => {
+        const ratios = (seconds: number, start: number, finish: number) => ({
+            t: (seconds - start) / length,
+            u: (finish - seconds) / length,
+        });
+        const valueAt = (seconds: number, start: number, finish: number) => {
             if (single || before.interpolation === "hold") return before.value;
-            const { elapsed, remaining, t, u } = ratios(seconds);
-            const linear = elapsed <= remaining ? before.value + difference * t : after.value - difference * u;
+            if (!Number.isFinite(length)) return after.value;
+            const { t, u } = ratios(seconds, start, finish);
+            const linear = t <= u ? before.value + difference * t : after.value - difference * u;
             const value = linear + before.tension * t * u * ((startDelta - difference) * u + (difference - endDelta) * t);
             return Math.max(Math.min(before.value, after.value), Math.min(Math.max(before.value, after.value), value));
         };
-        const derivative = (seconds: number) => {
+        const derivative = (seconds: number, start: number, finish: number) => {
             if (single || before.interpolation === "hold" || !Number.isFinite(length)) return 0;
-            const { t, u } = ratios(seconds);
+            const { t, u } = ratios(seconds, start, finish);
             const automatic = startDelta * (u * u - 2 * t * u) + endDelta * (t * t - 2 * t * u) + 6 * difference * t * u;
             return (difference + before.tension * (automatic - difference)) / length;
         };
@@ -303,16 +308,18 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
         const intervals = single ? [[-Infinity, Infinity]] : beforeTime < afterTime
             ? [[beforeTime, afterTime]]
             : compareAutomationTime(before, after) < 0 ? []
-                : [[beforeTime, afterTime + curve.cycleSeconds], [beforeTime - curve.cycleSeconds, afterTime]];
+                : [[beforeTime, time(after, 1)], [time(before, -1), afterTime]];
         for (const [start, finish] of intervals) {
             const a = Math.max(begin, start), b = Math.min(end, finish);
             if (!(a < b)) continue;
-            const first = sample(a), last = before.interpolation === "hold" ? before.value : sample(b);
+            const sample = (seconds: number) => valueAt(seconds, start, finish);
+            const first = sample(a), last = sample(b);
             // At the next point, an incoming endpoint precedes any outgoing
             // jump. Use its left-hand limit for this segment's terminal value.
-            const terminal = !single && b === afterTime && before.interpolation === "bezier" ? after.value : last;
+            const terminal = !single && b === finish && before.interpolation === "bezier" ? after.value : last;
             paths.push({ begin: { seconds: a, value: first }, end: { seconds: b, value: terminal },
-                first: first + derivative(a) * (b - a) / 3, second: terminal - derivative(b) * (b - a) / 3 });
+                first: first + derivative(a, start, finish) * (b - a) / 3,
+                second: terminal - derivative(b, start, finish) * (b - a) / 3 });
             sampleSegments.push({ start, finish, sample });
         }
     }
@@ -325,6 +332,27 @@ export function automationWindow(curve: AutomationCurve, begin: number, end: num
     for (const point of visible) vertices.push({ seconds: time(point), value: point.value });
     if (last !== undefined) vertices.push({ seconds: end, value: last });
     return { points: visible, paths, vertices };
+}
+
+export function automationTimelineWindow(curve: AutomationCurve, view: TimelineSamples,
+    drafts: readonly AutomationPointPosition[] = []) {
+    const rate = curve.sampleRate!;
+    const points = new Map<number, AutomationPoint>();
+    const paths: CurvePath[] = [];
+    const parts = signedTimelineSpans(view.origin.index, timelineSampleExtent(view));
+    for (const part of parts) {
+        const first = part.offset === 0n;
+        const offset = first ? 0 : (Number(part.offset) - view.origin.fraction) / rate;
+        const origin = { index: part.begin, fraction: first ? view.origin.fraction : 0 };
+        const end = Math.min(view.span / rate - offset, (Number(part.length) - origin.fraction) / rate);
+        if (!(end > 0)) continue;
+        const visible = automationWindow(curve, 0, end, drafts, origin);
+        for (const point of visible.points) points.set(point.id, point);
+        for (const path of visible.paths) paths.push({ ...path,
+            begin: { ...path.begin, seconds: path.begin.seconds + offset },
+            end: { ...path.end, seconds: path.end.seconds + offset } });
+    }
+    return { points: [...points.values()], paths };
 }
 
 const indexes = new WeakMap<AutomationCurve, Map<number, number>>();

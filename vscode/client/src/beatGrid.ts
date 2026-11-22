@@ -1,12 +1,11 @@
 import { automationSampleIndex, automationSampleOffset } from "./automationCurveGeometry";
 import type { ObservationWindowResult, ObservedBeatMark, ObservedBeatRun } from "./observations";
+import { firstSignedSample as timelineBegin, timelineSampleCount as timelineExtent } from "./timelineSamples";
 
 const bpmScale = 1_000_000;
 const maximumBeatSubdivisions = 1024;
 const uint32Max = 0xffffffff;
 export const maximumBeatsPerBar = uint32Max;
-const timelineExtent = 1n << 64n;
-const timelineBegin = -(timelineExtent / 2n);
 
 export const defaultBeatBpm = 120;
 export const minimumBeatBpm = 1 / bpmScale;
@@ -154,22 +153,24 @@ export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }
 
 // Preview Beats::tock_coverage using the accepted constructor values. Keep
 // calculation in sample indexes so independently drawn windows share marks.
-export function beatGridTicks(grid: BeatGrid, window: { spanSeconds: number } & ({ beginSeconds: number } | { beginSample: bigint }),
+export function beatGridTicks(grid: BeatGrid, window: { spanSeconds: number }
+    & ({ beginSeconds: number } | { beginSample: bigint; beginFraction?: number }),
     sampleRate: number, width: number): BeatGridTick[] {
     const { spanSeconds } = window;
     if (!(spanSeconds > 0 && width >= 1) || !Number.isFinite(width)) return [];
     const minimumSpacing = Math.max(minimumBeatMarkSpacing, width / 800);
-    const margin = spanSeconds * minimumSpacing / width;
+    const margin = spanSeconds * Math.min(.25, minimumSpacing / width);
     const indexAt = (seconds: number) => {
         if ("beginSeconds" in window) return automationSampleIndex(window.beginSeconds, sampleRate, seconds);
-        const offset = automationSampleIndex(seconds, sampleRate);
+        const offset = automationSampleIndex(seconds, sampleRate, (window.beginFraction ?? 0) / sampleRate);
         return offset === undefined ? undefined : window.beginSample + offset;
     };
     const secondsAt = (index: bigint) => "beginSeconds" in window
-        ? automationSampleOffset(index, window.beginSeconds, sampleRate) : Number(index - window.beginSample) / sampleRate;
+        ? automationSampleOffset(index, window.beginSeconds, sampleRate)
+        : (Number(index - window.beginSample) - (window.beginFraction ?? 0)) / sampleRate;
     const begin = indexAt(-margin);
     const end = indexAt(spanSeconds + margin);
-    if (begin === undefined || end === undefined || end - begin >= timelineExtent) return [];
+    if (begin === undefined || end === undefined || spanSeconds > Number(timelineExtent) / sampleRate) return [];
 
     // Depth zero marks bars, depth one marks beats, and each following
     // stride divides the preceding interval by the configured factor.

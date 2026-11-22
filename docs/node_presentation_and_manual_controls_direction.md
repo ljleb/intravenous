@@ -119,6 +119,14 @@ The owner specified these viewport interactions on 2026-11-12:
 Middle-button movement ends on release or cancellation. Viewport navigation
 does not modify graph nodes or port data. Zoom preserves the position under the
 pointer where the scroll bounds permit it.
+
+Horizontal pan follows the circle of 64-bit sample indices. Horizontal
+zoom shows a forward span of up to one lap. At one lap, the two viewport
+edges represent the same position. The full-lap interval contains each
+sample once. Sparse observations select positions within that interval.
+The ruler marks the seam where signed sample labels wrap. The ruler,
+lanes, and seek gestures use the same sample origin.
+
 The middle-button press selects the zoom axis. With Alt, drag left to zoom
 in vertically or right to zoom out at the cursor's current height. See the
 [previous direction](historical/vue_middle_vertical_zoom_before_left_to_zoom_in_2026-11-18.md).

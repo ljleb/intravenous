@@ -142,7 +142,17 @@ export function visibleCursorDestination(surface: Element, position: Point): Poi
     if (position.x >= left && position.x < right && position.y >= top && position.y < bottom
         && surface.contains(document.elementFromPoint(position.x, position.y))) return position;
     if (right - left < 4 || bottom - top < 4 || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return null;
-    const x = Math.max(left + 2, Math.min(right - 2, position.x));
+    let x = Math.max(left + 2, Math.min(right - 2, position.x));
     const y = Math.max(top + 2, Math.min(bottom - 2, position.y));
-    return surface.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+    const inward = position.x < left ? 1 : position.x >= right ? -1 : 0;
+    while (x >= left + 2 && x <= right - 2) {
+        const hit = document.elementFromPoint(x, y);
+        if (surface.contains(hit)) return { x, y };
+        if (!hit || !inward) return null;
+        // The resize handle or ruler settings can cover the first clamped
+        // point. Move inward past the covering element at the same height.
+        const cover = hit.getBoundingClientRect();
+        x = inward > 0 ? Math.max(x + 2, cover.right + 2) : Math.min(x - 2, cover.left - 2);
+    }
+    return null;
 }

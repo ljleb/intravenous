@@ -1,6 +1,8 @@
-import { automationSampleOffset, clampAutomationValue, type AutomationValueBounds, type CurvePath } from "./automationCurveGeometry";
+import { clampAutomationValue, type AutomationValueBounds, type CurvePath } from "./automationCurveGeometry";
 import type { ObservationSpan } from "./observationWindows";
-import type { ObservationTimeSpan, ObservationWindowResult } from "./observations";
+import type { ObservationWindowResult } from "./observations";
+import { observationSampleOffsets } from "./sampleWaveform";
+import { timelineObservationOffset, type TimelineSamples } from "./timelineSamples";
 
 export type AutomationBoundInput = "min" | "max";
 
@@ -8,18 +10,21 @@ export type BoundSample = { seconds: number; value: number };
 type BoundTrack = { begin: number; end: number; samples: BoundSample[] };
 export const automationBoundVisiblePositions = 1024;
 
-export function automationBoundTracksForSpans(spans: readonly ObservationSpan[], visible: ObservationTimeSpan,
-    beginSeconds: number, spanSeconds: number, sampleRate: number): BoundTrack[] {
-    const origin = BigInt(visible.begin);
+export function automationBoundTracksForSpans(spans: readonly ObservationSpan[], view: TimelineSamples, sampleRate: number): BoundTrack[] {
     const tracks: BoundTrack[] = [];
-    const projected = new Map<ObservationWindowResult, BoundTrack[]>();
+    const visibleOffset = timelineObservationOffset(view);
+    const projected = new Map<ObservationWindowResult, { offset: bigint; tracks: BoundTrack[] }>();
     for (const span of spans) {
         const { result } = span;
-        const begin = Math.max(0, automationSampleOffset(origin + span.begin, beginSeconds, sampleRate));
-        const end = Math.min(spanSeconds, automationSampleOffset(origin + span.end, beginSeconds, sampleRate));
+        const begin = Math.max(0, (Number(span.begin) + visibleOffset) / sampleRate);
+        const end = Math.min(view.span, Number(span.end) + visibleOffset) / sampleRate;
         let source = projected.get(result);
-        if (!source) projected.set(result, source = automationBoundTracks(result, beginSeconds, sampleRate));
-        for (const track of source) {
+        if (!source || source.offset !== span.windowOffset) {
+            source = { offset: span.windowOffset,
+                tracks: automationBoundTracks(result, span.windowOffset, sampleRate, visibleOffset) };
+            projected.set(result, source);
+        }
+        for (const track of source.tracks) {
             const clippedBegin = Math.max(begin, track.begin), clippedEnd = Math.min(end, track.end);
             if (clippedBegin < clippedEnd) tracks.push({ begin: clippedBegin, end: clippedEnd, samples: track.samples });
         }
@@ -30,21 +35,15 @@ export function automationBoundTracksForSpans(spans: readonly ObservationSpan[],
 // Use the project timeline for X. The observation can count samples at a
 // different pace, and its Region and sample indices can cross the circle seam.
 export function automationBoundTracks(result: ObservationWindowResult | undefined,
-    beginSeconds: number, sampleRate: number): BoundTrack[] {
+    windowOffset: bigint, sampleRate: number, visibleOffset = 0): BoundTrack[] {
     if (!result || result.status !== "ready") return [];
-    const pace = result.paceExponent ?? 0;
-    const begin = BigInt(result.window.begin);
-    const nativeBegin = pace >= 0 ? begin << BigInt(pace) : begin >> BigInt(-pace);
-    const nativeFraction = pace >= 0 ? 0 : Number(begin - (nativeBegin << BigInt(-pace))) / 2 ** -pace;
-    const offset = automationSampleOffset(begin, beginSeconds, sampleRate);
-    const secondsPerSample = 1 / (2 ** pace * sampleRate);
-    const time = (index: bigint) => offset
-        + (Number(BigInt.asIntN(64, index - nativeBegin)) - nativeFraction) * secondsPerSample;
+    const lattice = observationSampleOffsets(result, windowOffset);
+    const secondsPerSample = lattice.scale / sampleRate;
+    const time = (index: string) => (visibleOffset + lattice.at(index)) / sampleRate;
     const tracks: BoundTrack[] = [];
     for (const region of result.regions) {
-        const first = BigInt(region.begin);
-        const end = time(first + BigInt(region.length));
-        let begin = time(first);
+        let begin = time(region.begin);
+        const end = begin + Number(region.length) * secondsPerSample;
         let samples: BoundSample[] = [];
         let hasGap = false;
         for (const point of region.points) {
@@ -56,7 +55,7 @@ export function automationBoundTracks(result: ObservationWindowResult | undefine
                 hasGap = true;
                 continue;
             }
-            const seconds = time(BigInt(point.index));
+            const seconds = time(point.index);
             if (hasGap && !samples.length) begin = seconds;
             samples.push({ seconds, value });
         }

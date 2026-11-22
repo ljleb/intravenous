@@ -1,18 +1,24 @@
-import type { ObservationTimeSpan, ObservationWindow, ObservationWindowResult } from "./observations";
+import type { ObservationWindow, ObservationWindowResult } from "./observations";
+import { timelineObservationOffset, timelineObservationSpan, timelineSamples, type PresentationTime, type TimelineSamples } from "./timelineSamples";
 
-export function sampleTimeSpan(beginSeconds: number, endSeconds: number,
-    sampleRate: number | null | undefined): ObservationTimeSpan | undefined {
-    if (!sampleRate || sampleRate <= 0 || !Number.isFinite(sampleRate)
-        || !Number.isFinite(beginSeconds) || !Number.isFinite(endSeconds) || endSeconds <= beginSeconds) return;
-    const begin = Math.floor(beginSeconds * sampleRate), end = Math.ceil(endSeconds * sampleRate);
-    if (!Number.isSafeInteger(begin) || !Number.isSafeInteger(end) || !Number.isSafeInteger(end - begin) || end <= begin) return;
-    return { begin: String(begin), length: String(end - begin) };
+export function sampleWindow(time: PresentationTime, points: number): ObservationWindow | undefined {
+    if (!time.sampleRate || !Number.isSafeInteger(time.sampleRate) || time.sampleRate < 1
+        || !Number.isFinite(time.spanSamples) || time.spanSamples <= 0) return;
+    return { ...timelineObservationSpan(timelineSamples(time)), points: Math.max(2, Math.min(1024, Math.ceil(Number.isFinite(points) ? points : 2))) };
 }
 
-export function sampleWindow(beginSeconds: number, endSeconds: number, sampleRate: number | null | undefined,
-    points: number): ObservationWindow | undefined {
-    const span = sampleTimeSpan(beginSeconds, endSeconds, sampleRate);
-    return span && { ...span, points: Math.max(2, Math.min(1024, Math.ceil(Number.isFinite(points) ? points : 2))) };
+// Observation Regions and points are expressed on the port's lattice. Anchor
+// their forward distances at the individual RPC window before projecting X.
+export function observationSampleOffsets(result: ObservationWindowResult, windowOffset = 0n) {
+    const pace = result.paceExponent ?? 0;
+    const rootBegin = BigInt.asUintN(64, BigInt(result.window.begin));
+    const scale = 2 ** -pace;
+    const nativeBegin = pace >= 0 ? rootBegin << BigInt(pace) : rootBegin >> BigInt(-pace);
+    const bits = Math.min(64, 64 + pace);
+    const distance = (index: string) => BigInt.asUintN(bits, BigInt(index) - nativeBegin);
+    const at = pace >= 0 ? (index: string) => Number((windowOffset << BigInt(pace)) + distance(index)) * scale
+        : (index: string) => Number(windowOffset + ((nativeBegin + distance(index)) << BigInt(-pace)) - rootBegin);
+    return { scale, at };
 }
 
 export type SampleWaveformGeometry = { paths: string[]; coverage: Array<{ x: number; width: number }> };
@@ -20,20 +26,18 @@ export type SampleWaveformGeometry = { paths: string[]; coverage: Array<{ x: num
 // The default vertical scale is -1..1; specialized presentations can supply
 // their existing bounds. This is representative sampling, not an exact envelope: connecting samples never promises to preserve intervening peaks.
 export function sampleWaveform(result: ObservationWindowResult | undefined,
-    bounds = { min: -1, max: 1 }, visible?: ObservationTimeSpan): SampleWaveformGeometry {
+    bounds = { min: -1, max: 1 }, view?: TimelineSamples, windowOffset = 0n): SampleWaveformGeometry {
     const paths: string[] = [], coverage: SampleWaveformGeometry["coverage"] = [];
     if (result?.status !== "ready") return { paths, coverage };
-    const pace = result.paceExponent ?? 0;
-    const window = visible ?? result.window;
-    const rootBegin = BigInt(window.begin);
-    const nativeBegin = pace >= 0 ? rootBegin << BigInt(pace) : rootBegin >> BigInt(-pace);
-    const fraction = pace >= 0 ? 0 : Number(rootBegin - (nativeBegin << BigInt(-pace))) / 2 ** -pace;
-    const nativeLength = Number(window.length) * 2 ** pace;
-    if (!Number.isFinite(nativeLength) || nativeLength <= 0) return { paths, coverage };
-    const x = (index: string) => (Number(BigInt.asIntN(64, BigInt(index) - nativeBegin)) - fraction) / nativeLength * 1000;
+    const span = view?.span ?? Number(result.window.length);
+    if (!Number.isFinite(span) || span <= 0) return { paths, coverage };
+    const offset = view ? timelineObservationOffset(view) : 0;
+    const lattice = observationSampleOffsets(result, windowOffset);
+    const pixelsPerSample = 1000 / span;
+    const x = (index: string) => (offset + lattice.at(index)) * pixelsPerSample;
     for (const region of result.regions) {
         const begin = Math.max(0, x(region.begin));
-        const end = Math.min(1000, x(region.begin) + Number(region.length) / nativeLength * 1000);
+        const end = Math.min(1000, x(region.begin) + Number(region.length) * lattice.scale * pixelsPerSample);
         if (end > begin) coverage.push({ x: begin, width: end - begin });
         let path = "";
         const finish = () => {

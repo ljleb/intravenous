@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { BeatRulerLabel } from "../../src/beatGrid";
-import { rulerMarkerPoints, timelineSampleFraction, timelineTicks } from "../../src/timelineGeometry";
+import { rulerMarkerPoints, timelineSampleFraction, timelineSeamX, timelineTicks } from "../../src/timelineGeometry";
 import RulerGraduations from "./RulerGraduations.vue";
 import GridGuides from "./GridGuides.vue";
 import { usePresentationSize } from "../presentation/presentationSize";
@@ -16,18 +16,18 @@ const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly Tim
     beatLabels?: readonly BeatRulerLabel[];
     beatStrengths?: ReadonlyMap<number, number>; playback?: boolean; openBeatReader?: () => SeekBeatReader | undefined }>();
 const { state, requestedPosition, dragPreview } = usePlayback();
-const sampleRate = computed(() => state.value?.sampleRate ?? props.window.sampleRate ?? 48000);
 const root = ref<HTMLElement | null>(null);
 const size = usePresentationSize(root);
 const width = computed(() => size.value?.width ?? 0);
 const showBeats = computed(() => props.window.gridMode === "beats" || props.window.gridMode === "custom");
 const beatLineStart = ({ depth }: TimelineMark) => depth === 0 ? "33%" : depth === 1 ? "56%" : depth === 2 ? "75%" : "83%";
 const ticks = computed(() => timelineTicks(props.window, width.value));
+const seamX = computed(() => timelineSeamX(props.window, width.value));
 const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : undefined,
     () => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : [],
     () => showBeats.value ? props.openBeatReader?.() : undefined);
 const markerPosition = (selected: bigint | null) => selected === null ? -1
-    : timelineSampleFraction(selected, props.window, sampleRate.value) * width.value;
+    : timelineSampleFraction(selected, props.window) * width.value;
 const displayedStart = computed(() => dragPreview.value?.toString() ?? state.value?.startPosition);
 const startMarker = computed(() => {
     const start = displayedStart.value;
@@ -42,6 +42,7 @@ const requestedMarker = computed(() => markerPosition(dragPreview.value === null
         @pointerdown="beginSeek"
         :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
         <RulerGraduations v-if="!showBeats" :ticks="ticks" />
+        <RulerGraduations v-if="seamX !== undefined" :ticks="[{ key: 'wrap', x: seamX, label: 'Wrap', seam: true }]" />
         <svg v-if="playback || marks?.length" class="ruler-playheads">
             <GridGuides v-if="showBeats && marks" :marks="marks" :strengths="beatStrengths"
                 :mark-key="timelineMarkKey" :position="timelineMarkPosition" :start="beatLineStart" />

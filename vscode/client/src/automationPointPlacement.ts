@@ -1,7 +1,7 @@
 import { compareAutomationPoints, type AutomationPoint } from "./automationCurveGeometry";
 import type { SetSegmentPayload } from "./generated/automationEvents";
 import { detentHalfWidth } from "./scrubSensitivity";
-import { timelineTimeDrag } from "./timelineTimeDrag";
+import { timelineTimeDrag, type TimelineDragScale } from "./timelineTimeDrag";
 
 export function pointInsertionIndex(points: readonly AutomationPoint[], point: AutomationPoint): number {
     let first = 0, end = points.length;
@@ -80,7 +80,7 @@ type SampleGroup = { start: number; points: AutomationPoint[] };
 export type PointTime = { sampleIndex: bigint; snappedTime?: bigint; order?: number; orderedIds: readonly number[]; slot: number };
 
 export function automationTimeDrag(neighbors: readonly AutomationPoint[], anchor: AutomationPoint,
-    secondsPerPixel: number, sampleRate: number, timeDetents: readonly bigint[] = []): (pixels: number) => PointTime {
+    scale: TimelineDragScale, timeDetents: readonly bigint[] = []): (pixels: number) => PointTime {
     const groups = new Map<bigint, SampleGroup>();
     for (const [index, point] of neighbors.entries()) {
         const sample = point.sampleIndex!;
@@ -93,7 +93,7 @@ export function automationTimeDrag(neighbors: readonly AutomationPoint[], anchor
     const anchorGroup = groups.get(sample);
     const anchorSlot = pointInsertionIndex(neighbors, anchor);
     const anchorPlateau = !anchorGroup ? 0 : anchorSlot === anchorGroup.start ? -detentHalfWidth / 2 : detentHalfWidth / 2;
-    const atTravel = timelineTimeDrag(sample, secondsPerPixel, sampleRate, new Set([...groups.keys(), ...grid]), anchorPlateau);
+    const atTravel = timelineTimeDrag(sample, scale, new Set([...groups.keys(), ...grid]), anchorPlateau);
     return (pixels) => {
         const { sampleIndex, snappedIndex: snapped, offset, plateau } = atTravel(pixels);
         const snappedTime = snapped !== undefined && grid.has(snapped) ? snapped : undefined;
@@ -103,7 +103,7 @@ export function automationTimeDrag(neighbors: readonly AutomationPoint[], anchor
         // The first half places the grabbed point before the coincident group.
         // The second half places it after, using the very same sample index.
         const beforeGroup = snapped !== undefined ? plateau < 0 : offset < Number(BigInt.asIntN(64, sampleIndex - sample))
-            / (secondsPerPixel * sampleRate);
+            * (scale.width / scale.spanSamples);
         const order = pixels === 0 ? anchorSlot - group.start : beforeGroup ? 0 : group.points.length;
         const orderedIds = group.points.map(({ id }) => id);
         orderedIds.splice(order, 0, anchor.id);
