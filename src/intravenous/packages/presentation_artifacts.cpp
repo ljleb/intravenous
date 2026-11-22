@@ -84,6 +84,25 @@ void validate_binding(Json const& binding, IvPackageDeclaration const& package,
     }
 }
 
+std::vector<PresentationTriggerObservation> read_trigger_observations(Json const& binding)
+{
+    auto const list = binding.find("observations");
+    if (list == binding.end()) return {};
+    if (!list->is_array() || list->size() > 8)
+        throw std::runtime_error("Expected at most eight presentation observations");
+    std::vector<PresentationTriggerObservation> observations;
+    for (auto const& entry : *list) {
+        auto id = entry.at("id").get<std::string>();
+        auto port = entry.at("port").get<std::string>();
+        if (id.empty() || id.size() > 128 || port.empty() || port.size() > 128
+            || entry.at("direction") != "output" || entry.at("operation") != "trigger-bins"
+            || std::ranges::contains(observations, id, &PresentationTriggerObservation::id))
+            throw std::runtime_error("Invalid trigger-bins presentation observation");
+        observations.push_back({std::move(id), std::move(port)});
+    }
+    return observations;
+}
+
 struct ArtifactFile {
     Json binding;
     std::string digest{};
@@ -177,11 +196,13 @@ bool PresentationArtifacts::refresh(std::span<IvPackageDeclaration const> declar
             auto candidate = std::make_shared<Entry>();
             try {
                 validate_binding(file.binding, package, owners);
+                auto observations = read_trigger_observations(file.binding);
                 auto& metadata = candidate->metadata;
                 metadata.id = package.package_namespace + "/" + id;
                 metadata.provider = package.package_namespace;
                 metadata.title = file.binding.at("title").get<std::string>();
                 metadata.definition_ids = file.binding.at("definitionIds").get<std::vector<std::string>>();
+                metadata.trigger_observations = std::move(observations);
                 if (auto const initial = file.binding.find("initialConfiguration"); initial != file.binding.end())
                     metadata.initial_configuration = initial->get<std::string>();
                 if (!file.error.empty()) throw std::runtime_error(file.error);
@@ -193,6 +214,7 @@ bool PresentationArtifacts::refresh(std::span<IvPackageDeclaration const> declar
                 if (!metadata.id.empty() && previous != published_.end() && previous->second->encoded) {
                     auto const& old = previous->second->metadata;
                     if (metadata.id == old.id && metadata.definition_ids == old.definition_ids
+                        && metadata.trigger_observations == old.trigger_observations
                         && metadata.initial_configuration == old.initial_configuration) {
                         metadata.digest = old.digest;
                         candidate->encoded = previous->second->encoded;

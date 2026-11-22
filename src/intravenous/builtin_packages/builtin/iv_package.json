@@ -2,5 +2,21 @@
   "schema": 2,
   "entry": "module.cpp",
   "namespace": "builtin",
-  "dependencies": []
+  "dependencies": [],
+  "presentations": {
+    "click_detector": {
+      "title": "Click Detector",
+      "definitionIds": [
+        "builtin.click_detector"
+      ],
+      "observations": [
+        {
+          "id": "clicks",
+          "direction": "output",
+          "port": "clicks",
+          "operation": "trigger-bins"
+        }
+      ]
+    }
+  }
 }

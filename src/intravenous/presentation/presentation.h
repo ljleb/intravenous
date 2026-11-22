@@ -1,10 +1,11 @@
+// @doc docs/api/reference/presentation_c_abi.md
 #ifndef INTRAVENOUS_PRESENTATION_H
 #define INTRAVENOUS_PRESENTATION_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 3
+#define IV_PRESENTATION_ABI_VERSION 4
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
 #define IV_PRESENTATION_NO_FLAGS 0
@@ -38,6 +39,7 @@ typedef struct IvPresentationContext IvPresentationContext;
 typedef struct { double x, y; } IvPoint;
 typedef struct { double x, y, width, height; } IvRectangle;
 IV_TYPEDEF_SPAN(char, IvString);
+IV_TYPEDEF_SPAN(IvString, IvStringSpan);
 IV_TYPEDEF_SPAN(IvPoint, IvPointSpan);
 
 enum {
@@ -63,6 +65,27 @@ typedef struct {
 } IvPolyline;
 IV_TYPEDEF_SPAN(IvPolyline, IvPolylineSpan);
 
+typedef struct {
+    uint32_t id, ink;
+    IvPoint position;
+    IvString text;
+} IvText;
+IV_TYPEDEF_SPAN(IvText, IvTextSpan);
+
+enum { IV_OBSERVATION_PENDING, IV_OBSERVATION_READY, IV_OBSERVATION_UNAVAILABLE, IV_OBSERVATION_FAILED };
+IV_TYPEDEF_SPAN(uint32_t, IvColumnSpan);
+typedef struct {
+    IvString id;
+    IvColumnSpan columns;
+    uint64_t count;
+    IvString error;
+    uint32_t status;
+    uint32_t partial;
+} IvObservedTriggerColumns;
+IV_TYPEDEF_SPAN(IvObservedTriggerColumns, IvObservedTriggerColumnSpan);
+
+enum { IV_LANE_EDITABLE, IV_LANE_COMPACT, IV_LANE_MINI, IV_LANE_NANO };
+
 enum { IV_DRAG_RELATIVE, IV_DRAG_ABSOLUTE };
 typedef struct {
     uint32_t id, drag;
@@ -73,10 +96,14 @@ IV_TYPEDEF_SPAN(IvDragTarget, IvDragTargetSpan);
 IvRectangle iv_content_bounds(const IvPresentationContext *context);
 bool iv_can_edit(const IvPresentationContext *context);
 IvGestureInputSpan iv_gesture_inputs(const IvPresentationContext *context);
+uint32_t iv_lane_mode(const IvPresentationContext *context);
+IvStringSpan iv_connected_inputs(const IvPresentationContext *context);
+IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationContext *context);
 
 /* Calls record in memory. The host consumes the recorded batches after the
    presentation returns. Each span can contain all items of that kind. */
 bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines);
+bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts);
 bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan targets);
 void iv_reuse_drawing(IvPresentationContext *context);
 void iv_set_status(IvPresentationContext *context, IvString status);

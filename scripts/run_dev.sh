@@ -61,6 +61,7 @@ cp -p "$build_dir/package_tools/"{iv_clang_source_introspection_plugin.so,iv_pac
 cp -p "$build_dir/package_tools/iv_package_prebuild" "$server_dir/PrepareDevRuntime.cmake" "$snapshot/"
 cp -R "$server_dir/runtime-sdk" "$snapshot/sdk"
 cp -p "$server_dir/builtin_packages/builtin/"{iv_package.json,module.cpp} "$snapshot/builtin_packages/builtin/"
+cp -R "$server_dir/builtin_packages/builtin/presentations" "$snapshot/builtin_packages/builtin/"
 require_linked_server "$snapshot/runtime/intravenous"
 sed -e 's@^iv_package_pch=.*@iv_package_pch=iv_dsl.pch@' \
     -e 's@^iv_builtin_package_root=.*@iv_builtin_package_root=builtin_packages@' \

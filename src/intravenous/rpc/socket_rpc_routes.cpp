@@ -29,6 +29,14 @@ Json presentation_catalog_json(PresentationCatalog const& catalog)
             Json manifest{{"version", schema_version}, {"id", presentation.id.substr(presentation.provider.size() + 1)},
                 {"title", presentation.title}, {"definitionIds", presentation.definition_ids}};
             if (presentation.initial_configuration) manifest["initialConfiguration"] = *presentation.initial_configuration;
+            if (!presentation.trigger_observations.empty()) {
+                auto observations = Json::array();
+                for (auto const& observation : presentation.trigger_observations) {
+                    observations.push_back({{"id", observation.id}, {"port", observation.port},
+                        {"direction", "output"}, {"operation", "trigger-bins"}});
+                }
+                manifest["observations"] = std::move(observations);
+            }
             entry.update(Json{{"id", presentation.id}, {"provider", presentation.provider}, {"format", "wasm"},
                 {"schemaVersion", schema_version}, {"manifest", std::move(manifest)}});
             if (!presentation.digest.empty()) entry["digest"] = presentation.digest;

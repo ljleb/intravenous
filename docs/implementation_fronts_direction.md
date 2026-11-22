@@ -7330,20 +7330,22 @@ runtime requirements and keeps the same presentation data schema. Shipping
 LLVM IR to clients would require its own compiler and target profile, plus
 an isolation mechanism for compiled code.
 
-**Published WASM artifacts and C++ SDK checkpoint (2026-11-22).**
-`iv_package.json` binds presentation IDs to node definitions. Each ID owns
-a prebuilt file in `presentations/`. The artifact carries a static timeline
-and icon descriptor. The server publishes bytes by digest and automatically
-watches project-local packages and development checkouts. The development
-tool compiles and atomically replaces the file. The client keeps the live
-lane through a failed candidate. C and C++ guests share ABI 3 with explicit
-session creation and destruction. JSON is confined to save and restore for
-live guest communication.
+**Click Detector WASM checkpoint (2026-11-22).**
+The server publishes the bundled Click Detector artifact from
+`iv_package.json`. The client gives a project-authored presentation
+precedence over the shipped default. Browser and headless workers use
+compiled entry points with one shared ABI adapter.
 
-The marker exercises this boundary. Dependencies for the remaining built-in
-migrations follow below.
-[Artifact and SDK guide](project_presentation_plugins.md) ·
-[Earlier marker implementation](historical/project_presentation_server_build_2026-11-22.md)
+ABI 4 adds bounded trigger-column views, connected input names, lane
+mode, and text batches. The host keeps one source of truth for cache
+selection, clipped counts, and the circular-time projection. The guest
+draws the count and markers. It uses the polyline batch already available
+to the marker. The exact `event-timestamps` operation remains available for
+diagnostics. A future guest that needs exact event positions or payloads
+will need a different observation view.
+
+[Authoring APIs](api/README.md) ·
+[Previous ABI 3 checkpoint](historical/project_presentation_abi3_guide_2026-11-22.md)
 
 - `createBeatsPresentation` implements `openSeekReader` as a synchronous
   reader over the displayed `BeatGrid`. `usePlayheadSeek` asks it about
@@ -7353,12 +7355,6 @@ migrations follow below.
   drag starts and use that same grid for the entire gesture. Verify the
   detent behavior when an outside-window result is pending before porting
   Beats.
-- `createClickDetectorPresentation` now uses bounded `trigger-bins` windows
-  over the signed-sorted recorded output. Each occupied bin contains the first
-  sample index and the exact occurrence count. The host retains ready spans
-  while the next window loads. The remaining WASM migration needs a typed
-  observation interface. The exact `event-timestamps` query remains available
-  for callers that need every occurrence.
 - `createAutomationCurvePresentation` reads accepted control points from
   `PresentationSnapshot.node.arguments`. The host currently obtains that
   field from `NodeConstructionArguments` JSON. Publish a typed control-point
@@ -7370,14 +7366,10 @@ migrations follow below.
   destination on release. Preserve their ordered delivery independently of
   whether the rendering host displays the resulting frame.
 
-The two workers currently embed `createWasmPresentation` as source text.
-That forces packet decoding to live inside one self-contained function.
-Switch to bundled worker entry points before adding the observation and edit
-interfaces, so each part of the ABI can have its own implementation and tests.
-
-The generic presentation and the current built-in lanes keep their
-existing host behavior while these dependencies are exercised.
-[Function API and marker](project_presentation_plugins.md)
+The remaining WASM migration needs typed beat and sample observations,
+host-mediated seeking and edits, and cursor return. The Click Detector
+port records which of its needs were shared across presentations in the
+[ownership explanation](api/explanation/presentation_execution.md).
 
 **Continuous edit scheduling review.** `ProjectGraph` already kept one
 replaceable `pending_graph_compile_` request. An in-flight compile could finish

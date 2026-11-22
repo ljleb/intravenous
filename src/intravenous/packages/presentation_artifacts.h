@@ -13,12 +13,19 @@ namespace iv {
 struct IvPackageDeclaration;
 struct IvPackageInfo;
 
+struct PresentationTriggerObservation {
+    std::string id;
+    std::string port;
+    bool operator==(PresentationTriggerObservation const&) const = default;
+};
+
 struct PresentationCatalogEntry {
     std::string id;
     std::string provider;
     std::string title;
     std::vector<std::string> definition_ids;
     std::optional<std::string> initial_configuration;
+    std::vector<PresentationTriggerObservation> trigger_observations{};
     std::string digest;
     std::string error;
 

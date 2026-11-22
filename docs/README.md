@@ -8,6 +8,8 @@ friction, and historical material are defined by
 Implementation success must not retroactively redefine design intent, and semantic
 information removed from a current document must be preserved under `historical/`.
 
+[Authoring APIs](./api/README.md) covers presentations and native nodes.
+
 The primary application-architecture entry points are:
 
 - [Outstanding Implementation Fronts](./implementation_fronts_direction.md)

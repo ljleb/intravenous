@@ -202,6 +202,8 @@ set(_iv_builtin_package_manifest
     "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/iv_package.json")
 set(_iv_builtin_package_entry
     "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/module.cpp")
+set(_iv_builtin_click_presentation
+    "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/presentations/click_detector.wasm")
 add_custom_command(
     OUTPUT "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
@@ -218,7 +220,16 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(intravenous_builtin_package_assets
-    DEPENDS "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}")
+    DEPENDS "${_iv_builtin_package_manifest}" "${_iv_builtin_package_entry}" "${_iv_builtin_click_presentation}")
+add_custom_command(
+    OUTPUT "${_iv_builtin_click_presentation}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+        "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/presentations"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+        "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/presentations/click_detector.wasm"
+        "${_iv_builtin_click_presentation}"
+    DEPENDS "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/presentations/click_detector.wasm"
+    VERBATIM)
 
 add_library(intravenous_graph_builder OBJECT
     basic_nodes/debug_probe.cpp

@@ -21,6 +21,8 @@ add_custom_command(
         "${iv_client_dist}/vscodeRelaunchWorker.js.map"
         "${iv_client_dist}/headlessClient.js"
         "${iv_client_dist}/headlessClient.js.map"
+        "${iv_client_dist}/wasmPresentationNodeEntry.js"
+        "${iv_client_dist}/wasmPresentationNodeEntry.js.map"
         "${iv_client_dist}/webview/main.css"
         "${iv_client_dist}/webview/main.js"
         "${iv_client_dist}/webview/main.js.map"

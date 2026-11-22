@@ -1,3 +1,4 @@
+// @doc docs/api/reference/llvm_nodes.md
 #pragma once
 
 #include <intravenous/node/code_key.h>
@@ -15,9 +16,8 @@ namespace details {
 struct ConfigurationTypeIdentity;
 }
 // The loader rejects a package whose iv_package_abi_version() differs from this
-// value. It stays 0 and is never raised: a package build signature already
-// contains this header's text and the identity of the DSL precompiled header,
-// so a changed host header rebuilds every package.
+// value. Package build identity also includes this header and the DSL
+// precompiled header, so changes can invalidate cached artifacts.
 inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 1;
 
 struct ModuleDataView {

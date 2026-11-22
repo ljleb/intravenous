@@ -4,7 +4,6 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createBeatsPresentation } from "../src/beatsPresentationPlugin";
-import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../src/clickDetectorPresentation";
 import { PresentationEdits, type PresentationEdit } from "../src/presentationEdits";
 import { presentationPluginVersion, readPresentationFrame, readPresentationManifest,
     type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
@@ -20,40 +19,61 @@ const snapshot: PresentationSnapshot = {
         time: { beginSample: "0", beginFraction: 0, spanSamples: 96000, sampleRate: 48000 } }, observations: {}, state: null,
 };
 
-test("Click Detector displays observed events at their sample positions during pending refresh", () => {
-    assert.ok(readPresentationManifest(clickDetectorPresentationManifest));
-    const detect = createClickDetectorPresentation();
+const clickDetector = readFileSync(resolve(__dirname,
+    "../../../../src/intravenous/builtin_packages/builtin/presentations/click_detector.wasm"));
+const clickManifest = JSON.parse(readFileSync(resolve(__dirname,
+    "../../../../src/intravenous/builtin_packages/builtin/iv_package.json"), "utf8")).presentations.click_detector;
+
+test("the published Click Detector WASM draws retained trigger columns through the headless worker", async () => {
+    assert.ok(readPresentationManifest({ ...clickManifest, version: presentationPluginVersion, id: "click_detector" }));
+    assert.deepEqual(readWasmPresentationDescriptor(clickDetector), { timeline: true, icon: "M1 8h4l2-5 2 10 2-5h4" });
+    const worker = createNodePresentationWorker(clickDetector.toString("base64"));
     const result = {
-        id: "clicks", status: "ready" as const, approximate: false,
+        id: "clicks", status: "ready" as const, approximate: true,
         window: { begin: "0", length: "96000", points: 500 },
         triggerBins: [
             { begin: "24000", length: "192", first: "24000", count: "1" },
             { begin: "48000", length: "192", first: "48000", count: "3" },
         ], regions: [],
     };
-    const frame = readPresentationFrame(detect({
-        ...snapshot, node: { definitionId: "builtin.click_detector", arguments: [],
-            ports: [{ name: "audio", direction: "input", kind: "continuous", connected: false }] },
-        observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
-    }, []));
-    assert.equal(frame.status, "4 recorded clicks in view");
-    assert.deepEqual(frame.marks?.filter((mark) => mark.type === "rect").map(({ x }) => x), [125, 250]);
+    try {
+        const frame = readPresentationFrame(await worker.run({
+            ...snapshot, observations: { clicks: { status: "pending", result,
+                spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
+        }, []));
+        assert.equal(frame.status, "4 recorded clicks in view");
+        assert.deepEqual(frame.marks?.filter((mark) => mark.type === "packedPolyline")
+            .map(({ coordinates }) => Array.from(coordinates)), [[125.5, 0, 125.5, 80], [250.5, 0, 250.5, 80]]);
+        assert.equal(frame.marks?.at(-1)?.type, "text");
+    } finally { worker.stop(); }
 });
 
-test("Click Detector renders bounded marks while preserving large recorded counts", async () => {
-    const present = createClickDetectorPresentation();
-    const triggerBins = Array.from({ length: 500 }, (_, i) =>
-        ({ begin: String(i * 192), length: "192", first: String(i * 192 + 1), count: "2000" }));
-    const result = { id: "clicks", status: "ready" as const, approximate: true,
-        window: { begin: "0", length: "96000", points: 500 }, triggerBins, regions: [] };
-    let frame: PresentationFrame | undefined;
-    const session = new PresentationPluginSession(present, () => {}, (value) => { frame = value; }, (error) => { throw error; });
-    session.update({ ...snapshot,
-        observations: { clicks: { status: "ready", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
-    });
-    await session.flush();
-    assert.equal(frame?.status, "1000000 recorded clicks in view");
-    assert.equal(frame?.marks?.filter(({ type }) => type === "rect").length, 500);
+test("Click Detector bounds drawing while preserving large counts and hides its label in mini lanes", () => {
+    const instance = createWasmPresentation(clickDetector.toString("base64"));
+    instance.restore("");
+    try {
+        const triggerBins = Array.from({ length: 500 }, (_, i) =>
+            ({ begin: String(i * 192), length: "192", first: String(i * 192 + 1), count: "2000" }));
+        const result = { id: "clicks", status: "ready" as const, approximate: true,
+            window: { begin: "0", length: "96000", points: 500 }, triggerBins, regions: [] };
+        const displayed = { ...snapshot, mode: "mini" as const,
+            observations: { clicks: { status: "ready" as const, result,
+                spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
+        };
+        const frame = readPresentationFrame(instance.present(wasmPresentationUpdate(displayed, [])).frame);
+        assert.equal(frame.status, "1000000 recorded clicks in view");
+        assert.equal(frame.marks?.length, 500);
+        assert.ok(frame.marks?.every(({ type }) => type === "packedPolyline"));
+
+        const clipped = { ...displayed, observations: { clicks: { status: "pending" as const, result,
+            spans: [{ begin: "1", end: "192", windowOffset: "0", result }] } } };
+        assert.equal(instance.present(wasmPresentationUpdate(clipped, [])).frame?.status, "At least 1 recorded click in view");
+
+        const waiting = { ...snapshot, node: { ...snapshot.node,
+            ports: [{ direction: "input" as const, kind: "continuous" as const, connected: true, name: "audio" }] } };
+        assert.equal(instance.present(wasmPresentationUpdate(waiting, [])).frame?.status, "Waiting for click observations");
+        assert.equal(instance.present(wasmPresentationUpdate(snapshot, [])).frame?.status, "Connect the audio to inspect");
+    } finally { instance.dispose(); }
 });
 
 test("Beats uses the portable contract for rendering, settings and exact seek marks", () => {

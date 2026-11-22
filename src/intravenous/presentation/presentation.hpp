@@ -1,3 +1,4 @@
+// @doc docs/api/reference/presentation_cpp.md
 #ifndef INTRAVENOUS_PRESENTATION_HPP
 #define INTRAVENOUS_PRESENTATION_HPP
 
@@ -22,6 +23,17 @@ public:
     explicit Context(IvPresentationContext& context) : context_(&context) {}
     IvRectangle content_bounds() const { return iv_content_bounds(context_); }
     bool can_edit() const { return iv_can_edit(context_); }
+    uint32_t lane_mode() const { return iv_lane_mode(context_); }
+    Span<IvString const> connected_inputs() const
+    {
+        auto const inputs = iv_connected_inputs(context_);
+        return {inputs.data, inputs.size};
+    }
+    Span<IvObservedTriggerColumns const> observed_trigger_columns() const
+    {
+        auto const observations = iv_observed_trigger_columns(context_);
+        return {observations.data, observations.size};
+    }
     Span<IvGestureInput const> gestures() const
     {
         auto const input = iv_gesture_inputs(context_);
@@ -30,6 +42,10 @@ public:
     bool draw_polylines(Span<IvPolyline const> lines) const
     {
         return iv_draw_polylines(context_, {lines.data, lines.size});
+    }
+    bool draw_texts(Span<IvText const> texts) const
+    {
+        return iv_draw_texts(context_, {texts.data, texts.size});
     }
     IvPolylineBatch reserve_polylines(uint32_t lines, uint32_t points) const
     {

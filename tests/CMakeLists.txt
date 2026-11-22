@@ -3,6 +3,11 @@ include(GoogleTest)
 
 find_package(Python3 3.9 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_custom_target(intravenous_api_docs_check
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check_api_docs.py"
+            --build-dir "${CMAKE_BINARY_DIR}"
+        DEPENDS iv_package_prebuild
+        VERBATIM)
     add_test(NAME intravenous_build_cache
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/build_cache_test.py"
             "$<TARGET_FILE:ivctl>" "$<TARGET_FILE:iv-dev-cache>"

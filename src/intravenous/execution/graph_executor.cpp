@@ -456,14 +456,15 @@ void GraphExecutor::ExecutionGeneration::initialize_first_background_generation(
             "GraphExecutor first background generation is already initialized or has migration state");
     }
     background.tock_states.initialize();
-    if (requires_prepared_playback(*graph)) {
-        background.reconciliation_required = true;
-        for (graph_jit::BackgroundNodeIndex node = 0; node < graph->background_evaluation_plan.nodes.size(); ++node) {
-            auto const& planned = graph->background_evaluation_plan.nodes[node];
-            if (planned.authored_forward_coverage || planned.uses_replay_forward_coverage)
-                background.reconciliation_roots.locally_changed_nodes.push_back(node);
-        }
+    auto const& nodes = graph->background_evaluation_plan.nodes;
+    auto& roots = background.reconciliation_roots.locally_changed_nodes;
+    // Window observations also depend on the first generation's coverage.
+    // Playback preparation controls when Tick can activate.
+    for (graph_jit::BackgroundNodeIndex node = 0; node < nodes.size(); ++node) {
+        if (nodes[node].authored_forward_coverage || nodes[node].uses_replay_forward_coverage)
+            roots.push_back(node);
     }
+    background.reconciliation_required = requires_prepared_playback(*graph) || !roots.empty();
     background_initialized = true;
 }
 

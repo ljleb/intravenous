@@ -1,8 +1,8 @@
 import type { PresentationFrame, PresentationInput, PresentationSavedState, PresentationSnapshot } from "./presentationPlugin";
-import { wasmPresentationUpdate, type WasmPresentationReply, type WasmPresentationUpdate } from "./wasmPresentation";
+import { wasmPresentationUpdate, type WasmPresentationReply } from "./wasmPresentation";
 
-type FrameRequest = { update: WasmPresentationUpdate; bytes?: string; restore?: string } | { close: true };
-type WorkerTransport = { postMessage(request: FrameRequest): void; terminate(): void };
+import type { WasmPresentationRequest } from "./wasmPresentationEndpoint";
+type WorkerTransport = { postMessage(request: WasmPresentationRequest): void; terminate(): void };
 type StartWorker = (receive: (reply: WasmPresentationReply) => void, fail: (error: Error) => void) => WorkerTransport;
 
 export class WasmPresentationWorker {
@@ -51,7 +51,7 @@ export class WasmPresentationWorker {
             const timeout = setTimeout(() => this.stop(new Error("Presentation worker timed out")), 1500);
             this.pending = { resolve, reject, timeout };
             try {
-                const message: FrameRequest = { update: wasmPresentationUpdate(snapshot, inputs) };
+                const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs) };
                 if (initialize) message.bytes = this.bytes;
                 if (initialize || this.restoring) message.restore = this.state === null ? "" : JSON.stringify(this.state);
                 this.restoring = false;

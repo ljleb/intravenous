@@ -1,3 +1,4 @@
+// @doc docs/api/reference/presentation_c_abi.md
 #ifndef INTRAVENOUS_PRESENTATION_ABI_H
 #define INTRAVENOUS_PRESENTATION_ABI_H
 
@@ -17,6 +18,11 @@ typedef struct IvRecordedDragTargets {
     struct IvRecordedDragTargets *next;
 } IvRecordedDragTargets;
 
+typedef struct IvRecordedTexts {
+    IvTextSpan values;
+    struct IvRecordedTexts *next;
+} IvRecordedTexts;
+
 struct IvPresentationContext {
     double width, height;
     IvGestureInputSpan gestures;
@@ -26,6 +32,10 @@ struct IvPresentationContext {
     IvRecordedPolylines *drawing, *last_drawing;
     IvRecordedDragTargets *targets, *last_targets;
     IvString status;
+    IvRecordedTexts *texts, *last_texts;
+    IvObservedTriggerColumnSpan trigger_columns;
+    IvStringSpan connected_inputs;
+    uint32_t mode;
 };
 
 #if defined(__wasm32__)
@@ -35,12 +45,19 @@ _Static_assert(sizeof(IvPolyline) == 16, "polyline layout");
 _Static_assert(sizeof(IvDragTarget) == 40, "target layout");
 _Static_assert(sizeof(IvRecordedPolylines) == 12, "drawing batch layout");
 _Static_assert(sizeof(IvRecordedDragTargets) == 12, "target batch layout");
-_Static_assert(sizeof(IvPresentationContext) == 72, "frame layout");
+_Static_assert(sizeof(IvText) == 32, "text layout");
+_Static_assert(sizeof(IvRecordedTexts) == 12, "text batch layout");
+_Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation layout");
+_Static_assert(sizeof(IvPresentationContext) == 104, "frame layout");
 _Static_assert(offsetof(IvPresentationContext, gestures) == 16, "input layout");
 _Static_assert(offsetof(IvPresentationContext, storage) == 32, "arena layout");
 _Static_assert(offsetof(IvPresentationContext, drawing) == 48, "drawing layout");
 _Static_assert(offsetof(IvPresentationContext, targets) == 56, "target layout");
 _Static_assert(offsetof(IvPresentationContext, status) == 64, "status layout");
+_Static_assert(offsetof(IvPresentationContext, texts) == 72, "text output layout");
+_Static_assert(offsetof(IvPresentationContext, trigger_columns) == 80, "observation input layout");
+_Static_assert(offsetof(IvPresentationContext, connected_inputs) == 88, "port input layout");
+_Static_assert(offsetof(IvPresentationContext, mode) == 96, "lane mode layout");
 #endif
 
 #ifdef __cplusplus

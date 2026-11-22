@@ -1,3 +1,4 @@
+// @doc docs/api/reference/presentation_c_abi.md
 #include "abi.h"
 
 #include <stdbool.h>
@@ -98,6 +99,13 @@ IvGestureInputSpan iv_gesture_inputs(const IvPresentationContext *context)
     return context->gestures;
 }
 
+uint32_t iv_lane_mode(const IvPresentationContext *context) { return context->mode; }
+IvStringSpan iv_connected_inputs(const IvPresentationContext *context) { return context->connected_inputs; }
+IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationContext *context)
+{
+    return context->trigger_columns;
+}
+
 static void *reserve_output(IvPresentationContext *context, uint32_t size)
 {
     uint32_t start = (context->used + 7u) & ~7u;
@@ -171,9 +179,38 @@ bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan t
     return true;
 }
 
+bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts)
+{
+    if (!texts.size) return true;
+    if (texts.size > 256 || (context->flags & IV_REUSE_DRAWING)) {
+        context->error = 1;
+        return false;
+    }
+    IvRecordedTexts *batch = reserve_output(context, sizeof(*batch));
+    IvText *values = reserve_output(context, texts.size * sizeof(*values));
+    if (context->error) return false;
+    for (uint32_t i = 0; i < texts.size; ++i) {
+        IvText value = texts.data[i];
+        if (value.text.size > 1024) {
+            context->error = 1;
+            return false;
+        }
+        char *bytes = reserve_output(context, value.text.size);
+        if (!bytes) return false;
+        for (uint32_t j = 0; j < value.text.size; ++j) bytes[j] = value.text.data[j];
+        value.text.data = bytes;
+        values[i] = value;
+    }
+    *batch = (IvRecordedTexts){.values = {values, texts.size}};
+    if (context->last_texts) context->last_texts->next = batch;
+    else context->texts = batch;
+    context->last_texts = batch;
+    return true;
+}
+
 void iv_reuse_drawing(IvPresentationContext *context)
 {
-    if (context->drawing) context->error = 1;
+    if (context->drawing || context->texts) context->error = 1;
     context->flags |= IV_REUSE_DRAWING;
 }
 
