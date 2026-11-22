@@ -604,6 +604,12 @@ Use `usePortObservationViewport` for a windowed port display and
 `GridGuides` for SVG guides, `usePresentationSize` for element size, and
 `usePresentationFrame` for work that runs once per frame.
 
+A plot uses ready windows from one compatible observation snapshot.
+The host keeps the previous plot while the replacement is incomplete.
+It can reproject overlapping spans during navigation. Finer windows can
+replace coarse windows within the same snapshot. The Automation Curve
+groups the observed min and max because both bounds affect its output.
+
 ### Webview focus and keyboard shortcuts
 
 Keep controls and scrollable regions out of the Tab order with `tabindex="-1"`.

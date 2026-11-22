@@ -46,12 +46,17 @@ export function observationSourceKey(source: ObservationSource): string {
     return JSON.stringify([source.node.instanceId, source.node.path ?? [], source.kind, source.member, source.channel ?? null, ...(source.portKind === "event" ? ["event"] : [])]);
 }
 
-export function compareObservationWindowVersions(left: ObservationWindowResult, right: ObservationWindowResult): number {
+export type ObservationWindowVersion = Pick<ObservationWindowResult, "semanticVersion" | "dataVersion" | "executionGeneration">;
+export function compareObservationWindowVersions(left: ObservationWindowVersion, right: ObservationWindowVersion): number {
     for (const field of ["semanticVersion", "dataVersion", "executionGeneration"] as const) {
         const a = BigInt(left[field] ?? "0"), b = BigInt(right[field] ?? "0");
         if (a !== b) return a > b ? 1 : -1;
     }
     return 0;
+}
+
+export function observationWindowVersion(result: ObservationWindowVersion): string {
+    return `${result.semanticVersion ?? "0"}:${result.dataVersion ?? "0"}:${result.executionGeneration ?? "0"}`;
 }
 
 type ReadyWindow = { execution: bigint; result: ObservationWindowResult; source: string; units: number };
@@ -81,6 +86,7 @@ function windowSource({ source, operation, window }: Pick<ObservationInterest, "
 // A host scope replaces its complete desired set. It never lets an older
 // activation or a result from an earlier request revision replace current data.
 export class ObservationValues {
+    windowEpoch = 0;
     private revision = 0n;
     private sampleRate: number | undefined;
     private readonly delivery = new ObservationDeliveryState();
@@ -155,6 +161,7 @@ export class ObservationValues {
         if (this.recentWindows.delete(entry)) this.recentWindows.add(entry);
     }
     private clearReadyWindows(): void {
+        ++this.windowEpoch;
         this.readyWindows.clear();
         this.recentWindows.clear();
         this.retainedWindowUnits = 0;
@@ -183,7 +190,7 @@ export class ObservationValues {
             const { result } = ready;
             if ((completeOnly && result.truncated) || !windowsOverlap(result.window, visible)) return;
             const { begin, length, points, maxDepth, includeIndexedRuns } = result.window;
-            const key = JSON.stringify([begin, length, points, maxDepth, !!includeIndexedRuns]);
+            const key = JSON.stringify([begin, length, points, maxDepth, !!includeIndexedRuns, observationWindowVersion(result)]);
             const previous = selected.get(key);
             if (!previous || compareReadyWindows(ready, previous) >= 0) selected.set(key, ready);
         };
@@ -272,14 +279,15 @@ export class ObservationValues {
         if (!desired || !sameObservationWindow(item.window, desired.window)) return false;
         if (item.status === "ready") {
             if (item.sampleRate && this.sampleRate !== undefined && item.sampleRate !== this.sampleRate) return false;
-            const previous = this.readyWindows.get(id)?.find(({ result }) => sameObservationWindow(result.window, item.window)
-                && !!result.truncated === !!item.truncated);
+            const previous = this.readyWindows.get(id)?.find((entry) => sameObservationWindow(entry.result.window, item.window)
+                && !!entry.result.truncated === !!item.truncated && entry.execution === execution);
             const current = this.currentWindow(id, item.window);
             if (current?.status === "ready" && !!current.truncated === !!item.truncated
                 && compareObservationWindowVersions(item, current) < 0) return false;
             if (previous) {
-                if (previous.execution === execution && compareObservationWindowVersions(item, previous.result) < 0) return false;
-                this.removeReadyWindows(id, (entry) => entry === previous);
+                const order = compareObservationWindowVersions(item, previous.result);
+                if (order < 0) return false;
+                if (!order) this.removeReadyWindows(id, (entry) => entry === previous);
             }
             // Preserve one whole event window during panning even when the
             // recording has more events than the sampled-window cache allows.

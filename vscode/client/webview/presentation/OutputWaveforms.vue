@@ -7,20 +7,27 @@ import { useNode } from "./nodeContext";
 import { useObservations, useObservationTier } from "./observationContext";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { timelineObservationOffset, timelineSamples } from "../../src/timelineSamples";
+import { ObservationViewportDisplay } from "../../src/observationViewportDisplay";
 const props = defineProps<{ bounds?: { min: number; max: number }; mode?: string; inputMember?: string; window?: ObservationWindow }>();
 const node = useNode();
 const observations = useObservations();
 const tier = useObservationTier();
 const time = useTimelineWindow();
+const displays = new Map<string, ObservationViewportDisplay>();
 const waveforms = computed(() => {
     const address = node.value.address;
     const visible = props.window;
-    if (tier.value !== "visible" || !address || !observations || !visible || !time) return [];
+    if (tier.value !== "visible" || !address || !observations || !visible || !time) { displays.clear(); return []; }
     const view = timelineSamples(time.value);
     const visibleOffset = timelineObservationOffset(view);
-    return observations.forNode(address).filter((entry) => entry.delivery === "window"
-        && (props.inputMember === undefined ? entry.kind === "output" : entry.kind === "input" && entry.member === props.inputMember)).map((entry) => {
-        const { result, spans, status, error } = observations.viewportWindow(entry.id, visible, visible, false);
+    const entries = observations.forNode(address).filter((entry) => entry.delivery === "window"
+        && (props.inputMember === undefined ? entry.kind === "output" : entry.kind === "input" && entry.member === props.inputMember));
+    for (const id of displays.keys()) if (!entries.some((entry) => entry.id === id)) displays.delete(id);
+    return entries.map((entry) => {
+        let display = displays.get(entry.id);
+        if (!display) displays.set(entry.id, display = new ObservationViewportDisplay());
+        const [{ result, spans, status, error }] = observations.viewportWindows(display,
+            [{ id: entry.id, visible, requested: visible, completeOnly: false }]);
         const layers = spans.flatMap(({ result, begin, end, windowOffset }) => {
             const scale = 1000 / view.span;
             const from = Math.max(0, (Number(begin) + visibleOffset) * scale);

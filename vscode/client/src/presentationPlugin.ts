@@ -14,7 +14,7 @@ export type PresentationManifest = {
     timeline?: true;
     timelineSnapping?: true;
     initialConfiguration?: string;
-    observations?: Array<{ id: string; port: string; whenConnected?: true; completeOnly?: true } & (
+    observations?: Array<{ id: string; port: string; whenConnected?: true; completeOnly?: true; group?: string } & (
         { direction: "input" | "output"; operation?: "waveform"; points: number }
         | { direction: "output"; operation: typeof recordedEventTimestampsOperation })>;
 };
@@ -130,7 +130,8 @@ export function readPresentationManifest(value: unknown): PresentationManifest |
                 && ((entry.operation === undefined || entry.operation === "waveform")
                     ? Number.isInteger(entry.points) && entry.points >= 2 && entry.points <= 1024
                     : entry.operation === recordedEventTimestampsOperation && entry.direction === "output" && entry.points === undefined)
-                && flag(entry.whenConnected) && flag(entry.completeOnly)))) return;
+                && flag(entry.whenConnected) && flag(entry.completeOnly)
+                && (entry.group === undefined || identifier(entry.group))))) return;
     const manifest: PresentationManifest = value as PresentationManifest;
     const { version, id, title, definitionIds, icon, timeline, timelineSnapping, initialConfiguration, observations } = manifest;
     if (observations && new Set(observations.map(({ id }) => id)).size !== observations.length) return;

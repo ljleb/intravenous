@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { CursorReturnMessage, CursorReturnPolicy } from "../src/graphEditorProtocol";
 import { PointerLockExitGuard } from "../src/pointerLockExitGuard";
+import { timelineSampleFraction } from "../src/timelineGeometry";
+import { timelineSampleAt, timelineSampleCount, timelineSamples } from "../src/timelineSamples";
 import { cursorWarpAnchor, PointerLockCursorReturn, visibleCursorDestination } from "../webview/graph/cursorReturn";
 
 const origin = { x: 10, y: 20 };
@@ -110,35 +112,48 @@ test("capture fallback, canceled drags and non-mouse input never submit a cursor
         { type: "cursorReturnSkipped", detail: "The drag ended before a normal pointer-lock release." }]);
 });
 
-test("visible destinations keep their exact position, including near a surface edge", (t) => {
+test("playheads and presentation points can land under controls within the visible surface", (t) => {
+    const heading = {
+        contains: (node: unknown) => node === ruler,
+        getBoundingClientRect: () => ({ bottom: 30 }),
+    };
+    let viewportBottom = 100;
+    const timeline = {
+        getBoundingClientRect: () => ({ left: 0, right: 200, top: 0, bottom: viewportBottom }),
+        querySelector: () => heading,
+    };
+    const ruler = {
+        getBoundingClientRect: () => ({ left: 20, right: 120, top: 10, bottom: 30 }),
+        closest: () => timeline,
+        contains: () => false,
+    } as unknown as Element;
     const surface = {
-        getBoundingClientRect: () => ({ left: 20, right: 120, top: 10, bottom: 40 }),
-        closest: () => null,
-        contains: (node: unknown) => node === surface,
+        getBoundingClientRect: () => ({ left: 20, right: 120, top: 25, bottom: 110 }),
+        closest: () => timeline,
+        contains: () => false,
     } as unknown as Element;
     const window = Object.getOwnPropertyDescriptor(globalThis, "window");
     const document = Object.getOwnPropertyDescriptor(globalThis, "document");
     Object.defineProperty(globalThis, "window", { configurable: true, value: { innerWidth: 200, innerHeight: 100 } });
-    const resizeHandle = { getBoundingClientRect: () => ({ left: 16, right: 24 }) };
-    const rulerSettings = { getBoundingClientRect: () => ({ left: 104, right: 120 }) };
-    const dialog = { getBoundingClientRect: () => ({ left: 13, right: 130 }) };
-    let covered = false;
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: (x: number, y: number) => {
-        if (covered) return dialog;
-        if (y === 21 && x < 24) return resizeHandle;
-        if (y === 21 && x >= 104) return rulerSettings;
-        return surface;
-    } } });
+    const overlay = { getBoundingClientRect: () => ({ left: 104, right: 120 }) };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { elementFromPoint: () => overlay } });
     t.after(() => {
         if (window) Object.defineProperty(globalThis, "window", window);
         else Reflect.deleteProperty(globalThis, "window");
         if (document) Object.defineProperty(globalThis, "document", document);
         else Reflect.deleteProperty(globalThis, "document");
     });
-    assert.deepEqual(visibleCursorDestination(surface, { x: 20.5, y: 20 }), { x: 20.5, y: 20 });
-    assert.deepEqual(visibleCursorDestination(surface, { x: 180, y: 20 }), { x: 118, y: 20 });
-    assert.deepEqual(visibleCursorDestination(surface, { x: 0, y: 21 }), { x: 26, y: 21 });
-    assert.deepEqual(visibleCursorDestination(surface, { x: 180, y: 21 }), { x: 102, y: 21 });
-    covered = true;
-    assert.equal(visibleCursorDestination(surface, { x: 180, y: 21 }), null);
+    const fullLap = { beginSample: "0", beginFraction: 0, spanSamples: Number(timelineSampleCount) };
+    const wrappedSample = timelineSampleAt(timelineSamples(fullLap), -0.0625);
+    const wrappedTarget = { x: 20 + 100 * timelineSampleFraction(wrappedSample, fullLap), y: 21 };
+    assert.deepEqual(wrappedTarget, { x: 113.75, y: 21 });
+    assert.deepEqual(visibleCursorDestination(ruler, wrappedTarget), wrappedTarget);
+    assert.deepEqual(visibleCursorDestination(ruler, { x: 120, y: 21 }), { x: 118, y: 21 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 20.5, y: 45 }), { x: 20.5, y: 45 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 110, y: 45 }), { x: 110, y: 45 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 180, y: 45 }), { x: 118, y: 45 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 60, y: 27 }), { x: 60, y: 32 });
+    assert.deepEqual(visibleCursorDestination(surface, { x: 60, y: 110 }), { x: 60, y: 98 });
+    viewportBottom = 25;
+    assert.equal(visibleCursorDestination(surface, { x: 60, y: 45 }), null);
 });

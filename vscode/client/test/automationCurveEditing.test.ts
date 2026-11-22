@@ -1,4 +1,5 @@
-import { observationSpans, observationWindowRequests } from "../src/observationWindows";
+import { observationWindowRequests } from "../src/observationWindows";
+import { ObservationViewportDisplay } from "../src/observationViewportDisplay";
 import { receiveSnapshot } from "./observationFixtures";
 import { automationBoundTracks, automationBoundTracksForSpans,
     sampleAutomationPreview } from "../src/automationBoundInputs";
@@ -734,7 +735,7 @@ test("automation bounds spend 1024 positions on the viewport and reuse coarse ti
     assert.deepEqual(coarse.map(({ window }) => window.begin), ["-3072", "-2048", "-1024", "0", "1024", "2048"]);
 });
 
-test("automation bounds keep their fine outline during successive edits of the connected source", () => {
+test("automation bounds use fine coverage within one snapshot and replace the whole trace after an edit", () => {
     const make = (begin: string, length: string, points: number, value?: number): ObservationWindowResult => ({
         id: begin, window: { begin, length, points }, status: "ready", approximate: true, dataVersion: "3",
         regions: value === undefined ? [] : [{ begin, length, points: [{ index: begin, available: true, value: { value } }] }],
@@ -743,6 +744,7 @@ test("automation bounds keep their fine outline during successive edits of the c
     const fine = make("20", "8", 8, 6);
     const empty = make("28", "4", 4);
     const values = new ObservationValues();
+    const display = new ObservationViewportDisplay();
     const visible = { begin: "16", length: "20" };
     const source = { node: { instanceId: "curve" }, kind: "input" as const, member: "max" };
     const requests = [coarse, fine, empty].map(({ id, window }) => ({ id, source, window, operation: "waveform" }));
@@ -753,7 +755,9 @@ test("automation bounds keep their fine outline during successive edits of the c
     const retained = () => values.readyWindowsForDisplay(requests.map(({ id }) => id), visible, true);
     const tracksFor = (begin: number, length: number, fine?: ObservationWindow) => {
         const visible = { begin: String(begin), length: String(length) };
-        return automationBoundTracksForSpans(observationSpans(retained(), visible, fine ? [fine] : []),
+        const [trace] = display.read([{ id: "max", visible, fine: fine ? [fine] : [],
+            ready: retained(), current: fine ? [values.currentWindow("20", fine)] : [], completeOnly: true }], values.windowEpoch);
+        return automationBoundTracksForSpans(trace.spans,
             { origin: { index: BigInt(begin), fraction: 0 }, span: length }, 1);
     };
     values.expectWindows(requests);
@@ -768,12 +772,12 @@ test("automation bounds keep their fine outline during successive edits of the c
     for (const generation of [8, 9]) {
         publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
         assert.deepEqual(tracksFor(20, 8, fine.window)
-            .map(({ samples }) => samples[0].value), [6]);
-        publish(String(generation), { ...fine, truncated: true, regions: [] });
+            .map(({ samples }) => samples[0].value), [2]);
+        publish(String(generation), { ...fine, dataVersion: "6", truncated: true, regions: [] });
         assert.deepEqual(tracksFor(20, 8, fine.window)
-            .map(({ samples }) => samples[0].value), [6]);
+            .map(({ samples }) => samples[0].value), [2]);
     }
-    publish("9", { ...fine, dataVersion: "1", regions: [] });
+    publish("9", { ...fine, dataVersion: "6", regions: [] });
     assert.deepEqual(tracksFor(20, 8, fine.window), []);
     values.expectWindows([]);
     assert.equal(values.windowForDisplay(fine.id), undefined);

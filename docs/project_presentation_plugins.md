@@ -136,6 +136,10 @@ Version 2 supplies the time axis in samples.
   Use `whenConnected` to observe only a connected port. Use
   `completeOnly` if a partial result should leave the previous complete
   spans in view.
+- Use the same `group` name on observations that feed one plot. The host
+  updates the group together when one snapshot answers each visible
+  range. A ready result with empty coverage counts as an answer.
+  Without a group name, each observation updates independently.
 - The host can split one viewport observation into several server requests.
   A span's `begin` and `end` are offsets from the start of the viewport's
   observation window, in project samples. The interval includes `begin`.

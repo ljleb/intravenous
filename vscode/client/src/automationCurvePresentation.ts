@@ -21,7 +21,7 @@ export const automationCurvePresentationManifest: PresentationManifest = {
     version: presentationPluginVersion, id: definitionId, title: "Automation curve", definitionIds: [definitionId], timeline: true, timelineSnapping: true,
     icon: "M2 12C5 12 5 4 14 4M2 10v4m12-12v4",
     observations: (["min", "max"] as const).map((port) => ({
-        id: port, direction: "input", port, points: automationBoundVisiblePositions, whenConnected: true, completeOnly: true,
+        id: port, direction: "input", port, points: automationBoundVisiblePositions, whenConnected: true, completeOnly: true, group: "bounds",
     })),
 };
 

@@ -3999,6 +3999,8 @@ The X11 helper checks the result of each cursor move. The output channel
 reports failed requests and explains why they stop. If the dragged automation
 point leaves the visible lane, the editor sends the cursor to the nearest
 visible edge of the lane. It leaves the point at its edited position.
+Playhead and presentation point drags use the same viewport clipping in
+`visibleCursorDestination`. Controls over the target do not block the move.
 [Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
 [Retired trace commands](./historical/vue_cursor_return_trace_commands_before_removal_2026-11-19.md).
 
@@ -4465,6 +4467,17 @@ windows as outdated. A ready reply, including an empty window, replaces its
 older result. Unsubscribing or changing the source, session, or sample rate
 discards incompatible windows. Automation bounds use the shared port-window
 hook to read both their visible window and prefetched tiles.
+
+`ObservationViewportDisplay` selects one semantic version, data version,
+and execution generation for the ready windows of a plot. It holds that
+selection while a newer version is missing visible ranges. A manifest can
+group observations that affect the same plot, as Automation Curve does
+for min and max.
+
+The server can still run separate window reads against different snapshots.
+If the data version advances between every read, a group can keep its
+previous plot until compatible replies arrive. Serving a group from one
+pinned snapshot would address that case on the server.
 
 #### Indexed event observation and Timeline
 

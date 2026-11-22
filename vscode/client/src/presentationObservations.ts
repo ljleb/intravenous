@@ -2,8 +2,9 @@ import type { NodeAddress } from "./graphScope";
 import { addressFromKey, addressKey } from "./graphScope";
 import type { ObservationProfile } from "./observationProfile";
 import type { ObservationDelivery } from "./observationDelivery";
-import { observationSpans, observationWindowId,
+import { observationWindowId,
     observationWindowIds, observationWindowRequests, visibleObservationRequests, type ObservationTier } from "./observationWindows";
+import type { ObservationViewportDisplay } from "./observationViewportDisplay";
 import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationTimeSpan,
     type MeterMode, type ObservationWindow, sameObservationWindow } from "./observations";
@@ -12,6 +13,7 @@ type NodeInterest = { node: NodeAddress; tier?: ObservationTier; window?: Observ
 export type PortObservation = Omit<ObservationInterest, "id"> & { prefetchRank?: number };
 type PresentationInterest = PortObservation & { id: string };
 type ViewportObservation = { source: ObservationSource; operation: string; window: ObservationWindow; consumer?: NodeAddress | string };
+export type ObservationViewport = { id: string; visible: ObservationTimeSpan; requested: ObservationWindow; completeOnly: boolean };
 export type PresentedObservation = ObservationCapability & { source: ObservationSource; id: string; operation: string; channelName?: string };
 type Capability = PresentedObservation;
 
@@ -264,18 +266,13 @@ export class PresentationObservations {
     windowForDisplay(id: string, visible?: ObservationTimeSpan) {
         return this.values.windowForDisplay(id, visible);
     }
-    viewportWindow(id: string, visible: ObservationTimeSpan, requested: ObservationWindow, completeOnly: boolean) {
-        const fine = visibleObservationRequests(requested);
-        const current = fine.map(({ slot, window }) => this.values.currentWindow(observationWindowId(id, slot), window));
-        const ready = this.values.readyWindowsForDisplay(observationWindowIds(id), visible, completeOnly);
-        const unavailable = current.flatMap((result) => result?.status === "unavailable" ? [result] : []);
-        const spans = observationSpans([...unavailable, ...ready], visible, fine.map(({ window }) => window));
-        const preferred = current.find((result) => result?.status === "ready" && (!completeOnly || !result.truncated));
-        const result = preferred ?? spans[0]?.result ?? current.find((result) => result);
-        const failure = current.find((result) => result?.status === "failed");
-        const status = failure ? "failed" as const : current.some((result) => !result || result.status === "pending") ? "pending" as const
-            : unavailable.length === current.length ? "unavailable" as const : "ready" as const;
-        return { result, spans, status, error: failure?.error };
+    viewportWindows(display: ObservationViewportDisplay, viewports: readonly ObservationViewport[]) {
+        return display.read(viewports.map(({ id, visible, requested, completeOnly }) => {
+            const fine = visibleObservationRequests(requested);
+            return { id, visible, completeOnly, fine: fine.map(({ window }) => window),
+                current: fine.map(({ slot, window }) => this.values.currentWindow(observationWindowId(id, slot), window)),
+                ready: this.values.readyWindowsForDisplay(observationWindowIds(id), visible, completeOnly) };
+        }), this.values.windowEpoch);
     }
     refresh(): void {
         this.recording?.sink({ type: "refresh" });

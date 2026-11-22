@@ -3,6 +3,7 @@ import { observationPrefetchMarginPx, observationViewportWindow, type Observatio
 import { useOptionalNode } from "./nodeContext";
 import { observationSourceKey, type ObservationSource, type ObservationWindow, sameObservationWindow } from "../../src/observations";
 import type { PresentationObservations } from "../../src/presentationObservations";
+import { ObservationViewportDisplay } from "../../src/observationViewportDisplay";
 
 export type { PortObservation, PresentedObservation } from "../../src/presentationObservations";
 
@@ -57,7 +58,7 @@ type PortObservationViewport = {
     consumer?: string;
 };
 
-export function usePortObservationViewport(request: () => PortObservationViewport | undefined) {
+function usePortObservationRequest(request: () => PortObservationViewport | undefined) {
     const observations = useObservations();
     const consumer = observations ? useOptionalNode() : null;
     const tier = useObservationTier();
@@ -88,6 +89,26 @@ export function usePortObservationViewport(request: () => PortObservationViewpor
     return computed(() => {
         const value = wanted.value, window = requested.value, base = id.value;
         return value && window && base && tier.value === "visible"
-            ? observations?.viewportWindow(base, value.window, window, value.completeOnly ?? false) : undefined;
+            ? { id: base, visible: value.window, requested: window, completeOnly: value.completeOnly ?? false } : undefined;
     });
+}
+
+export function usePortObservationViewports(requests: readonly (() => PortObservationViewport | undefined)[]) {
+    const observations = useObservations();
+    const tier = useObservationTier();
+    const registered = requests.map(usePortObservationRequest);
+    const display = new ObservationViewportDisplay();
+    watch(tier, (tier) => { if (tier !== "visible") display.clear(); }, { flush: "sync" });
+    return computed(() => {
+        if (!observations) return [];
+        const active = registered.flatMap((request) => request.value ? [request.value] : []);
+        const plots = observations.viewportWindows(display, active);
+        let next = 0;
+        return registered.map((request) => request.value ? plots[next++] : undefined);
+    });
+}
+
+export function usePortObservationViewport(request: () => PortObservationViewport | undefined) {
+    const group = usePortObservationViewports([request]);
+    return computed(() => group.value[0]);
 }

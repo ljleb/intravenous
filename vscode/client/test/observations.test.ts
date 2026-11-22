@@ -4,6 +4,7 @@ import test from "node:test";
 import { reactive } from "vue";
 import { ObservationValues, observationSourceKey, recordedEventTimestampsOperation } from "../src/observations";
 import { observationViewportWindow, observationWindowId, predictedObservationRows } from "../src/observationWindows";
+import { ObservationViewportDisplay } from "../src/observationViewportDisplay";
 
 test("viewport prediction moves farther for a fast pan and respects the graph bounds", () => {
     assert.deepEqual(predictedObservationRows(86, 136, 36, 50, 12, 0), { begin: 2, end: 5 });
@@ -27,7 +28,8 @@ test("viewport observations preserve pending detail and replace it with an empty
         generation: "1", activationId: "1", revision: "1", index: "0", blockSize: 64, dataVersion: "0",
         scopes: [{ scopeId: "viewport", values: [], windows }],
     });
-    const view = () => scope.viewportWindow(id, actual, window, false);
+    const display = new ObservationViewportDisplay();
+    const view = () => scope.viewportWindows(display, [{ id, visible: actual, requested: window, completeOnly: false }])[0];
     try {
         scope.values.expectWindows(setup);
         publish(response("pending"), { id: preview, window: coarse, status: "ready", approximate: true,
@@ -42,6 +44,57 @@ test("viewport observations preserve pending detail and replace it with an empty
         assert.equal(view().status, "unavailable");
         assert.equal(view().spans[0].result.status, "unavailable");
     } finally { scope.dispose(); }
+});
+
+test("combined traces switch atomically and never fill an updated range with detail from an old snapshot", async () => {
+    const { PresentationObservations } = await import("../src/presentationObservations");
+    const observations = new PresentationObservations(() => {});
+    const display = new ObservationViewportDisplay();
+    const visible = { begin: "0", length: "100", points: 100 };
+    const left = { begin: "0", length: "50", points: 8 };
+    const right = { begin: "50", length: "50", points: 8 };
+    const detail = { begin: "25", length: "50", points: 128 };
+    const sources = ["min", "max"];
+    const viewports = sources.map((id) => ({ id, visible, requested: visible, completeOnly: true }));
+    type Result = import("../src/observations").ObservationWindowResult;
+    const result = (id: string, window: Result["window"], semanticVersion: string, dataVersion: string,
+        regions: Result["regions"] = []): Result =>
+        ({ id, window, semanticVersion, dataVersion, executionGeneration: semanticVersion, status: "ready",
+            approximate: true, regions });
+    const publish = (execution: string, ...windows: Result[]) => receiveSnapshot(observations.values, {
+        generation: execution, activationId: execution, revision: "1", index: "0", blockSize: 64, dataVersion: "0",
+        scopes: [{ scopeId: "viewport", values: [], windows }],
+    });
+    const render = () => observations.viewportWindows(display, viewports);
+    const checkpoints = () => render().map(({ spans }) => spans.map(({ result, begin, end }) =>
+        [begin, end, result.semanticVersion, result.dataVersion]));
+    try {
+        observations.values.expectWindows(sources.flatMap((member) => {
+            const source = { node: { instanceId: "curve" }, kind: "input" as const, member };
+            return ([[member, visible], [`${member}:tile:0`, left], [`${member}:tile:1`, right], [`${member}:tile:2`, detail]] as const)
+                .map(([id, window]) => ({ id, window, source, operation: "waveform" }));
+        }));
+        const region = { begin: "0", length: "100", points: [{ index: "0", available: true, value: { value: .5 } }] };
+        publish("1", ...sources.map((id) => result(id, visible, "1", "4", [region])));
+        const original = [[[0n, 100n, "1", "4"]], [[0n, 100n, "1", "4"]]];
+        assert.deepEqual(checkpoints(), original);
+
+        publish("2", result("min", visible, "2", "6"), result("max:tile:0", left, "2", "5"));
+        assert.deepEqual(checkpoints(), original);
+        publish("2", result("min", visible, "2", "6"), result("max:tile:0", left, "2", "6"));
+        assert.deepEqual(checkpoints(), original);
+        publish("2", result("min", visible, "2", "6"), result("max:tile:0", left, "2", "6"),
+            result("max:tile:1", right, "2", "6"), result("max:tile:2", detail, "1", "4"));
+        assert.deepEqual(checkpoints(), [[[0n, 100n, "2", "6"]], [[0n, 50n, "2", "6"], [50n, 100n, "2", "6"]]]);
+        assert.ok(render().every(({ spans }) => spans.every(({ result }) => result.regions.length === 0)));
+
+        // Fine detail from the selected snapshot can replace coarse data in
+        // the part of the viewport that it actually covers.
+        publish("2", result("min", visible, "2", "6"), result("max:tile:2", detail, "2", "6"));
+        assert.deepEqual(checkpoints()[1], [[0n, 25n, "2", "6"], [25n, 75n, "2", "6"], [75n, 100n, "2", "6"]]);
+        observations.values.clear();
+        assert.deepEqual(checkpoints(), [[], []]);
+    } finally { observations.dispose(); }
 });
 
 test("a viewport reader reuses nearby interests on promotion and small zooms", async (context) => {

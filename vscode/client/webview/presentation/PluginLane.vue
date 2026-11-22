@@ -23,7 +23,7 @@ import PresentationControls from "./PresentationControls.vue";
 import PresentationScene from "./PresentationScene.vue";
 import type { NodeDisplayMode } from "./displayMode";
 import { useNode } from "./nodeContext";
-import { usePresentationActive, usePortObservationViewport } from "./observationContext";
+import { usePresentationActive, usePortObservationViewports } from "./observationContext";
 import { usePresentationFrame } from "./presentationFrames";
 import { presentationDrag } from "./presentationDrag";
 import { usePresentationSize } from "./presentationSize";
@@ -59,7 +59,15 @@ const save = usePresentationState({
     serialize: () => state.value,
     restore: (saved) => { state.value = saved ?? null; },
 });
-const observed = (props.program.manifest.observations ?? []).map((need) => ({ id: need.id, view: usePortObservationViewport(() => {
+const needs = props.program.manifest.observations ?? [];
+const observationGroups = new Map<string, typeof needs>();
+for (const need of needs) {
+    const key = need.group === undefined ? `port:${need.id}` : `group:${need.group}`;
+    const group = observationGroups.get(key);
+    if (group) group.push(need);
+    else observationGroups.set(key, [need]);
+}
+const observed = [...observationGroups.values()].map((group) => ({ group, view: usePortObservationViewports(group.map((need) => () => {
     const { address, ports } = node.value;
     const timeline = time?.value;
     const event = need.operation === recordedEventTimestampsOperation;
@@ -70,14 +78,14 @@ const observed = (props.program.manifest.observations ?? []).map((need) => ({ id
     if (window) return { source: { node: address, kind: need.direction, member: need.port, portKind: event ? "event" : undefined },
         operation: need.operation ?? "waveform", window,
         completeOnly: need.completeOnly };
-}) }));
-const observations = computed(() => Object.fromEntries(observed.map(({ id, view }): [string, PresentationObservation | null] => {
-    const observation = view.value;
+})) }));
+const observations = computed(() => Object.fromEntries(observed.flatMap(({ group, view }) => group.map(({ id }, index): [string, PresentationObservation | null] => {
+    const observation = view.value[index];
     if (!observation) return [id, null];
     const spans = observation.spans.map(({ begin, end, windowOffset, result }) =>
         ({ begin: String(begin), end: String(end), windowOffset: String(windowOffset), result }));
     return [id, { ...observation, spans }];
-})));
+}))));
 const acceptedRevision = ref(0);
 const wake = new PresentationWake(() => session.input({ type: "wake" }));
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
