@@ -1,9 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { editableHeightPx, initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, middleDragZoomFactor, middleZoomPickup,
+import { editableHeightPx, formatPlaybackSeconds, initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, middleDragZoomFactor, middleZoomPickup,
     minimumLaneHeight, moveMiddleDrag, panTimeline, readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction,
     wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineAxes,
     zoomTimelineHorizontally, zoomTimelineVertically, stepTimelineVerticalZoom, timelineLaneBorderPx, type MiddleDrag } from "../src/timelineViewport";
+
+test("the playback readout drops decimals before shortening the whole seconds", () => {
+    const fit = (characters: number) => (text: string) => text.length <= characters;
+    assert.equal(formatPlaybackSeconds(12.347, fit(6)), "12.347");
+    assert.equal(formatPlaybackSeconds(12.347, fit(5)), "12.34");
+    assert.equal(formatPlaybackSeconds(-123.347, fit(5)), "-123");
+    assert.equal(formatPlaybackSeconds(-12_000_000, fit(5)), "-1e7");
+});
 
 test("the opening height is the last editable wheel step from maximum zoom", () => {
     let view = { ...initialTimelineViewport, laneHeight: maximumLaneHeight };

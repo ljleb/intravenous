@@ -13,7 +13,8 @@ import { portSlotKey } from "../../src/selectedLaneConnections";
 import ManualInput from "./ManualInput.vue";
 import NodePortRow from "./NodePortRow.vue";
 import { useOptionalManualControls } from "./manualControlContext";
-import { lanePortLayout, lanePortRowGap } from "../../src/lanePortLayout";
+import { compactLanePortRowHeight, lanePortColumns, lanePortContinuationColumn, lanePortControls, lanePortFoldedSocketHeight,
+    lanePortLayout, lanePortRowGap, lanePortRowHeight } from "../../src/lanePortLayout";
 import { usePresentationFrame } from "./presentationFrames";
 import { usePresentationSize } from "./presentationSize";
 
@@ -27,18 +28,13 @@ const editingControl = computed(() => {
     void manualControls?.version.value;
     return !!node.value.address && !!manualControls?.gestures.isEditingNode(node.value.address);
 });
-const hasKnob = (port: SemanticPort) => !props.moduleBoundary && port.kind === "continuous" && !!port.manualControl?.available;
-const compactKnobSize = 24;
-const fullKnobSize = 31;
-const foldedSocketHeight = 8;
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaSize = usePresentationSize(portArea);
-const portAreaHeight = computed(() => portAreaSize.value?.height ?? compactKnobSize + foldedSocketHeight);
-const rowHeight = computed(() =>
-    portAreaHeight.value >= fullKnobSize + foldedSocketHeight ? fullKnobSize : compactKnobSize);
+const portAreaHeight = computed(() => portAreaSize.value?.height ?? compactLanePortRowHeight + lanePortFoldedSocketHeight);
+const rowHeight = computed(() => lanePortRowHeight(portAreaHeight.value));
 let header: HTMLElement | null = null;
-const expanded = ref<"header" | SemanticPortDirection | null>(null);
+const expanded = ref<SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
 const hoveredPort = ref<SemanticPort | null>(null);
 let hoveredPortRect: DOMRect | null = null;
@@ -46,21 +42,33 @@ let popoverPointer: { x: number; y: number } | null = null;
 let panelPositionVersion = 0;
 const panelPositioned = ref(false);
 const panelPosition = ref<Record<string, string>>({ left: "0px", top: "0px" });
-const continuationOffsets = ref<Partial<Record<SemanticPortDirection, number>>>({});
 const above = ref(false);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const nodeKey = computed(() => node.value.address ? addressKey(node.value.address) : "");
 const rowKey = ref<string>();
 const directions: SemanticPortDirection[] = ["input", "output"];
 const portDirection = (port: SemanticPort) => props.moduleBoundary ? oppositePortDirection(port.direction) : port.direction;
-const ports = (direction: SemanticPortDirection) => node.value.ports.filter((port) => portDirection(port) === direction);
+const ports = computed(() => ({
+    input: node.value.ports.filter((port) => portDirection(port) === "input"),
+    output: node.value.ports.filter((port) => portDirection(port) === "output"),
+}));
+const controls = computed(() => lanePortControls(portAreaSize.value?.width, rowHeight.value));
+const socketsOnly = computed(() => !props.inline && !controls.value);
+const hasKnob = (port: SemanticPort) => !props.moduleBoundary && !socketsOnly.value
+    && port.kind === "continuous" && !!port.manualControl?.available;
+const columnStyle = computed(() => ({
+    "--port-row-height": `${rowHeight.value}px`,
+    "--port-knob-size": `${controls.value?.knobSize ?? rowHeight.value}px`,
+    "--port-row-gap": `${lanePortRowGap}px`,
+    "--port-column-gap": `${lanePortColumns.gap}px`,
+    "--port-handle-width": `${controls.value?.handleWidth ?? lanePortColumns.handleWidth}px`,
+    "--output-polarity-width": `${lanePortColumns.polarityWidth}px`,
+    "--output-polarity-inset": `${lanePortColumns.polarityInset}px`,
+}));
 function layoutDirection(direction: SemanticPortDirection) {
-    return lanePortLayout(ports(direction), props.inline ? 0 : portAreaHeight.value, rowHeight.value, foldedSocketHeight);
+    return lanePortLayout(ports.value[direction], props.inline ? 0 : portAreaHeight.value, rowHeight.value, lanePortFoldedSocketHeight);
 }
 const layout = computed(() => ({ input: layoutDirection("input"), output: layoutDirection("output") }));
-const foldedDirections = computed(() => directions.filter((direction) => layout.value[direction].folded.length));
-const continuationDirections = computed(() => foldedDirections.value.filter((direction) =>
-    !chooserPort.value && (expanded.value === "header" || expanded.value === direction)));
 const isDirect = (port: SemanticPort) => layout.value[portDirection(port)].direct.some((entry) => portKey(entry) === portKey(port));
 const popoverHasKnob = (port: SemanticPort) => hasKnob(port) && !isDirect(port);
 const editable = computed(() => !props.inline && !!editor?.scope.value?.editable && !!node.value.address);
@@ -107,29 +115,24 @@ function setGroup(direction: SemanticPortDirection, element: unknown) {
     if (element instanceof HTMLElement) groups[direction] = element;
     else delete groups[direction];
 }
-function expandContinuation(direction?: SemanticPortDirection) {
-    if (props.inline || !header) return;
-    const headerBounds = header.getBoundingClientRect();
-    const columns = foldedDirections.value.filter((side) => !direction || side === direction).flatMap((side) => {
-        const bounds = groups[side]?.getBoundingClientRect();
-        if (!bounds) return [];
-        const top = bounds.top + layout.value[side].continuationOffset;
-        return [{ side, bounds, top }];
-    });
-    const first = columns[0], last = columns.at(-1);
-    if (!first || !last) return;
-
-    const top = Math.min(...columns.map((column) => column.top));
-    const width = last.bounds.right - first.bounds.left;
-    const columnWidths = columns.map(({ bounds }) => `${bounds.width}px`).join(" ");
-    continuationOffsets.value = Object.fromEntries(columns.map(({ side, top: rowTop }) => [side, rowTop - top]));
+function expandContinuation(direction: SemanticPortDirection) {
+    if (props.inline || !layout.value[direction].folded.length) return;
+    const bounds = groups[direction]?.getBoundingClientRect();
+    if (!bounds) return;
+    const geometry = lanePortContinuationColumn(bounds, window.innerWidth, direction);
+    const widened = geometry.left !== bounds.left || geometry.width > bounds.width;
+    // A wider continuation can cross the other column. Start below any visible rows there.
+    const visibleRowsEnd = widened ? Math.max(...directions.map((side) =>
+        layout.value[side].continuationOffset - lanePortRowGap)) : 0;
+    const rowTop = bounds.top + Math.max(layout.value[direction].continuationOffset, visibleRowsEnd);
+    const footerBottom = header?.querySelector(".module-footer")?.getBoundingClientRect().bottom;
+    const top = Math.max(rowTop, footerBottom ?? rowTop);
     ++panelPositionVersion;
     above.value = false;
-    panelPosition.value = { left: `${first.bounds.left}px`, top: `${top}px`, width: `${width}px`,
-        maxHeight: `${Math.max(0, window.innerHeight - top)}px`, gridTemplateColumns: columnWidths,
-        '--continuation-header-overlap': `${Math.max(0, headerBounds.bottom - top)}px` };
+    panelPosition.value = { left: `${geometry.left}px`, top: `${top}px`, width: `${geometry.width}px`,
+        maxHeight: `${Math.max(0, window.innerHeight - top)}px` };
     panelPositioned.value = true;
-    expanded.value = direction ?? "header";
+    expanded.value = direction;
     editor?.portsChanged();
     void nextTick(checkPopoverPointer);
 }
@@ -185,12 +188,25 @@ function validOrigin(rect: DOMRect | null): rect is DOMRect {
     return !!rect && rect.width > 0 && rect.height > 0
         && Number.isFinite(rect.left) && Number.isFinite(rect.top);
 }
-function hoverHeader() {
-    if (!chooserPort.value && !dragPort.value && !editingControl.value && expanded.value !== "header") expandContinuation();
+function headerPortDirection(target: EventTarget | null | undefined): SemanticPortDirection | undefined {
+    if (!(target instanceof Element)) return;
+    const control = target.closest("[data-port-control]");
+    if (!control || !portArea.value?.contains(control)) return;
+    const group = control.closest<HTMLElement>("[data-port-group]");
+    const direction = group?.dataset.portGroup;
+    return direction === "input" || direction === "output" ? direction : undefined;
+}
+function hoverPorts(target: EventTarget | null | undefined) {
+    const direction = headerPortDirection(target);
+    if (direction && !chooserPort.value && !dragPort.value && !editingControl.value && expanded.value !== direction)
+        expandContinuation(direction);
+}
+function enterPortArea(event: PointerEvent) {
+    hoverPorts(event.target);
+    if (expanded.value && !editingControl.value) popoverPointer = { x: event.clientX, y: event.clientY };
 }
 const hoverContinuationFrame = usePresentationFrame("measure", () => {
-    const target = editor?.elementAtPointer();
-    if (target && header?.contains(target)) hoverHeader();
+    hoverPorts(editor?.elementAtPointer());
 });
 function scheduleHoveredContinuation() {
     if (props.inline || !editor || dragPort.value || editingControl.value || !header?.hasAttribute("data-hovered")) return;
@@ -202,10 +218,19 @@ function leave() {
     // overwrite the pointer position recorded by actual movement.
     checkPopoverPointer();
 }
+function crossingModuleFooter(target: Element | null, direction: SemanticPortDirection, point: { x: number; y: number }): boolean {
+    if (!target || !header?.contains(target) || chooserPort.value) return false;
+    const footer = header.querySelector(".module-footer")?.getBoundingClientRect();
+    if (!footer || point.y < footer.top || point.y >= footer.bottom) return false;
+    const column = groups[direction]?.querySelector(".port-column-hover")?.getBoundingClientRect();
+    return !!column && point.x >= column.left && point.x <= column.right;
+}
 function checkPopoverPointer() {
-    if (!expanded.value || !panelPositioned.value || !popoverPointer || dragPort.value || editingControl.value) return;
+    const direction = expanded.value;
+    if (!direction || !panelPositioned.value || !popoverPointer || dragPort.value || editingControl.value) return;
     const current = document.elementFromPoint(popoverPointer.x, popoverPointer.y);
-    if (current && (header?.contains(current) || panel.value?.contains(current))) return;
+    if (panel.value?.contains(current) || headerPortDirection(current) === direction
+        || crossingModuleFooter(current, direction, popoverPointer)) return;
     closePanel();
 }
 function movePopoverPointer(event: PointerEvent) {
@@ -227,8 +252,11 @@ function closePanel() {
 function closeConnectionChooser() {
     const port = chooserPort.value;
     if (!port || editingControl.value) return;
+    const target = editor?.elementAtPointer() ?? document.activeElement;
+    const inPanel = !!target && !!panel.value?.contains(target);
     closePanel();
-    if (!isDirect(port) || header?.contains(editor?.elementAtPointer() ?? document.activeElement)) expandContinuation();
+    if (inPanel && !isDirect(port)) expandContinuation(portDirection(port));
+    else hoverPorts(target);
 }
 function endpoint(port: SemanticPort): GraphPortEndpoint {
     return { address: node.value.address!, direction: portDirection(port), moduleBoundary: props.moduleBoundary || undefined,
@@ -335,15 +363,14 @@ watch(shiftHeld, (held) => {
     else if (hoveredPort.value) openConnectionChooser(hoveredPort.value);
 });
 watch([expanded, chooserPort], () => editor?.portsChanged(), { flush: "post" });
-watch([portAreaHeight, () => props.inline,
+watch([portAreaHeight, socketsOnly, () => portAreaSize.value?.width, () => props.inline,
     () => layout.value.input.continuationOffset, () => layout.value.output.continuationOffset,
     () => layout.value.input.folded.length, () => layout.value.output.folded.length], () => {
     if (props.inline) closePanel();
     else if (expanded.value && !editingControl.value) {
         const direction = expanded.value;
         if (chooserPort.value) closePanel();
-        else if (dragPort.value && direction !== "header" && groupAccepts(direction)) expandContinuation(direction);
-        else if (direction === "header" && foldedDirections.value.length) expandContinuation();
+        else if (layout.value[direction].folded.length && (!dragPort.value || groupAccepts(direction))) expandContinuation(direction);
         else closePanel();
     }
     editor?.portsChanged();
@@ -364,7 +391,7 @@ function leaveFocus() {
     queueMicrotask(() => {
         const focused = document.activeElement;
         if (!expanded.value || editingControl.value || dragPort.value
-            || header?.contains(focused) || panel.value?.contains(focused)) return;
+            || headerPortDirection(focused) === expanded.value || panel.value?.contains(focused)) return;
         if (popoverPointer) checkPopoverPointer();
         else closePanel();
     });
@@ -372,10 +399,7 @@ function leaveFocus() {
 onMounted(() => {
     header = portArea.value?.closest("header") ?? null;
     rowKey.value = header?.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
-    header?.addEventListener("iv-hoverenter", hoverHeader);
     header?.addEventListener("iv-hoverleave", leave);
-    header?.addEventListener("focusin", hoverHeader);
-    header?.addEventListener("focusout", leaveFocus);
     editor?.portsChanged();
     window.addEventListener("resize", viewportChanged);
     window.addEventListener("scroll", viewportChanged, true);
@@ -383,10 +407,7 @@ onMounted(() => {
     window.addEventListener("blur", windowBlurred);
 });
 onBeforeUnmount(() => {
-    header?.removeEventListener("iv-hoverenter", hoverHeader);
     header?.removeEventListener("iv-hoverleave", leave);
-    header?.removeEventListener("focusin", hoverHeader);
-    header?.removeEventListener("focusout", leaveFocus);
     hoverContinuationFrame.cancel();
     window.removeEventListener("pointermove", movePopoverPointer, true);
     window.removeEventListener("pointerout", leavePopoverWindow, true);
@@ -400,12 +421,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <div ref="portArea" class="node-ports" :class="{ inline }" :data-module-boundary="moduleBoundary ? '' : undefined"
-        :style="{ '--folded-socket-height': `${foldedSocketHeight}px`, '--port-row-height': `${rowHeight}px`,
-            '--port-row-gap': `${lanePortRowGap}px` }">
+    <div ref="portArea" class="node-ports" :class="{ inline, 'sockets-only': socketsOnly }"
+        :data-module-boundary="moduleBoundary ? '' : undefined"
+        :style="[columnStyle, { '--folded-socket-height': `${lanePortFoldedSocketHeight}px` }]"
+        @pointerover="enterPortArea" @focusin="hoverPorts($event.target)" @focusout="leaveFocus">
         <div v-for="direction in directions" :key="direction" :ref="(element) => setGroup(direction, element)"
             class="port-group" :data-port-group="direction" :data-node-key="nodeKey" :data-direction="direction"
             :data-folded-ports="!inline && layout[direction].folded.length ? direction : undefined">
+            <span v-if="!inline && layout[direction].folded.length" class="port-column-hover" data-port-control aria-hidden="true" />
             <NodePortRow v-for="port in layout[direction].direct" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
                 :has-knob="hasKnob(port)" :hint="portStatus(port)"
                 :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === direction && !accepts(port)"
@@ -418,10 +441,10 @@ onBeforeUnmount(() => {
                 :data-connection-state="groupConnections[direction].state"
                 :data-port-slot="node.address ? portSlotKey(node.address, direction, moduleBoundary) : undefined"
                 :aria-label="`${layout[direction].folded.length}${inline ? '' : ' more'} ${direction} ports, ${groupConnections[direction].connected} connected`"
-                :aria-expanded="inline ? undefined : continuationDirections.includes(direction)"
+                :aria-expanded="inline ? undefined : expanded === direction && !chooserPort"
                 :aria-disabled="inline ? undefined : destinationDirection === direction && !groupAccepts(direction)"
                 :data-status-hint="`${layout[direction].folded.length}${inline ? '' : ' more'} ${direction} ports · ${groupConnections[direction].connected} connected`"
-                v-on="inline ? {} : { click: hoverHeader }">
+                data-port-control v-on="inline ? {} : { click: (event: MouseEvent) => hoverPorts(event.target) }">
                 <span class="port-circle stacked-first"
                     :data-port-kind="inline || groupConnections[direction].kinds.length === 1 ? groupConnections[direction].kinds[0] : undefined" />
                 <span v-if="inline && layout[direction].folded.length > 1" class="port-circle stacked-second"
@@ -431,12 +454,12 @@ onBeforeUnmount(() => {
     </div>
     <Teleport to="body">
         <div v-if="expanded && !inline" ref="panel" class="port-panel"
-            :class="{ above, continuation: !chooserPort, positioning: !panelPositioned }"
-            :style="[panelPosition, { '--port-row-gap': `${lanePortRowGap}px`, '--port-row-height': `${rowHeight}px` }]"
+            :class="{ above, continuation: !chooserPort, positioning: !panelPositioned, 'sockets-only': socketsOnly }"
+            :style="[panelPosition, columnStyle]"
             :aria-hidden="!panelPositioned"
             :data-lane-key="moduleBoundary ? undefined : nodeKey"
             :data-lane-row="rowKey" :data-module-boundary="moduleBoundary ? '' : undefined"
-            :data-port-group="chooserPort && portDirection(chooserPort)" :data-node-key="nodeKey"
+            :data-port-group="expanded" :data-node-key="nodeKey"
             @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
             @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">
             <div v-if="chooserPort" class="expansion-body" tabindex="-1">
@@ -455,12 +478,10 @@ onBeforeUnmount(() => {
                     <ManualInput v-if="index === 0 && popoverHasKnob(chooserPort)" :name="chooserPort.name" :direction="chooserPort.direction" />
                 </div>
             </div>
-            <div v-for="direction in continuationDirections" :key="direction" class="expansion-body" tabindex="-1"
-                :style="{ marginBlockStart: `${continuationOffsets[direction] ?? 0}px` }"
-                :data-direction="direction" :data-folded-ports="direction">
-                <NodePortRow v-for="port in layout[direction].folded" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
+            <div v-else class="expansion-body" tabindex="-1" :data-direction="expanded">
+                <NodePortRow v-for="port in layout[expanded].folded" :key="portKey(port)" :port="port" :endpoint="endpoint(port)"
                     :has-knob="hasKnob(port)" :hint="portStatus(port)"
-                    :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === direction && !accepts(port)"
+                    :connected="applied(port)" :pending="pending(port)" :unavailable="destinationDirection === expanded && !accepts(port)"
                     @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
             </div>
         </div>
@@ -469,18 +490,23 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .node-ports, .port-panel {
-    --output-polarity-width: 12px;
-    --output-polarity-inset: 2px;
-    --port-control-column: calc(var(--port-row-height) + var(--output-polarity-width) - var(--output-polarity-inset));
+    --port-control-column: calc(var(--port-knob-size) + var(--output-polarity-width) - var(--output-polarity-inset));
     --socket-tuck: 10px;
-    --port-handle-width: 24px;
     --port-socket-size: 12px;
-    --socket-center-inset: calc(var(--port-control-column) - var(--socket-tuck) + var(--port-socket-size) / 2);
 }
-.node-ports { display: grid; grid-template-columns: minmax(min-content, 1fr) fit-content(50%);
-    grid-template-rows: minmax(0, 1fr); gap: 4px; margin-top: 5px; min-height: 22px; }
-.port-group { position: relative; display: flex; flex-direction: column; gap: var(--port-row-gap); min-height: 0; }
-.node-ports:not(.inline) .port-group[data-direction="output"][data-folded-ports] { min-width: calc(var(--port-handle-width) + var(--port-control-column)); }
+:is(.node-ports, .port-panel).sockets-only { --port-control-column: 0px; --socket-tuck: 0px; }
+.node-ports { display: grid;
+    grid-template-columns: minmax(min-content, 1fr) fit-content(calc((100% - var(--port-column-gap)) / 2));
+    grid-template-rows: minmax(0, 1fr); gap: var(--port-column-gap); margin-top: 5px; min-height: 22px; }
+.node-ports.inline {
+    grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--inline-port-gap);
+}
+.node-ports.inline > .port-group[data-direction="output"] { align-items: flex-end; }
+.port-group { position: relative; isolation: isolate; display: flex; flex-direction: column; gap: var(--port-row-gap); min-height: 0; }
+.port-column-hover { position: absolute; z-index: -1; inset-block: 0; inset-inline-start: 0;
+    width: min(100%, calc(var(--port-control-column) + var(--port-handle-width))); }
+[data-direction="output"] > .port-column-hover { inset-inline-start: auto; inset-inline-end: 0; }
+.node-ports:not(.inline) .port-group[data-folded-ports] { min-width: calc(var(--port-handle-width) + var(--port-control-column)); }
 [data-direction="input"] { --port-base-color: var(--iv-port-input); --port-color: var(--port-base-color); }
 [data-direction="output"] { --port-base-color: var(--iv-port-output); --port-color: var(--port-base-color); }
 .port-circle {
@@ -491,14 +517,18 @@ onBeforeUnmount(() => {
 }
 [data-port-kind="event"] .port-circle, .port-circle[data-port-kind="event"] { border-radius: 25%; }
 .pending .port-circle { border: 2px dashed var(--port-circle-outline, var(--port-color)); }
-.port-slot { position: relative; flex: 0 0 var(--port-slot-height, 22px); width: 28px; height: var(--port-slot-height, 22px);
+.port-slot { position: relative; flex: 0 0 var(--port-slot-height, 22px); width: min(28px, 100%); height: var(--port-slot-height, 22px);
     box-sizing: border-box; padding: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; }
 button.port-slot { cursor: pointer; }
-.port-slot .port-circle { width: min(12px, calc(var(--port-slot-height, 22px) - 2px)); height: auto; aspect-ratio: 1; }
-.stacked-first { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); }
-.stacked-second { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); }
-.single .stacked-first { left: 7px; }
-.port-slot.cropped { position: absolute; bottom: 0; left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
+.inline .port-slot { width: calc(var(--inline-symbol-size) + var(--inline-stack-spacing)); }
+.inline .port-slot .port-circle { width: var(--inline-symbol-size); height: auto; aspect-ratio: 1; }
+.stacked-first, .stacked-second { position: absolute; top: 50%; transform: translate(-50%, -50%); }
+.inline .stacked-first { left: calc(50% - var(--inline-stack-spacing) / 2); }
+.inline .stacked-second { left: calc(50% + var(--inline-stack-spacing) / 2); }
+.inline .single .stacked-first { left: 50%; }
+.port-slot.cropped {
+    --socket-center-inset: calc(var(--port-control-column) - var(--socket-tuck) + var(--port-socket-size) / 2);
+    position: absolute; bottom: 0; left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
     width: var(--port-handle-width); height: var(--folded-socket-height);
     overflow: hidden; border: 0; border-radius: 4px 4px 0 0; }
 .port-group[data-direction="output"] > .cropped { left: auto; right: calc(var(--socket-center-inset) - var(--port-handle-width) / 2); }
@@ -513,16 +543,12 @@ button.port-slot { cursor: pointer; }
 }
 button.port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color) 12%, transparent); }
 .port-panel { position: fixed; z-index: 20; display: flex; flex-direction: column; box-sizing: border-box; border: 1px solid var(--vscode-panel-border); border-radius: 7px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); box-shadow: 0 3px 12px #0005; }
-.port-panel.continuation { display: grid; grid-template-rows: minmax(0, 1fr); column-gap: 4px;
-    border: 0; background: transparent; box-shadow: none; pointer-events: none; }
-.port-panel.continuation::before { content: ""; position: absolute;
-    inset: min(var(--continuation-header-overlap), 100%) 0 0; z-index: -1;
-    border-radius: 0 0 6px 6px; background: var(--vscode-editorWidget-background);
-    box-shadow: 0 1px var(--vscode-panel-border), 0 3px 10px #0005; pointer-events: auto; }
+.port-panel.continuation { border: 0; background: transparent; box-shadow: none; }
 .port-panel.positioning { visibility: hidden; pointer-events: none; }
 .expansion-body { display: flex; flex-direction: column; gap: var(--port-row-gap); overflow-y: auto; overflow-x: hidden; min-height: 0; padding: 3px; }
-.continuation .expansion-body { padding: 0 0 3px; border-radius: 0 0 6px 6px;
-    background: var(--vscode-editorWidget-background); pointer-events: auto; }
+.continuation .expansion-body { padding: 0 0 3px; border-radius: 5px;
+    background: var(--vscode-editorWidget-background); pointer-events: auto;
+    box-shadow: inset 0 0 0 1px var(--vscode-editorWidget-border, var(--vscode-panel-border)), 0 3px 10px #0005; }
 /* Keep the output columns at the right edge when the list scrolls. */
 .continuation .expansion-body[data-direction="output"] { direction: rtl; }
 .continuation .expansion-body[data-direction="output"] > .control-row { direction: ltr; }

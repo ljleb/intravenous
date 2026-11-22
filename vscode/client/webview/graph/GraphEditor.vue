@@ -114,14 +114,56 @@ function selectLaneByKey(key: string, modifiers?: { shiftKey?: boolean; ctrlKey?
     selectedLanes.value = selection.selected;
     laneSelectionAnchor = selection.anchor;
 }
+const moduleFooterSeamHeight = 6;
+function moduleFooterWithin(row: Element, point: Point, end: number): HTMLButtonElement | null {
+    if (point.y >= end) return null;
+    const footer = row.querySelector<HTMLButtonElement>(".lane-label > .module-footer");
+    if (!footer) return null;
+    const bounds = footer.getBoundingClientRect();
+    const start = Math.max(bounds.top, bounds.bottom - moduleFooterSeamHeight);
+    if (point.x >= bounds.left && point.x < bounds.right && point.y >= start) return footer;
+    const chevron = footer.querySelector(".module-footer-chevron")?.getBoundingClientRect();
+    return chevron && point.x >= chevron.left && point.x < chevron.right
+        && point.y >= chevron.top && point.y < chevron.bottom ? footer : null;
+}
+function moduleFooterAcrossSeam(target: EventTarget | null, point: Point) {
+    if (!(target instanceof Element) || target.closest("button, a[href], input, [data-port-control]")) return null;
+    const row = target.closest<HTMLElement>(".lane[data-lane-row]");
+    if (!row) return null;
+    const header = target.closest<HTMLElement>(".lane-label");
+    if (!header && target.closest(".lane-content")) return null;
+    const bounds = row.getBoundingClientRect();
+    const cursorTarget = header ?? row;
+    // Fractional lane positions can leave the boundary event on either row.
+    const ownFooter = moduleFooterWithin(row, point, bounds.bottom + moduleFooterSeamHeight);
+    if (ownFooter) return { footer: ownFooter, cursorTarget };
+
+    const previous = row.previousElementSibling;
+    if (!previous?.matches(".lane[data-lane-row]")) return null;
+    const end = bounds.top + Math.min(moduleFooterSeamHeight, bounds.height / 3);
+    const footer = moduleFooterWithin(previous, point, end);
+    return footer ? { footer, cursorTarget } : null;
+}
+function pressedModuleFooterAcrossSeam(event: MouseEvent) {
+    if (event.button !== 0 || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return null;
+    return moduleFooterAcrossSeam(event.target, { x: event.clientX, y: event.clientY });
+}
+function clickModuleFooterAcrossSeam(event: MouseEvent) {
+    if (event.defaultPrevented) return;
+    const target = pressedModuleFooterAcrossSeam(event);
+    if (!target) return;
+    event.stopPropagation();
+    target.footer.click();
+}
 function selectLaneAtPointer(event: PointerEvent) {
     if (event.button !== 0 && event.button !== 2) return;
     if (!(event.target instanceof Element)) return;
-    const key = event.target.closest<HTMLElement>("[data-lane-key]")?.dataset.laneKey;
+    const target = pressedModuleFooterAcrossSeam(event)?.footer ?? event.target;
+    const key = target.closest<HTMLElement>("[data-lane-key]")?.dataset.laneKey;
     if (!key) return;
     if (event.button === 0 && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
         && state.value.scope?.editable && selectedLanes.value.has(key)
-        && event.target.closest(".lane-label") && !event.target.closest(".node-ports, input, .module-disclosure, .copy-debug")
+        && event.target.closest(".lane-label") && !event.target.closest(".node-ports, input, .module-footer, .copy-debug")
         && projectLanes.value.some(({ address }) => addressKey(address) === key)
         && startLaneDrag(event, key)) return;
     selectLaneByKey(key, event);
@@ -388,7 +430,19 @@ function guardPointerLockExit(event: Event) {
 // Registered before the component's other window listeners, including those
 // added later by port popovers, so no capture handler sees a displaced event.
 for (const type of pointerLockExitTypes) window.addEventListener(type, guardPointerLockExit, true);
-const trustedHover = new TrustedHover(undefined, elementStatus.hover);
+let hoveredModuleFooterAcrossSeam: ReturnType<typeof moduleFooterAcrossSeam> = null;
+const trustedHover = new TrustedHover(undefined, (target, pointerMoved, point) => {
+    const hovered = target instanceof Element && point ? moduleFooterAcrossSeam(target, point) : null;
+    if (hovered?.footer !== hoveredModuleFooterAcrossSeam?.footer
+        || hovered?.cursorTarget !== hoveredModuleFooterAcrossSeam?.cursorTarget) {
+        hoveredModuleFooterAcrossSeam?.footer.removeAttribute("data-seam-hovered");
+        hoveredModuleFooterAcrossSeam?.cursorTarget.removeAttribute("data-module-footer-target");
+        hovered?.footer.setAttribute("data-seam-hovered", "");
+        hovered?.cursorTarget.setAttribute("data-module-footer-target", "");
+        hoveredModuleFooterAcrossSeam = hovered;
+    }
+    elementStatus.hover(hovered?.footer ?? target, pointerMoved);
+});
 
 const surface = ref<HTMLElement | null>(null);
 const connectionDrag = shallowRef<PortConnectionDrag | null>(null);
@@ -765,7 +819,8 @@ function measureWireOcclusions(top: number, bottom: number, roots: readonly Pare
 }
 function portGroupAt(point: Point): HoveredPortGroup | null {
     const hit = document.elementFromPoint(point.x, point.y);
-    const group = hit?.closest<HTMLElement>("[data-folded-ports], .port-panel[data-port-group]");
+    const group = hit?.closest<HTMLElement>(".port-panel[data-port-group]")
+        ?? hit?.closest("[data-port-control]")?.closest<HTMLElement>("[data-folded-ports]");
     const nodeKey = group?.dataset.nodeKey ?? group?.closest<HTMLElement>("[data-node-key]")?.dataset.nodeKey;
     const direction = group?.dataset.foldedPorts ?? group?.dataset.portGroup;
     const rowKey = group?.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
@@ -1438,6 +1493,7 @@ onMounted(() => {
     document.addEventListener("visibilitychange", cancelHiddenObjectDrag);
     window.addEventListener("pointerdown", clickOutsideManual, true);
     window.addEventListener("pointerdown", selectLaneAtPointer, true);
+    window.addEventListener("click", clickModuleFooterAcrossSeam, true);
     window.addEventListener("contextmenu", guardDragContextMenu, true);
     window.addEventListener("wheel", wheelControl, { capture: true, passive: false });
     window.addEventListener("focus", focusPointerHint);
@@ -1493,6 +1549,7 @@ onBeforeUnmount(() => {
     document.removeEventListener("visibilitychange", cancelHiddenObjectDrag);
     window.removeEventListener("pointerdown", clickOutsideManual, true);
     window.removeEventListener("pointerdown", selectLaneAtPointer, true);
+    window.removeEventListener("click", clickModuleFooterAcrossSeam, true);
     window.removeEventListener("contextmenu", guardDragContextMenu, true);
     window.removeEventListener("wheel", wheelControl, true);
     window.removeEventListener("focus", focusPointerHint);

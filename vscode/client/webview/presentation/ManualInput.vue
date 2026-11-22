@@ -39,7 +39,7 @@ onBeforeUnmount(() => control.hover(false));
             :aria-label="`${name} manual value`"
             :data-status-hint="descriptor?.enabled ? 'Disable knob' : 'Enable knob'"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
-            <span aria-hidden="true">{{ descriptor?.enabled ? '●' : '○' }}</span>
+            <span aria-hidden="true" />
         </button>
         <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="name" :value="value" :limits="limits"
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
@@ -53,7 +53,7 @@ onBeforeUnmount(() => control.hover(false));
             aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">
-            <span aria-hidden="true">{{ control.inverted.value ? '−' : '+' }}</span>
+            <span aria-hidden="true" />
         </button>
         <span v-if="state?.error" class="manual-error" :data-status-hint="state.error"
             role="img" :aria-label="`Manual control error. ${state.error}`">!</span>

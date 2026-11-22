@@ -62,7 +62,7 @@ export class TrustedHover {
     private readonly listeners: Array<[EventTarget, string, EventListener, boolean]> = [];
 
     constructor(private readonly env: HoverEnvironment = browserHoverEnvironment(),
-        private readonly refreshed?: (target: HoverElement | null, pointerMoved: boolean) => void) {
+        private readonly refreshed?: (target: HoverElement | null, pointerMoved: boolean, point: Point | null) => void) {
         const pointer = (event: Event) => event as unknown as PointerFields;
         this.listen(env.window, "pointermove", (event) => this.moved(pointer(event)), true);
         this.listen(env.window, "pointerout", (event) => this.left(pointer(event)), true);
@@ -132,7 +132,7 @@ export class TrustedHover {
             element.setAttribute(hoveredAttribute, "");
             element.dispatchEvent(new Event(hoverEnterEvent));
         }
-        this.refreshed?.(next[0] ?? null, pointerMoved);
+        this.refreshed?.(next[0] ?? null, pointerMoved, this.position);
     }
 
     // Leaves everything until the next pointer move, which enters its chain

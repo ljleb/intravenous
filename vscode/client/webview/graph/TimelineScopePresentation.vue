@@ -27,7 +27,7 @@ import { beatGridTicks, beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, s
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition, type TimelineMark,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
-import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
+import { editableHeightPx, formatPlaybackSeconds, initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
     panTimeline, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor,
     zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineHorizontally,
     stepTimelineVerticalZoom, timelineLaneBorderPx, verticalWheelStepPixels,
@@ -112,6 +112,7 @@ async function setGridMode(mode: TimelineGridMode) {
     webviewApi.postMessage({ type: "setTimelineSnapMode", mode });
 }
 const laneHeight = computed(() => viewport.value.laneHeight);
+const laneContentHeight = computed(() => laneHeight.value - timelineLaneBorderPx);
 const nestedAreas = computed(() => {
     const rows = children.value;
     type Area = { key: string; begin: number; end: number };
@@ -153,8 +154,36 @@ const scrollbarStyle = computed(() => {
 });
 const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
+const playbackReadout = ref<HTMLElement | null>(null);
 const timelineSize = usePresentationSize(root);
 const timeRegionSize = usePresentationSize(timeRegion);
+const playbackReadoutSize = usePresentationSize(playbackReadout);
+const minimumHeaderWidth = 74;
+const playbackSymbol = computed(() => playback.state.value?.running ? "▷" : "Ⅱ");
+let playbackTextContext: CanvasRenderingContext2D | null = null;
+const measurePlaybackText = computed(() => {
+    const element = playbackReadout.value;
+    const width = playbackReadoutSize.value?.width;
+    if (!element || width === undefined) return;
+    const style = getComputedStyle(element);
+    const context = playbackTextContext ??= document.createElement("canvas").getContext("2d");
+    if (!context) return;
+    context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const digitWidth = Math.max(...Array.from("0123456789", (digit) => context.measureText(digit).width));
+    return (text: string) => {
+        const digits = text.match(/\d/g)?.length ?? 0;
+        return context.measureText(text.replace(/\d/g, "")).width + digits * digitWidth <= width;
+    };
+});
+const playbackSecondsLabel = computed(() => {
+    const seconds = backgroundPlayheadSeconds.value;
+    if (seconds === null) return null;
+    return formatPlaybackSeconds(seconds, (text) => measurePlaybackText.value?.(`${playbackSymbol.value} ${text} s`) ?? true);
+});
+const maximumHeaderWidth = computed(() => {
+    const timelineWidth = timelineSize.value?.width ?? Infinity;
+    return Math.max(minimumHeaderWidth, Math.floor(Math.min(260, timelineWidth * 0.4)));
+});
 const timeHeaderWidth = shallowRef(webviewApi.getState()?.timelineHeaderWidth);
 function resizeTimelineHeaders(event: PointerEvent) {
     if (event.button !== 0 || !root.value || !timeRegion.value) return;
@@ -163,7 +192,10 @@ function resizeTimelineHeaders(event: PointerEvent) {
     const previous = timeHeaderWidth.value;
     const move = ({ x }: Point) => {
         if (!root.value || (x === startX && timeHeaderWidth.value === previous)) return;
-        timeHeaderWidth.value = Math.round(Math.max(112, Math.min(root.value.clientWidth - 80, initial + x - startX)));
+        const width = Math.round(Math.max(minimumHeaderWidth,
+            Math.min(maximumHeaderWidth.value, initial + x - startX)));
+        if (width === timeHeaderWidth.value) return;
+        timeHeaderWidth.value = width;
         void nextTick(portsChanged);
     };
     if (startObjectDrag(event, {
@@ -750,6 +782,7 @@ onBeforeUnmount(() => {
     <section ref="root" class="timeline-scope" tabindex="-1"
         :data-middle-drag="middleDrag && (middleDrag.action !== 'bothZoom' && laneValueGesture?.gesture.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
         :style="[scrollbarStyle, { '--preferred-header-width': timeHeaderWidth === undefined ? undefined : `${timeHeaderWidth}px`,
+            '--minimum-header-width': `${minimumHeaderWidth}px`, '--maximum-header-width': `${maximumHeaderWidth}px`,
             '--lane-border-width': `${timelineLaneBorderPx}px` }]" :data-has-selection="selectedLanes.size > 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
         @pointercancel="middlePointerCancelled" @lostpointercapture="middleCaptureLost"
@@ -757,16 +790,19 @@ onBeforeUnmount(() => {
         <header class="timeline-heading">
             <div class="header-width-handle" role="separator" aria-orientation="vertical" aria-label="Lane header width"
                 data-status-hint="Drag to resize lane headers" @pointerdown.stop="resizeTimelineHeaders" />
-            <div class="node-column">
-                <div class="playback-position" data-status-shortcuts="Space ▶/Ⅱ">
-                    <template v-if="backgroundPlayheadSeconds !== null">
-                        {{ playback.state.value?.running ? '▷' : 'Ⅱ' }} {{ backgroundPlayheadSeconds.toFixed(3) }} s
-                        <small>{{ playback.backgroundPlayhead.value?.toString() }} smp</small>
+            <div class="node-column iv-graph-header" :class="{ 'inline-ports': laneContentHeight < editableHeightPx }"
+                :style="{ '--graph-lane-height': `${laneContentHeight}px` }">
+                <div ref="playbackReadout" class="playback-position" data-status-shortcuts="Space ▶/Ⅱ">
+                    <template v-if="playbackSecondsLabel !== null">
+                        <span class="playback-seconds">
+                            {{ playbackSymbol }} {{ playbackSecondsLabel }} s
+                        </span>
+                        <small class="iv-graph-header-detail">{{ playback.backgroundPlayhead.value?.toString() }} smp</small>
                     </template>
                 </div>
                 <div v-if="gridMode === 'custom'" class="timeline-snap-input">
                     <NodePorts v-if="customInput?.ports.length" :node="customInput" :inline="false" />
-                    <span v-else role="status">Loading Beats input…</span>
+                    <span v-else class="iv-graph-header-detail" role="status">Loading Beats input…</span>
                 </div>
             </div>
             <div ref="timeRegion" class="time-region">
@@ -809,8 +845,8 @@ onBeforeUnmount(() => {
                     : formatLaneLabel(laneLabels(nodeDisplayName(semantic), semantic.sourceLabel))
                         + (selectedLanes.has(addressKey(child.address)) ? ', selected' : ''))
                     + (depth ? `, module nesting depth ${depth}` : '')">
-                <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - timelineLaneBorderPx" module-boundary />
-                <PresentationHost v-else :node="semantic" :region-height="laneHeight - timelineLaneBorderPx" lane
+                <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneContentHeight" module-boundary />
+                <PresentationHost v-else :node="semantic" :region-height="laneContentHeight" lane
                     :open-source="child.virtualNode && child.declarationSource
                         ? () => openVirtualNodeSource(child.address) : undefined"
                     :rename-lane="scope.editable && isProjectInstance(child.address)
@@ -842,7 +878,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto;
     scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto;
-    --node-label-width: min(var(--preferred-header-width, clamp(112px, 17%, 182px)), max(112px, calc(100% - 80px))); }
+    --node-label-width: clamp(var(--minimum-header-width), var(--preferred-header-width, clamp(112px, 17%, 182px)),
+        var(--maximum-header-width)); }
 .timeline-scope::-webkit-scrollbar { width: 14px; height: 10px; }
 .timeline-scope::-webkit-scrollbar-track { background-color: var(--vscode-scrollbar-background, transparent); }
 /* Paint the overview marker in the native track. It adds no hit target and
@@ -881,9 +918,15 @@ onBeforeUnmount(() => {
     background: linear-gradient(to right, transparent 3px, var(--vscode-focusBorder) 3px 5px, transparent 5px);
 }
 .node-column { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
-    border-right: 1px solid var(--vscode-panel-border); }
-.timeline-snap-input { min-height: 0; padding-inline: 12px; }
+    border-right: 1px solid var(--vscode-panel-border); padding-inline: var(--iv-graph-header-inset); }
+.timeline-snap-input { min-height: 0; }
 .timeline-snap-input :deep(.node-ports) { height: 100%; margin: 0; }
+.inline-ports .timeline-snap-input :deep(.port-group[data-direction="input"]) {
+    /* Center the ruler socket where a single symbol sits in the compact input column. */
+    --port-control-column: calc(100cqw - var(--inline-port-width) + var(--inline-stack-spacing) / 2);
+    --port-socket-size: var(--inline-symbol-size);
+    --socket-tuck: 0px;
+}
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
 /* Inner groups paint over outer groups and use the same left edge. */
 .nested-lane-area {
@@ -903,10 +946,13 @@ onBeforeUnmount(() => {
 .lane-timeline-overlay { position: absolute; inset-inline-start: var(--node-label-width);
     width: calc(100% - var(--node-label-width)); pointer-events: none; }
 .lane-snap-grid { z-index: -1; }
-.playback-position { box-sizing: border-box; height: 32px; padding: 8px 12px 0; overflow: hidden;
+.playback-position { display: flex; align-items: baseline; gap: 6px; box-sizing: border-box;
+    height: 32px; padding-top: 8px; overflow: hidden;
     white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
-.playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
+.playback-seconds { flex: 0 0 auto; }
+.playback-position small { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--iv-port-label-base); }
 .lane { position: relative; box-sizing: border-box; border-bottom: var(--lane-border-width) solid transparent; }
+.lane[data-module-footer-target] { cursor: pointer; }
 .lane[data-lane-drop="inside"] { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); }
 .lane[data-lane-drop="before"] { box-shadow: inset 0 2px var(--vscode-focusBorder); }
 .lane[data-lane-drop="after"] { box-shadow: inset 0 -2px var(--vscode-focusBorder); }

@@ -201,22 +201,23 @@ number and preserves the enabled state.
 
 ### Folded inputs extend the existing lane header
 
-The owner chose cropped sockets and a shared continuation on 2026-11-19.
+The owner chose cropped sockets on 2026-11-19.
 In editable-height headers, show a half socket at the bottom of each column
 that has hidden ports. Cables for folded ports attach to the half socket
 while those ports are out of view. Visible rows retain their own knobs,
 sockets, names, and interactions. Their geometry stays fixed while opening
 or closing the continuation.
 
-Hover anywhere in the lane header to open one popover. In editable-height
-headers, each column's hidden rows start at the next position in that column,
-using the same knob size, row heights, and spacing as the visible rows. One
-column can start higher than the other when their visible rows differ. Each
-revealed port uses its own socket for cable endpoints. Scroll the additional
-rows when they exceed the available viewport height. Keep the continuation
-open while the pointer crosses between it and the header or while a knob is
-in use. During a cable drag, reveal the compatible destination column. Shift
-retains the separate per-port connection chooser.
+Hover over the input or output controls to open that column's popover.
+The gap between the columns closes the popover when the pointer enters it.
+The popover stays open while the pointer moves into it or while a knob is in use.
+Hidden rows use the same knob size, height, and spacing as the visible rows.
+The popover can widen for port names and start below visible rows to keep their
+controls clear. Each revealed port uses its own socket for cable endpoints.
+Scroll the additional rows when they exceed the available viewport height.
+During a cable drag, hover over compatible controls to reveal their column.
+Shift retains the separate per-port connection chooser.
+[Earlier shared popover](./historical/vue_port_popover_before_directional_hover_2026-11-21.md).
 [Earlier header-bottom placement](./historical/vue_folded_ports_before_row_alignment_2026-11-19.md).
 
 As the lane shrinks, step from full-size knobs to compact knobs and then to
@@ -592,6 +593,8 @@ Bounds affect the output. Control points stay in the authored value domain
 during creation and dragging. Point edits do not rescale the axis to fit the
 points.
 [Previous point clamping](./historical/automation_point_clamping_before_output_bounds_2026-11-18.md).
+
+For a later UI pass, add a faint fill between the `min` and `max` traces.
 
 Honor the lane's existing **`nano`**, **`mini`**, and **`editable`** vertical
 zoom categories. Both `nano` and `mini` display the curve shape scaled to the

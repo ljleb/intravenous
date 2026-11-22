@@ -56,6 +56,16 @@ can revisit their visibility.
 
 ### Module Ports and child lanes
 
+Click the footer of a module header to expand or collapse its children. A faint
+gradient fades upward from the footer when the pointer enters the header.
+The gradient brightens slightly and the cursor changes to a hand over the footer.
+The footer sits below the ports.
+The click area extends just below the seam into the next lane header. A name
+that links to source takes priority in that area.
+Double-click an editable name to rename it. Click a source link to open the source.
+[Earlier double-click expansion](./historical/module_expansion_before_header_footer_2026-11-21.md).
+[Earlier footer highlights](./historical/module_footer_before_inset_line_2026-11-21.md).
+
 When a module with public ports expands, Module Ports is its first child lane.
 The lane shows the sockets on the inner side of the module boundary. A public
 input becomes an output socket inside the module. A public output becomes an

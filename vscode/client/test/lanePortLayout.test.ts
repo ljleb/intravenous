@@ -1,7 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lanePortLayout } from "../src/lanePortLayout";
+import { lanePortContinuationColumn, lanePortControls, lanePortFoldedSocketHeight, lanePortLayout, lanePortRowHeight } from "../src/lanePortLayout";
 import { minimumLaneHeight } from "../src/timelineViewport";
+
+test("port controls use narrow knobs before falling back to sockets alone", () => {
+    const narrow = { knobSize: 20, handleWidth: 14 };
+    assert.equal(lanePortControls(91, 24), null);
+    assert.deepEqual(lanePortControls(92, 24), narrow);
+    assert.deepEqual(lanePortControls(92, 31), narrow);
+    assert.deepEqual(lanePortControls(119, 24), narrow);
+    assert.deepEqual(lanePortControls(120, 24), { knobSize: 24, handleWidth: 24 });
+    assert.deepEqual(lanePortControls(133, 31), narrow);
+    assert.deepEqual(lanePortControls(134, 31), { knobSize: 31, handleWidth: 24 });
+});
+
+test("a short editable header fits its first row above the folded socket", () => {
+    const ports = ["audio", "cutoff"];
+    for (const [height, rowHeight] of [[28, 20], [31.5, 20], [32, 24], [39, 31]]) {
+        assert.equal(lanePortRowHeight(height), rowHeight);
+        const layout = lanePortLayout(ports, height, lanePortRowHeight(height), lanePortFoldedSocketHeight);
+        assert.deepEqual(layout.direct, ["audio"]);
+        assert.deepEqual(layout.folded, ["cutoff"]);
+    }
+});
+
+test("a narrow continuation grows away from its socket edge when there is room", () => {
+    const column = { left: 12, width: 54 };
+    assert.deepEqual(lanePortContinuationColumn(column, 400, "input"), { left: 12, width: 144 });
+    assert.deepEqual(lanePortContinuationColumn({ ...column, left: 150 }, 400, "output"), { left: 60, width: 144 });
+    assert.deepEqual(lanePortContinuationColumn(column, 100, "output"), { left: 4, width: 92 });
+    assert.deepEqual(lanePortContinuationColumn({ left: 12, width: 160 }, 400, "input"), { left: 12, width: 160 });
+});
 
 test("lane ports unfold at the height needed for the complete direction", () => {
     const ports = ["audio", "cutoff"];

@@ -15,15 +15,15 @@ const emit = defineEmits<{
 <template>
     <div class="control-row" :class="{ unavailable, 'with-knob': hasKnob }" :data-direction="endpoint.direction"
         :data-port-kind="endpoint.kind" :data-port-drop-target="endpoint.direction === 'input' ? '' : undefined">
-        <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout />
+        <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout data-port-control />
         <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
-            :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
+            data-port-control :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
             :aria-disabled="unavailable" :aria-label="`${endpoint.direction} ${port.displayName || port.name || port.index + 1}`"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
             @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
             <span class="port-circle" />
         </button>
-        <span class="direct-port-name" :data-status-hint="hint">
+        <span class="direct-port-name iv-graph-header-detail" data-port-control :data-status-hint="hint">
             {{ port.displayName || port.name || port.index + 1 }}
         </span>
     </div>
@@ -31,7 +31,7 @@ const emit = defineEmits<{
 
 <style scoped>
 .control-row {
-    --knob-size: var(--port-row-height);
+    --knob-size: var(--port-knob-size);
     --handle-shift: calc(-1 * var(--socket-tuck) + (var(--port-socket-size) - var(--port-handle-width)) / 2);
     /* Keep the socket fixed even when the hit area shifts away from the knob. */
     --socket-shift: calc(-1 * var(--socket-tuck) - var(--handle-shift));
@@ -80,11 +80,12 @@ const emit = defineEmits<{
 .with-knob .port-handle[data-hovered] { background: transparent; }
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }
 .direct-port-name { grid-column: 3; grid-row: 1; padding-right: 3px; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
+    justify-self: start; box-sizing: border-box; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
     color: color-mix(in srgb, var(--port-color) var(--iv-port-label-accent), var(--iv-port-label-base)); }
 .unavailable .direct-port-name { color: var(--vscode-disabledForeground); }
-[data-direction="output"] .direct-port-name { grid-column: 1; text-align: right; }
-.with-knob .direct-port-name { align-self: start; margin-block-start: 2px; margin-inline-start: -17px; line-height: 13px; }
+[data-direction="output"] .direct-port-name { grid-column: 1; justify-self: end; text-align: right; }
+.with-knob .direct-port-name { align-self: start; max-width: calc(100% + 17px);
+    margin-block-start: 2px; margin-inline-start: -17px; line-height: 13px; }
 [data-direction="output"].with-knob .direct-port-name {
     margin-inline-start: 0; margin-inline-end: -17px; padding-right: 0;
 }

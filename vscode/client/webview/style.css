@@ -56,19 +56,42 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
         var(--iv-text-link-color, var(--vscode-descriptionForeground)) 65%, var(--vscode-foreground));
 }
 
+.iv-graph-header {
+    --iv-graph-header-inset: 8px;
+    --graph-lane-height: 100cqh;
+    --inline-title-width: min(13px, var(--graph-lane-height));
+    --inline-port-width: min(72px, calc(100cqw - var(--inline-title-width) - 4px));
+    --inline-port-gap: 14px;
+    --inline-port-column-width: calc((var(--inline-port-width) - var(--inline-port-gap)) / 2);
+    --inline-stack-spacing: min(7px, calc(var(--inline-port-column-width) / 3));
+    --inline-symbol-size: min(12px, calc(var(--graph-lane-height) - 2px),
+        calc(var(--inline-port-column-width) - var(--inline-stack-spacing)));
+    container: graph-header / inline-size;
+}
+.iv-graph-header .iv-graph-header-detail {
+    opacity: clamp(0, (100cqw - 92px) / 16px, 1);
+}
+@container graph-header (max-width: 92px) {
+    .iv-graph-header-detail { display: none; }
+}
+
 .knob-side-toggle {
     --toggle-accent: var(--knob-toggle-accent, var(--iv-port-output));
+    --toggle-stroke: 1.5px;
     display: grid; place-items: center; flex: 0 0 var(--output-polarity-width, 12px);
     width: var(--output-polarity-width, 12px); height: 20px; margin-inline-start: calc(-1 * var(--output-polarity-inset, 2px));
     padding: 0; border: 0; border-radius: 3px; background: transparent; cursor: pointer;
     color: color-mix(in srgb, var(--vscode-descriptionForeground) 55%, var(--vscode-editor-background));
-    font: 600 12px / 1 var(--vscode-editor-font-family, monospace);
 }
 .knob-side-toggle > span { display: grid; place-items: center; width: 100%; height: 12px; border-radius: 3px; }
+.knob-side-toggle > span::before { content: ""; grid-area: 1 / 1; width: 6px; height: var(--toggle-stroke); background: currentColor; }
+.knob-side-toggle:not(.knob-enable-toggle)[aria-pressed="false"] > span::after {
+    content: ""; grid-area: 1 / 1; width: var(--toggle-stroke); height: 6px; background: currentColor;
+}
 .knob-side-toggle[data-hovered]:not(:disabled) { color: var(--toggle-accent); }
 .knob-side-toggle[aria-pressed="true"] > span { color: var(--vscode-editor-background); background: var(--toggle-accent); }
 .knob-side-toggle:disabled { opacity: .4; cursor: default; }
-.knob-enable-toggle[aria-pressed="true"] > span { color: var(--toggle-accent); background: transparent; }
+.knob-enable-toggle > span::before { height: 6px; border-radius: 50%; }
 
 .live-graph {
     display: flex;

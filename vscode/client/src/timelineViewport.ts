@@ -22,6 +22,19 @@ export const initialTimelineViewport: TimelineViewport = {
     laneHeight: laneHeightAtWheelStep(Math.floor(laneWheelStepAtHeight(editableHeightPx + timelineLaneBorderPx))),
 };
 
+export function formatPlaybackSeconds(seconds: number, fits: (text: string) => boolean): string {
+    const full = seconds.toFixed(3);
+    if (fits(full)) return full;
+    const fraction = full.lastIndexOf(".");
+    if (fraction < 0) return full;
+    for (let places = 2; places > 0; --places) {
+        const shortened = full.slice(0, fraction + 1 + places);
+        if (fits(shortened)) return shortened;
+    }
+    const whole = full.slice(0, fraction);
+    return fits(whole) ? whole : seconds.toExponential(0).replace("e+", "e");
+}
+
 export function readTimelineViewport(value: Partial<TimelineViewport> | undefined): TimelineViewport {
     const finiteOr = (candidate: unknown, fallback: number) =>
         typeof candidate === "number" && Number.isFinite(candidate) ? candidate : fallback;
