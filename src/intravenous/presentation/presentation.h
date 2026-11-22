@@ -1,4 +1,3 @@
-// @doc docs/api/reference/presentation_c_abi.md
 #ifndef INTRAVENOUS_PRESENTATION_H
 #define INTRAVENOUS_PRESENTATION_H
 

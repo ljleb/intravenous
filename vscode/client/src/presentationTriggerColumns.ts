@@ -1,4 +1,3 @@
-// @doc docs/api/explanation/presentation_execution.md
 import type { PresentationObservation, PresentationSnapshot } from "./presentationPlugin";
 import { timelineSamples } from "./timelineSamples";
 

@@ -1,4 +1,3 @@
-// @doc docs/api/reference/llvm_nodes.md
 #pragma once
 
 #include <intravenous/node/code_key.h>

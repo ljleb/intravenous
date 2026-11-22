@@ -1,4 +1,3 @@
-// @doc docs/api/reference/presentation_c_abi.md
 import type { PresentationFrame, PresentationInput, PresentationSnapshot, PresentationSavedState } from "./presentationPlugin";
 import { presentationTriggerColumns, triggerColumnLimit, type TriggerColumns } from "./presentationTriggerColumns";
 

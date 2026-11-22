@@ -1,4 +1,3 @@
-// @doc docs/api/reference/llvm_nodes.md
 #pragma once
 
 // Stable package definitions emitted by IV_NODE / IV_MODULE. Definitions are

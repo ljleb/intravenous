@@ -67,12 +67,9 @@ def compile_examples(build):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build-release")
-    parser.add_argument("--docdiff", type=Path, help="check the current changes with a DocDiff executable")
     args = parser.parse_args()
     check_links()
     compile_examples(args.build_dir.resolve())
-    if args.docdiff:
-        run(args.docdiff.resolve(), "check")
     print("API documentation links and examples passed.")
 
 

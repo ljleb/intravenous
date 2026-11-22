@@ -1,4 +1,3 @@
-// @doc docs/api/reference/presentation_cpp.md
 #ifndef INTRAVENOUS_PRESENTATION_HPP
 #define INTRAVENOUS_PRESENTATION_HPP
 

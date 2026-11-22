@@ -1,4 +1,3 @@
-// @doc docs/api/reference/presentation_c_abi.md
 #include "abi.h"
 
 #include <stdbool.h>
