@@ -6,7 +6,7 @@ import { nodeDisplayName, portDescription } from "./nodeSummary";
 import { editableHeightPx, type NodeDisplayMode } from "./displayMode";
 import NodePorts from "./NodePorts.vue";
 import LiveOutputMeters from "./LiveOutputMeters.vue";
-import { addressKey, formatLaneLabel, laneLabels } from "../../src/graphScope";
+import { addressKey, formatLaneLabel, isProjectInstance, laneLabels } from "../../src/graphScope";
 import { useOptionalGraphEditor } from "../graph/context";
 
 const props = defineProps<{ mode?: NodeDisplayMode; flushContent?: boolean; moduleBoundary?: boolean }>();
@@ -14,6 +14,7 @@ const props = defineProps<{ mode?: NodeDisplayMode; flushContent?: boolean; modu
 const node = useNode();
 const lane = useLane();
 const editor = useOptionalGraphEditor();
+const moduleChild = computed(() => !props.moduleBoundary && !!node.value.address && !isProjectInstance(node.value.address));
 const canExpand = computed(() => !props.moduleBoundary && !!editor && node.value.hasChildren
     && node.value.loadState === "ready" && !!node.value.address);
 const expanded = computed(() => !!node.value.address && (editor?.expandedModules.value.has(addressKey(node.value.address)) ?? false));
@@ -38,10 +39,13 @@ const memberDescription = computed(() => {
     const count = virtualMembers.value;
     return count === undefined ? "" : `Virtual lane · ${count} ${count === 1 ? 'member' : 'members'}`;
 });
-const laneStatus = computed(() => props.moduleBoundary ? `Public ports of ${displayName.value}`
+const laneStatus = computed(() => props.moduleBoundary ? `Inner boundary of ${displayName.value}`
     : node.value.loadState === "waitingForDefinition" ? "Waiting for the node definition"
     : node.value.loadState === "waitingForGraph" ? "Waiting for graph realization"
-    : node.value.errorMessage || (labels.value.secondary ? formatLaneLabel(labels.value) : node.value.definitionId));
+    : node.value.errorMessage || [
+        labels.value.secondary ? formatLaneLabel(labels.value) : node.value.definitionId,
+        moduleChild.value ? "C++ module child" : "",
+    ].filter(Boolean).join(" · "));
 const nameInput = ref<HTMLInputElement | null>(null);
 const nameEdit = ref<{ original: string; draft: string } | null>(null);
 
@@ -64,7 +68,8 @@ function finishRename(commit: boolean) {
 </script>
 
 <template>
-    <div class="node-lane" :class="{ 'inline-header': inlineHeader }" :data-mode="mode">
+    <div class="node-lane" :class="{ 'inline-header': inlineHeader, 'module-child': moduleChild,
+        'boundary-lane': moduleBoundary }" :data-mode="mode">
         <header class="lane-label">
             <div class="lane-heading">
                 <svg class="lane-identity" viewBox="0 0 16 16" aria-hidden="true">
@@ -117,8 +122,17 @@ function finishRename(commit: boolean) {
     position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
     padding: calc(1px + var(--header-growth) * .28) 12px 0 17px; border-right: 1px solid var(--vscode-panel-border);
 }
-.lane-heading { display: flex; flex: 0 0 var(--heading-height); align-items: flex-start; gap: 6px;
-    padding-inline-start: var(--iv-lane-indent, 0px); }
+.lane-heading { display: flex; flex: 0 0 var(--heading-height); align-items: flex-start; gap: 6px; }
+.module-child .lane-label, .boundary-lane .lane-label { background-image: var(--iv-diagonal-stripes); }
+.module-child .lane-heading { opacity: .74; }
+.boundary-lane .lane-label {
+    background-color: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 82%, transparent);
+    box-shadow: inset 0 1px var(--vscode-panel-border);
+}
+.boundary-lane::after {
+    content: ""; pointer-events: none;
+    background: linear-gradient(to right, color-mix(in srgb, var(--vscode-panel-border) 26%, transparent), transparent 48px);
+}
 .lane-identity, .module-disclosure svg { fill: none; stroke: currentColor; stroke-width: 1.25;
     stroke-linecap: round; stroke-linejoin: round; }
 .lane-identity { flex: 0 0 auto; width: min(13px, 100cqh); height: min(13px, 100cqh); color: var(--vscode-icon-foreground); }

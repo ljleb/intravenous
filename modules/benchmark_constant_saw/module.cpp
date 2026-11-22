@@ -5,7 +5,7 @@ void benchmark_constant_saw(iv::GraphBuilder& g)
     using namespace iv;
 
     auto const phase = g.node<"phase_integrator">();
-    auto const osc = g.node<"saw_oscillator">();
+    auto const osc = g.node<"saw">();
     phase(0.0);
     auto const tone = osc(
         "frequency"_P = 110.0,

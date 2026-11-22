@@ -76,7 +76,7 @@ function focusLane(event: MouseEvent) {
 .peak-fill { position: absolute; bottom: 0; left: 0; height: 35%; min-height: 2px; background: #3ab963; }
 .reading-mark { position: absolute; bottom: 0; width: 2px; height: 45%; min-height: 3px; transform: translateX(-1px); background: #9ceaac; }
 .over-reference .peak-fill, .held-over-reference .reading-mark { background: #f0b45c; }
-.unavailable { background: repeating-linear-gradient(135deg, transparent, transparent 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 7px, color-mix(in srgb, var(--vscode-foreground) 4%, transparent) 8px); }
+.unavailable { background: var(--iv-diagonal-stripes); }
 .unavailable-mark { position: absolute; right: 5px; bottom: 1px; opacity: .6; }
 .hide-scale-labels :deep(.ruler-tick span) { display: none; }
 </style>

@@ -33,9 +33,14 @@ std::expected<void, std::string> finalize_background_runtime_plan(
 std::expected<void, std::string> validate_background_runtime_plan(
     BackgroundEvaluationPlan const& plan);
 
-// A Random Access input that no BackgroundConnectionPlan targets has empty
-// coverage. Its runtime binding is the only input binding without storage.
+// A Random Access input without an upstream connection has empty coverage.
 [[nodiscard]] bool is_disconnected_random_access_input(
+    BackgroundEvaluationPlan const& plan,
+    BackgroundPortIndex port);
+
+// Disconnected Random Access inputs have no Regions. Disconnected Sequential
+// replay inputs resolve their samples from the fallback, or have no events.
+[[nodiscard]] bool background_binding_allows_empty_storage(
     BackgroundEvaluationPlan const& plan,
     BackgroundPortIndex port);
 

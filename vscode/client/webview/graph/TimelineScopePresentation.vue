@@ -113,23 +113,21 @@ async function setGridMode(mode: TimelineGridMode) {
 const laneHeight = computed(() => viewport.value.laneHeight);
 const nestedAreas = computed(() => {
     const rows = children.value;
-    const open: Array<{ depth: number; first: number; key: string }> = [];
-    const areas: Array<{ key: string; style: Record<string, string> }> = [];
-    for (let index = 0; index <= rows.length; ++index) {
-        const depth = rows[index]?.depth ?? 0;
-        while (open.length && open.at(-1)!.depth > depth) {
-            const area = open.pop()!;
-            areas.push({ key: area.key, style: {
-                insetInlineStart: `${Math.min(area.depth - 1, 5) * 12}px`,
-                top: `${area.first * laneHeight.value}px`,
-                height: `${(index - area.first) * laneHeight.value}px`,
-            } });
+    type Area = { key: string; begin: number; end: number };
+    const areas: Area[] = [];
+    const open: { depth: number; area: Area }[] = [];
+    for (const [index, { depth, rowKey }] of rows.entries()) {
+        while (open.length && open[open.length - 1].depth >= depth) {
+            open.pop()!.area.end = index;
         }
-        if (rows[index + 1]?.depth > depth)
-            open.push({ depth: depth + 1, first: index + 1, key: rows[index].rowKey });
+        if ((rows[index + 1]?.depth ?? 0) <= depth) continue;
+        const area = { key: rowKey, begin: index + 1, end: rows.length };
+        areas.push(area);
+        open.push({ depth, area });
     }
-    return areas.reverse();
+    return areas;
 });
+const nestedAreaEnds = computed(() => [...new Set(nestedAreas.value.map(({ end }) => end))]);
 const timelineRuns = computed(() => {
     const timelineLanes = new Set(children.value.filter(({ semantic, moduleBoundary }) =>
         !moduleBoundary && selectPresentation(semantic.definitionId).timeline)
@@ -751,9 +749,10 @@ onBeforeUnmount(() => {
                 </LaneSettings>
             </div>
         </header>
-        <div class="lanes">
+        <div class="lanes" :style="{ '--nested-rim-height': `${Math.min(9, laneHeight / 2)}px` }">
             <div v-for="area in nestedAreas" :key="area.key" class="nested-lane-area"
-                :style="area.style" aria-hidden="true" />
+                :style="{ top: `${area.begin * laneHeight}px`, height: `${(area.end - area.begin) * laneHeight}px` }"
+                aria-hidden="true" />
             <template v-if="gridMode !== 'seconds'">
                 <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay lane-snap-grid" aria-hidden="true"
                     :style="run.style">
@@ -762,14 +761,16 @@ onBeforeUnmount(() => {
                 </svg>
             </template>
             <section v-for="{ child, depth, rowKey, semantic, moduleBoundary } in children" :key="rowKey"
-                class="lane" :class="{ selected: !moduleBoundary && selectedLanes.has(addressKey(child.address)), 'module-boundary': moduleBoundary }"
+                class="lane" :class="{ selected: !moduleBoundary && selectedLanes.has(addressKey(child.address)) }"
                 :data-lane-row="rowKey"
                 :data-lane-address="addressKey(child.address)"
                 :data-lane-key="moduleBoundary ? undefined : addressKey(child.address)"
-                :style="{ height: `${laneHeight}px`, '--iv-lane-indent': `${Math.min(depth, 5) * 12}px` }" tabindex="-1"
-                :aria-label="moduleBoundary ? `${nodeDisplayName(semantic)} module ports`
+                :style="{ height: `${laneHeight}px` }" tabindex="-1"
+                :data-status-hint="depth ? `Module nesting depth ${depth}` : undefined"
+                :aria-label="(moduleBoundary ? `${nodeDisplayName(semantic)} module ports`
                     : formatLaneLabel(laneLabels(nodeDisplayName(semantic), semantic.sourceLabel))
-                        + (selectedLanes.has(addressKey(child.address)) ? ', selected' : '')">
+                        + (selectedLanes.has(addressKey(child.address)) ? ', selected' : ''))
+                    + (depth ? `, module nesting depth ${depth}` : '')">
                 <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - 1" module-boundary />
                 <PresentationHost v-else :node="semantic" :region-height="laneHeight - 1" lane
                     :open-source="child.virtualNode && child.declarationSource
@@ -778,6 +779,10 @@ onBeforeUnmount(() => {
                         ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />
             </section>
+            <div v-for="{ key, begin } in nestedAreas" :key="key" class="nested-lane-rim start"
+                :style="{ top: `${begin * laneHeight}px` }" aria-hidden="true" />
+            <div v-for="end in nestedAreaEnds" :key="end" class="nested-lane-rim end"
+                :style="{ top: `${end * laneHeight}px` }" aria-hidden="true" />
             <svg v-for="run in timelineRuns" :key="run.begin" class="lane-timeline-overlay" aria-hidden="true"
                 :style="run.style">
                 <TimelinePlayhead />
@@ -835,14 +840,20 @@ onBeforeUnmount(() => {
 .timeline-snap-input { min-height: 0; padding-inline: 12px; }
 .timeline-snap-input :deep(.node-ports) { height: 100%; margin: 0; }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
+/* Inner groups paint over outer groups and use the same left edge. */
 .nested-lane-area {
-    position: absolute; inset-inline-end: 0; z-index: -3; pointer-events: none;
-    box-shadow: inset 6px 0 9px -6px var(--vscode-scrollbar-shadow, #0009),
-        inset 0 6px 10px -7px var(--vscode-scrollbar-shadow, #0009),
-        inset 0 -5px 8px -6px var(--vscode-scrollbar-shadow, #0009);
+    position: absolute; inset-inline: 0; z-index: -3; pointer-events: none;
+    box-shadow: inset 6px 0 9px -6px var(--vscode-scrollbar-shadow, #0009);
     border-start-start-radius: 3px; border-end-start-radius: 3px;
     border-inline-start: 1px solid var(--vscode-panel-border);
     background: color-mix(in srgb, var(--vscode-editor-background) 97%, black);
+}
+/* Paint the horizontal edges above the lane backgrounds. */
+.nested-lane-rim { position: absolute; inset-inline: 0; height: var(--nested-rim-height); z-index: 0; pointer-events: none; }
+.nested-lane-rim.start { box-shadow: inset 0 6px 9px -5px var(--vscode-scrollbar-shadow, #0009); }
+.nested-lane-rim.end {
+    transform: translateY(-100%);
+    box-shadow: inset 0 -5px 8px -5px var(--vscode-scrollbar-shadow, #0009);
 }
 .lane-timeline-overlay { position: absolute; inset-inline-start: var(--node-label-width);
     width: calc(100% - var(--node-label-width)); pointer-events: none; }
@@ -851,7 +862,6 @@ onBeforeUnmount(() => {
     white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
 .lane { position: relative; box-sizing: border-box; border-bottom: 1px solid transparent; }
-.module-boundary :deep(.lane-name) { color: var(--vscode-descriptionForeground); }
 /* The snap grid passes over lane separators and under their contents. */
 .lane::before {
     content: ""; position: absolute; z-index: -2; pointer-events: none;

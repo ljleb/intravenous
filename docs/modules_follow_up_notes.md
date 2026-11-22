@@ -42,8 +42,9 @@
   `nullopt` means unbounded. They are control metadata, not a global DSP
   clamping policy. Nodes may clamp in `tick()` / `tick_block()` where that is
   semantically required.
-- `g.input()` accepts both named and unnamed configured forms:
-  `g.input("name", default, min, max)` and `g.input(default, min, max)`.
+- The local identifier names an authored public input. Native construction can
+  supply names through the explicit API.
+  [Public input names](./iv_module_source_introspection_direction.md#public-input-names)
 - Knobs always retain a normalized position in `[0, 1]`; the port value is
   mapped separately. Finite bounds are linear. With a finite lower bound use
   `min + x|x| / (1 - x)`; with a finite upper bound use

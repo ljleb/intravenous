@@ -19,8 +19,8 @@ In particular:
 - documentation changes preserve information: semantic text that is removed or
   superseded must first be retained under `docs/historical/` with provenance and a link
   to its replacement; and
-- write implementation tests after the feature's actual shape is known, then refactor
-  the working bottom-up implementation without changing its semantics.
+- write implementation tests after the feature's actual shape is known, and assess
+  the need for a focused refactor before handing the feature to the owner for a build.
 
 ## Backward compatibility
 

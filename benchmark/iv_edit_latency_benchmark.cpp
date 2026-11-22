@@ -13,9 +13,9 @@
 // --size), so that compilation and tick-scheduling changes are not tuned to one
 // graph:
 //   voices    N parallel identical chains (wide and shallow):
-//               constant(frequency) -> saw_oscillator -> simple_iir_low_pass -> dummy_sink
+//               constant(frequency) -> saw -> simple_iir_low_pass -> dummy_sink
 //               constant(cutoff) ---------------------^
-//   chain     one saw_oscillator through N simple_iir_low_pass in series (deep)
+//   chain     one saw through N simple_iir_low_pass in series (deep)
 //   mixed     N voices alternating oscillator and filter types, each through a
 //             warper, and each voice subtracting the previous voice's signal
 //             (heterogeneous types and cross-voice fan-out)
@@ -99,8 +99,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr std::string_view constant_id = "builtin.constant";
-constexpr std::string_view saw_id = "builtin.saw_oscillator";
-constexpr std::string_view sine_id = "builtin.sine_oscillator";
+constexpr std::string_view saw_id = "builtin.saw";
+constexpr std::string_view sine_id = "builtin.sine";
 constexpr std::string_view low_pass_id = "builtin.simple_iir_low_pass";
 constexpr std::string_view high_pass_id = "builtin.simple_iir_high_pass";
 constexpr std::string_view warper_id = "builtin.warper";
@@ -385,9 +385,9 @@ constexpr char const* feedback_voice_source = R"(#include <intravenous/dsl.h>
 
 void feedback_voice(iv::GraphBuilder& g)
 {
-    auto frequency = g.input<"frequency">(110.0f);
-    auto cutoff = g.input<"cutoff">(0.5f);
-    auto oscillator = g.node<"builtin.saw_oscillator">();
+    auto frequency = g.input(110.0f);
+    auto cutoff = g.input(0.5f);
+    auto oscillator = g.node<"builtin.saw">();
     oscillator.connect_input("frequency", frequency);
     auto filter = g.node<"builtin.simple_iir_low_pass">();
     auto difference = g.node<"builtin.subtract">();
@@ -568,7 +568,7 @@ struct StorageEventConsumer {
 
 void storage_voice(iv::GraphBuilder& graph)
 {
-    auto drive = graph.input<"drive">(0.25f);
+    auto drive = graph.input(0.25f);
     auto samples = graph.node<StorageSampleSource>(
         std::size_t{512});
     auto converted_samples = graph.node<StorageSampleSource>(

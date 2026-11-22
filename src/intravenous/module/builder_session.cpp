@@ -1063,8 +1063,8 @@ BuilderDefinition find_builder_definition(
 
     // Builtins have canonical stable IDs, but their short names are useful in
     // ordinary package source.  Resolve a bare name only after exact lookup,
-    // so a package's deliberately registered `saw_oscillator` still wins over
-    // the convenience alias for `builtin.saw_oscillator`.
+    // so a package's deliberately registered `saw` still wins over
+    // the convenience alias for `builtin.saw`.
     if (auto const builtin_id = builtin_definition_alias(id)) {
         if (auto found = find_exact(*builtin_id)) return *found;
     }

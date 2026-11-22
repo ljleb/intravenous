@@ -1435,17 +1435,13 @@ std::expected<BackgroundStoragePlan, std::string> build_background_storage_plan(
     return result;
 }
 
-bool is_disconnected_random_access_input(
+namespace {
+
+bool has_background_input_connection(
     BackgroundEvaluationPlan const& plan,
     BackgroundPortIndex port)
 {
-    if (port >= plan.ports.size()) return false;
-    auto const& logical = plan.ports[port];
-    if (logical.direction != PortDirection::input
-        || !logical.random_access_input) {
-        return false;
-    }
-    return std::ranges::none_of(
+    return std::ranges::any_of(
         plan.connections,
         [&](auto const& connection) {
             return std::ranges::contains(connection.target_coverage_ports, port)
@@ -1456,6 +1452,29 @@ bool is_disconnected_random_access_input(
                         return delivery.target_port == port;
                     });
         });
+}
+
+} // namespace
+
+bool is_disconnected_random_access_input(
+    BackgroundEvaluationPlan const& plan,
+    BackgroundPortIndex port)
+{
+    return port < plan.ports.size()
+        && plan.ports[port].direction == PortDirection::input
+        && plan.ports[port].random_access_input
+        && !has_background_input_connection(plan, port);
+}
+
+bool background_binding_allows_empty_storage(
+    BackgroundEvaluationPlan const& plan,
+    BackgroundPortIndex port)
+{
+    if (port >= plan.ports.size()) return false;
+    auto const& logical = plan.ports[port];
+    return logical.direction == PortDirection::input
+        && (logical.random_access_input || logical.replay_sequential_input)
+        && !has_background_input_connection(plan, port);
 }
 
 std::expected<void, std::string> validate_background_runtime_plan(
@@ -1500,11 +1519,17 @@ std::expected<void, std::string> validate_background_runtime_plan(
         if (binding.port != port_index
             || binding.node != port.node
             || binding.kind != port.kind
-            || binding.direction != port.direction
-            || (binding.storage.empty()
-                && !is_disconnected_random_access_input(plan, port_index))) {
+            || binding.direction != port.direction) {
             return std::unexpected(
                 "GraphJit background runtime binding does not match its logical port");
+        }
+        if (binding.storage.empty()
+            && !background_binding_allows_empty_storage(plan, port_index)) {
+            return std::unexpected(
+                "GraphJit background runtime binding has no storage for "
+                + std::string(port.direction == PortDirection::input ? "input" : "output")
+                + " '" + port.name + "' on bundle "
+                + std::to_string(port.configured_port.node_bundle_handle));
         }
         for (auto const storage_index : binding.storage) {
             if (storage_index >= plan.storage.ports.size()

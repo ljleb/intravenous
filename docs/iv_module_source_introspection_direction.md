@@ -59,3 +59,26 @@ connection or observation of an addressable internal port. See
 
 The superseded live-value claim is preserved in
 [Source Introspection With Fake Live Port Values](./historical/source_introspection_fake_live_port_values.md).
+
+## Public input names
+
+The IV Clang plugin uses the identifier of a local declaration as the public
+port name. A call to `input()` or `event_input()` must directly initialize
+that local. This rule applies to `GraphBuilder` and `SubgraphBuilder`.
+It applies when source annotations are off.
+
+```cpp
+auto const frequency = g.input<iv::Sample>();
+auto const beats = g.event_input(iv::EventTypeId::beat, iv::InputAccess::coverage);
+```
+
+The template arguments still select the continuous value types or a channel
+type. Later references and named connections use the declared port names.
+If a declaration changes name, update its named connections and saved
+references.
+
+Native code can include `intravenous/graph/programmatic_inputs.h` and call
+`iv::programmatic::declare_input` or `iv::programmatic::declare_event_input`.
+These functions take a name explicitly and can read it from a runtime schema.
+The plugin uses the same functions to create ports for authored declarations.
+[Earlier naming forms](./historical/module_input_names_before_identifier_declarations_2026-11-21.md)

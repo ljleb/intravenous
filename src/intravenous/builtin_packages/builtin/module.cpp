@@ -52,8 +52,8 @@ IV_NODE("builtin.dummy_event_sink", iv::DummyEventSink, "Dummy Event Sink");
 
 IV_NODE("builtin.warper", iv::Warper, "Warper");
 IV_NODE("builtin.phase_integrator", iv::PhaseIntegrator, "Phase Integrator");
-IV_NODE("builtin.saw_oscillator", iv::SawOscillator, "Saw Oscillator", iv::tags(iv::tag::oscillator));
-IV_NODE("builtin.sine_oscillator", iv::SineOscillator, "Sine Oscillator", iv::tags(iv::tag::oscillator));
+IV_NODE("builtin.saw", iv::SawOscillator, "Saw Oscillator", iv::tags(iv::tag::oscillator));
+IV_NODE("builtin.sine", iv::SineOscillator, "Sine Oscillator", iv::tags(iv::tag::oscillator));
 IV_NODE("builtin.phase_offset_predictor", iv::PhaseOffsetPredictor, "Phase Offset Predictor");
 IV_NODE("builtin.interpolation", iv::Interpolation, "Interpolation");
 

@@ -1073,7 +1073,7 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
 {
     using namespace iv;
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto first = details::configure_concrete_node<TimedSamplePass>(graph);
     auto second = details::configure_concrete_node<TimedSamplePass>(graph);
     auto const first_handle = first.node_bundle_handle();
@@ -1151,7 +1151,7 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
 {
     using namespace iv;
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto first_source = details::configure_concrete_node<PlainSamplePass>(graph);
     auto second_source = details::configure_concrete_node<PlainSamplePass>(graph);
     auto first_target = details::configure_concrete_node<PlainSamplePass>(graph);
@@ -1305,7 +1305,7 @@ TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)
     auto const source_handle = source.node_bundle_handle();
     NodeBundleHandle sink_handle = 0;
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"in">();
+        auto input = iv::programmatic::declare_input(boundary, "in");
         auto sink = details::configure_concrete_node<StereoSink>(graph);
         sink_handle = sink.node_bundle_handle();
         sink(input);
@@ -1376,7 +1376,7 @@ TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualContro
     auto mono = details::configure_concrete_node<MonoSource>(graph);
     auto stereo_source = details::configure_concrete_node<PersistedStereoSource>(graph);
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"in">();
+        auto input = iv::programmatic::declare_input(boundary, "in");
         auto sink = details::configure_concrete_node<StereoSink>(graph);
         sink(input);
         boundary.outputs();
@@ -1460,7 +1460,7 @@ TEST(GraphJitConnectionPlan, ComposesEventConversionsAcrossASubgraphInput)
     auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
     NodeBundleHandle sink_handle = 0;
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.event_input<"in">(EventTypeId::boundary);
+        auto input = iv::programmatic::declare_event_input(boundary, "in", EventTypeId::boundary);
         auto sink = details::configure_concrete_node<PlainEventPass>(graph);
         sink_handle = sink.node_bundle_handle();
         sink.connect_event_input(0, input);
@@ -2019,7 +2019,7 @@ TEST(GraphJitConnectionPlan, RejectsSerialDetachesAcrossSubgraphBoundaries)
         details::configure_concrete_node<MonoSource>(sample_graph);
     auto sample_subgraph = sample_graph.subgraph(
         [&](SubgraphBuilder& boundary) {
-            auto input = boundary.input<"in">();
+            auto input = iv::programmatic::declare_input(boundary, "in");
             boundary.outputs(
                 static_cast<SamplePortRef>(input).detach(3));
         },
@@ -2045,7 +2045,7 @@ TEST(GraphJitConnectionPlan, RejectsSerialDetachesAcrossSubgraphBoundaries)
         details::configure_concrete_node<PlainEventPass>(event_graph);
     auto event_subgraph = event_graph.subgraph(
         [&](SubgraphBuilder& boundary) {
-            auto input = boundary.event_input<"in">(EventTypeId::trigger);
+            auto input = iv::programmatic::declare_event_input(boundary, "in", EventTypeId::trigger);
             boundary.event_outputs(
                 static_cast<EventPortRef>(input).detach(3));
         },
@@ -2868,7 +2868,7 @@ TEST(GraphJitConnectionPlan, ExternalEventsUseBoundaryPolicy)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto event = graph.event_input<"event">(EventTypeId::trigger);
+    auto event = iv::programmatic::declare_event_input(graph, "event", EventTypeId::trigger);
     graph.event_outputs("event"_F = event);
     graph.outputs();
 
@@ -4698,7 +4698,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     using namespace iv;
 
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
     auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     replay(input);
@@ -4803,7 +4803,7 @@ TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
     GraphBuilder graph;
     NodeBundleHandle sink_handle = 0;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"gain", stereo>();
+        auto input = iv::programmatic::declare_input<stereo>(boundary, "gain");
         auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
         sink_handle = sink.node_bundle_handle();
         sink(input);
@@ -4912,7 +4912,7 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
     GraphBuilder graph;
     NodeBundleHandle delayed_handle = 0;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"gain">();
+        auto input = iv::programmatic::declare_input(boundary, "gain");
         auto direct = details::configure_concrete_node<PlainSamplePass>(graph);
         auto delayed = details::configure_concrete_node<PlainSamplePass>(graph);
         delayed_handle = delayed.node_bundle_handle();
@@ -4961,7 +4961,7 @@ TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
     using namespace iv;
     GraphBuilder graph;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.input<"gain">();
+        auto input = iv::programmatic::declare_input(boundary, "gain");
         auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
         sink(static_cast<SamplePortRef>(input).detach(3));
         boundary.outputs();
@@ -4990,9 +4990,9 @@ TEST(GraphJitConnectionPlan, SequentialModuleEventResolutionPreservesNestedFanIn
     auto first = details::configure_concrete_node<PlainEventPass>(graph);
     auto second = details::configure_concrete_node<PlainEventPass>(graph);
     auto outer = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = boundary.event_input<"events">(EventTypeId::trigger);
+        auto input = iv::programmatic::declare_event_input(boundary, "events", EventTypeId::trigger);
         auto inner = graph.subgraph([&](SubgraphBuilder& child) {
-            auto nested_input = child.event_input<"events">(EventTypeId::trigger);
+            auto nested_input = iv::programmatic::declare_event_input(child, "events", EventTypeId::trigger);
             auto sink = details::configure_concrete_node<PlainEventPass>(graph);
             sink.connect_event_input(0, nested_input);
             child.outputs();
@@ -5018,6 +5018,69 @@ TEST(GraphJitConnectionPlan, SequentialModuleEventResolutionPreservesNestedFanIn
         ++stages;
     }
     EXPECT_EQ(stages, 2u);
+}
+
+TEST(GraphJitConnectionPlan, ModuleBoundaryFeedsCoverageWithOrWithoutAnUpstreamWire)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    for (bool const connected : {false, true}) {
+        SCOPED_TRACE(connected);
+        GraphBuilder graph;
+        auto source = details::configure_concrete_node<ComputedBackgroundSource>(graph);
+        auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+            auto input = iv::programmatic::declare_input<mono>(boundary, "freq");
+            auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
+            sink(input);
+            boundary.outputs();
+        }, "oscillator");
+        if (connected) module(source);
+        auto bounds = details::configure_concrete_node<BackgroundSamplePass>(graph);
+        graph.outputs();
+        auto authored = std::move(graph).finish();
+
+        NodeBundlePortId const public_input{module.node_bundle_handle(), PortKind::sample, 0};
+        auto const boundary = authored.node_bundles.bundle(public_input.node_bundle_handle)
+            .subgraph_boundary_handle();
+        ASSERT_TRUE(boundary);
+        auto const existing = authored.connections.configured_sample_connections();
+        std::vector<ConfiguredSampleConnection> samples(existing.begin(), existing.end());
+        samples.push_back({
+            .source_type = ChannelTypeId::mono,
+            .source_channels = {{.channel = {*boundary, 0, 0}}},
+            .target_type = ChannelTypeId::mono,
+            .target_channels = {{bounds.node_bundle_handle(), 0, 0}},
+        });
+        authored.connections = GraphBuilderConnections::from_configured_connections(
+            samples, authored.connections.configured_event_connections());
+        authored.manual_controls.push_back({
+            .id = {.node = {.instance_id = "oscillator"}, .port_name = "freq"},
+            .input = public_input, .settled_value = 300.0f,
+        });
+
+        auto const resolved = iv::graph_jit::detail::resolve_module_inputs(authored);
+        auto const stage = authored.node_bundles.size();
+        ASSERT_EQ(resolved.node_bundles.size(), stage + 1);
+        ASSERT_EQ(resolved.node_bundles.bundle(stage).resolved_module_input(), public_input);
+        auto const plan = build_connection_analysis_plan(resolved, 64);
+        ASSERT_TRUE(plan) << plan.error();
+        auto const& background = plan->background;
+        auto input_binding = [&](NodeBundleHandle bundle) {
+            return std::ranges::find_if(background.runtime.bindings, [&](auto const& binding) {
+                return binding.direction == PortDirection::input
+                    && background.ports[binding.port].configured_port.node_bundle_handle == bundle;
+            });
+        };
+        auto const stage_binding = input_binding(stage);
+        ASSERT_NE(stage_binding, background.runtime.bindings.end());
+        EXPECT_TRUE(background.ports[stage_binding->port].replay_sequential_input);
+        EXPECT_EQ(background.ports[stage_binding->port].sample_fallback_value, Sample{300.0f});
+        EXPECT_EQ(stage_binding->storage.empty(), !connected);
+
+        auto const bounds_binding = input_binding(bounds.node_bundle_handle());
+        ASSERT_NE(bounds_binding, background.runtime.bindings.end());
+        EXPECT_FALSE(bounds_binding->storage.empty());
+    }
 }
 
 

@@ -69,10 +69,6 @@ struct ProjectGraphScopeConnection {
     // endpoints is missing or the connection has not been realized yet.
     bool applied = false;
     bool source_owned = false;
-    // In the module interior, public inputs supply data and public outputs
-    // receive it. These endpoints are displayed on the module's boundary lane.
-    std::vector<ProjectNodePortMatcher> boundary_sources{};
-    std::vector<ProjectNodePortMatcher> boundary_targets{};
 };
 
 struct ProjectGraphChildScope {

@@ -23,6 +23,7 @@ struct Fields {
     std::string_view instance_id;
     std::string_view source_identity;
     std::string_view type_identity;
+    std::string_view module_boundary;
 };
 
 Fields fields(ProjectConnectionJsonNames names)
@@ -35,6 +36,7 @@ Fields fields(ProjectConnectionJsonNames names)
             .instance_id = "instanceId",
             .source_identity = "sourceIdentity",
             .type_identity = "typeIdentity",
+            .module_boundary = "moduleBoundary",
         };
     }
     return {
@@ -44,6 +46,7 @@ Fields fields(ProjectConnectionJsonNames names)
         .instance_id = "instance_id",
         .source_identity = "source_identity",
         .type_identity = "type_identity",
+        .module_boundary = "module_boundary",
     };
 }
 
@@ -177,11 +180,13 @@ Json matcher_json(ProjectNodePortMatcher const& matcher, Fields const& names)
     if (matcher.port.name) port["name"] = *matcher.port.name;
     if (matcher.port.index) port["index"] = *matcher.port.index;
     if (matcher.port.channel) port["channel"] = *matcher.port.channel;
-    return Json{
+    Json result{
         {std::string(names.instance_id), matcher.instance_id},
         {"path", std::move(path)},
         {"port", std::move(port)},
     };
+    if (matcher.module_boundary) result[std::string(names.module_boundary)] = true;
+    return result;
 }
 
 ProjectNodePortMatcher parse_matcher(Json const& json, Fields const& names)
@@ -205,6 +210,11 @@ ProjectNodePortMatcher parse_matcher(Json const& json, Fields const& names)
             .channel = optional_index(*port, "channel"),
         },
     };
+    if (auto const boundary = json.find(std::string(names.module_boundary)); boundary != json.end()) {
+        if (!boundary->is_boolean())
+            throw std::runtime_error("project connection module boundary must be a boolean");
+        result.module_boundary = boundary->get<bool>();
+    }
     result.path.reserve(path->size());
     for (auto const& selector : *path) {
         result.path.push_back(parse_selector(selector, names));
@@ -237,13 +247,6 @@ std::vector<ProjectNodePortMatcher> parse_matchers(
     return result;
 }
 } // namespace
-
-nlohmann::ordered_json project_port_matchers_json(
-    std::vector<ProjectNodePortMatcher> const& matchers,
-    ProjectConnectionJsonNames names)
-{
-    return matchers_json(matchers, fields(names));
-}
 
 nlohmann::ordered_json project_connection_json(
     ProjectConnection const& connection,

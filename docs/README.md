@@ -43,6 +43,7 @@ The primary application-architecture entry points are:
 - [Cyclic Automation, Event Projections, And Suspendable Coverage Propagation](./automation_and_suspendable_coverage_direction.md)
 - [Automation And Background Planning Migration](./automation_and_background_migration_plan.md) (implementation order)
 - [Random-Access Port Data, Audio Value Types, And Input Contract Direction](./random_access_port_data_direction.md)
+- [Project-Defined Port Types and Value Boundaries](./project_defined_port_types_proposal.md) (deferred proposal)
 - [Sequential Port Storage And Connection Planning](./sequential_port_storage_planning.md)
 - [Event Propagation Tree Constraint](./event_propagation_tree_constraint.md)
 - [Fundamental Event Flows](./event_flows/README.md)

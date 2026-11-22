@@ -189,35 +189,33 @@ Internal implementation milestones may exist inside that pass. They are useful f
 reasoning, compiler diagnostics, and handoff, but they must be described as incomplete
 parts of the same feature rather than independent delivered features.
 
-### 3.3 Prefer bottom-up discovery, then refactor top-down
+### 3.3 Assess refactoring before build handoff
 
-Before editing, inspect enough of the existing call graph, ownership graph, and
-normative data flow to identify the real feature boundary. Structural inspection is a
-strength of a coding agent and should reduce accidental omissions; it must not become
-premature top-down class design.
+Inspect the affected call paths, data flow, and ownership as you implement the
+feature. If responsibilities are unclear, use a direct local implementation to
+learn how the pieces fit together.
 
-When the final internal decomposition is not yet known, implement the behavior in the
-most direct local form. It is acceptable for the initial working implementation to use
-one large function or tightly connected local code while relationships are being
-discovered.
+Before handing the feature to the owner for a build, consider these questions
+on the paths the feature touches.
 
-One large function is permitted, not required. The rule is to avoid freezing uncertain
-responsibilities behind abstractions. If existing stable ownership boundaries already
-match the complete feature, using them directly is preferable to manufacturing a
-monolith solely to mimic another programmer's working style.
+- Where does each new decision belong? Does that code already have the
+  information it needs?
+- What work or state does the feature duplicate, recompute, or require us to
+  keep in sync?
+- Which nearby planned changes would put pressure on the same boundary?
 
-Once the complete behavior works:
+Use the existing boundaries when they fit. If a focused refactor clarifies
+ownership or avoids repeated work, include it when the source gives you
+enough evidence. That can happen before, during, or after the feature takes
+shape. Remove temporary duplication that the implementation introduced.
+Preserve behavior outside the requested change and check the effect on runtime
+work and dependencies. Use the same interface for the same semantics, and use
+static information to remove costs from configurations that can skip the work.
 
-1. identify the actual stable responsibilities and data flow;
-2. extract functions, classes, and ownership boundaries around those facts;
-3. remove temporary duplication created inside the feature implementation;
-4. verify that the refactoring did not introduce additional dynamic work or coupling;
-   and
-5. keep the base interface homogeneous where semantics are homogeneous while using
-   static information to erase costs for configurations that do not use a feature.
-
-Premature top-down decomposition is not a substitute for discovering how the whole
-feature needs to connect.
+Use the size inventory to find code worth inspecting. Base the decision on a
+concrete cost, correctness risk, or plausible change. If the finding needs a
+design decision, follow [the friction reporting process](#41-required-response-to-friction).
+[Former workflow](historical/development_workflow_before_flexible_refactoring_2026-11-21.md)
 
 ### 3.4 Write tests after the implementation shape is known
 
@@ -225,9 +223,10 @@ Do not force a speculative test API before the implementation has established it
 interfaces and invariants. After the feature is implemented:
 
 1. test its externally meaningful semantics;
-2. test important ownership, failure, concurrency, and transition boundaries;
-3. add regression tests for friction or defects discovered during implementation; and
-4. refactor the implementation with those tests as verification.
+2. test important ownership, failure, concurrency, and transition boundaries; and
+3. add regression tests for friction or defects discovered during implementation.
+
+Use tests for the affected behavior to verify refactors.
 
 Focused experiments used to understand an existing behavior are allowed, but they are
 not a requirement to design the final implementation test suite in advance.
@@ -423,8 +422,8 @@ A feature is complete only when:
 - its complete semantic path is implemented across all required layers;
 - known dependency surfaces no longer rely on scaffolding for that feature;
 - discovered friction has been resolved or explicitly accepted as part of the design;
-- the bottom-up implementation has been refactored into understandable stable
-  responsibilities;
+- the implementation has clear responsibilities, and the refactoring assessment
+  is complete;
 - feature tests cover the meaningful semantics and boundary failures; and
 - implementation-status documents describe the result without changing normative
   intent.

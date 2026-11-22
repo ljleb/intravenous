@@ -17,16 +17,16 @@ auto pan(auto&& g, double t)
 void module_main(iv::GraphBuilder& g)
 {
     constexpr size_t iters = 16;
-    auto const f = g.input<"freq">(0, 0, 20000);
-    auto const detune = g.input<"detune">(0, -100, 100);
+    auto const freq = g.input(0, 0, 20000);
+    auto const detune = g.input(0, -100, 100);
     auto const detune_pair = detune*2 / (iters-1);
 
     for (size_t i = 0; i < iters + 1; ++i)
     {
         auto const add_voice = [&] (auto&& gain) {
-            auto const osc = g.node<"sine_oscillator">();
+            auto const osc = g.node<"sine">();
             auto const t = (static_cast<double>(i) - 0.5) * detune_pair - detune;
-            osc("frequency"_P = f + t, "phase_offset"_P = 0.25); // cosine
+            osc("frequency"_P = freq + t, "phase_offset"_P = 0.25); // cosine
             g.outputs(osc * gain * 0.1);
         };
 

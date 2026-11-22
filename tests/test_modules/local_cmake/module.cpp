@@ -5,7 +5,7 @@ using namespace iv;
 
 void local_cmake_module(iv::GraphBuilder& g)
 {
-    auto const tone = g.node<"saw_oscillator">();
+    auto const tone = g.node<"saw">();
     tone(
         "phase_offset"_P = 0.0,
         "frequency"_P = 440.0

@@ -386,7 +386,7 @@ const trustedHover = new TrustedHover(undefined, elementStatus.hover);
 const surface = ref<HTMLElement | null>(null);
 const connectionDrag = shallowRef<PortConnectionDrag | null>(null);
 const hoverShift = shallowRef(initialPortHoverShift());
-const connectionStartAnchor = shallowRef<PortWireAnchor | null>(null);
+const connectionStartAnchor = shallowRef<PreviewAnchor | null>(null);
 const dropPreviewAnchor = shallowRef<PreviewAnchor | null>(null);
 const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
@@ -512,8 +512,7 @@ const cursorWireColor = computed(() =>
 const previewWires = computed(() => {
     const drag = connectionDrag.value;
     if (!drag?.moved) return [];
-    const anchors: PreviewAnchor[] = drag.edit ? dragAnchors.value : connectionStartAnchor.value
-        ? [{ ...connectionStartAnchor.value, direction: drag.port.direction }] : [];
+    const anchors = drag.edit ? dragAnchors.value : connectionStartAnchor.value ? [connectionStartAnchor.value] : [];
     return anchors.map((anchor) => ({ anchor, cursor: drag.end,
         path: connectionWirePath(anchor, drag.end),
     }));
@@ -619,14 +618,16 @@ provideGraphEditor({ layout, save, profileGraphUi,
     },
 });
 
-function measureWireAnchor(element: HTMLElement, id: string, direction: "input" | "output"): PortWireAnchor | null {
+function measureWireAnchor(element: HTMLElement, id: string): PreviewAnchor | null {
     if (!element.isConnected || element.closest(".port-panel.positioning")) return null;
+    const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
+    if (direction !== "input" && direction !== "output") return null;
     const circles = element.querySelectorAll<HTMLElement>(".port-circle");
     // The grouped icon has two circles. Use its outer circle on the cable side.
     const circle = circles.item(direction === "input" ? circles.length - 1 : 0) ?? element;
     const rect = circle.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
-    const point = { id, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2,
+    const point: PreviewAnchor = { id, direction, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2,
         moduleBoundary: !!element.closest("[data-module-boundary]"),
         rulerInput: direction === "input" && !!element.closest(".timeline-snap-input") };
     const body = element.closest(".expansion-body");
@@ -673,8 +674,8 @@ function portGroupAt(point: Point): HoveredPortGroup | null {
 function measurePortColorColumns(): PortColorColumns[] {
     const columns: PortColorColumns[] = [];
     for (const area of document.querySelectorAll<HTMLElement>(".node-ports")) {
-        const input = area.querySelector<HTMLElement>('.port-group[data-port-group="input"]');
-        const output = area.querySelector<HTMLElement>('.port-group[data-port-group="output"]');
+        const input = area.querySelector<HTMLElement>('.port-group[data-direction="input"]');
+        const output = area.querySelector<HTMLElement>('.port-group[data-direction="output"]');
         if (!input || !output || !input.dataset.nodeKey) continue;
         const inputRect = input.getBoundingClientRect();
         const outputRect = output.getBoundingClientRect();
@@ -734,13 +735,12 @@ function updateWires() {
         anchorRoots = [...roots];
         occlusionRoots = [...auxiliaryRoots, ...lanes.rows.slice(Math.max(0, first), Math.max(0, last + 1))];
     }
-    const exact = new Map<string, PortWireAnchor[]>();
-    const slots = new Map<string, PortWireAnchor[]>();
-    const connectionEnds = new Map<string, PortWireAnchor[]>();
-    const addAnchor = (anchors: Map<string, PortWireAnchor[]>, key: string, kind: string,
-        direction: "input" | "output", element: HTMLElement) => {
+    const exact = new Map<string, PreviewAnchor[]>();
+    const slots = new Map<string, PreviewAnchor[]>();
+    const connectionEnds = new Map<string, PreviewAnchor[]>();
+    const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement) => {
         const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
-        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), direction);
+        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]));
         if (!anchor) return;
         const existing = anchors.get(key);
         if (existing) existing.push(anchor);
@@ -748,35 +748,23 @@ function updateWires() {
     };
     for (const { element, end } of revealedEnds) {
         const key = connectionEndKey(end.connectionId, end.port);
-        addAnchor(connectionEnds, key, "connection", end.port.direction, element);
+        addAnchor(connectionEnds, key, "connection", element);
     }
     for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-endpoint]")) {
         const port = JSON.parse(element.dataset.portEndpoint!) as GraphPortEndpoint;
         const key = portEndpointKey(port);
-        addAnchor(exact, key, "port", port.direction, element);
+        addAnchor(exact, key, "port", element);
     }
     for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-slot]")) {
-        const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
-        if (direction !== "input" && direction !== "output") continue;
         const key = element.dataset.portSlot!;
-        addAnchor(slots, key, "slot", direction, element);
+        addAnchor(slots, key, "slot", element);
     }
-    const portAnchors = (port: GraphPortEndpoint, moduleBoundary: boolean) => {
-        const direct = exact.get(portEndpointKey(port))?.filter((anchor) => anchor.moduleBoundary === moduleBoundary);
-        return direct?.length ? direct : slots.get(portSlotKey(port.address, port.direction))
-            ?.filter((anchor) => anchor.moduleBoundary === moduleBoundary) ?? [];
+    const portAnchors = (port: GraphPortEndpoint) => {
+        const direct = exact.get(portEndpointKey(port));
+        return direct?.length ? direct : slots.get(portSlotKey(port.address, port.direction, port.moduleBoundary)) ?? [];
     };
-    const anchorFor = (port: GraphPortEndpoint, connectionId: string, moduleBoundary = false) => {
-        if (wireConnectionsById.value.get(connectionId)?.sourceOwned) return portAnchors(port, moduleBoundary);
-        const revealed = connectionEnds.get(connectionEndKey(connectionId, port))
-            ?.filter((anchor) => anchor.moduleBoundary === moduleBoundary);
-        if (revealed?.length) return revealed;
-        if (moduleBoundary) {
-            const anchors = portAnchors(port, true);
-            if (anchors.length) return anchors;
-        }
-        return portAnchors(port, false);
-    };
+    const anchorFor = (port: GraphPortEndpoint, connectionId: string) =>
+        connectionEnds.get(connectionEndKey(connectionId, port)) ?? portAnchors(port);
     selectedWires.value = profileGraphUi("Route connections", () => selectedLaneConnections(candidates, selectedLanes.value,
         anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom }));
     if (selectedWires.value.length || drag) {
@@ -788,7 +776,7 @@ function updateWires() {
                 return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
             })];
     }
-    const starts = drag && !drag.edit ? portAnchors(drag.port, !!connectionStartAnchor.value?.moduleBoundary) : null;
+    const starts = drag && !drag.edit ? portAnchors(drag.port) : null;
     if (starts?.length) {
         const previous = connectionStartAnchor.value;
         connectionStartAnchor.value = starts.reduce((closest, candidate) => previous
@@ -796,8 +784,7 @@ function updateWires() {
     } else connectionStartAnchor.value = null;
     previewColorColumns.value = drag ? measurePortColorColumns() : [];
     const end = drag?.edit;
-    const anchors: PreviewAnchor[] = end ? fixedConnectionPorts(scope, end).flatMap((port) =>
-        (anchorFor(port, end.connection.id) ?? []).map((anchor) => ({ ...anchor, direction: port.direction }))) : [];
+    const anchors = end ? fixedConnectionPorts(scope, end).flatMap((port) => anchorFor(port, end.connection.id)) : [];
     dragAnchors.value = [...new Map(anchors.map((anchor) => [anchor.id, anchor])).values()];
     updateDropPreview();
 }
@@ -818,7 +805,7 @@ function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: Gr
     if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
     const handle = event.currentTarget;
     if (!(handle instanceof HTMLElement)) return;
-    const anchor = measureWireAnchor(handle, `port:${portEndpointKey(port)}`, port.direction);
+    const anchor = measureWireAnchor(handle, `port:${portEndpointKey(port)}`);
     if (!anchor) return;
     const drag = beginPortConnection(port, event.pointerId, event.button, { x: event.clientX, y: event.clientY }, edit);
     if (!drag) return;
@@ -842,9 +829,8 @@ function updateDropPreview() {
     const drag = connectionDrag.value;
     const handle = drag?.moved ? destinationHandle(document.elementFromPoint(drag.end.x, drag.end.y)) : null;
     const target = handle?.dataset.portEndpoint ? JSON.parse(handle.dataset.portEndpoint) as GraphPortEndpoint : null;
-    const anchor = handle && drag && target && canDropPortConnection(visibleScope.value, drag, target)
-        ? measureWireAnchor(handle, "drop-preview", target.direction) : null;
-    dropPreviewAnchor.value = anchor && target ? { ...anchor, direction: target.direction } : null;
+    dropPreviewAnchor.value = handle && drag && target && canDropPortConnection(visibleScope.value, drag, target)
+        ? measureWireAnchor(handle, "drop-preview") : null;
 }
 function moveConnection(event: PointerEvent) {
     observePointerShift(event);

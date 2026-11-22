@@ -234,7 +234,7 @@ void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
 {
     using namespace iv;
     ++configure_calls;
-    auto input = graph.input<"main">();
+    auto input = iv::programmatic::declare_input(graph, "main");
     graph.outputs("main"_P = input);
 }
 
@@ -277,7 +277,7 @@ struct ReplacingModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
 
@@ -338,7 +338,7 @@ struct SuccessorModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
 
@@ -364,7 +364,7 @@ struct ReceiverModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
 
@@ -391,7 +391,7 @@ struct SenderModule {
             source_file,
             1,
             2);
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
 
@@ -439,7 +439,7 @@ struct SelectorSenderModule {
             source_file,
             1,
             2);
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
 
@@ -2377,7 +2377,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     using namespace iv;
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
         using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         auto named = details::configure_concrete_node<NamedSamplePass>(graph);
         named(input);
         named._annotate_source_info("source-local:/tmp/module_children.cpp:1@named", "/tmp/module_children.cpp", 1, 2, "named");
@@ -2452,11 +2452,15 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const& source_wires = expanded.at("connections");
     ASSERT_EQ(source_wires.size(), 3u) << expanded.dump();
     for (auto const& wire : source_wires) EXPECT_TRUE(wire.at("sourceOwned").get<bool>());
-    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("instanceId"), "module");
-    EXPECT_EQ(source_wires.at(0).at("boundarySources").at(0).at("port").at("index"), 0);
+    auto const& boundary_source = source_wires.at(0).at("connection").at("outputs").at(0);
+    EXPECT_EQ(boundary_source.at("instanceId"), "module");
+    EXPECT_EQ(boundary_source.at("moduleBoundary"), true);
+    EXPECT_EQ(boundary_source.at("port").at("index"), 0);
     EXPECT_EQ(source_wires.at(1).at("connection").at("outputs").at(0).at("path"), member.at("address").at("path"));
-    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("instanceId"), "module");
-    EXPECT_EQ(source_wires.at(2).at("boundaryTargets").at(0).at("port").at("index"), 1);
+    auto const& boundary_target = source_wires.at(2).at("connection").at("inputs").at(0);
+    EXPECT_EQ(boundary_target.at("instanceId"), "module");
+    EXPECT_EQ(boundary_target.at("moduleBoundary"), true);
+    EXPECT_EQ(boundary_target.at("port").at("index"), 1);
 
     ProjectStringBuilder create_sink;
     in_event_source([&] { project_graph.handle_project_create_node_instance(
@@ -2481,6 +2485,47 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_EQ(wires.at(0).at("id"), "child-wire");
     EXPECT_FALSE(wires.at(0).at("sourceOwned").get<bool>());
     EXPECT_TRUE(wires.at(1).at("sourceOwned").get<bool>());
+
+    std::array const boundary_connections{
+        ProjectSampleConnection{
+            .connection_id = "from-module-input",
+            .outputs = {{.instance_id = "module", .port = {.name = "main"}, .module_boundary = true}},
+            .inputs = {{.instance_id = second.instance_id, .path = second.path, .port = {.index = 0}}},
+        },
+        ProjectSampleConnection{
+            .connection_id = "to-module-output",
+            .outputs = {{.instance_id = address.instance_id, .path = address.path, .port = {.index = 0}}},
+            .inputs = {{.instance_id = "module", .port = {.name = "tap"}, .module_boundary = true}},
+        },
+    };
+    for (auto const& connection : boundary_connections) {
+        ProjectAckBuilder wire;
+        in_event_source([&] { project_graph.handle_project_upsert_graph_connection({.connection = connection}, wire); });
+        ASSERT_NO_THROW(wire.build());
+    }
+    auto const connected = project_graph.current_generation();
+    ASSERT_TRUE(connected && connected->graph);
+    for (auto const& connection : boundary_connections) {
+        EXPECT_TRUE(std::ranges::contains(connected->applied_connection_ids, connection.connection_id));
+        for (auto const names : {ProjectConnectionJsonNames::socket_rpc, ProjectConnectionJsonNames::project_file}) {
+            EXPECT_EQ(parse_project_connection_json(project_connection_json(connection, names), names),
+                ProjectConnection{connection});
+        }
+    }
+
+    auto const module_bundle = connected->placements.at("module").root;
+    auto const boundary = connected->graph->node_bundles.bundle(module_bundle).subgraph_boundary_handle();
+    ASSERT_TRUE(boundary);
+    auto const configured = connected->graph->connections.configured_sample_connections()
+        .subspan(connected->source_sample_connection_count);
+    EXPECT_TRUE(std::ranges::any_of(configured, [&](auto const& wire) {
+        return wire.source_channels.size() == 1 && wire.source_channels.front().channel.bundle == *boundary
+            && wire.source_channels.front().channel.port == 0;
+    }));
+    EXPECT_TRUE(std::ranges::any_of(configured, [&](auto const& wire) {
+        return wire.target_channels.size() == 1 && wire.target_channels.front().bundle == *boundary
+            && wire.target_channels.front().port == 1;
+    }));
 }
 
 TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases)
@@ -2517,7 +2562,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
 {
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto const detune = graph.input<"main">(0, -100, 100);
+        auto const detune = iv::programmatic::declare_input(graph, "main", 0, -100, 100);
         // Use private constant nodes because this fixture has no package-generated type metadata.
         auto const numerator_scale = graph.node<Constant>(Sample{2});
         auto const denominator = graph.node<Constant>(Sample{15});
@@ -4758,7 +4803,7 @@ TEST_F(ProjectGraphFixture, RegisteredBuiltinConstructionIsAnImplicitPackageDepe
 TEST_F(ProjectGraphFixture, StereoObservationCapabilitiesKeepPublicChannelNamesAndOperationSchemas)
 {
     auto snapshot = make_snapshot(1, +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs(graph.tile<iv::stereo>(input, input));
     });
     publish_definitions_snapshot(project_graph, {.snapshot = snapshot});

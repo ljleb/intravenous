@@ -236,3 +236,17 @@ connections for stack-budget trials with the same callback order. Preserve
 their indices because `SampleStoragePlan` returns bindings indexed by
 connection. Each trial chooses storage and packs the resulting buffers for
 its cost model.
+
+
+## Original size inventory scope
+
+The runtime responsibility audit used this scope before the owner raised
+the size inventory limits on 2026-11-21. The
+[current size inventory](../runtime_responsibility_audit.md#size-inventory)
+replaces it.
+
+This implementation audit began on 2026-11-21. Its inventory covers
+project-owned runtime source and test files above 4,000 lines. It excludes
+vendored miniaudio. The findings also cover related work across file
+boundaries. The project owner reported that all tests passed after the
+realtime root extraction.

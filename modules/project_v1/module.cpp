@@ -12,7 +12,7 @@ void project_v1(iv::GraphBuilder& g)
     auto make_channel = [&]<auto Channel>() {
         polyphonic<16>(g, [&]<size_t Voice>(auto m) {
             auto& [a, f] = m;
-            auto saw = g.node<"saw_oscillator">();
+            auto saw = g.node<"saw">();
             (void)Voice;
             g.outputs("main"_P[Channel] = saw("frequency"_P = f) * a);
         });

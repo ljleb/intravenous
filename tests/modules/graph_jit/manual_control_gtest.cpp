@@ -1,4 +1,5 @@
 #include "test_support.h"
+#include <intravenous/graph/programmatic_inputs.h>
 
 namespace iv::test::graph_jit_tests {
 
@@ -54,7 +55,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
             graph, id, std::nullopt, arguments);
     };
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto value = boundary.input<"value">(iv::Sample{.25f});
+        auto value = iv::programmatic::declare_input(boundary, "value", iv::Sample{.25f});
         auto converted = iv::details::configure_package_definition_provider(graph,
             "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
         auto delayed = iv::details::configure_package_definition_provider(graph,

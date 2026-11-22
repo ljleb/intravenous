@@ -394,9 +394,9 @@ namespace {
     void child_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const in = g.input<"in">();
-        auto const az = g.input<"azimuth">(0, -180, 180);
-        g.outputs("main"_P = in + az);
+        auto const in = g.input();
+        auto const azimuth = g.input(0, -180, 180);
+        g.outputs("main"_P = in + azimuth);
     }
     IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
 
@@ -440,7 +440,7 @@ namespace {
     };
 
     EXPECT_TRUE(has_port_identifier("in", "in"));
-    EXPECT_TRUE(has_port_identifier("azimuth", "az"));
+    EXPECT_TRUE(has_port_identifier("azimuth", "azimuth"));
 }
 
 TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBindingStrings)

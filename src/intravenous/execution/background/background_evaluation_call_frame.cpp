@@ -866,15 +866,16 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 "background runtime binding has an invalid logical port");
         }
         auto const& port = plan.ports[binding.port];
-        // A disconnected Random Access input has empty coverage and binds
-        // no storage.
         if (port.node != binding.node || port.kind != binding.kind ||
-            port.direction != binding.direction ||
-            (binding.storage.empty() &&
-             !graph_jit::detail::is_disconnected_random_access_input(
-                 plan, binding.port))) {
+            port.direction != binding.direction) {
             return std::unexpected(
                 "background runtime binding does not match its logical port");
+        }
+        if (binding.storage.empty() &&
+            !graph_jit::detail::background_binding_allows_empty_storage(
+                plan, binding.port)) {
+            return std::unexpected(
+                "background runtime binding has no storage for port '" + port.name + "'");
         }
 
         auto adapter = std::make_unique<BindingAdapter>();

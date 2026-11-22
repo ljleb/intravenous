@@ -79,6 +79,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
             if (connection.kind !== (kind === "continuous" ? "sample" : "event")) return false;
             const matchers = direction === "input" ? connection.inputs : connection.outputs;
             return matchers.some((matcher) => {
+                if (matcher.moduleBoundary) return false;
                 return resolveScopePorts(scope, matcher, connection.kind, direction)
                     .some((resolved) => addressKey(resolved.node.address) === addressKey(child.address)
                         && resolved.port.index === entry.index);

@@ -9,6 +9,7 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/UnresolvedSet.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Lex/Lexer.h"
@@ -487,7 +488,18 @@ struct StatementAnalysis {
     std::vector<RefAnnotation> refs;
     std::vector<NodeInputPortAnnotation> node_input_ports;
     std::vector<PublicOutputAnnotation> public_outputs;
+    std::vector<std::pair<VarDecl*, CXXMemberCallExpr*>> module_inputs;
+    std::vector<CXXMemberCallExpr*> unnamed_module_inputs;
 };
+
+bool is_module_input_call(CXXMemberCallExpr const* call)
+{
+    auto const* method = call ? call->getMethodDecl() : nullptr;
+    if (!method || !method->getIdentifier()) return false;
+    auto const name = method->getName();
+    return (name == "input" || name == "event_input")
+        && method->getParent()->getQualifiedNameAsString() == "iv::details::ModuleInputDeclarations";
+}
 
 class StatementAnalyzer final : public RecursiveASTVisitor<StatementAnalyzer> {
 public:
@@ -511,9 +523,11 @@ public:
         if (!statement) return true;
         for (auto* declaration : statement->decls()) {
             auto* variable = dyn_cast<VarDecl>(declaration);
-            if (!variable || variable->isImplicit()
-                || !is_annotatable_ref(variable->getType()))
-                continue;
+            if (!variable || variable->isImplicit()) continue;
+            auto* call = dyn_cast_or_null<CXXMemberCallExpr>(peel_expression(variable->getInit()));
+            if (variable->getIdentifier() && is_module_input_call(call))
+                result_.module_inputs.emplace_back(variable, call);
+            if (!is_annotatable_ref(variable->getType())) continue;
 
             auto const span = sources_.declaration_span(variable);
             auto const identity = declaration_identity(variable, span);
@@ -618,6 +632,9 @@ public:
     bool VisitCXXMemberCallExpr(CXXMemberCallExpr* call)
     {
         if (!call) return true;
+        if (is_module_input_call(call) && !std::ranges::contains(
+                result_.module_inputs, call, &std::pair<VarDecl*, CXXMemberCallExpr*>::second))
+            result_.unnamed_module_inputs.push_back(call);
         auto* method = call->getMethodDecl();
         if (!method) return true;
         auto const method_name = method->getNameAsString();
@@ -869,8 +886,16 @@ class HelperFinder final : public RecursiveASTVisitor<HelperFinder> {
 public:
     bool VisitFunctionTemplateDecl(FunctionTemplateDecl* declaration)
     {
-        if (declaration && declaration->getNameAsString() == "_annotate_source_info_after_statement")
+        if (!declaration || !declaration->getIdentifier()) return true;
+        auto const name = declaration->getName();
+        if (name == "_annotate_source_info_after_statement")
             source_annotation = declaration;
+        else if (name == "declare_input"
+            && declaration->getQualifiedNameAsString() == "iv::programmatic::declare_input")
+            sample_input_declarations.addDecl(declaration, AS_none);
+        else if (name == "declare_event_input"
+            && declaration->getQualifiedNameAsString() == "iv::programmatic::declare_event_input")
+            event_input_declarations.addDecl(declaration, AS_none);
         return true;
     }
 
@@ -891,6 +916,8 @@ public:
     FunctionDecl* node_source_preparation = nullptr;
     FunctionDecl* node_input_annotation = nullptr;
     FunctionDecl* public_output_annotation = nullptr;
+    UnresolvedSet<8> sample_input_declarations;
+    UnresolvedSet<1> event_input_declarations;
 };
 
 class FunctionInstrumenter {
@@ -930,16 +957,29 @@ public:
         function->setBody(transform_statement(function->getBody()));
     }
 
+    void diagnose_unnamed_module_input(CXXMemberCallExpr* call)
+    {
+        if (!is_module_input_call(call) || !sources_.is_user_source(call->getExprLoc())
+            || !diagnosed_module_inputs_.insert(call).second) return;
+        auto const id = context_.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "module input must directly initialize a named local variable, such as 'auto const frequency = g.input();'");
+        context_.getDiagnostics().Report(call->getExprLoc(), id);
+    }
+
 private:
     CompilerInstance& compiler_;
     ASTContext& context_;
     SourceModel const& sources_;
     bool source_annotations_ = true;
     llvm::DenseSet<FunctionDecl*> instrumented_;
+    llvm::DenseSet<CXXMemberCallExpr*> diagnosed_module_inputs_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
     FunctionDecl* node_source_preparation_function_ = nullptr;
     FunctionDecl* node_input_annotation_function_ = nullptr;
     FunctionDecl* public_output_annotation_function_ = nullptr;
+    UnresolvedSet<8> sample_input_declarations_;
+    UnresolvedSet<1> event_input_declarations_;
     bool helpers_searched_ = false;
     std::unordered_map<FunctionDecl const*,
         std::unordered_map<std::string, SourceSpanRecord>> graph_locals_;
@@ -956,6 +996,8 @@ private:
         node_source_preparation_function_ = finder.node_source_preparation;
         node_input_annotation_function_ = finder.node_input_annotation;
         public_output_annotation_function_ = finder.public_output_annotation;
+        sample_input_declarations_.append(finder.sample_input_declarations.begin(), finder.sample_input_declarations.end());
+        event_input_declarations_.append(finder.event_input_declarations.begin(), finder.event_input_declarations.end());
     }
 
     Stmt* transform_statement(Stmt* statement)
@@ -984,6 +1026,10 @@ private:
             StatementAnalysis analysis;
             StatementAnalyzer analyzer(context_, sources_, analysis, graph_locals_);
             analyzer.TraverseStmt(statement);
+            for (auto const& [variable, call] : analysis.module_inputs)
+                name_module_input(*variable, *call);
+            for (auto* call : analysis.unnamed_module_inputs)
+                diagnose_unnamed_module_input(call);
             for (auto const& ref : analysis.refs) {
                 if (ref.node_builder) {
                     if (auto* preparation = build_node_source_preparation(ref))
@@ -1048,6 +1094,62 @@ private:
             context_.CharTy, static_cast<unsigned>(value.size() + 1));
         return StringLiteral::Create(
             context_, value, StringLiteralKind::Ordinary, false, type, location);
+    }
+
+    void name_module_input(VarDecl& variable, CXXMemberCallExpr& original)
+    {
+        auto const location = variable.getLocation();
+        auto const* member = cast<MemberExpr>(original.getCallee()->IgnoreParenImpCasts());
+        auto* builder = member->getBase()->IgnoreParenImpCasts();
+        if (member->isArrow()) {
+            auto dereference = sema().BuildUnaryOp(nullptr, location, UO_Deref, builder);
+            if (dereference.isInvalid()) return;
+            builder = dereference.get();
+        }
+        auto const event = original.getMethodDecl()->getName() == "event_input";
+        UnresolvedSetImpl const& candidates = event
+            ? static_cast<UnresolvedSetImpl const&>(event_input_declarations_)
+            : static_cast<UnresolvedSetImpl const&>(sample_input_declarations_);
+        if (candidates.empty()) {
+            auto const id = context_.getDiagnostics().getCustomDiagID(
+                DiagnosticsEngine::Error, "IV programmatic input declarations were not found; include <intravenous/dsl.h>");
+            context_.getDiagnostics().Report(location, id);
+            return;
+        }
+        auto const name = event ? "declare_event_input" : "declare_input";
+        auto const info = DeclarationNameInfo(&context_.Idents.get(name), location);
+        UnresolvedLookupExpr* callee = nullptr;
+        if (member->hasExplicitTemplateArgs()) {
+            TemplateArgumentListInfo explicit_arguments;
+            member->copyTemplateArgumentsInto(explicit_arguments);
+            callee = UnresolvedLookupExpr::Create(context_, nullptr, {}, {}, info,
+                false, &explicit_arguments, candidates.begin(), candidates.end(), false, false);
+        } else {
+            callee = UnresolvedLookupExpr::Create(context_, nullptr, {}, info,
+                false, candidates.begin(), candidates.end(), false, false);
+        }
+        llvm::SmallVector<Expr*, 8> arguments{builder, make_string(variable.getNameAsString(), location)};
+        for (auto* argument : original.arguments()) {
+            if (!isa<CXXDefaultArgExpr>(argument)) arguments.push_back(argument);
+        }
+        auto replacement = sema().BuildCallExpr(nullptr, callee, location, arguments, original.getRParenLoc());
+        if (replacement.isInvalid()) return;
+        if (variable.getInit() == &original)
+            variable.setInit(replacement.get());
+        else
+            replace_input_initializer(*variable.getInit(), original, *replacement.get());
+    }
+
+    static bool replace_input_initializer(Stmt& expression, Expr const& original, Expr& replacement)
+    {
+        for (auto child = expression.child_begin(); child != expression.child_end(); ++child) {
+            if (*child == &original) {
+                *child = &replacement;
+                return true;
+            }
+            if (*child && replace_input_initializer(**child, original, replacement)) return true;
+        }
+        return false;
     }
 
     IntegerLiteral* make_u32(std::uint32_t value, SourceLocation location)
@@ -2558,6 +2660,14 @@ public:
     bool VisitFunctionDecl(FunctionDecl* declaration)
     {
         instrumenter_.instrument(declaration);
+        return true;
+    }
+
+    bool VisitCXXMemberCallExpr(CXXMemberCallExpr* call)
+    {
+        // The function pass rewrites named declarations before this visit.
+        // Also catch calls in places that never enter a function body.
+        instrumenter_.diagnose_unnamed_module_input(call);
         return true;
     }
 

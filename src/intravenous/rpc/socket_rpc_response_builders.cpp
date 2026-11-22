@@ -557,16 +557,13 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     }
     auto connections = Json::array();
     for (auto const& entry : result->connections) {
-        auto& connection = connections.emplace_back(Json{
+        connections.push_back({
             {"id", project_connection_id(entry.connection)},
             {"connection", project_connection_json(
                 entry.connection, ProjectConnectionJsonNames::socket_rpc)},
             {"applied", entry.applied},
             {"sourceOwned", entry.source_owned},
         });
-        constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
-        if (!entry.boundary_sources.empty()) connection["boundarySources"] = project_port_matchers_json(entry.boundary_sources, names);
-        if (!entry.boundary_targets.empty()) connection["boundaryTargets"] = project_port_matchers_json(entry.boundary_targets, names);
     }
     auto timelines = Json::array();
     for (auto const& address : result->timeline_nodes)

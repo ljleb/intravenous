@@ -28,7 +28,7 @@ struct PrivatePass {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = graph.input<"in">(default_value);
+        auto input = iv::programmatic::declare_input(graph, "in", default_value);
         details::iv_builder_prepare_node_source_identity(&graph, "inner-pass", "pass");
         auto pass = graph.node<Pass>();
         pass(input);
@@ -102,7 +102,7 @@ iv::ConfiguredGraph make_frozen_pass()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto const input = graph.input<"in">();
+    auto const input = iv::programmatic::declare_input(graph, "in");
     auto pass = details::configure_concrete_node<Pass>(graph);
     pass(input);
     pass._annotate_source_info("pass", "/tmp/frozen.cpp", 1, 2);
@@ -161,7 +161,7 @@ TEST(ScopedGraphBuilder, PrivateModuleConstructionPreservesItsBoundary)
     details::iv_builder_prepare_node_source_identity(&root, "private-module", "module");
     auto module = root.node<PrivatePass>(Sample{.25f});
     auto const handle = module.node_bundle_handle();
-    auto const input = root.input<"in">();
+    auto const input = iv::programmatic::declare_input(root, "in");
     module("in"_P = input);
     root.outputs("out"_P = module["value"_P]);
 
@@ -270,7 +270,7 @@ TEST(ScopedGraphBuilder, NestedScopeSnapshotLeavesTheSessionUntouched)
     using namespace iv;
     GraphBuilder root;
     auto nested = root.nested();
-    auto const input = nested.input<"in">();
+    auto const input = iv::programmatic::declare_input(nested, "in");
     auto pass = details::configure_concrete_node<Pass>(nested);
     pass(input);
     pass._annotate_source_info("pass", "/tmp/frozen.cpp", 1, 2);
@@ -323,7 +323,7 @@ TEST(ScopedGraphBuilder, FailedSubgraphFailsItsSession)
     auto outer = details::configure_concrete_node<Pass>(root);
 
     EXPECT_THROW(root.subgraph([&](SubgraphBuilder& boundary) {
-        (void)boundary.input();
+        (void)iv::programmatic::declare_input(boundary, "");
         auto inner = details::configure_concrete_node<Pass>(root);
         outer(inner);
         throw std::runtime_error("construction failed");
@@ -354,7 +354,7 @@ TEST(ScopedGraphBuilder, ReusableClosuresPlaceFreshScopesOnEveryInvocation)
     using namespace iv;
     GraphBuilder root;
     SubgraphClosure callable = [&](SubgraphBuilder& boundary) {
-        auto const input = boundary.input();
+        auto const input = iv::programmatic::declare_input(boundary, "");
         auto pass = details::configure_concrete_node<Pass>(root);
         pass(input);
         boundary.outputs("out"_P = pass);
@@ -556,7 +556,7 @@ TEST(ScopedGraphBuilder, SnapshotAvailabilityFollowsTheScopeLifecycle)
     root.outputs();
     // An interface operation on a closed view is an error of the session, so
     // it fails the session.
-    EXPECT_THROW((void)inner.input<"late">(), std::logic_error);
+    EXPECT_THROW((void)iv::programmatic::declare_input(inner, "late"), std::logic_error);
     EXPECT_THROW((void)std::move(root).finish(), std::logic_error);
 }
 
@@ -567,7 +567,7 @@ TEST(ScopedGraphBuilder, RootInterfaceDeclaredWhileANestedScopeIsCurrentBelongsT
     auto nested = root.nested();
     // Interface operations act on the view's scope; node creation acts on
     // the session's current scope, which is `nested`.
-    auto const input = root.input<"x">();
+    auto const input = iv::programmatic::declare_input(root, "x");
     auto pass = details::configure_concrete_node<Pass>(root);
     pass(input);
     nested.outputs("out"_P = pass);
@@ -622,7 +622,7 @@ TEST(ScopedGraphBuilder, EnclosingInterfaceDeclaredWhileANestedScopeIsOpenBelong
     // An interface operation on the root view acts on the root scope, even
     // while `voice` is the current construction scope. The voice's own
     // contents are unchanged, so its snapshot stays closed.
-    (void)root.input<"gain">();
+    (void)iv::programmatic::declare_input(root, "gain");
     EXPECT_TRUE(voice.configured_graph().has_value());
 
     auto const placed = root.subgraph(std::move(voice), "voice");

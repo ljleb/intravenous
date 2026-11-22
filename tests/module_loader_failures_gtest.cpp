@@ -41,6 +41,58 @@ TEST(ModuleLoaderFailures, MissingManifestFails)
         "iv_package.json");
 }
 
+TEST(ModuleLoaderPackages, ModuleInputIdentifiersNamePortsWithoutSourceAnnotations)
+{
+    auto const workspace = iv::test::make_inline_module_workspace(
+        "module_input_identifier_names",
+        R"cpp(
+#include <intravenous/dsl.h>
+
+void module_main(iv::GraphBuilder& graph)
+{
+    auto const frequency = graph.input<iv::Sample>({.default_value = 440.f});
+    auto const gates = graph.event_input(iv::EventTypeId::trigger, iv::InputAccess::coverage);
+    graph.outputs(frequency);
+    graph.event_outputs(gates);
+}
+IV_MODULE("iv.test.input_identifiers", module_main, "Input Identifiers");
+)cpp");
+    iv::ModuleLoader loader(iv::test::repo_root(), {.source_introspection = false});
+    auto loaded = iv::test::load_project_package_definitions(loader, workspace);
+    auto const definition = std::ranges::find(
+        loaded, "iv.test.input_identifiers", &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(definition, loaded.end());
+    ASSERT_TRUE(definition->configured_graph);
+    auto const& graph = *definition->configured_graph;
+    auto const& ports = graph.node_bundles.bundle(graph.public_ports.boundary_handle()).boundary_ports();
+    ASSERT_EQ(ports.sample_input_count(), 1u);
+    ASSERT_EQ(ports.event_input_count(), 1u);
+    EXPECT_EQ(ports.sample_input(0).name, "frequency");
+    EXPECT_EQ(ports.event_input(0).name, "gates");
+}
+
+TEST(ModuleLoaderFailures, ModuleInputMustDirectlyInitializeANamedLocal)
+{
+    auto const workspace = iv::test::make_inline_module_workspace(
+        "unnamed_module_input",
+        R"cpp(
+#include <intravenous/dsl.h>
+
+void invalid_inputs(iv::GraphBuilder& graph)
+{
+    (void)graph.input();
+    graph.event_outputs(graph.event_input(iv::EventTypeId::trigger));
+}
+IV_MODULE("iv.test.unnamed_inputs", invalid_inputs, "Unnamed Inputs");
+)cpp");
+    iv::ModuleLoader loader(iv::test::repo_root());
+    testing::internal::CaptureStdout();
+    testing::internal::CaptureStderr();
+    EXPECT_THROW((void)loader.compile_package({.package_root = workspace}), std::runtime_error);
+    auto const output = testing::internal::GetCapturedStdout() + testing::internal::GetCapturedStderr();
+    EXPECT_NE(output.find("module input must directly initialize a named local variable"), std::string::npos) << output;
+}
+
 TEST(ModuleLoaderFailures, NonmovableTickStateRequiresAnAuthoredMoveDecision)
 {
     auto const workspace = iv::test::make_inline_module_workspace(
@@ -380,7 +432,7 @@ TEST(ModuleLoaderPackages, BuiltinNodeShortIdCanConstructATiledRegisteredNode)
         "#include <intravenous/dsl.h>\n\n"
         "void builtin_oscillator(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto oscillator = g.node<\"saw_oscillator\", iv::stereo>();\n"
+        "    auto oscillator = g.node<\"saw\", iv::stereo>();\n"
         "    oscillator.connect_input(\"frequency\", 440.0f);\n"
         "    g.outputs(oscillator);\n"
         "}\n\n"
@@ -450,9 +502,9 @@ TEST(ModuleLoaderPackages, ExactShortRegistrationOverridesBuiltinConvenienceAlia
         "};\n\n"
         "void local_short_name_consumer(iv::GraphBuilder& g)\n"
         "{\n"
-        "    g.outputs(g.node<\"saw_oscillator\">(iv::Sample{0.25f}));\n"
+        "    g.outputs(g.node<\"saw\">(iv::Sample{0.25f}));\n"
         "}\n\n"
-        "IV_NODE(\"saw_oscillator\", LocalShortNameOscillator, \"Saw oscillator\");\n"
+        "IV_NODE(\"saw\", LocalShortNameOscillator, \"Saw oscillator\");\n"
         "IV_MODULE(\"iv.test.local_short_name_consumer\", local_short_name_consumer, \"Local short name consumer\");\n");
 
     auto loader = iv::test::make_loader();
@@ -481,14 +533,14 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "#include <intravenous/dsl.h>\n\n"
         "void mono_voice(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto frequency = g.input<\"frequency\">(220.0f);\n"
-        "    auto oscillator = g.node<\"saw_oscillator\">();\n"
+        "    auto frequency = g.input(220.0f);\n"
+        "    auto oscillator = g.node<\"saw\">();\n"
         "    oscillator.connect_input(\"frequency\", frequency);\n"
         "    g.outputs(oscillator);\n"
         "}\n\n"
         "void stereo_voice(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto frequency = g.input<\"frequency\", iv::stereo>(440.0f);\n"
+        "    auto frequency = g.input<iv::stereo>(440.0f);\n"
         "    auto voice = g.node<\"iv.test.tiled_mono_voice\", iv::stereo>();\n"
         "    voice.connect_input(\"frequency\", frequency);\n"
         "    g.outputs(voice);\n"
@@ -531,7 +583,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleInterface)
         "#include <intravenous/dsl.h>\n\n"
         "void stereo_provider(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto input = g.input<\"input\", iv::stereo>();\n"
+        "    auto input = g.input<iv::stereo>();\n"
         "    g.outputs(input);\n"
         "}\n\n"
         "void invalid_tiled_use(iv::GraphBuilder& g)\n"
@@ -562,7 +614,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleOutputs)
         "#include <intravenous/dsl.h>\n\n"
         "void stereo_output_provider(iv::GraphBuilder& g)\n"
         "{\n"
-        "    g.outputs(g.node<\"saw_oscillator\", iv::stereo>());\n"
+        "    g.outputs(g.node<\"saw\", iv::stereo>());\n"
         "}\n\n"
         "void invalid_tiled_use(iv::GraphBuilder& g)\n"
         "{\n"
@@ -592,7 +644,7 @@ TEST(ModuleLoaderPackages, CaughtTiledModuleRejectionStillFailsThePackage)
         "#include <intravenous/dsl.h>\n\n"
         "void incompatible_provider(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto input = g.input<\"input\", iv::stereo>();\n"
+        "    auto input = g.input<iv::stereo>();\n"
         "    g.outputs(input);\n"
         "}\n\n"
         "void catches_rejected_tile(iv::GraphBuilder& g)\n"

@@ -26,6 +26,8 @@ struct ProjectNodePortMatcher {
     std::string instance_id{};
     std::vector<ProjectNodePathSelector> path{};
     ProjectPortMatcher port{};
+    // Resolve the addressed module's inward-facing ports.
+    bool module_boundary = false;
     bool operator==(ProjectNodePortMatcher const&) const = default;
 };
 

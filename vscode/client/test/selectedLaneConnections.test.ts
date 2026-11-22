@@ -26,7 +26,7 @@ function scope(connections: GraphScopeConnection[]): GraphScope {
 const selected = new Set([addressKey({ instanceId: "a" })]);
 function anchors(expanded: string[]) {
     return (port: GraphPortEndpoint) => {
-        const group = portSlotKey(port.address, port.direction);
+        const group = portSlotKey(port.address, port.direction, port.moduleBoundary);
         const direct = expanded.includes(group);
         return { id: direct ? `port:${portEndpointKey(port)}` : `slot:${group}`,
             x: port.direction === "output" ? 30 : 10, y: direct ? port.index * 20 : 0 };
@@ -130,23 +130,23 @@ test("lane cable index updates across disjoint jumps and reversals", () => {
 test("C++ routes use the module's public inputs as sources and public outputs as targets", () => {
     const graph = scope([
         { ...connection("public input", "a", 0, "b", 0), sourceOwned: true,
-            boundarySources: [{ instanceId: "a", port: { name: "in0" } }],
-            connection: { kind: "sample", outputs: [], inputs: [{ instanceId: "b", port: { index: 0 } }] } },
+            connection: { kind: "sample", outputs: [{ instanceId: "a", moduleBoundary: true, port: { name: "in0" } }],
+                inputs: [{ instanceId: "b", port: { index: 0 } }] } },
         { ...connection("public output", "b", 0, "a", 0), sourceOwned: true,
-            boundaryTargets: [{ instanceId: "a", port: { name: "out0" } }],
-            connection: { kind: "sample", outputs: [{ instanceId: "b", port: { index: 0 } }], inputs: [] } },
+            connection: { kind: "sample", outputs: [{ instanceId: "b", port: { index: 0 } }],
+                inputs: [{ instanceId: "a", moduleBoundary: true, port: { name: "out0" } }] } },
         connection("project cable", "c", 0, "a", 0),
     ]);
-    const wires = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, (port, _, moduleBoundary) => ({
-        id: `${port.address.instanceId}:${port.name}:${moduleBoundary ? "boundary" : "lane"}`,
-        moduleBoundary, x: 10, y: moduleBoundary ? 20 : 35,
+    const wires = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, (port) => ({
+        id: `${port.address.instanceId}:${port.name}:${port.moduleBoundary ? "boundary" : "lane"}`,
+        moduleBoundary: port.moduleBoundary, x: port.direction === "output" ? 30 : 10, y: port.moduleBoundary ? 20 : 35,
     }));
     assert.deepEqual(wires.map(({ source, target, sourceOwned }) => [source.id, target.id, sourceOwned]), [
         ["a:in0:boundary", "b:in0:lane", true],
         ["b:out0:lane", "a:out0:boundary", true],
         ["c:out0:lane", "a:in0:lane", false],
     ]);
-    assert.equal(selectedLaneWirePath(wires[0]), "M 10 20 C 32 20, 32 35, 10 35");
+    assert.equal(selectedLaneWirePath(wires[0]), "M 30 20 C 20 20, 20 35, 10 35");
 });
 
 test("a C++ cable and a project cable sharing sockets retain separate drawing styles", () => {
@@ -158,19 +158,22 @@ test("a C++ cable and a project cable sharing sockets retain separate drawing st
     ]);
 });
 
-test("only interior connections use the module boundary sockets", () => {
+test("a project wire to a child uses the socket face it was authored on", () => {
     const child = { instanceId: "a", path: [{ kind: "tiledChild", name: "child" }] };
     const inside = connection("inside", "a", 0, "a", 0);
+    inside.connection.outputs[0].moduleBoundary = true;
     inside.connection.inputs[0] = { ...child, port: { index: 0 } };
-    const graph = scope([connection("outside", "a", 0, "b", 0), inside]);
+    const fromHeader = connection("from header", "a", 0, "a", 0);
+    fromHeader.connection.inputs[0] = inside.connection.inputs[0];
+    const graph = scope([connection("outside", "a", 0, "b", 0), inside, fromHeader]);
     const member = { ...node("a"), address: child };
     graph.nodes.push(member);
     graph.childScopes = [{ subject: { instanceId: "a" }, nodes: [member], hasBoundary: true }];
-    const wires = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, (port, _, moduleBoundary) => ({
-        id: `${portEndpointKey(port)}:${moduleBoundary ? "boundary" : "lane"}`, x: 10, y: 20,
+    const wires = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, (port) => ({
+        id: `${portEndpointKey(port)}:${port.moduleBoundary ? "boundary" : "lane"}`, x: 10, y: 20,
     }));
     assert.deepEqual(wires.map((wire) => [wire.connectionIds[0], wire.source.id.split(":").at(-1)]), [
-        ["outside", "lane"], ["inside", "boundary"],
+        ["outside", "lane"], ["inside", "boundary"], ["from header", "lane"],
     ]);
 });
 

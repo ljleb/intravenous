@@ -308,7 +308,13 @@ std::vector<Result> resolve_matcher(
     auto const cursors = resolve_project_node_path(
         graph, placements, matcher.instance_id, matcher.path);
     std::vector<Result> result;
-    for (auto const& cursor : cursors) {
+    for (auto cursor : cursors) {
+        if (matcher.module_boundary) {
+            if (cursor.kind != PathCursor::Kind::bundle) continue;
+            auto const boundary = graph.node_bundles.bundle(cursor.bundle).subgraph_boundary_handle();
+            if (!boundary) continue;
+            cursor.bundle = *boundary;
+        }
         auto values = std::forward<Resolver>(resolver)(graph, cursor, matcher.port);
         for (auto& value : values) append_unique(result, std::move(value));
     }

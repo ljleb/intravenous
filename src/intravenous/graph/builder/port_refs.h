@@ -226,10 +226,8 @@ struct PublicSampleInputRef {
       uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const;
 };
 
-// A named public input has a compile-time channel type when it was declared
-// through GraphBuilder::input<Name, ChannelType>.  Keep its public-input
-// identity so source annotations still attach to the graph interface, while
-// exposing the same channel-selection API as a TypedSamplePortRef.
+// Keep the public-input identity for source annotations while exposing
+// compile-time channel selection like TypedSamplePortRef.
 template<class ChannelType>
 class TypedPublicSampleInputRef {
   PublicSampleInputRef _input;

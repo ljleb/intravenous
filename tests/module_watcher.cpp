@@ -37,8 +37,8 @@ int main(int, char** argv)
 
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
-    auto replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* watcher marker*/");
+    auto needle = std::string("auto const amplitude = g.input(0.1);");
+    auto replacement = std::string("auto const amplitude = g.input(0.1);/* watcher marker*/");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text_advancing_timestamp(module_cpp, source);

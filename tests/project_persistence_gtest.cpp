@@ -1,4 +1,5 @@
 #include "module_test_utils.h"
+#include <intravenous/graph/programmatic_inputs.h>
 #include "event_source_test_support.h"
 #include "node_instances_test_driver.h"
 
@@ -67,7 +68,7 @@ void configure_persisted_original(
     std::span<iv::details::ConfigurationArgument>)
 {
     using namespace iv;
-    auto input = graph.input<"main">();
+    auto input = iv::programmatic::declare_input(graph, "main");
     graph.outputs(input);
 }
 
@@ -77,7 +78,7 @@ void configure_persisted_successor(
 {
     ++persisted_successor_configure_calls;
     using namespace iv;
-    auto input = graph.input<"main">();
+    auto input = iv::programmatic::declare_input(graph, "main");
     graph.outputs(input);
 }
 

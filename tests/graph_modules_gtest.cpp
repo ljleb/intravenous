@@ -171,7 +171,7 @@ void configure_pointer_metadata_package(
 ConfiguredGraph configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
-    auto input = g.input<"in">(0.0f);
+    auto input = iv::programmatic::declare_input(g, "in", 0.0f);
     g.outputs("out"_P = input);
     return std::move(g).finish();
 }
@@ -179,8 +179,8 @@ ConfiguredGraph configure_direct_public_sample_passthrough()
 ConfiguredGraph configure_introspection_regression()
 {
     GraphBuilder g;
-    auto input = g.input<"in">(0.25f);
-    auto event = g.event_input<"event">(EventTypeId::empty);
+    auto input = iv::programmatic::declare_input(g, "in", 0.25f);
+    auto event = iv::programmatic::declare_event_input(g, "event", EventTypeId::empty);
     auto sum = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 1>>(g);
     auto const sum_handle = sum.node_bundle_handle();
     auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
@@ -258,7 +258,7 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     ASSERT_NE(session, nullptr);
 
     GraphBuilder builder(session.get());
-    auto input = builder.input<"in">(0.0f);
+    auto input = iv::programmatic::declare_input(builder, "in", 0.0f);
     auto pass = details::configure_concrete_node<
         SumN<mono, SampleStreamLayout::planar, 1>>(builder);
     pass(input);
@@ -279,8 +279,8 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
 TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
 {
     GraphBuilder graph;
-    auto left = graph.input<"left">(0.0f);
-    auto right = graph.input<"right">(0.0f);
+    auto left = iv::programmatic::declare_input(graph, "left", 0.0f);
+    auto right = iv::programmatic::declare_input(graph, "right", 0.0f);
     auto source = details::configure_concrete_node<NodeCallEventSource>(graph);
     auto sink = details::configure_concrete_node<NodeCallMixedSink>(graph);
     auto tiled_sink = details::configure_concrete_tiled_node<NodeCallMixedSink, stereo>(graph);
@@ -425,26 +425,26 @@ TEST(GraphModules, NodeChainingUsesDeclaredKindAndReturnsTheTargetNode)
 TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
 {
     GraphBuilder graph;
-    (void)graph.input<"sequential", Sample>(InputAccess::sequential, {
+    (void)iv::programmatic::declare_input<Sample>(graph, "sequential", InputAccess::sequential, {
         .default_value = Sample{0.25f},
         .scrub_speed = Sample{0.375f}, .enabled_by_default = false});
-    (void)graph.input<"region", stereo>(InputAccess::region);
-    (void)graph.input<"coverage", Sample>(InputAccess::coverage, {
+    (void)iv::programmatic::declare_input<stereo>(graph, "region", InputAccess::region);
+    (void)iv::programmatic::declare_input<Sample>(graph, "coverage", InputAccess::coverage, {
         .channel_layout = mono_planar_channel_layout, .default_value = Sample{1}, .enabled_by_default = true});
-    (void)graph.input<Sample>();
-    (void)graph.event_input<"seq-events">(EventTypeId::trigger);
-    (void)graph.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
-    (void)graph.event_input(EventTypeId::trigger, InputAccess::coverage);
+    (void)iv::programmatic::declare_input<Sample>(graph, "");
+    (void)iv::programmatic::declare_event_input(graph, "seq-events", EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(graph, "region-events", EventTypeId::trigger, InputAccess::region);
+    (void)iv::programmatic::declare_event_input(graph, "", EventTypeId::trigger, InputAccess::coverage);
     auto child = graph.subgraph([](SubgraphBuilder& boundary) {
-        (void)boundary.input<"sequential", Sample>({
+        (void)iv::programmatic::declare_input<Sample>(boundary, "sequential", {
             .default_value = Sample{0.5f},
             .scrub_speed = Sample{0.125f}});
-        (void)boundary.input<"region", stereo>(InputAccess::region);
-        (void)boundary.input<FFTBlock>(InputAccess::coverage);
-        (void)boundary.input(InputAccess::region);
-        (void)boundary.event_input<"seq-events">(EventTypeId::trigger, InputAccess::sequential);
-        (void)boundary.event_input<"region-events">(EventTypeId::trigger, InputAccess::region);
-        (void)boundary.event_input(EventTypeId::trigger, InputAccess::coverage);
+        (void)iv::programmatic::declare_input<stereo>(boundary, "region", InputAccess::region);
+        (void)iv::programmatic::declare_input<FFTBlock>(boundary, "", InputAccess::coverage);
+        (void)iv::programmatic::declare_input(boundary, "", InputAccess::region);
+        (void)iv::programmatic::declare_event_input(boundary, "seq-events", EventTypeId::trigger, InputAccess::sequential);
+        (void)iv::programmatic::declare_event_input(boundary, "region-events", EventTypeId::trigger, InputAccess::region);
+        (void)iv::programmatic::declare_event_input(boundary, "", EventTypeId::trigger, InputAccess::coverage);
         boundary.outputs();
     });
     auto const child_handle = child.node_bundle_handle();
@@ -534,10 +534,10 @@ TEST(GraphModules, MixedPublicOutputsPreserveKindOrderThroughSubgraphsAndArchive
 TEST(GraphModules, MixedPublicOutputOrderUsesOutputCountsInsteadOfInputCounts)
 {
     GraphBuilder g;
-    (void)g.input<"audio-in">();
-    (void)g.event_input<"event-in-a">(EventTypeId::trigger);
-    (void)g.event_input<"event-in-b">(EventTypeId::trigger);
-    (void)g.event_input<"event-in-c">(EventTypeId::trigger);
+    (void)iv::programmatic::declare_input(g, "audio-in");
+    (void)iv::programmatic::declare_event_input(g, "event-in-a", EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(g, "event-in-b", EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(g, "event-in-c", EventTypeId::trigger);
     auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
     g.outputs("event-a"_F = source.event_port(0), "audio-a"_P = source[0],
         "audio-b"_P = source[1], "event-b"_F = source.event_port(1));
@@ -809,7 +809,7 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
 TEST(GraphModules, UnnamedChannelAssignmentsExposeOneValueOutput)
 {
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     graph.outputs(stereo::left = input, stereo::right = input);
 
     auto configured = std::move(graph).finish();

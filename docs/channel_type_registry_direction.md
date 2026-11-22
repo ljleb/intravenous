@@ -1,5 +1,8 @@
 # Channel Type Registry Direction
 
+For a future open registry and tensor model, see the
+[deferred proposal on project-defined port types](./project_defined_port_types_proposal.md).
+
 ## Goal
 
 Channel types have one canonical declaration.  That declaration defines their

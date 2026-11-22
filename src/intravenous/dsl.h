@@ -8,6 +8,7 @@
 #endif
 
 #include <intravenous/channel_ports.h>
+#include <intravenous/graph/programmatic_inputs.h>
 #include <intravenous/module/source_annotations.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/module_api.h>

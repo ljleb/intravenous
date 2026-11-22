@@ -119,14 +119,14 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         return finish();
     }
     source << "    using namespace iv;\n"
-           << "    auto const frequency = g.input<\"frequency\">(220.0f);\n";
+           << "    auto const frequency = g.input(220.0f);\n";
     if (shape == SourceShape::input) {
         source << "}\n";
         return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    auto const osc" << voice
-               << " = g.node<\"saw_oscillator\">();\n";
+               << " = g.node<\"saw\">();\n";
     }
     if (shape == SourceShape::nodes) {
         source << "}\n";

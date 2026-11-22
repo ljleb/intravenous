@@ -54,15 +54,24 @@ children, and project connections can target their ports. Children that no
 selector can reach stay hidden. A future inspection or module-copy operation
 can revisit their visibility.
 
-When a module with public ports expands, **Module Ports** is its first child
-lane. It gives project edits access to the same public ports as the module
-header. External cables terminate on the module header. Connections between
-the public ports and the module's children use the boundary lane. C++
-connections between shown nodes and to or from these boundary ports appear
-as solid gray cables. Editing those cables belongs to the module source.
-The boundary lane has no independent node or saved state.
-Its knobs edit the same manual input values and output gains as the module
-header.
+### Module Ports and child lanes
+
+When a module with public ports expands, Module Ports is its first child lane.
+The lane shows the sockets on the inner side of the module boundary. A public
+input becomes an output socket inside the module. A public output becomes an
+input socket inside the module. Project connections can use either side of the
+boundary and store which side each endpoint uses.
+
+The module header shows the outer sockets, manual input knobs, and output gain
+knobs. The Module Ports header has its own shading and contains only sockets and
+their labels. The module address identifies both sides of the boundary.
+C++ connections appear as solid gray cables. Edit those cables in the module source.
+
+C++ child lane headers use the same diagonal stripes as VU meters that are
+waiting for data. Module Ports also uses this texture. The knobs stay editable.
+Each expanded group has an inset shadow around its descendants, with a visible
+edge above its first child and below its last descendant. The shadows and lane
+headers share a left edge at every depth.
 
 The Add Node picker lists exported definitions. An addressable package-private
 child can appear in its module's expanded lanes and take part in project

@@ -713,57 +713,6 @@ GraphBuilder& GraphBuilder::operator=(GraphBuilder&& other) noexcept
     return *this;
 }
 
-PublicSampleInputRef GraphBuilder::input()
-try {
-    return details::iv_builder_scope_input(_session, _scope,
-        details::make_default_boundary_input_config({}));
-} catch (...) {
-    // An exception leaving a session operation fails the session.
-    details::record_builder_failure(_session, std::current_exception(), {});
-    throw;
-}
-PublicSampleInputRef GraphBuilder::input(
-    Sample value, std::optional<Sample> min, std::optional<Sample> max)
-try {
-    return details::iv_builder_scope_input(_session, _scope,
-        details::make_sample_boundary_input_config({}, {
-            .channel_type = ChannelTypeId::mono,
-            .sample_layout = SampleStreamLayout::planar,
-        }, value, min, max));
-} catch (...) {
-    // An exception leaving a session operation fails the session.
-    details::record_builder_failure(_session, std::current_exception(), {});
-    throw;
-}
-PublicEventInputRef GraphBuilder::event_input(EventTypeId type)
-try {
-    return details::iv_builder_scope_event_input(_session, _scope, {.type = type});
-} catch (...) {
-    // An exception leaving a session operation fails the session.
-    details::record_builder_failure(_session, std::current_exception(), {});
-    throw;
-}
-PublicSampleInputRef GraphBuilder::input_named(
-    std::string_view name, ContinuousInputConfig config)
-try {
-    config.name = name;
-    return details::iv_builder_scope_input(_session, _scope, std::move(config));
-} catch (...) {
-    // An exception leaving a session operation fails the session.
-    details::record_builder_failure(_session, std::current_exception(), {});
-    throw;
-}
-PublicEventInputRef GraphBuilder::event_input_named(
-    std::string_view name, EventTypeId type, InputAccessKind access)
-try {
-    return details::iv_builder_scope_event_input(_session, _scope,
-        {.name = std::string(name), .type = type, .access = access});
-} catch (...) {
-    // An exception leaving a session operation fails the session.
-    details::record_builder_failure(_session, std::current_exception(), {});
-    throw;
-}
-
 void GraphBuilder::outputs(std::initializer_list<NamedRef> refs)
 try {
     outputs(std::span<NamedRef const>(refs.begin(), refs.size()));

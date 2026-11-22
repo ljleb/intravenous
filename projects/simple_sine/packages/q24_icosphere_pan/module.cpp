@@ -1343,16 +1343,16 @@ struct SinglePan {
 
 void SinglePan::build_graph(GraphBuilder& g) const
 {
-    auto const in = g.input<"in">();
-    auto const az = g.input<"azimuth">(0, -180, 180);
-    auto const el = g.input<"elevation">(0, -180, 180);
+    auto const in = g.input();
+    auto const azimuth = g.input(0, -180, 180);
+    auto const elevation = g.input(0, -180, 180);
 
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonMono>();
 
     hrtf(
         "in"_P = in,
-        "azimuth"_P = az,
-        "elevation"_P = el
+        "azimuth"_P = azimuth,
+        "elevation"_P = elevation
     );
 
     g.outputs(hrtf);
@@ -1361,15 +1361,15 @@ void SinglePan::build_graph(GraphBuilder& g) const
 
 void module_main(GraphBuilder& g)
 {
-    auto const in = g.input<"in", stereo>();
-    auto const center = g.input<"azimuth">(0, -180, 180);
-    auto const el = g.input<"elevation">(0, -180, 180);
-    auto const spread = g.input<"spread">(30, 0, 180);
+    auto const in = g.input<stereo>();
+    auto const azimuth = g.input(0, -180, 180);
+    auto const elevation = g.input(0, -180, 180);
+    auto const spread = g.input(30, 0, 180);
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonStereo>();
     hrtf(
         "in"_P = in,
-        "azimuth"_P = center,
-        "elevation"_P = el,
+        "azimuth"_P = azimuth,
+        "elevation"_P = elevation,
         "spread"_P = spread
     );
     auto const fir = g.node<BaselineFir256>();

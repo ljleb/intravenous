@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/graph/builder/port_refs.h>
 #include <intravenous/ports.h>
 
 #include <concepts>
@@ -116,5 +117,68 @@ template<ModuleInputAccess Access>
         .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
     });
 }
+
+// The package compiler replaces these calls before they reach CodeGen.
+[[noreturn]] inline void uninstrumented_module_input()
+{
+    error("Module input declarations require the IV Clang plugin. For programmatic graphs, use iv::programmatic::declare_input or declare_event_input.");
+}
+
+class ModuleInputDeclarations {
+public:
+    template<class ChannelType = mono>
+        requires requires { ChannelTypeTraits<ChannelType>::id; }
+    TypedPublicSampleInputRef<ChannelType> input() {
+        uninstrumented_module_input();
+    }
+
+    template<class ChannelType = mono>
+        requires requires { ChannelTypeTraits<ChannelType>::id; }
+    TypedPublicSampleInputRef<ChannelType> input(
+        Sample, std::optional<Sample> = {}, std::optional<Sample> = {}) {
+        uninstrumented_module_input();
+    }
+
+    template<RegisteredContinuousValue... Types>
+        requires(sizeof...(Types) != 0)
+    PublicSampleInputRef input() {
+        uninstrumented_module_input();
+    }
+
+    template<RegisteredContinuousValue... Types>
+        requires(sizeof...(Types) != 0)
+    PublicSampleInputRef input(typename ContinuousValueType<Types>::BoundaryInputOptions...) {
+        uninstrumented_module_input();
+    }
+
+    template<class ChannelType = mono, ModuleInputAccess Access>
+        requires requires { ChannelTypeTraits<ChannelType>::id; }
+    TypedPublicSampleInputRef<ChannelType> input(Access) {
+        uninstrumented_module_input();
+    }
+
+    template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
+        requires(sizeof...(Types) != 0)
+    PublicSampleInputRef input(Access) {
+        uninstrumented_module_input();
+    }
+
+    template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
+        requires(sizeof...(Types) != 0)
+    PublicSampleInputRef input(Access, module_input_options_t<Types, Access>...) {
+        uninstrumented_module_input();
+    }
+
+    PublicEventInputRef event_input(EventTypeId) {
+        uninstrumented_module_input();
+    }
+
+    template<ModuleInputAccess Access>
+    PublicEventInputRef event_input(EventTypeId, Access) {
+        uninstrumented_module_input();
+    }
+};
+
+struct ProgrammaticInputAccess;
 
 } // namespace iv::details

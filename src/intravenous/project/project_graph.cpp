@@ -3850,23 +3850,22 @@ void append_source_scope_connections(ProjectGraphScope& scope,
     auto const& connections = generation.graph->connections;
     std::unordered_set<std::string> ids;
     for (auto const& entry : scope.connections) ids.insert(project_connection_id(entry.connection));
-    auto append = [&](auto connection, std::vector<ProjectNodePortMatcher> boundary_sources,
-                      std::vector<ProjectNodePortMatcher> boundary_targets, std::string id) {
-        if ((connection.inputs.empty() && boundary_targets.empty())
-            || (connection.outputs.empty() && boundary_sources.empty())) return;
+    auto append = [&](auto connection, std::string id) {
+        if (connection.inputs.empty() || connection.outputs.empty()) return;
         while (!ids.insert(id).second) id.push_back('_');
         connection.connection_id = std::move(id);
         scope.connections.push_back({
             .connection = std::move(connection), .applied = true, .source_owned = true,
-            .boundary_sources = std::move(boundary_sources), .boundary_targets = std::move(boundary_targets),
         });
     };
-    auto add_port = [](auto port, auto const& addresses, std::vector<ProjectNodePortMatcher>& endpoints) {
+    auto add_port = [](auto port, auto const& addresses, std::vector<ProjectNodePortMatcher>& endpoints,
+                       bool module_boundary = false) {
         auto const found = addresses.find(port.bundle);
         if (found == addresses.end()) return;
         for (auto const& address : found->second) {
             ProjectNodePortMatcher matcher{
                 .instance_id = address.instance_id, .path = address.path, .port = {.index = port.port},
+                .module_boundary = module_boundary,
             };
             if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(std::move(matcher));
         }
@@ -3881,36 +3880,32 @@ void append_source_scope_connections(ProjectGraphScope& scope,
     for (std::size_t index = 0; index < generation.source_sample_connection_count; ++index) {
         auto const& wiring = samples[index];
         ProjectSampleConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
-        std::vector<ProjectNodePortMatcher> boundary_sources, boundary_targets;
         for (auto const& source : wiring.source_channels) {
             add_port(source.channel, children, connection.outputs);
-            add_port(source.channel, boundaries, boundary_sources);
+            add_port(source.channel, boundaries, connection.outputs, true);
             add_aliases(aliases.sample, std::tuple{source.channel.bundle, source.channel.port, source.channel.channel},
                 connection.outputs);
         }
         for (auto const target : wiring.target_channels) {
             add_port(target, children, connection.inputs);
-            add_port(target, boundaries, boundary_targets);
+            add_port(target, boundaries, connection.inputs, true);
         }
-        append(std::move(connection), std::move(boundary_sources), std::move(boundary_targets),
-            "source:sample:" + std::to_string(index));
+        append(std::move(connection), "source:sample:" + std::to_string(index));
     }
     auto const events = connections.configured_event_connections();
     for (std::size_t index = 0; index < generation.source_event_connection_count; ++index) {
         auto const& wiring = events[index];
         ProjectEventConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
-        std::vector<ProjectNodePortMatcher> boundary_sources, boundary_targets;
         for (auto const& source : wiring.sources) {
             add_port(source.port, children, connection.outputs);
-            add_port(source.port, boundaries, boundary_sources);
+            add_port(source.port, boundaries, connection.outputs, true);
             add_aliases(aliases.event, std::pair{source.port.bundle, source.port.port}, connection.outputs);
         }
         for (auto const target : wiring.targets) {
             add_port(target, children, connection.inputs);
-            add_port(target, boundaries, boundary_targets);
+            add_port(target, boundaries, connection.inputs, true);
         }
-        append(std::move(connection), std::move(boundary_sources), std::move(boundary_targets),
-            "source:event:" + std::to_string(index));
+        append(std::move(connection), "source:event:" + std::to_string(index));
     }
 }
 } // namespace

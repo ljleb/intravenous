@@ -52,6 +52,7 @@ test("event connection drag retains distinct registered event types for backend 
 });
 
 const matcher = (port: GraphPortEndpoint): GraphPortMatcher => ({ ...port.address, path: port.address.path ?? [],
+    ...(port.moduleBoundary ? { moduleBoundary: true } : {}),
     port: { name: port.name, index: port.index } });
 const cInput = { ...input, address: { instanceId: "c" } };
 const cOutput = { ...output, address: { instanceId: "c" } };
@@ -74,6 +75,25 @@ function replacement(graph: GraphScope, end: GraphConnectionEnd, target: GraphPo
     assert.ok(mutation?.type === "upsert");
     return mutation.connection as GraphScopeConnection["connection"];
 }
+
+test("module boundary ports can be connected and rewired with their inward directions", () => {
+    const graph = connectedScope();
+    const innerSource = { ...output, name: "in", moduleBoundary: true };
+    const innerTarget = { ...input, name: "out", moduleBoundary: true };
+    const created = connectionFromPorts(graph, "inside", innerTarget, innerSource);
+    assert.equal(created.sourceType, "mono");
+    assert.equal(created.targetType, "stereo");
+    assert.deepEqual(created.outputs, [matcher(innerSource)]);
+    assert.deepEqual(created.inputs, [matcher(innerTarget)]);
+    graph.connections.push({ id: "inside", applied: true, connection: created });
+
+    assert.deepEqual(connectionEndsAtPort(graph, output).map(({ connection }) => connection.id), ["wire"]);
+    const end = selectedEnd(graph, innerTarget);
+    assert.deepEqual(fixedConnectionPorts(graph, end), [innerSource]);
+    const moved = replacement(graph, end, cInput);
+    assert.deepEqual(moved.outputs, [matcher(innerSource)]);
+    assert.deepEqual(moved.inputs, [matcher(cInput)]);
+});
 
 test("expanded child ports can be wired while module-source cables remain read-only", () => {
     const graph = connectedScope();

@@ -17,7 +17,7 @@ iv::ConfiguredGraph make_nested_annotated_graph()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto const input = graph.input<"in">();
+    auto const input = iv::programmatic::declare_input(graph, "in");
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
         auto pass = details::configure_concrete_node<Pass>(graph);
         pass(input);

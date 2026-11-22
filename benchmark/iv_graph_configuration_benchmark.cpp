@@ -277,7 +277,7 @@ void subgraphs_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
     auto head = static_cast<SamplePortRef>(leaf(constant_id, graph));
     for (int index = 0; index < shape.subgraphs; ++index) {
         auto const nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-            auto const input = static_cast<SamplePortRef>(boundary.input());
+            auto const input = static_cast<SamplePortRef>(iv::programmatic::declare_input(boundary, ""));
             boundary.outputs("out"_P = leaf_chain(graph, input));
         });
         nested(head);

@@ -1,4 +1,4 @@
-import { addressKey, matchingScopePorts, type GraphPortMatcher, type GraphScope, type NodeAddress, type Point } from "./graphScope";
+import { addressKey, matchingScopePorts, type GraphScope, type NodeAddress, type Point } from "./graphScope";
 import type { GraphPortEndpoint } from "./graphConnectionEditing";
 
 export type PortWireAnchor = { id: string; x: number; y: number; moduleBoundary?: boolean; rulerInput?: boolean };
@@ -14,11 +14,11 @@ export type SelectedLaneWire = {
 };
 
 export function portEndpointKey(port: GraphPortEndpoint): string {
-    return JSON.stringify([addressKey(port.address), port.direction, port.kind, port.index, port.name]);
+    return JSON.stringify([addressKey(port.address), port.direction, port.kind, port.index, port.name, !!port.moduleBoundary]);
 }
 
-export function portSlotKey(address: NodeAddress, direction: "input" | "output"): string {
-    return JSON.stringify([addressKey(address), direction]);
+export function portSlotKey(address: NodeAddress, direction: "input" | "output", moduleBoundary = false): string {
+    return JSON.stringify([addressKey(address), direction, moduleBoundary]);
 }
 
 export function connectionEndKey(connectionId: string, port: GraphPortEndpoint): string {
@@ -33,35 +33,23 @@ export function resolveLaneConnectionEnds(scope: GraphScope) {
             if (node.membershipAddress) aliases.set(addressKey(node.membershipAddress), addressKey(node.address));
         }
     }
-    const moduleBoundaries = new Set(scope.childScopes?.filter((child) => child.hasBoundary).map(({ subject }) => addressKey(subject)));
     return scope.connections.map((entry) => {
         const { connection } = entry;
         const resolve = (direction: "input" | "output") => {
             const matchers = direction === "input" ? connection.inputs : connection.outputs;
-            const peers = direction === "input" ? connection.outputs : connection.inputs;
-            const boundary = direction === "input" ? entry.boundaryTargets : entry.boundarySources;
-            const opposite = direction === "input" ? "output" : "input";
-            const ports = new Map<string, { port: GraphPortEndpoint; key: string; address: string; moduleBoundary: boolean }>();
-            const add = (endpoints: readonly GraphPortMatcher[], portDirection: typeof direction, moduleBoundary: boolean) => {
-                for (const matcher of endpoints) {
-                    const matcherKey = addressKey(matcher);
-                    const node = nodes.get(matcherKey) ?? nodes.get(aliases.get(matcherKey) ?? "");
-                    if (!node) continue;
-                    const address = addressKey(node.address);
-                    const pathLength = node.address.path?.length ?? 0;
-                    const interior = !entry.sourceOwned && peers.length > 0 && moduleBoundaries.has(address)
-                        && peers.every((peer) => (peer.path?.length ?? 0) > pathLength
-                            && addressKey({ instanceId: peer.instanceId, path: peer.path?.slice(0, pathLength) }) === address);
-                    for (const resolved of matchingScopePorts(node, matcher, connection.kind, portDirection)) {
-                        const port: GraphPortEndpoint = { address: node.address, kind: connection.kind,
-                            direction: portDirection, index: resolved.port.index, name: resolved.port.name };
-                        const key = portEndpointKey(port);
-                        ports.set(key, { port, key, address, moduleBoundary: moduleBoundary || interior });
-                    }
+            const ports = new Map<string, { port: GraphPortEndpoint; key: string; address: string }>();
+            for (const matcher of matchers) {
+                const matcherKey = addressKey(matcher);
+                const node = nodes.get(matcherKey) ?? nodes.get(aliases.get(matcherKey) ?? "");
+                if (!node) continue;
+                const address = addressKey(node.address);
+                for (const { port: matched } of matchingScopePorts(node, matcher, connection.kind, direction)) {
+                    const port: GraphPortEndpoint = { address: node.address, kind: connection.kind,
+                        direction, index: matched.index, name: matched.name, moduleBoundary: matcher.moduleBoundary };
+                    const key = portEndpointKey(port);
+                    ports.set(key, { port, key, address });
                 }
-            };
-            add(matchers, direction, false);
-            if (boundary) add(boundary, opposite, true);
+            }
             return [...ports.values()];
         };
         return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned,
@@ -126,7 +114,7 @@ export class LaneConnectionViewport {
 // A collapsed slot can represent several logical ports. Merge only the
 // drawing's visible endpoint pairs; preserve the underlying connection IDs.
 export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnection>, selected: ReadonlySet<string>,
-    anchorFor: (port: GraphPortEndpoint, connectionId: string, moduleBoundary?: boolean) =>
+    anchorFor: (port: GraphPortEndpoint, connectionId: string) =>
         PortWireAnchor | readonly PortWireAnchor[] | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
     context?: { top: number; bottom: number }): SelectedLaneWire[] {
@@ -143,8 +131,8 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
             && !entry.inputs.some(({ address }) => selected.has(address))) continue;
         const resolve = (ports: typeof entry.outputs) => {
             const visible = new Map<string, { anchor: PortWireAnchor; selected: boolean; revealed: boolean }>();
-            for (const { port, key, address, moduleBoundary } of ports) {
-                const anchors = anchorFor(port, entry.id, moduleBoundary);
+            for (const { port, key, address } of ports) {
+                const anchors = anchorFor(port, entry.id);
                 if (!anchors) continue;
                 const isSelected = selected.has(address);
                 const isRevealed = revealed.get(entry.id)?.has(key) ?? false;
@@ -191,7 +179,8 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
 
 export function selectedLaneWirePath(wire: SelectedLaneWire): string {
     const { source, target } = wire;
-    if (wire.sourceOwned && !!source.moduleBoundary !== !!target.moduleBoundary) {
+    if (wire.sourceOwned && !!source.moduleBoundary !== !!target.moduleBoundary
+        && Math.abs(source.x - target.x) < 12) {
         // Boundary and child ports can lie in the same column. Bend into the
         // lane so their cable stays visible beside the overlapping headers.
         const bend = Math.max(source.x, target.x) + Math.max(22, Math.min(88, Math.abs(source.y - target.y) / 3));

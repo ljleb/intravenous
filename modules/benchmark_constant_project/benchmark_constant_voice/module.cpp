@@ -4,11 +4,11 @@ void benchmark_constant_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
 
-    auto const amplitude = g.input<"amplitude">(0.1);
-    auto const frequency = g.input<"frequency">(110.0);
-    auto const phase_offset = g.input<"phase_offset">(0.0);
+    auto const amplitude = g.input(0.1);
+    auto const frequency = g.input(110.0);
+    auto const phase_offset = g.input(0.0);
 
-    auto const saw = g.node<"saw_oscillator">();
+    auto const saw = g.node<"saw">();
     saw(
         "frequency"_P = frequency,
         "phase_offset"_P = phase_offset

@@ -12,6 +12,8 @@ body {
     --iv-port-label-base: var(--vscode-descriptionForeground, var(--vscode-foreground));
     --iv-port-label-accent: 16%;
     --iv-disconnected-port-strength: 55%;
+    --iv-stripe-ink: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+    --iv-diagonal-stripes: repeating-linear-gradient(135deg, transparent 0 7px, var(--iv-stripe-ink) 7px 8px);
     margin: 0;
     padding: 0;
     background: var(--vscode-sideBar-background);

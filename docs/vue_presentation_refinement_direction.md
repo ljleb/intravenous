@@ -181,7 +181,7 @@ on the current manual value or an incoming connected signal.
 For example, a module can author its frequency control as:
 
 ```cpp
-auto frequency = g.input<"freq", Sample>({
+auto frequency = g.input<Sample>({
     .default_value = Sample{220.f}, .min = Sample{0.f},
     .scrub_speed = Sample{2.f},
 });

@@ -13,12 +13,12 @@ const emit = defineEmits<{
 </script>
 
 <template>
-    <div class="control-row" :class="{ unavailable, 'with-knob': hasKnob }" :data-direction="port.direction"
-        :data-port-kind="endpoint.kind" :data-port-drop-target="port.direction === 'input' ? '' : undefined">
+    <div class="control-row" :class="{ unavailable, 'with-knob': hasKnob }" :data-direction="endpoint.direction"
+        :data-port-kind="endpoint.kind" :data-port-drop-target="endpoint.direction === 'input' ? '' : undefined">
         <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout />
         <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
             :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
-            :aria-disabled="unavailable" :aria-label="`${port.direction} ${port.displayName || port.name || port.index + 1}`"
+            :aria-disabled="unavailable" :aria-label="`${endpoint.direction} ${port.displayName || port.name || port.index + 1}`"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
             @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
             <span class="port-circle" />
@@ -43,7 +43,7 @@ const emit = defineEmits<{
 .control-row.unavailable { --port-color: var(--vscode-disabledForeground); color: var(--vscode-disabledForeground); }
 .port-knob { grid-column: 1; grid-row: 1; padding: 0; gap: 2px; }
 .port-handle { position: relative; left: var(--handle-shift); grid-column: 2; grid-row: 1; display: grid;
-    align-items: center; width: var(--port-handle-width); height: 22px; overflow: visible;
+    align-items: center; width: var(--port-handle-width); height: min(22px, var(--port-row-height)); overflow: visible;
     padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--port-color); cursor: crosshair; touch-action: none; }
 [data-direction="output"] .port-knob { grid-column: 3; }
 .port-circle {

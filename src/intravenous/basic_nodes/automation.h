@@ -434,9 +434,9 @@ public:
         auto points = g.node<PointSource>(g.immutable_array<Point>(points_));
         auto curve = g.node<Curve>();
 
-        auto const min = g.input<"min", Sample>(InputAccess::coverage, {
+        auto const min = iv::programmatic::declare_input<Sample>(g, "min", InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 0, .enabled_by_default = false});
-        auto const max = g.input<"max", Sample>(InputAccess::coverage, {
+        auto const max = iv::programmatic::declare_input<Sample>(g, "max", InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 1, .enabled_by_default = false});
         curve("points"_F = points, "min"_P = min, "max"_P = max);
 

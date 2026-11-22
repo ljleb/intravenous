@@ -1782,7 +1782,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
             if (candidate.is_concrete() && candidate.sample_output_count() == 1
                 && candidate.sample_output_config(0).name == "manual-full") direct = bundle;
             if (candidate.is_subgraph() && candidate.sample_input_count() == 1
-                && configured->node_bundles.resolve_sample_input({bundle, iv::PortKind::sample, 0}).config.name == "boundary-gain")
+                && configured->node_bundles.resolve_sample_input({bundle, iv::PortKind::sample, 0}).config.name == "boundary_gain")
                 module = bundle;
         }
         ASSERT_TRUE(direct);
@@ -1795,7 +1795,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
                 : iv::ManualControlParticipation::disconnected_only,
         });
         configured->manual_controls.push_back({
-            .id = {.node = {.instance_id = "module"}, .port_name = "boundary-gain"},
+            .id = {.node = {.instance_id = "module"}, .port_name = "boundary_gain"},
             .input = {*module, iv::PortKind::sample, 0}, .settled_value = 1.25f,
         });
         auto compiled = compile_graph(configured, 3004 + explicit_contribution);

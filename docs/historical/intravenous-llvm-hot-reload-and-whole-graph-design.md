@@ -637,10 +637,10 @@ the public `GraphBuilder` surface has no `g.node<NodeType>` overload. A source
 uses, for example:
 
 ```cpp
-auto oscillator = g.node<"saw_oscillator", stereo>();
+auto oscillator = g.node<"saw", stereo>();
 ```
 
-`builtin.saw_oscillator` remains the canonical registered ID. A bare name
+`builtin.saw` remains the canonical registered ID. A bare name
 first resolves an exact user/package registration and only then falls back to
 `builtin.<name>`, so this readability shortcut cannot silently override a
 locally registered definition. The optional channel type creates a promoted

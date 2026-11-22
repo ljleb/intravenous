@@ -345,17 +345,17 @@ struct ModuleBoundaryCoverageObserver {
 
 void multi_region_boundary_child_module(iv::GraphBuilder& graph)
 {
-    auto sample_input = graph.input<"samples", iv::Sample>(iv::InputAccess::coverage);
-    auto event_input = graph.event_input<"events">(
+    auto samples = graph.input<iv::Sample>(iv::InputAccess::coverage);
+    auto events = graph.event_input(
         iv::EventTypeId::trigger, iv::InputAccess::coverage);
     auto sample = graph.node<
         "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
-    auto events = graph.node<
+    auto event_consumer = graph.node<
         "iv.test.graph_jit.state_context.multi_region_event_coverage_consumer">();
-    sample(sample_input);
-    events.connect_event_input(0, event_input);
+    sample(samples);
+    event_consumer.connect_event_input(0, events);
     graph.outputs(sample);
-    graph.event_outputs(events.event_port());
+    graph.event_outputs(event_consumer.event_port());
 }
 
 struct PersistedStereoRecordingSource {

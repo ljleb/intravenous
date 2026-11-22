@@ -374,9 +374,9 @@ TEST(Channels, DetachRejectsAnExpressionContainingAnAlreadyDetachedChannel)
 TEST(Channels, NamedPublicInputsRetainRequestedChannelTypes)
 {
     iv::GraphBuilder graph;
-    auto const default_type = graph.input<"default-type">();
-    auto const mono = graph.input<"mono">(iv::Sample{0.25f});
-    auto const stereo = graph.input<"stereo", iv::stereo>(iv::Sample{0.5f});
+    auto const default_type = iv::programmatic::declare_input(graph, "default-type");
+    auto const mono = iv::programmatic::declare_input(graph, "mono", iv::Sample{0.25f});
+    auto const stereo = iv::programmatic::declare_input<iv::stereo>(graph, "stereo", iv::Sample{0.5f});
     auto const families = iv::host::public_sample_input_families(graph);
 
     static_assert(std::same_as<iv::DefaultContinuousValueType, iv::Sample>);
@@ -401,17 +401,17 @@ TEST(Channels, PublicInputsRetainDeclaredContinuousValueDomains)
 
     iv::GraphBuilder graph;
     auto const coordinate =
-        graph.input<"coordinate", iv::FractionalGlobalIndex>({
+        iv::programmatic::declare_input<iv::FractionalGlobalIndex>(graph, "coordinate", {
             .default_value = coordinate_default,
         });
-    auto const spectrum = graph.input<"spectrum", iv::FFTBlock>({
+    auto const spectrum = iv::programmatic::declare_input<iv::FFTBlock>(graph, "spectrum", {
         .channel_layout = {
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::planar,
         },
     });
     auto const either =
-        graph.input<"either", iv::Sample, iv::FractionalGlobalIndex>(
+        iv::programmatic::declare_input<iv::Sample, iv::FractionalGlobalIndex>(graph, "either",
             {.default_value = iv::Sample{0.25f}},
             {.default_value = coordinate_default});
 
@@ -451,9 +451,9 @@ TEST(Channels, SubgraphInputsRetainDeclaredContinuousValueDomains)
 {
     iv::GraphBuilder graph;
     auto nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto default_type = boundary.input<"default-type">();
+        auto default_type = iv::programmatic::declare_input(boundary, "default-type");
         auto coordinate =
-            boundary.input<"coordinate", iv::FractionalGlobalIndex>();
+            iv::programmatic::declare_input<iv::FractionalGlobalIndex>(boundary, "coordinate");
         (void)default_type;
         (void)coordinate;
     }, "typed-boundary");

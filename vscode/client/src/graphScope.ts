@@ -67,14 +67,13 @@ export function graphScopeNodeLabel(node: GraphScopeNode): string {
 }
 
 export type GraphPortMatcher = NodeAddress & {
+    moduleBoundary?: boolean;
     port: { name?: string; index?: number; channel?: number };
 };
 export type GraphScopeConnection = {
     id: string;
     applied: boolean;
     sourceOwned?: boolean;
-    boundarySources?: GraphPortMatcher[];
-    boundaryTargets?: GraphPortMatcher[];
     connection: {
         connectionId?: string;
         kind: "sample" | "event";
@@ -223,11 +222,16 @@ export function resolveScopePorts(scope: GraphScope, matcher: GraphPortMatcher,
 
 export function matchingScopePorts(node: GraphScopeNode, matcher: GraphPortMatcher,
     kind: "sample" | "event", direction: "input" | "output") {
+    const publicDirection = matcher.moduleBoundary ? oppositePortDirection(direction) : direction;
     const ports = kind === "sample"
-        ? direction === "input" ? node.sampleInputs : node.sampleOutputs
-        : direction === "input" ? node.eventInputs : node.eventOutputs;
+        ? publicDirection === "input" ? node.sampleInputs : node.sampleOutputs
+        : publicDirection === "input" ? node.eventInputs : node.eventOutputs;
     const selected = ports.filter((entry) => (matcher.port.name === undefined || entry.name === matcher.port.name)
         && (matcher.port.index === undefined || entry.index === matcher.port.index));
     return selected.map((port) => ({ node, port, row: ports.indexOf(port) + (kind === "event"
-        ? (direction === "input" ? node.sampleInputs.length : node.sampleOutputs.length) : 0) }));
+        ? (publicDirection === "input" ? node.sampleInputs.length : node.sampleOutputs.length) : 0) }));
+}
+
+export function oppositePortDirection(direction: "input" | "output"): "input" | "output" {
+    return direction === "input" ? "output" : "input";
 }

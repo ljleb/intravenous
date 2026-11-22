@@ -5,7 +5,7 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     using namespace iv;
 
     auto const phase = g.node<"phase_integrator">();
-    auto const osc = g.node<"saw_oscillator">();
+    auto const osc = g.node<"saw">();
     auto const low_pass = g.node<"simple_iir_low_pass">();
     auto const high_pass = g.node<"simple_iir_high_pass">();
 

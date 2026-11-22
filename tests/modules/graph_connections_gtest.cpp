@@ -19,10 +19,10 @@ iv::ConfiguredGraph make_sample_passthrough(iv::ChannelTypeId type = iv::Channel
     using namespace iv;
     GraphBuilder graph;
     if (type == ChannelTypeId::stereo) {
-        auto input = graph.input<"main", stereo>();
+        auto input = iv::programmatic::declare_input<stereo>(graph, "main");
         graph.outputs("main"_P = input);
     } else {
-        auto input = graph.input<"main">();
+        auto input = iv::programmatic::declare_input(graph, "main");
         graph.outputs("main"_P = input);
     }
     return std::move(graph).finish();
@@ -33,9 +33,9 @@ iv::ConfiguredGraph make_sample_sink(iv::ChannelTypeId type = iv::ChannelTypeId:
     using namespace iv;
     GraphBuilder graph;
     if (type == ChannelTypeId::stereo) {
-        (void)graph.input<"main", stereo>();
+        (void)iv::programmatic::declare_input<stereo>(graph, "main");
     } else {
-        (void)graph.input<"main">();
+        (void)iv::programmatic::declare_input(graph, "main");
     }
     graph.outputs();
     return std::move(graph).finish();
@@ -45,7 +45,7 @@ iv::ConfiguredGraph make_event_passthrough()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto trigger = graph.event_input<"trigger">(EventTypeId::trigger);
+    auto trigger = iv::programmatic::declare_event_input(graph, "trigger", EventTypeId::trigger);
     graph.event_outputs("trigger"_P = trigger);
     graph.outputs();
     return std::move(graph).finish();
@@ -55,7 +55,7 @@ iv::ConfiguredGraph make_event_sink()
 {
     using namespace iv;
     GraphBuilder graph;
-    (void)graph.event_input<"trigger">(EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(graph, "trigger", EventTypeId::trigger);
     graph.event_outputs();
     graph.outputs();
     return std::move(graph).finish();
@@ -66,7 +66,7 @@ iv::ConfiguredGraph make_virtual_source()
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto first = details::configure_concrete_node<Pass>(graph);
     first(input);
     first._annotate_source_info("virtual-source", "/tmp/virtual.cpp", 1, 2);
@@ -83,7 +83,7 @@ iv::ConfiguredGraph make_set_valued_virtual_source()
     using First = SumN<mono, SampleStreamLayout::planar, 1>;
     using Second = ProductN<1>;
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto first = details::configure_concrete_node<First>(graph);
     first(input);
     first._annotate_source_info(
@@ -101,7 +101,7 @@ iv::ConfiguredGraph make_scoped_virtual_source()
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
-    auto input = graph.input<"in">();
+    auto input = iv::programmatic::declare_input(graph, "in");
     auto make_processor = [&](std::string_view processor, std::size_t offset) {
         auto result = graph.subgraph([&](SubgraphBuilder& boundary) {
             auto filter = details::configure_concrete_node<Pass>(graph);

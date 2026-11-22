@@ -84,8 +84,8 @@ void summed_module_boundaries(iv::GraphBuilder& graph) {
         }
     }, "summed-voices");
     auto pass = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto input = boundary.input<"in", iv::stereo>();
-        boundary.outputs(input);
+        auto in = boundary.input<iv::stereo>();
+        boundary.outputs(in);
     }, "summed-input");
     auto extra = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
     pass(voices);
@@ -272,10 +272,10 @@ void rolling_automation_module(iv::GraphBuilder& graph) {
         std::vector<iv::automation::Point>{{1, 0, 1, iv::CurveInterpolation::bezier, 0},
             {2, 1, 2, iv::CurveInterpolation::bezier, 0}});
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto input = boundary.input<"frequency", iv::Sample>(iv::InputAccess::sequential, {
+        auto frequency = boundary.input<iv::Sample>(iv::InputAccess::sequential, {
             .default_value = .25f});
         auto consumer = graph.node<"iv.test.replay.manual_full">();
-        consumer(input);
+        consumer(frequency);
         boundary.outputs(consumer);
     }, "automation-boundary");
     module(curve);

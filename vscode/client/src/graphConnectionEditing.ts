@@ -1,4 +1,4 @@
-import { addressKey, resolveScopePorts, scopeNodeForAddress, type GraphPortMatcher, type GraphScope,
+import { addressKey, matchingScopePorts, oppositePortDirection, resolveScopePorts, scopeNodeForAddress, type GraphPortMatcher, type GraphScope,
     type GraphScopeConnection, type NodeAddress } from "./graphScope";
 import { isGeneratedSnapConnection, isTimelineSnapAddress, timelineGridMode } from "./timelineSnap";
 
@@ -8,6 +8,7 @@ export type GraphPortEndpoint = {
     direction: "input" | "output";
     index: number;
     name: string;
+    moduleBoundary?: boolean;
 };
 
 // Capture the semantic record at pickup. Re-read it before committing, so a
@@ -23,10 +24,9 @@ export type GraphConnectionMutation = { type: "delete"; id: string }
 function resolveEndpoint(scope: GraphScope, endpoint: GraphPortEndpoint) {
     const node = scope.nodes.find((entry) => addressKey(entry.address) === addressKey(endpoint.address));
     if (!node) throw new Error("The selected node is no longer available in this scope");
-    const ports = endpoint.kind === "sample"
-        ? endpoint.direction === "input" ? node.sampleInputs : node.sampleOutputs
-        : endpoint.direction === "input" ? node.eventInputs : node.eventOutputs;
-    const port = ports.find((entry) => entry.index === endpoint.index && entry.name === endpoint.name);
+    const [match] = matchingScopePorts(node, { ...matcherFor(endpoint),
+        port: { index: endpoint.index, name: endpoint.name } }, endpoint.kind, endpoint.direction);
+    const port = match?.port;
     if (!port) throw new Error("The selected port changed; select it again");
     return port;
 }
@@ -38,16 +38,19 @@ function endpointType(scope: GraphScope, endpoint: GraphPortEndpoint): string {
 }
 function matcherFor(endpoint: GraphPortEndpoint, channel?: number): GraphPortMatcher {
     return { ...endpoint.address, path: endpoint.address.path ?? [],
+        ...(endpoint.moduleBoundary ? { moduleBoundary: true } : {}),
         port: { ...(endpoint.name ? { name: endpoint.name } : {}), index: endpoint.index,
             ...(channel === undefined ? {} : { channel }) } };
 }
 export function sameGraphPort(first: GraphPortEndpoint, second: GraphPortEndpoint): boolean {
     return addressKey(first.address) === addressKey(second.address) && first.kind === second.kind
+        && !!first.moduleBoundary === !!second.moduleBoundary
         && first.direction === second.direction && first.index === second.index && first.name === second.name;
 }
 function matchesPort(scope: GraphScope, matcher: GraphPortMatcher, port: GraphPortEndpoint): boolean {
     const node = scopeNodeForAddress(scope, matcher);
     return !!node && addressKey(node.address) === addressKey(port.address)
+        && !!matcher.moduleBoundary === !!port.moduleBoundary
         && (matcher.port.name === undefined || matcher.port.name === port.name)
         && (matcher.port.index === undefined || matcher.port.index === port.index);
 }
@@ -59,15 +62,16 @@ export function connectionEndsAtPort(scope: GraphScope, port: GraphPortEndpoint)
 }
 export function fixedConnectionPorts(scope: GraphScope, end: GraphConnectionEnd): GraphPortEndpoint[] {
     const connection = end.connection.connection;
-    const direction = end.port.direction === "input" ? "output" : "input";
+    const direction = oppositePortDirection(end.port.direction);
     const matchers = direction === "output" ? connection.outputs : connection.inputs;
     return matchers.flatMap((matcher) => resolveScopePorts(scope, matcher, connection.kind, direction)
-        .map(({ node, port }): GraphPortEndpoint => ({ address: node.address, kind: connection.kind, direction, index: port.index, name: port.name })));
+        .map(({ node, port }): GraphPortEndpoint => ({ address: node.address, kind: connection.kind,
+            direction, index: port.index, name: port.name, ...(matcher.moduleBoundary ? { moduleBoundary: true } : {}) })));
 }
 
 function connectionKey(entry: GraphScopeConnection): string {
     const matchers = (values: GraphPortMatcher[]) => values.map((value) => [addressKey(value),
-        value.port.name ?? null, value.port.index ?? null, value.port.channel ?? null]);
+        !!value.moduleBoundary, value.port.name ?? null, value.port.index ?? null, value.port.channel ?? null]);
     const c = entry.connection;
     return JSON.stringify([entry.id, c.kind, c.sourceType, c.targetType, matchers(c.outputs), matchers(c.inputs)]);
 }
@@ -102,7 +106,7 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
         const resolved = resolveScopePorts(scope, matcher, connection.kind, end.port.direction);
         for (const { node, port } of resolved) {
             const endpoint = { address: node.address, kind: connection.kind, direction: end.port.direction,
-                index: port.index, name: port.name };
+                index: port.index, name: port.name, moduleBoundary: matcher.moduleBoundary };
             if (!sameGraphPort(endpoint, end.port)) {
                 matchers.push(matcherFor(endpoint, matcher.port.channel));
             } else {
@@ -120,7 +124,7 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
         const otherEnds = connection[side].some((matcher) => !matchesPort(scope, matcher, end.port)
             || resolveScopePorts(scope, matcher, connection.kind, end.port.direction)
                 .some(({ node, port }) => !sameGraphPort({ address: node.address, kind: connection.kind,
-                    direction: end.port.direction, index: port.index, name: port.name }, end.port)));
+                    direction: end.port.direction, index: port.index, name: port.name, moduleBoundary: matcher.moduleBoundary }, end.port)));
         const selectedChannels = connection[side].some((matcher) => matchesPort(scope, matcher, end.port)
             && matcher.port.channel !== undefined);
         if (targetType !== originalType && (otherEnds || selectedChannels)) {

@@ -138,7 +138,7 @@ void routed_unequal_compensation_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.trigger_event_source">();
     auto routed = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto trigger = boundary.event_input<"trigger">(iv::EventTypeId::trigger);
+        auto trigger = boundary.event_input(iv::EventTypeId::trigger);
         auto ramp = graph.node<"iv.test.graph_jit.state_context.latency_argument_ramp_source">(std::size_t{7});
         auto probe = graph.node<"iv.test.graph_jit.state_context.compensated_trigger_probe">();
         probe(ramp);
@@ -706,9 +706,9 @@ IV_NODE("iv.test.replay.window", ReplayWindow, "Window");
 void coverage_manual_window_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto input = boundary.input<"coverage", iv::Sample>(iv::InputAccess::coverage);
+        auto coverage = boundary.input<iv::Sample>(iv::InputAccess::coverage);
         auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
-        window(input);
+        window(coverage);
         boundary.outputs(window);
     }, "coverage-manual-window");
     module(source);
@@ -742,9 +742,9 @@ IV_NODE("iv.test.replay.stereo_boundary_source", StereoBoundaryCoverageSource, "
 void stereo_coverage_boundary_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.replay.stereo_boundary_source">();
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto input = boundary.input<"coverage", iv::stereo>(iv::InputAccess::coverage);
+        auto coverage = boundary.input<iv::stereo>(iv::InputAccess::coverage);
         auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
-        window(input);
+        window(coverage);
         boundary.outputs(window);
     }, "stereo-coverage-window");
     module(source);
@@ -755,7 +755,7 @@ IV_MODULE("iv.test.replay.stereo_coverage_boundary", stereo_coverage_boundary_mo
 void unused_coverage_input_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
     auto module = graph.subgraph([](iv::SubgraphBuilder& boundary) {
-        (void)boundary.input<"coverage", iv::Sample>(iv::InputAccess::coverage);
+        [[maybe_unused]] auto coverage = boundary.input<iv::Sample>(iv::InputAccess::coverage);
         boundary.outputs();
     }, "unused-coverage-input");
     module(source);
@@ -905,10 +905,10 @@ void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     auto direct = graph.node<"iv.test.replay.manual_full">();
     direct(source);
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto input = boundary.input<"boundary-gain", iv::Sample>(iv::InputAccess::sequential, {
+        auto boundary_gain = boundary.input<iv::Sample>(iv::InputAccess::sequential, {
             .default_value = 0.5f});
         auto child = graph.node<"iv.test.replay.manual_union">();
-        child(input);
+        child(boundary_gain);
         boundary.outputs(child);
     }, "manual-resolution");
     module(source);
