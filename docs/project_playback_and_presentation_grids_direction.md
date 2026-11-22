@@ -111,6 +111,15 @@ Similarly, smoothing is an explicit signal/input interpretation rather than a
 mandatory approximation for every parameter change; the compiled graph should
 preserve sample-exact authored behavior.
 
+### Explicit node state reset
+
+_Future work recorded 2026-11-21._
+
+Provide a session action that resets the state of all nodes in the current node
+buffer. Use the `release()` hook before `initialize()` and reuse the existing
+buffer allocation. Apply the reset at a safe execution boundary. Set the
+foreground playhead to the applied background playhead position at that boundary.
+
 ### Background selection, coverage and pause
 
 An ordinary clip or automation source can publish Tock/buffered or computed

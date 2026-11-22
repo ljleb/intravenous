@@ -41,7 +41,8 @@ import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
-import { expandedGraphLanes, mergeLaneOrder, moveSelectedLanes, selectedProjectLaneIds, selectLaneRange } from "../../src/laneSelection";
+import { dropSelectedLanes, expandedGraphLanes, mergeLaneOrder, movableLaneSelection, moveLaneNesting, moveSelectedSiblingLanes,
+    orderLanes, selectedProjectLaneIds, selectLaneRange, type LaneDestination } from "../../src/laneSelection";
 import { connectionEndKey, connectionWirePath, LaneConnectionViewport, portEndpointKey, portSlotKey,
     resolveLaneConnectionEnds, selectedLaneConnections, selectedLaneWirePath,
     type PortWireAnchor, type ResolvedLaneConnections, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
@@ -117,7 +118,13 @@ function selectLaneAtPointer(event: PointerEvent) {
     if (event.button !== 0 && event.button !== 2) return;
     if (!(event.target instanceof Element)) return;
     const key = event.target.closest<HTMLElement>("[data-lane-key]")?.dataset.laneKey;
-    if (key) selectLaneByKey(key, event);
+    if (!key) return;
+    if (event.button === 0 && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
+        && state.value.scope?.editable && selectedLanes.value.has(key)
+        && event.target.closest(".lane-label") && !event.target.closest(".node-ports, input, .module-disclosure, .copy-debug")
+        && projectLanes.value.some(({ address }) => addressKey(address) === key)
+        && startLaneDrag(event, key)) return;
+    selectLaneByKey(key, event);
 }
 const knobClicks = new KnobClicks();
 const activeKnob = ref<string | null>(null);
@@ -395,13 +402,14 @@ const selectedLanes = shallowRef<ReadonlySet<string>>(new Set());
 const expandedModules = shallowRef<ReadonlyMap<string, NodeAddress>>(new Map());
 const lanes = computed(() => profileGraphUi("Build lane list", () => {
     const scope = state.value.scope;
-    return scope ? expandedGraphLanes(scope, layout.value.laneOrder, expandedModules.value)
+    return scope ? expandedGraphLanes(scope, layout.value.laneOrder, expandedModules.value, layout.value.laneParents)
         .filter(({ node }) => !isTimelineSnapNode(node)) : [];
 }));
+const lanesByRow = computed(() => new Map(lanes.value.map((lane) => [lane.rowKey, lane])));
 const visibleScope = computed(() => {
     const scope = state.value.scope;
     if (!scope) return null;
-    const children = new Map(lanes.value.filter(({ depth }) => depth > 0)
+    const children = new Map(lanes.value.filter(({ depth, node }) => depth > 0 && !isProjectInstance(node.address))
         .map(({ node }) => [addressKey(node.address), node]));
     return children.size ? { ...scope, nodes: [...scope.nodes, ...children.values()] } : scope;
 });
@@ -459,14 +467,87 @@ function toggleModule(address: NodeAddress) {
     if (expanded.delete(key)) {
         const scope = state.value.scope;
         if (scope) {
-            const remaining = expandedGraphLanes(scope, layout.value.laneOrder, expanded);
+            const remaining = expandedGraphLanes(scope, layout.value.laneOrder, expanded, layout.value.laneParents);
             const keys = new Set(remaining.map(({ node }) => addressKey(node.address)));
             for (const candidate of expanded.keys())
                 if (!keys.has(candidate)) expanded.delete(candidate);
         }
     } else expanded.set(key, address);
+    applyExpandedModules(expanded);
+}
+function applyExpandedModules(expanded: ReadonlyMap<string, NodeAddress>) {
     expandedModules.value = expanded;
     webviewApi.postMessage({ type: "setExpandedModules", modules: [...expanded.values()] } satisfies GraphEditorWebviewMessage);
+}
+function showLaneParents(parents: Readonly<Record<string, string>>, moved: ReadonlySet<string>) {
+    const expanded = new Map(expandedModules.value);
+    const destinations = new Set([...moved].map((child) => parents[child]));
+    for (const lane of lanes.value) {
+        const address = lane.node.membershipAddress ?? lane.node.address;
+        const key = addressKey(lane.node.address);
+        if (!expanded.has(key) && destinations.has(addressKey(address))) {
+            expanded.set(key, lane.node.address);
+        }
+    }
+    if (expanded.size !== expandedModules.value.size) applyExpandedModules(expanded);
+}
+function currentProjectLaneOrder() {
+    const nodes = state.value.scope?.nodes.filter((node) => !isTimelineSnapNode(node)) ?? [];
+    return mergeLaneOrder(layout.value.laneOrder, orderLanes(nodes, layout.value.laneOrder).map(({ address }) => addressKey(address)));
+}
+function startLaneDrag(event: PointerEvent, key: string) {
+    const selected = new Set(selectedLanes.value);
+    const roots = movableLaneSelection(lanes.value, selected);
+    const origin = { x: event.clientX, y: event.clientY };
+    let moved = false;
+    let marked: HTMLElement | undefined;
+    const destinationAt = (point: Point): { destination: LaneDestination; row: HTMLElement; placement: string } | undefined => {
+        const row = document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>("[data-lane-row]");
+        if (!row || !surface.value?.contains(row)) return;
+        const target = lanesByRow.value.get(row.dataset.laneRow!);
+        if (!target || roots.some(({ rowKey }) => target.rowKey === rowKey || target.rowKey.startsWith(rowKey + "/"))) return;
+        const address = addressKey(target.node.address);
+        if (selected.has(address)) return;
+        const rect = row.getBoundingClientRect();
+        const fraction = (point.y - rect.top) / rect.height;
+        if (target.node.isModule && fraction >= .25 && fraction <= .75)
+            return { destination: { parent: target }, row, placement: "inside" };
+        if (!isProjectInstance(target.node.address)) return;
+        const parent = target.parentRowKey === undefined ? undefined : lanesByRow.value.get(target.parentRowKey);
+        return fraction < .5
+            ? { destination: { parent, before: address }, row, placement: "before" }
+            : { destination: { parent, after: address }, row, placement: "after" };
+    };
+    const update = (point: Point) => {
+        moved ||= Math.hypot(point.x - origin.x, point.y - origin.y) >= 5;
+        if (!moved) return;
+        marked?.removeAttribute("data-lane-drop");
+        const target = destinationAt(point);
+        marked = target?.row;
+        target?.row.setAttribute("data-lane-drop", target.placement);
+    };
+    const started = startObjectDrag(event, {
+        lock: false,
+        move: update,
+        moveBy: () => {},
+        finish(point): undefined {
+            marked?.removeAttribute("data-lane-drop");
+            if (!point) return;
+            if (!moved) { selectLaneByKey(key, event); return; }
+            const target = destinationAt(point);
+            if (!target) return;
+            const change = dropSelectedLanes(lanes.value, currentProjectLaneOrder(), layout.value.laneParents, selected, target.destination);
+            if (!change) return;
+            showLaneParents(change.parents, selected);
+            save(change.order, change.parents);
+        },
+    });
+    if (started) {
+        surface.value?.focus({ preventScroll: true });
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }
+    return !!started;
 }
 let laneSelectionAnchor: string | null = null;
 let pendingLaneCopies: string | undefined;
@@ -534,6 +615,7 @@ function updateProjectPresentation() {
             continue;
         }
         if (patch.laneOrder) view.laneOrder = patch.laneOrder;
+        if (patch.laneParents) view.laneParents = patch.laneParents;
         for (const [key, state] of Object.entries(patch.presentationStates)) {
             if (state === null) delete view.presentationStates[key];
             else view.presentationStates[key] = state;
@@ -542,16 +624,20 @@ function updateProjectPresentation() {
     const currentOrder = layout.value.laneOrder;
     if (currentOrder.length !== view.laneOrder.length || currentOrder.some((key, index) => key !== view.laneOrder[index]))
         layout.value.laneOrder = view.laneOrder;
+    const currentParents = layout.value.laneParents;
+    if (Object.keys(currentParents).length !== Object.keys(view.laneParents).length
+        || Object.entries(view.laneParents).some(([key, parent]) => currentParents[key] !== parent))
+        layout.value.laneParents = view.laneParents;
     layout.value.presentationStates = view.presentationStates;
 }
-function save(laneOrder?: string[]) {
-    if (!laneOrder && !changedPresentationStates.size) return;
+function save(laneOrder?: readonly string[], laneParents?: Record<string, string>) {
+    if (!laneOrder && !laneParents && !changedPresentationStates.size) return;
     const presentationStates: GraphPresentationPatch["presentationStates"] = {};
     for (const [key, serialize] of changedPresentationStates) {
         presentationStates[key] = JSON.parse(JSON.stringify(serialize())) as PresentationState | null;
     }
     changedPresentationStates.clear();
-    const patch = { presentationStates, laneOrder };
+    const patch = { presentationStates, laneOrder: laneOrder && [...laneOrder], laneParents };
     const requestId = ++nextPresentationRequest;
     pendingPresentation.set(requestId, { patch });
     updateProjectPresentation();
@@ -618,7 +704,16 @@ provideGraphEditor({ layout, save, profileGraphUi,
     },
 });
 
-function measureWireAnchor(element: HTMLElement, id: string): PreviewAnchor | null {
+function measureLaneHeader(element: Element, measurements?: Map<Element, DOMRect>): DOMRect | undefined {
+    const header = element.closest(".lane-label");
+    if (!header) return;
+    const cached = measurements?.get(header);
+    if (cached) return cached;
+    const bounds = header.getBoundingClientRect();
+    measurements?.set(header, bounds);
+    return bounds;
+}
+function measureWireAnchor(element: HTMLElement, id: string, headers?: Map<Element, DOMRect>): PreviewAnchor | null {
     if (!element.isConnected || element.closest(".port-panel.positioning")) return null;
     const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
     if (direction !== "input" && direction !== "output") return null;
@@ -626,8 +721,11 @@ function measureWireAnchor(element: HTMLElement, id: string): PreviewAnchor | nu
     // The grouped icon has two circles. Use its outer circle on the cable side.
     const circle = circles.item(direction === "input" ? circles.length - 1 : 0) ?? element;
     const rect = circle.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const point: PreviewAnchor = { id, direction, x: direction === "input" ? rect.right : rect.left, y: rect.top + rect.height / 2,
+    const header = measureLaneHeader(element, headers);
+    const left = Math.max(rect.left, header?.left ?? rect.left);
+    const right = Math.min(rect.right, header?.right ?? rect.right);
+    if (right <= left || !rect.height) return null;
+    const point: PreviewAnchor = { id, direction, x: direction === "input" ? right : left, y: rect.top + rect.height / 2,
         moduleBoundary: !!element.closest("[data-module-boundary]"),
         rulerInput: direction === "input" && !!element.closest(".timeline-snap-input") };
     const body = element.closest(".expansion-body");
@@ -637,13 +735,15 @@ function measureWireAnchor(element: HTMLElement, id: string): PreviewAnchor | nu
     }
     return point;
 }
-function measureWireOcclusions(top: number, bottom: number, roots: readonly ParentNode[]): WireOcclusions {
+function measureWireOcclusions(top: number, bottom: number, roots: readonly ParentNode[],
+    headers: Map<Element, DOMRect>): WireOcclusions {
     const range = document.createRange();
     const occlusions: WireOcclusions = { labels: [], knobs: [] };
     for (const root of roots) for (const element of root.querySelectorAll(".lane-name, .lane-source-label, .direct-port-name, .port-entry .port-name, .manual-knob")) {
         if (element.closest(".port-panel.positioning")) continue;
         const bounds = element.getBoundingClientRect();
         const popup = element.closest(".expansion-body")?.getBoundingClientRect();
+        const horizontalClip = popup ?? measureLaneHeader(element, headers);
         const clipTop = popup?.top ?? top;
         const clipBottom = popup?.bottom ?? bottom;
         if (!bounds.width || !bounds.height || bounds.bottom < clipTop || bounds.top > clipBottom) continue;
@@ -654,8 +754,8 @@ function measureWireOcclusions(top: number, bottom: number, roots: readonly Pare
             range.selectNodeContents(element);
             content = range.getBoundingClientRect();
         }
-        const left = Math.max(bounds.left, content.left, popup?.left ?? bounds.left);
-        const right = Math.min(bounds.right, content.right, popup?.right ?? bounds.right);
+        const left = Math.max(bounds.left, content.left, horizontalClip?.left ?? bounds.left);
+        const right = Math.min(bounds.right, content.right, horizontalClip?.right ?? bounds.right);
         const upper = Math.max(bounds.top, content.top, clipTop);
         const lower = Math.min(bounds.bottom, content.bottom, clipBottom);
         if (right > left && lower > upper)
@@ -671,7 +771,7 @@ function portGroupAt(point: Point): HoveredPortGroup | null {
     const rowKey = group?.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
     return nodeKey && (direction === "input" || direction === "output") ? { nodeKey, direction, rowKey } : null;
 }
-function measurePortColorColumns(): PortColorColumns[] {
+function measurePortColorColumns(headers: Map<Element, DOMRect>): PortColorColumns[] {
     const columns: PortColorColumns[] = [];
     for (const area of document.querySelectorAll<HTMLElement>(".node-ports")) {
         const input = area.querySelector<HTMLElement>('.port-group[data-direction="input"]');
@@ -682,8 +782,11 @@ function measurePortColorColumns(): PortColorColumns[] {
         const inputHandle = input.querySelector(".port-handle .port-circle, .port-slot")?.getBoundingClientRect() ?? inputRect;
         const outputHandle = output.querySelector(".port-handle .port-circle, .port-slot")?.getBoundingClientRect() ?? outputRect;
         if (!inputRect.height || !outputRect.height) continue;
-        columns.push({ nodeKey: input.dataset.nodeKey, inputX: (inputHandle.left + inputHandle.right) / 2,
-            outputX: (outputHandle.left + outputHandle.right) / 2, top: Math.min(inputRect.top, outputRect.top),
+        const header = measureLaneHeader(area, headers);
+        const socketCenter = (rect: DOMRect) => Math.min(header?.right ?? Infinity,
+            Math.max(header?.left ?? -Infinity, (rect.left + rect.right) / 2));
+        columns.push({ nodeKey: input.dataset.nodeKey, inputX: socketCenter(inputHandle),
+            outputX: socketCenter(outputHandle), top: Math.min(inputRect.top, outputRect.top),
             bottom: Math.max(inputRect.bottom, outputRect.bottom) });
     }
     return columns;
@@ -738,9 +841,10 @@ function updateWires() {
     const exact = new Map<string, PreviewAnchor[]>();
     const slots = new Map<string, PreviewAnchor[]>();
     const connectionEnds = new Map<string, PreviewAnchor[]>();
+    const laneHeaders = new Map<Element, DOMRect>();
     const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement) => {
         const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
-        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]));
+        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), laneHeaders);
         if (!anchor) return;
         const existing = anchors.get(key);
         if (existing) existing.push(anchor);
@@ -768,7 +872,8 @@ function updateWires() {
     selectedWires.value = profileGraphUi("Route connections", () => selectedLaneConnections(candidates, selectedLanes.value,
         anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom }));
     if (selectedWires.value.length || drag) {
-        wireOcclusions.value = profileGraphUi("Measure wire occlusions", () => measureWireOcclusions(top, viewport.bottom, occlusionRoots));
+        wireOcclusions.value = profileGraphUi("Measure wire occlusions", () =>
+            measureWireOcclusions(top, viewport.bottom, occlusionRoots, laneHeaders));
         wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
             ...(snapInput ? [{ x: snapInput.x, y: snapInput.y, width: snapInput.width, height: snapInput.height }] : []),
             ...popovers.map((element) => {
@@ -782,7 +887,7 @@ function updateWires() {
         connectionStartAnchor.value = starts.reduce((closest, candidate) => previous
             && Math.abs(candidate.y - previous.y) < Math.abs(closest.y - previous.y) ? candidate : closest);
     } else connectionStartAnchor.value = null;
-    previewColorColumns.value = drag ? measurePortColorColumns() : [];
+    previewColorColumns.value = drag ? measurePortColorColumns(laneHeaders) : [];
     const end = drag?.edit;
     const anchors = end ? fixedConnectionPorts(scope, end).flatMap((port) => anchorFor(port, end.connection.id)) : [];
     dragAnchors.value = [...new Map(anchors.map((anchor) => [anchor.id, anchor])).values()];
@@ -1047,13 +1152,23 @@ function keyDown(event: KeyboardEvent) {
         if (!event.repeat) webviewApi.postMessage({ type: "playbackToggle" });
         return;
     }
-    if (event.shiftKey && (event.key === "ArrowUp" || event.key === "ArrowDown") && !event.defaultPrevented
-        && !editingText && !event.altKey && !event.ctrlKey && !event.metaKey && selectedLaneIds.value.length) {
+    if (event.shiftKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+        && !event.defaultPrevented && !editingText && !event.altKey && !event.ctrlKey && !event.metaKey
+        && state.value.scope?.editable && selectedLaneIds.value.length && !objectDrag) {
         event.preventDefault();
-        const current = projectLanes.value.map(({ address }) => addressKey(address));
-        const next = moveSelectedLanes(current, selectedLanes.value, event.key === "ArrowUp" ? -1 : 1);
+        const current = currentProjectLaneOrder();
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            const next = moveLaneNesting(lanes.value, current, layout.value.laneParents, selectedLanes.value,
+                event.key === "ArrowLeft" ? -1 : 1);
+            if (next) {
+                showLaneParents(next.parents, selectedLanes.value);
+                save(next.order, next.parents);
+            }
+            return;
+        }
+        const next = moveSelectedSiblingLanes(lanes.value, current, selectedLanes.value, event.key === "ArrowUp" ? -1 : 1);
         if (next !== current) {
-            save(mergeLaneOrder(layout.value.laneOrder, next));
+            save(next);
             const focused = document.activeElement;
             void nextTick(() => {
                 if (focused instanceof HTMLElement && focused.isConnected && document.activeElement === document.body)

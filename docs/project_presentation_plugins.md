@@ -148,6 +148,10 @@ built-in seek reader for extrapolating past the viewport. The
 [rendering review](historical/project_presentation_rendering_review.md#automation-curve-during-the-pilot)
 records the earlier pilot status.
 
+A future presentation API extension will support typed transfers between
+lanes, starting with Automation Curve control points. See
+[Copy, cut, and paste between lanes](./node_interaction_and_presentation_communication_direction.md#copy-cut-and-paste-between-lanes).
+
 ## Test a presentation scenario
 
 The headless client runs the same built-in and project presentation programs.

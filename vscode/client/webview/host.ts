@@ -13,6 +13,7 @@ export type WebviewLocalState = {
     surface?: "graphEditor";
     meterModes?: Record<string, import("../src/observations").MeterMode>;
     outputInversions?: Record<string, boolean>;
+    timelineHeaderWidth?: number;
 };
 
 const vscode = acquireVsCodeApi<WebviewLocalState>();

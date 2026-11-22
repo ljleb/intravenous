@@ -1,3 +1,6 @@
+import { editableHeightPx } from "../../src/timelineViewport";
+export { editableHeightPx };
+
 // The four global display modes of node_presentation_and_manual_controls_direction.md.
 // A presentation receives exactly one of them.
 export type NodeDisplayMode = "compact" | "nano" | "mini" | "editable";
@@ -14,7 +17,6 @@ export const compactWidthPx = 180;
 const compactHysteresisPx = 16;
 // Initial geometry thresholds, to tune against real presentations.
 export const nanoHeightPx = 16;
-export const editableHeightPx = 48;
 
 export function isNodeViewChoice(value: unknown): value is NodeViewChoice {
     return typeof value === "string"

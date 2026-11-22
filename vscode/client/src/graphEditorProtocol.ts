@@ -30,6 +30,7 @@ export type CursorReturnMessage =
 export type GraphPresentationPatch = {
     presentationStates: Record<string, PresentationState | null>;
     laneOrder?: string[];
+    laneParents?: Record<string, string>;
 };
 
 export type GraphEditorState = {

@@ -234,6 +234,9 @@ std::vector<ProjectCommand> ProjectPersistenceBuilder::build() const
             order.push_back(node_address_json(address, names));
         commands.push_back({"projectPresentation.setLaneOrder", {{"order", std::move(order)}}});
     }
+    if (!presentation_.lane_parents.empty())
+        commands.push_back({"projectPresentation.setLaneParents",
+            {{"parents", project_lane_parents_json(presentation_.lane_parents, names)}}});
     std::vector<Json> lane_views;
     lane_views.reserve(presentation_.lane_views.size());
     for (auto const& view : presentation_.lane_views)

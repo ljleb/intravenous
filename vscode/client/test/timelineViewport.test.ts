@@ -1,9 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, middleDragZoomFactor, middleZoomPickup,
+import { editableHeightPx, initialTimelineViewport, isMiddleDoubleClick, maximumLaneHeight, middleClickMode, middleDragZoomFactor, middleZoomPickup,
     minimumLaneHeight, moveMiddleDrag, panTimeline, readTimelineViewport, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction,
     wheelPixels, wrapTimelineCursor, zoomAnchorHint, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineAxes,
-    zoomTimelineHorizontally, zoomTimelineVertically, type MiddleDrag } from "../src/timelineViewport";
+    zoomTimelineHorizontally, zoomTimelineVertically, stepTimelineVerticalZoom, timelineLaneBorderPx, type MiddleDrag } from "../src/timelineViewport";
+
+test("the opening height is the last editable wheel step from maximum zoom", () => {
+    let view = { ...initialTimelineViewport, laneHeight: maximumLaneHeight };
+    assert.ok(initialTimelineViewport.laneHeight - timelineLaneBorderPx >= editableHeightPx);
+    while (true) {
+        const next = stepTimelineVerticalZoom(view, 0, 1);
+        if (next.laneHeight - timelineLaneBorderPx < editableHeightPx) break;
+        view = next;
+    }
+    assert.ok(Math.abs(view.laneHeight - initialTimelineViewport.laneHeight) < 1e-9);
+    const zoomedOut = stepTimelineVerticalZoom(view, 0, 1);
+    assert.ok(Math.abs(stepTimelineVerticalZoom(zoomedOut, 0, -1).laneHeight - view.laneHeight) < 1e-9);
+});
 
 test("timeline wheel modifiers implement the requested bindings", () => {
     const plain = { ctrlKey: false, altKey: false, shiftKey: false };
@@ -217,7 +230,10 @@ test("middle double-click modifiers reset the selected axis at the click anchor"
     assert.equal(isMiddleDoubleClick(first, { ...first, mode: "horizontalZoom" }), false);
     const view = { beginSeconds: 2, secondsPerPixel: .02, laneHeight: 160, scrollTop: 240 };
     assert.deepEqual(resetTimelineZoom(view, "horizontalZoom", 100), { ...view, beginSeconds: 3, secondsPerPixel: .01 });
-    assert.deepEqual(resetTimelineZoom(view, "verticalZoom", 120), { ...view, laneHeight: 120, scrollTop: 150 });
+    const laneHeight = initialTimelineViewport.laneHeight;
+    assert.deepEqual(resetTimelineZoom(view, "verticalZoom", 120), {
+        ...view, laneHeight, scrollTop: Math.max(0, 360 * laneHeight / 160 - 120),
+    });
 });
 
 test("saved timeline state normalizes invalid values and does not depend on viewport size", () => {

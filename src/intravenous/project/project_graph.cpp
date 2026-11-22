@@ -2662,6 +2662,12 @@ void append_project_instance_duplicates(ProjectEditBatch& edit,
         }, connection);
     }
 }
+bool is_module_lane_parent(ProjectGraphGeneration const& generation, NodeAddress const& address)
+{
+    auto const matches = resolve_node_address(*generation.graph, generation.placements, address);
+    return matches.size() == 1 && matches.front().kind == ProjectNodePathMatch::Kind::bundle
+        && generation.graph->node_bundles.bundle(matches.front().bundle).is_subgraph();
+}
 } // namespace
 
 ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
@@ -2704,6 +2710,8 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
     if (historical) {
         if (historical->lane_order)
             edit.lane_order = project_history_setting(presentation_.lane_order, *historical->lane_order, *history_undo);
+        if (historical->lane_parents)
+            edit.lane_parents = project_history_setting(presentation_.lane_parents, *historical->lane_parents, *history_undo);
         if (historical->timeline_snap_memory_json)
             edit.timeline_snap_memory_json = project_history_setting(
                 presentation_.timeline_snap_memory_json, *historical->timeline_snap_memory_json, *history_undo);
@@ -2717,7 +2725,12 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
     }
     std::optional<ProjectPresentation> next_presentation;
     auto prepare_presentation = [&](std::unordered_set<std::string> const& remaining_instances) {
-        if (edit.lane_views.empty() && !edit.lane_order && !edit.timeline_snap_memory_json
+        auto valid_placement_instances = [&](ProjectLaneParent const& placement) {
+            return remaining_instances.contains(placement.instance_id)
+                && remaining_instances.contains(placement.parent.instance_id);
+        };
+        if (edit.lane_views.empty() && !edit.lane_order && !edit.lane_parents && !edit.timeline_snap_memory_json
+            && std::ranges::all_of(presentation_.lane_parents, valid_placement_instances)
             && std::ranges::all_of(presentation_.lane_order, [&](auto const& address) {
                 return remaining_instances.contains(address.instance_id);
             }) && std::ranges::all_of(presentation_.lane_views, [&](auto const& view) {
@@ -2735,6 +2748,25 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             }
             next.lane_order = *edit.lane_order;
         }
+        if (edit.lane_parents) {
+            validate_project_lane_parents(*edit.lane_parents);
+            if (!std::ranges::all_of(*edit.lane_parents, valid_placement_instances))
+                throw std::invalid_argument("lane nesting addresses an unknown project instance");
+            if (!historical) {
+                std::unordered_map<std::string_view, NodeAddress const*> old_parents;
+                for (auto const& placement : presentation_.lane_parents)
+                    old_parents.emplace(placement.instance_id, &placement.parent);
+                for (auto const& placement : *edit.lane_parents) {
+                    auto const old = old_parents.find(placement.instance_id);
+                    if (old != old_parents.end() && *old->second == placement.parent) continue;
+                    if (!current_generation_ || !current_generation_->graph
+                        || !is_module_lane_parent(*current_generation_, placement.parent))
+                        throw std::invalid_argument("lane nesting requires a module instance as its parent");
+                }
+            }
+            next.lane_parents = *edit.lane_parents;
+        }
+        std::erase_if(next.lane_parents, [&](auto const& placement) { return !valid_placement_instances(placement); });
         if (edit.timeline_snap_memory_json) next.timeline_snap_memory_json = *edit.timeline_snap_memory_json;
         apply_project_record_edits(next.lane_views, edit.lane_views);
         std::erase_if(next.lane_order, [&](auto const& address) {
@@ -2818,7 +2850,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
             rebuilt = rebuild_locked(std::move(nodes), std::move(wires), true, nullptr,
                 &transactions, std::move(controls), false, &effect);
         }
-    } else if (!edit.lane_views.empty() || edit.lane_order || edit.timeline_snap_memory_json) {
+    } else if (!edit.lane_views.empty() || edit.lane_order || edit.lane_parents || edit.timeline_snap_memory_json) {
         NodeInstancesProjectGraphRead instances{};
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_node_instances_read_event, instances);
         if (!instances.handled) throw std::runtime_error("project editing requires NodeInstances");
@@ -2831,6 +2863,8 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         effect.lane_views = project_record_changes(presentation_.lane_views, next_presentation->lane_views);
         if (presentation_.lane_order != next_presentation->lane_order)
             effect.lane_order = {presentation_.lane_order, next_presentation->lane_order};
+        if (presentation_.lane_parents != next_presentation->lane_parents)
+            effect.lane_parents = {presentation_.lane_parents, next_presentation->lane_parents};
         if (presentation_.timeline_snap_memory_json != next_presentation->timeline_snap_memory_json)
             effect.timeline_snap_memory_json = {presentation_.timeline_snap_memory_json, next_presentation->timeline_snap_memory_json};
         presentation_ = std::move(*next_presentation);
@@ -3063,6 +3097,10 @@ void ProjectGraph::handle_project_replace_graph(
         for (auto& control : controls)
             if (control.id.kind == ManualControlKind::output_gain) control.enabled = true;
         auto presentation = request.presentation;
+        validate_project_lane_parents(presentation.lane_parents);
+        std::erase_if(presentation.lane_parents, [&](auto const& placement) {
+            return !instance_ids.contains(placement.instance_id) || !instance_ids.contains(placement.parent.instance_id);
+        });
         std::erase_if(presentation.lane_order, [&](auto const& address) {
             return !instance_ids.contains(address.instance_id);
         });
@@ -3933,6 +3971,13 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         ProjectGraphScope scope;
         scope.presentation = presentation_;
         auto const generation = current_generation_;
+        if (generation && generation->graph) {
+            std::unordered_set<NodeAddress, ProjectRecordKeyHash> seen;
+            for (auto const& placement : presentation_.lane_parents) {
+                if (seen.insert(placement.parent).second && !is_module_lane_parent(*generation, placement.parent))
+                    scope.unavailable_lane_parents.push_back(placement.parent);
+            }
+        }
         if (generation) scope.generation = generation->configured_generation;
         scope.sample_rate = generation && generation->compiled_graph
             ? generation->compiled_graph->specialization.sample_rate : sample_rate_;

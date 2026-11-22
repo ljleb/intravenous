@@ -44,6 +44,7 @@ export type GraphScopeNode = {
     eventInputs: GraphScopePort[];
     eventOutputs: GraphScopePort[];
     hasChildren: boolean;
+    isModule?: boolean;
     errorMessage?: string;
     // Accepted constructor values, independent of desired configurationSource.
     construction?: { definitionId: string; arguments: unknown[] } | null;
@@ -93,6 +94,7 @@ export type GraphScope = {
     childScopes?: Array<{ subject: NodeAddress; nodes: GraphScopeNode[]; hasBoundary?: boolean }>;
     connections: GraphScopeConnection[];
     timelineNodes?: NodeAddress[];
+    unavailableLaneParents?: NodeAddress[];
     presentation?: ProjectPresentation;
 };
 export type Point = { x: number; y: number };
@@ -106,12 +108,14 @@ export type ProjectLaneView = {
 };
 export type ProjectPresentation = {
     laneOrder: NodeAddress[];
+    laneParents?: Array<{ instanceId: string; parent: NodeAddress }>;
     laneViews: ProjectLaneView[];
     timelineSnapMemory: import("./timelineSnap").TimelineSnapMemory;
 };
 export type GraphViewState = {
     presentationStates: PresentationStates;
     laneOrder: string[];
+    laneParents: Record<string, string>;
 };
 export type GraphLayout = GraphViewState & {
     positions: Record<string, Point>;
@@ -161,6 +165,8 @@ export function laneViewFromKey(key: string, state: PresentationState | null): O
 export function readGraphViewState(presentation?: ProjectPresentation): GraphViewState {
     return {
         laneOrder: presentation?.laneOrder.map(addressKey) ?? [],
+        laneParents: Object.fromEntries((presentation?.laneParents ?? []).map(({ instanceId, parent }) =>
+            [addressKey({ instanceId }), addressKey(parent)])),
         presentationStates: Object.fromEntries((presentation?.laneViews ?? []).map(
             ({ address, presentationId, state }) => [presentationStateKey(address, presentationId), state])),
     };

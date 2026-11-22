@@ -760,6 +760,62 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     EXPECT_EQ(undone[2]["args"]["state"]["pan"], 8);
 }
 
+TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGraph)
+{
+    auto const workspace = fresh_workspace("project_persistence_lane_nesting");
+    auto const project_file = workspace / "iv_project.jsonl";
+    write_text(project_file,
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"module","definition_id":"iv.test.persistence.original"}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"lane","definition_id":"iv.test.persistence.original"}})" "\n");
+    iv::ProjectPersistence persistence(workspace, startup_for(workspace));
+    iv::NodeInstances instances;
+    iv::GraphConnections graph_connections;
+    iv::ProjectGraph project_graph;
+    auto persistence_graph_scope = iv::project_persistence_project_graph_bridge::bind(persistence, project_graph);
+    auto graph_instances_scope = iv::project_graph_node_instances_bridge::bind(project_graph, instances);
+    auto graph_connections_scope = iv::project_graph_graph_connections_bridge::bind(project_graph, graph_connections);
+    publish_definitions_snapshot(project_graph, {.snapshot = persisted_replacement_definitions()});
+    ASSERT_TRUE(persistence.load().empty());
+    auto const generation = project_graph.current_generation();
+    ASSERT_TRUE(generation && generation->graph);
+
+    auto apply = [&](iv::ProjectEditBatch const& batch) {
+        iv::ProjectAckBuilder builder;
+        in_event_source([&] { project_graph.handle_project_apply_edit(batch, builder); });
+        builder.build();
+    };
+    auto save = [&] {
+        in_event_source([&] { persistence.save(); });
+        return parse_project_file(project_file);
+    };
+    iv::ProjectEditBatch nest;
+    nest.lane_order = std::vector<iv::NodeAddress>{{.instance_id = "module"}, {.instance_id = "lane"}};
+    nest.lane_parents = std::vector<iv::ProjectLaneParent>{{"lane", {.instance_id = "module"}}};
+    ASSERT_NO_THROW(apply(nest));
+    EXPECT_EQ(project_graph.current_generation(), generation);
+    auto const nested = save();
+    ASSERT_EQ(nested.size(), 4u);
+    EXPECT_EQ(nested[3]["command"], "projectPresentation.setLaneParents");
+    EXPECT_EQ(nested[3]["args"]["parents"][0]["instance_id"], "lane");
+    EXPECT_EQ(nested[3]["args"]["parents"][0]["parent"]["instance_id"], "module");
+
+    iv::ProjectEditBatch cycle;
+    cycle.lane_parents = std::vector<iv::ProjectLaneParent>{
+        {"lane", {.instance_id = "module"}}, {"module", {.instance_id = "lane"}}};
+    EXPECT_THROW(apply(cycle), std::invalid_argument);
+    iv::ProjectAckBuilder undo;
+    in_event_source([&] { project_graph.handle_project_undo(undo); });
+    ASSERT_NO_THROW(undo.build());
+    EXPECT_EQ(save().size(), 2u);
+    iv::ProjectAckBuilder redo;
+    in_event_source([&] { project_graph.handle_project_redo(redo); });
+    ASSERT_NO_THROW(redo.build());
+    EXPECT_EQ(project_graph.current_generation(), generation);
+    EXPECT_EQ(save(), nested);
+    ASSERT_TRUE(persistence.load().empty());
+    EXPECT_EQ(save(), nested);
+}
+
 TEST(ProjectPersistence, SavingUnchangedContentsKeepsExistingFile)
 {
     auto const workspace = fresh_workspace("project_persistence_clean_save");

@@ -10,6 +10,28 @@
 #include <utility>
 
 namespace iv {
+inline std::vector<ProjectLaneParent> parse_project_lane_parents(
+    nlohmann::ordered_json const& values, ProjectConnectionJsonNames names)
+{
+    if (!values.is_array()) throw std::invalid_argument("lane parents must be an array");
+    std::vector<ProjectLaneParent> parents;
+    auto const field = names == ProjectConnectionJsonNames::project_file ? "instance_id" : "instanceId";
+    for (auto const& value : values)
+        parents.push_back({value.at(field).get<std::string>(), parse_node_address_json(value.at("parent"), names)});
+    validate_project_lane_parents(parents);
+    return parents;
+}
+
+inline nlohmann::ordered_json project_lane_parents_json(
+    std::vector<ProjectLaneParent> const& parents, ProjectConnectionJsonNames names)
+{
+    auto values = nlohmann::ordered_json::array();
+    auto const field = names == ProjectConnectionJsonNames::project_file ? "instance_id" : "instanceId";
+    for (auto const& placement : parents)
+        values.push_back({{field, placement.instance_id}, {"parent", node_address_json(placement.parent, names)}});
+    return values;
+}
+
 inline std::vector<NodeAddress> parse_project_lane_order(
     nlohmann::ordered_json const& order, ProjectConnectionJsonNames names)
 {

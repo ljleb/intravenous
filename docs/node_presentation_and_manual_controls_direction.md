@@ -690,6 +690,11 @@ output gain when the output has no consumer, no live observation, and no
 active gesture. See the former
 [virtual switch](historical/virtual_output_gain_switch_2026-11-20.md) and
 [member switch](historical/member_output_gain_switch_2026-11-20.md) rules.
+
+Deferred design topic, recorded 2026-11-21. The node definition can eventually
+specify whether an output port has a knob and how that knob behaves. The
+definition API and supported behaviors are open for later design.
+
 A virtual knob stores one value and applies it to the ports in its mapping.
 An explicitly enabled or edited concrete member input takes precedence at
 its port. An enabled virtual input takes precedence over an implicit

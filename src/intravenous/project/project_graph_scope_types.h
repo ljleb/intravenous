@@ -94,6 +94,7 @@ struct ProjectGraphScope {
     std::vector<ProjectGraphChildScope> child_scopes{};
     std::vector<ProjectGraphScopeConnection> connections{};
     std::vector<NodeAddress> timeline_nodes{};
+    std::vector<NodeAddress> unavailable_lane_parents{};
     ProjectPresentation presentation{};
 };
 } // namespace iv

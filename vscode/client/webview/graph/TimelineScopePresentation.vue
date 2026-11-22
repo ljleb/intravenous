@@ -29,7 +29,8 @@ import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
     panTimeline, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor,
-    zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineAxes,
+    zoomAnchorHint, zoomFactorForPixels, zoomMiddleDrag, zoomMiddleDragAtPickup, zoomTimelineHorizontally,
+    stepTimelineVerticalZoom, timelineLaneBorderPx, verticalWheelStepPixels,
     type MiddleClick, type MiddleDrag, type MiddleZoomPickup, type TimelineZoomAction, type TimelineViewport } from "../../src/timelineViewport";
 import { useGraphEditor } from "./context";
 import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
@@ -46,7 +47,7 @@ const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.val
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
 const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModules, finishPointerLock, setTimelineZoomHint,
-    profileGraphUi } = useGraphEditor();
+    profileGraphUi, portsChanged, startObjectDrag } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
 }
@@ -154,6 +155,30 @@ const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
 const timelineSize = usePresentationSize(root);
 const timeRegionSize = usePresentationSize(timeRegion);
+const timeHeaderWidth = shallowRef(webviewApi.getState()?.timelineHeaderWidth);
+function resizeTimelineHeaders(event: PointerEvent) {
+    if (event.button !== 0 || !root.value || !timeRegion.value) return;
+    const startX = event.clientX;
+    const initial = timeRegion.value.getBoundingClientRect().left - root.value.getBoundingClientRect().left;
+    const previous = timeHeaderWidth.value;
+    const move = ({ x }: Point) => {
+        if (!root.value || (x === startX && timeHeaderWidth.value === previous)) return;
+        timeHeaderWidth.value = Math.round(Math.max(112, Math.min(root.value.clientWidth - 80, initial + x - startX)));
+        void nextTick(portsChanged);
+    };
+    if (startObjectDrag(event, {
+        lock: false, move, moveBy: () => {},
+        finish(point): undefined {
+            if (point) {
+                move(point);
+                webviewApi.setState({ ...webviewApi.getState(), timelineHeaderWidth: timeHeaderWidth.value });
+            } else {
+                timeHeaderWidth.value = previous;
+                void nextTick(portsChanged);
+            }
+        },
+    })) event.preventDefault();
+}
 const timeWidth = computed(() => timeRegionSize.value?.width ?? 0);
 const timeWindow = computed(() => {
     const { beginSeconds, secondsPerPixel } = viewport.value;
@@ -398,11 +423,13 @@ function zoomAnchor(action: TimelineZoomAction, x: number, y: number, unwrapped 
 function wheel(event: WheelEvent) {
     profileGraphUi("Handle timeline wheel", () => applyWheel(event));
 }
+let verticalWheelRemainder = 0;
 function applyWheel(event: WheelEvent) {
     if (pendingMiddleViewport) commitMiddleViewport();
     const lane = event.shiftKey && event.target instanceof Element ? event.target.closest(".lane") : null;
     const navigation = lane && valueNavigationTargets.get(lane);
     const action = timelineWheelAction(event, !!navigation);
+    if (action !== "verticalZoom" && action !== "bothZoom") verticalWheelRemainder = 0;
     if (action === "verticalScroll") return; // Native scrolling, including its bounds and momentum.
     event.preventDefault();
     event.stopPropagation();
@@ -419,11 +446,17 @@ function applyWheel(event: WheelEvent) {
             return;
         }
         const horizontal = action !== "verticalZoom", vertical = action !== "horizontalZoom";
-        viewport.value = zoomTimelineAxes(viewport.value, {
-            x: horizontal ? zoomAnchor("horizontalZoom", event.clientX, event.clientY) : 0,
-            y: vertical ? zoomAnchor("verticalZoom", event.clientX, event.clientY) : 0,
-        }, delta, { horizontal, vertical });
-        if (vertical) void applyScroll();
+        if (horizontal)
+            viewport.value = zoomTimelineHorizontally(viewport.value, zoomAnchor("horizontalZoom", event.clientX, event.clientY), delta);
+        if (vertical) {
+            verticalWheelRemainder += delta;
+            const steps = Math.trunc(verticalWheelRemainder / verticalWheelStepPixels);
+            verticalWheelRemainder -= steps * verticalWheelStepPixels;
+            if (steps) {
+                viewport.value = stepTimelineVerticalZoom(viewport.value, zoomAnchor("verticalZoom", event.clientX, event.clientY), steps);
+                void applyScroll();
+            }
+        }
     }
 }
 function preventMiddleDefault(event: MouseEvent) {
@@ -716,11 +749,14 @@ onBeforeUnmount(() => {
 <template>
     <section ref="root" class="timeline-scope" tabindex="-1"
         :data-middle-drag="middleDrag && (middleDrag.action !== 'bothZoom' && laneValueGesture?.gesture.mode === 'zoom' ? 'valueZoom' : middleDrag.action)" aria-label="Project timeline"
-        :style="scrollbarStyle" :data-has-selection="selectedLanes.size > 0"
+        :style="[scrollbarStyle, { '--preferred-header-width': timeHeaderWidth === undefined ? undefined : `${timeHeaderWidth}px`,
+            '--lane-border-width': `${timelineLaneBorderPx}px` }]" :data-has-selection="selectedLanes.size > 0"
         @wheel="wheel" @scroll="scrolled" @pointerdown.capture="beginMiddleDrag" @pointermove="updateMiddleDrag"
         @pointercancel="middlePointerCancelled" @lostpointercapture="middleCaptureLost"
         @mousedown.capture="preventMiddleDefault" @auxclick.capture="preventMiddleDefault">
         <header class="timeline-heading">
+            <div class="header-width-handle" role="separator" aria-orientation="vertical" aria-label="Lane header width"
+                data-status-hint="Drag to resize lane headers" @pointerdown.stop="resizeTimelineHeaders" />
             <div class="node-column">
                 <div class="playback-position" data-status-shortcuts="Space ▶/Ⅱ">
                     <template v-if="backgroundPlayheadSeconds !== null">
@@ -750,6 +786,8 @@ onBeforeUnmount(() => {
             </div>
         </header>
         <div class="lanes" :style="{ '--nested-rim-height': `${Math.min(9, laneHeight / 2)}px` }">
+            <div class="header-width-handle" aria-hidden="true" data-status-hint="Drag to resize lane headers"
+                @pointerdown.stop="resizeTimelineHeaders" />
             <div v-for="area in nestedAreas" :key="area.key" class="nested-lane-area"
                 :style="{ top: `${area.begin * laneHeight}px`, height: `${(area.end - area.begin) * laneHeight}px` }"
                 aria-hidden="true" />
@@ -771,8 +809,8 @@ onBeforeUnmount(() => {
                     : formatLaneLabel(laneLabels(nodeDisplayName(semantic), semantic.sourceLabel))
                         + (selectedLanes.has(addressKey(child.address)) ? ', selected' : ''))
                     + (depth ? `, module nesting depth ${depth}` : '')">
-                <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - 1" module-boundary />
-                <PresentationHost v-else :node="semantic" :region-height="laneHeight - 1" lane
+                <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneHeight - timelineLaneBorderPx" module-boundary />
+                <PresentationHost v-else :node="semantic" :region-height="laneHeight - timelineLaneBorderPx" lane
                     :open-source="child.virtualNode && child.declarationSource
                         ? () => openVirtualNodeSource(child.address) : undefined"
                     :rename-lane="scope.editable && isProjectInstance(child.address)
@@ -802,7 +840,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto; --node-label-width: clamp(144px, 22%, 260px); }
+.timeline-scope { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow-y: auto;
+    scrollbar-gutter: stable; scrollbar-color: auto; scrollbar-width: auto;
+    --node-label-width: min(var(--preferred-header-width, clamp(112px, 17%, 182px)), max(112px, calc(100% - 80px))); }
 .timeline-scope::-webkit-scrollbar { width: 14px; height: 10px; }
 .timeline-scope::-webkit-scrollbar-track { background-color: var(--vscode-scrollbar-background, transparent); }
 /* Paint the overview marker in the native track. It adds no hit target and
@@ -835,6 +875,11 @@ onBeforeUnmount(() => {
 .timeline-grid-choices button:not([aria-pressed="true"]):hover { background: var(--vscode-list-hoverBackground); }
 .timeline-heading { display: grid; grid-template-columns: var(--node-label-width) minmax(0, 1fr); }
 .timeline-heading { box-sizing: border-box; position: sticky; top: 0; z-index: 1; background: var(--vscode-editor-background); flex: 0 0 var(--timeline-header-height); border-bottom: 1px solid var(--vscode-panel-border); }
+.header-width-handle { position: absolute; inset-block: 0; inset-inline-start: calc(var(--node-label-width) - 4px);
+    width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }
+.header-width-handle[data-hovered], .header-width-handle:active {
+    background: linear-gradient(to right, transparent 3px, var(--vscode-focusBorder) 3px 5px, transparent 5px);
+}
 .node-column { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
     border-right: 1px solid var(--vscode-panel-border); }
 .timeline-snap-input { min-height: 0; padding-inline: 12px; }
@@ -861,7 +906,10 @@ onBeforeUnmount(() => {
 .playback-position { box-sizing: border-box; height: 32px; padding: 8px 12px 0; overflow: hidden;
     white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--iv-lane-title-color); }
 .playback-position small { color: var(--iv-port-label-base); margin-left: 6px; }
-.lane { position: relative; box-sizing: border-box; border-bottom: 1px solid transparent; }
+.lane { position: relative; box-sizing: border-box; border-bottom: var(--lane-border-width) solid transparent; }
+.lane[data-lane-drop="inside"] { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); }
+.lane[data-lane-drop="before"] { box-shadow: inset 0 2px var(--vscode-focusBorder); }
+.lane[data-lane-drop="after"] { box-shadow: inset 0 -2px var(--vscode-focusBorder); }
 /* The snap grid passes over lane separators and under their contents. */
 .lane::before {
     content: ""; position: absolute; z-index: -2; pointer-events: none;

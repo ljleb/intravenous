@@ -55,6 +55,7 @@ struct NodeInstanceInterface {
     std::vector<NodeInstancePortInfo> event_inputs{};
     std::vector<NodeInstancePortInfo> event_outputs{};
     bool has_children = false;
+    bool is_module = false;
 };
 
 // Copy the public interface while its builder/configured-result owners are alive.
@@ -105,7 +106,8 @@ inline NodeInstanceInterface read_node_instance_interface(
         result.event_outputs.push_back({.name = config.name, .index = index, .event_type = config.type,
             .production = output_production(config), .realization = config.realization});
     }
-    result.has_children = bundle.is_subgraph();
+    result.is_module = bundle.is_subgraph();
+    result.has_children = result.is_module;
     return result;
 }
 
@@ -136,6 +138,7 @@ inline NodeInstanceInterface read_virtual_node_interface(GraphBuilderNodeBundles
     label(result.event_inputs, record.event_inputs, "Event Input");
     label(result.event_outputs, record.event_outputs, "Event Output");
     result.has_children = true;
+    result.is_module = false;
     return result;
 }
 } // namespace iv

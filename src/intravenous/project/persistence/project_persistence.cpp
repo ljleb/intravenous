@@ -425,6 +425,9 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
             } else if (command.command == "projectPresentation.setLaneOrder") {
                 presentation.lane_order = parse_project_lane_order(
                     args.at("order"), ProjectConnectionJsonNames::project_file);
+            } else if (command.command == "projectPresentation.setLaneParents") {
+                presentation.lane_parents = parse_project_lane_parents(
+                    args.at("parents"), ProjectConnectionJsonNames::project_file);
             } else if (command.command == "projectPresentation.setLaneView") {
                 auto key = parse_project_lane_view_id(args, ProjectConnectionJsonNames::project_file);
                 auto existing = std::ranges::find(presentation.lane_views, key, &ProjectLaneView::id);

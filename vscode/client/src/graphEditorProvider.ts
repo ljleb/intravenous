@@ -726,9 +726,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                     void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`);
                 }
             } else if (message?.type === "saveGraphPresentation") {
-                const { requestId, presentationStates, laneOrder } = message;
+                const { requestId, presentationStates, laneOrder, laneParents } = message;
                 try {
-                    const result = await this.session.saveGraphPresentation({ presentationStates, laneOrder });
+                    const result = await this.session.saveGraphPresentation({ presentationStates, laneOrder, laneParents });
                     void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId, revision: result.sessionRevision });
                     await this.refresh();
                 } catch (error) {

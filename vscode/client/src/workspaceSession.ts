@@ -49,15 +49,19 @@ function laneOrderOperation(order: readonly string[]): ProjectEditOperation {
     return { method: "projectPresentation.setLaneOrder", params: { order: order.map(addressFromKey) } };
 }
 
+function laneParentsOperation(parents: NonNullable<GraphScope["presentation"]>["laneParents"]): ProjectEditOperation {
+    return { method: "projectPresentation.setLaneParents", params: { parents } };
+}
+
 function orderWithInsertedLanes(scope: GraphScope, insertions: readonly { instanceId: string; afterInstanceId?: string }[]) {
     const saved = scope.presentation?.laneOrder.map(addressKey) ?? [];
     const visible = orderLanes(scope.nodes.filter((node) => !isTimelineSnapNode(node)), saved);
-    const order = insertLanes(visible.map(({ address }) => addressKey(address)),
+    const order = mergeLaneOrder(saved, visible.map(({ address }) => addressKey(address)));
+    return laneOrderOperation(insertLanes(order,
         insertions.map(({ instanceId, afterInstanceId }) => ({
             key: addressKey({ instanceId }),
             after: afterInstanceId === undefined ? undefined : addressKey({ instanceId: afterInstanceId }),
-        })));
-    return laneOrderOperation(mergeLaneOrder(saved, order));
+        }))));
 }
 
 type LiveGraphProviderLike = {
@@ -171,7 +175,9 @@ export class WorkspaceSession {
             const operations: ProjectEditOperation[] = Object.entries(patch.presentationStates)
                 .map(([key, state]) => ({ method: "projectPresentation.setLaneView", params: laneViewFromKey(key, state) }));
             if (patch.laneOrder) operations.push(laneOrderOperation(patch.laneOrder));
-            return rpc.applyProjectEdit(operations, patch.laneOrder ? undefined : null);
+            if (patch.laneParents) operations.push(laneParentsOperation(Object.entries(patch.laneParents).map(([child, parent]) =>
+                ({ instanceId: addressFromKey(child).instanceId, parent: addressFromKey(parent) }))));
+            return rpc.applyProjectEdit(operations, patch.laneOrder || patch.laneParents ? undefined : null);
         });
         this.presentationChanges = change;
         return change;
@@ -318,10 +324,19 @@ export class WorkspaceSession {
         if (!scope.editable || copies.some(({ sourceInstanceId }) => !visible.has(sourceInstanceId))) {
             throw new Error("A selected node is no longer available");
         }
-        await rpc.applyProjectEdit([
+        const parents = scope.presentation?.laneParents ?? [];
+        const unavailable = new Set(scope.unavailableLaneParents?.map(addressKey));
+        const parentsByChild = new Map(parents.map(({ instanceId, parent }) => [instanceId, parent]));
+        const duplicateParents = copies.flatMap(({ sourceInstanceId, instanceId }) => {
+            const parent = parentsByChild.get(sourceInstanceId);
+            return parent && !unavailable.has(addressKey(parent)) ? [{ instanceId, parent }] : [];
+        });
+        const operations = [
             { method: "nodeInstances.duplicate", params: { copies } },
             orderWithInsertedLanes(scope, copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId }))),
-        ], scope.sessionRevision ?? revision);
+        ];
+        if (duplicateParents.length) operations.push(laneParentsOperation([...parents, ...duplicateParents]));
+        await rpc.applyProjectEdit(operations, scope.sessionRevision ?? revision);
     }
 
     async projectHistory(direction: "undo" | "redo"): Promise<void> {

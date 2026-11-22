@@ -513,6 +513,7 @@ Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
             {"eventInputs", graph_scope_ports_json(node.interface.event_inputs)},
             {"eventOutputs", graph_scope_ports_json(node.interface.event_outputs)},
             {"hasChildren", node.interface.has_children},
+            {"isModule", node.interface.is_module},
             {"errorMessage", node.error_message},
             {"loadState", graph_scope_node_state_json(node.load_state)},
             {"construction", node.construction_arguments_json ? Json{
@@ -570,7 +571,10 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         timelines.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
     auto lane_order = Json::array();
     auto lane_views = Json::array();
+    auto unavailable_lane_parents = Json::array();
     constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
+    for (auto const& address : result->unavailable_lane_parents)
+        unavailable_lane_parents.push_back(node_address_json(address, names));
     for (auto const& address : result->presentation.lane_order)
         lane_order.push_back(node_address_json(address, names));
     for (auto const& view : result->presentation.lane_views)
@@ -583,7 +587,9 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"activeGeneration", result->active_generation ? Json(*result->active_generation) : Json(nullptr)}}},
         {"editable", result->editable},
         {"timelineNodes", std::move(timelines)},
+        {"unavailableLaneParents", std::move(unavailable_lane_parents)},
         {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", std::move(lane_views)},
+            {"laneParents", project_lane_parents_json(result->presentation.lane_parents, names)},
             {"timelineSnapMemory", Json::parse(result->presentation.timeline_snap_memory_json)}}},
         {"nodes", graph_scope_nodes_json(result->nodes)},
         {"childScopes", std::move(child_scopes)},

@@ -6,12 +6,21 @@ export type TimelineViewport = {
     laneHeight: number;
     scrollTop: number;
 };
-export const initialTimelineViewport: TimelineViewport = {
-    beginSeconds: 0, secondsPerPixel: 0.01, laneHeight: 120, scrollTop: 0,
-};
 export const minimumLaneHeight = 12;
 export const maximumLaneHeight = 1600;
+export const editableHeightPx = 48;
+export const timelineLaneBorderPx = 1;
+export const verticalWheelStepPixels = 100;
+const wheelZoomSensitivity = .001;
+const verticalWheelLogStep = verticalWheelStepPixels * wheelZoomSensitivity;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const laneHeightAtWheelStep = (steps: number) => clamp(maximumLaneHeight * Math.exp(-steps * verticalWheelLogStep),
+    minimumLaneHeight, maximumLaneHeight);
+const laneWheelStepAtHeight = (height: number) => Math.log(maximumLaneHeight / height) / verticalWheelLogStep;
+export const initialTimelineViewport: TimelineViewport = {
+    beginSeconds: 0, secondsPerPixel: 0.01, scrollTop: 0,
+    laneHeight: laneHeightAtWheelStep(Math.floor(laneWheelStepAtHeight(editableHeightPx + timelineLaneBorderPx))),
+};
 
 export function readTimelineViewport(value: Partial<TimelineViewport> | undefined): TimelineViewport {
     const finiteOr = (candidate: unknown, fallback: number) =>
@@ -44,7 +53,7 @@ export function wheelPixels(delta: number, mode: number, pageSize: number): numb
 }
 
 export function zoomFactorForPixels(pixels: number): number {
-    return Math.exp(clamp(pixels * .001, -20, 20));
+    return Math.exp(clamp(pixels * wheelZoomSensitivity, -20, 20));
 }
 
 export function zoomTimelineHorizontally(view: TimelineViewport, pointerX: number, delta: number): TimelineViewport {
@@ -55,6 +64,13 @@ export function zoomTimelineHorizontally(view: TimelineViewport, pointerX: numbe
 
 export function zoomTimelineVertically(view: TimelineViewport, pointerY: number, delta: number): TimelineViewport {
     return scaleTimelineLanes(view, pointerY, zoomFactorForPixels(-delta));
+}
+
+export function stepTimelineVerticalZoom(view: TimelineViewport, pointerY: number, steps: number): TimelineViewport {
+    if (steps === 0) return view;
+    const from = laneWheelStepAtHeight(view.laneHeight);
+    const step = steps > 0 ? Math.floor(from + 1e-9) : Math.ceil(from - 1e-9);
+    return scaleTimelineLanes(view, pointerY, laneHeightAtWheelStep(step + steps) / view.laneHeight);
 }
 
 export function zoomTimelineAxes(view: TimelineViewport, anchor: Point, delta: number,

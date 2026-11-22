@@ -1365,14 +1365,16 @@ void module_main(GraphBuilder& g)
     auto const azimuth = g.input(0, -180, 180);
     auto const elevation = g.input(0, -180, 180);
     auto const spread = g.input(30, 0, 180);
+
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonStereo>();
+    auto const fir = g.node<BaselineFir256>();
+
     hrtf(
         "in"_P = in,
         "azimuth"_P = azimuth,
         "elevation"_P = elevation,
         "spread"_P = spread
     );
-    auto const fir = g.node<BaselineFir256>();
     fir(hrtf);
 
     g.outputs("main"_P = fir);

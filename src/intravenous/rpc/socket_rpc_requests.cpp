@@ -344,6 +344,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 batch.lane_order = parse_project_lane_order(operation_params.at("order"), names);
                 continue;
             }
+            if (operation_method == "projectPresentation.setLaneParents") {
+                if (batch.lane_parents) throw std::invalid_argument("project batch edits lane parents twice");
+                batch.lane_parents = parse_project_lane_parents(operation_params.at("parents"), names);
+                continue;
+            }
             if (operation_method == "projectPresentation.setLaneView") {
                 auto key = parse_project_lane_view_id(operation_params, names);
                 auto const& state = operation_params.at("state");

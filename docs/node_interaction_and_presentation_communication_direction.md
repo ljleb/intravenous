@@ -555,6 +555,23 @@ node then coordinates the actual state/data transfer entirely on the backend.
 Large or implementation-specific backend state should not travel through Vue as
 an intermediary merely because the interaction began in the UI.
 
+### Copy, cut, and paste between lanes
+
+_Future work recorded 2026-11-21._
+
+Start with copying or cutting selected control points from one Automation
+Curve lane and pasting them into another. Use this feature to design a
+transfer operation or subscription in the presentation API. The API needs to
+let a lane offer typed data and another lane accept it. The two lanes can
+represent the same node type or different node types.
+
+C++ node message types are reusable across node types. A shared message can
+carry the request when both types support its payload contract. Design the
+transfer so that a later feature can move recorded output buffers between
+lanes. For large recordings, keep the data transfer on the backend and pass
+its identity through the presentation API. The exact messages, presentation
+bindings, and clipboard lifetime remain open.
+
 # Coherent semantic synchronization without a separate `PresentationState`
 
 ## Commit authoritative information after the root interaction

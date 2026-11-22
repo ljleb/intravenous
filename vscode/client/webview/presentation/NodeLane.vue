@@ -120,6 +120,7 @@ function finishRename(commit: boolean) {
     --header-growth: clamp(0px, calc(100cqh - v-bind(editableHeight)), 25px);
     --heading-height: calc(14px + var(--header-growth) * .24);
     position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    overflow-x: clip;
     padding: calc(1px + var(--header-growth) * .28) 12px 0 17px; border-right: 1px solid var(--vscode-panel-border);
 }
 .lane-heading { display: flex; flex: 0 0 var(--heading-height); align-items: flex-start; gap: 6px; }
@@ -127,6 +128,8 @@ function finishRename(commit: boolean) {
 .module-child .lane-heading { opacity: .74; }
 .boundary-lane .lane-label {
     background-color: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 82%, transparent);
+    background-clip: padding-box;
+    border-inline-start: 10px solid transparent;
     box-shadow: inset 0 1px var(--vscode-panel-border);
 }
 .boundary-lane::after {
@@ -146,6 +149,7 @@ function finishRename(commit: boolean) {
 .lane-label :deep(.node-ports) { flex: 1; min-height: 32px; margin-top: calc(var(--header-growth) * .2); }
 .port-summary { display: flex; gap: 16px; margin-top: 6px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 .inline-header .lane-label { flex-direction: row; align-items: center; gap: 4px; padding: 0 4px 0 17px; }
+.boundary-lane .lane-label { padding-inline-start: 7px; }
 .inline-header .lane-heading { flex: 1; min-width: 0; overflow: hidden; align-items: center; }
 .inline-header .lane-label :deep(.node-ports) {
     --port-slot-height: min(22px, 100cqh);

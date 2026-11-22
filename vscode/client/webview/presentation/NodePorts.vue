@@ -35,8 +35,8 @@ const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
 const portAreaSize = usePresentationSize(portArea);
 const portAreaHeight = computed(() => portAreaSize.value?.height ?? compactKnobSize + foldedSocketHeight);
-const rowHeight = computed(() => props.moduleBoundary ? 20
-    : portAreaHeight.value >= fullKnobSize + foldedSocketHeight ? fullKnobSize : compactKnobSize);
+const rowHeight = computed(() =>
+    portAreaHeight.value >= fullKnobSize + foldedSocketHeight ? fullKnobSize : compactKnobSize);
 let header: HTMLElement | null = null;
 const expanded = ref<"header" | SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
@@ -479,7 +479,6 @@ onBeforeUnmount(() => {
 }
 .node-ports { display: grid; grid-template-columns: minmax(min-content, 1fr) fit-content(50%);
     grid-template-rows: minmax(0, 1fr); gap: 4px; margin-top: 5px; min-height: 22px; }
-:is(.node-ports, .port-panel)[data-module-boundary] { --port-control-column: 0px; --socket-tuck: 0px; }
 .port-group { position: relative; display: flex; flex-direction: column; gap: var(--port-row-gap); min-height: 0; }
 .node-ports:not(.inline) .port-group[data-direction="output"][data-folded-ports] { min-width: calc(var(--port-handle-width) + var(--port-control-column)); }
 [data-direction="input"] { --port-base-color: var(--iv-port-input); --port-color: var(--port-base-color); }

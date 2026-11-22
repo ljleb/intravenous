@@ -73,6 +73,26 @@ Each expanded group has an inset shadow around its descendants, with a visible
 edge above its first child and below its last descendant. The shadows and lane
 headers share a left edge at every depth.
 
+### Project lanes within modules
+
+A project lane can sit under a module instance in the graph editor. The
+project presentation stores the parent address and the lane order. The node
+keeps its project instance ID, ports, and connections. Operators can still
+edit, wire, duplicate, or delete the project node from its nested lane.
+If the parent address becomes unavailable, the editor shows the lane at the
+root until the address resolves again.
+
+Shift+Right moves each selected run into the module immediately above it at
+the same level. Shift+Left moves nodes one module up. Root lanes stay in
+place on Shift+Left. Shift+Up and Shift+Down reorder siblings. Shift+drag
+from a selected header moves the selection to a module or a sibling insertion
+point. Module Ports and C++ children keep their source-defined order. A
+project edit saves the parent changes and order together for undo and redo.
+Project lanes can move past C++ siblings. Module Ports stays at the top.
+
+Drag the header separator to resize the headers in the current webview. The
+timeline opens at the smallest editable height on the vertical wheel zoom grid.
+
 The Add Node picker lists exported definitions. An addressable package-private
 child can appear in its module's expanded lanes and take part in project
 connections. Only project instances can be duplicated. Duplicating a module
