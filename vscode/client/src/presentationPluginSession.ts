@@ -27,6 +27,7 @@ export class PresentationPluginSession {
     private snapshot: PresentationSnapshot | undefined;
     private viewport = "";
     private inputs: PresentationInput[] = [];
+    private drawing: PresentationFrame["marks"];
     private dirty = false;
     private running = false;
     private closed = false;
@@ -74,11 +75,13 @@ export class PresentationPluginSession {
             const reply = this.run({ ...snapshot, clockMs: performance.now() }, inputs);
             const result = reply instanceof Promise ? await reply : reply;
             if (!this.closed) {
-                const eventWindows = new Set(Object.values(snapshot.observations).flatMap(
-                    (observation) => observation?.spans.map(({ result }) => result) ?? []));
-                let observedEventCount = 0;
-                for (const window of eventWindows) observedEventCount += window.eventIndices?.length ?? 0;
-                this.accept(readPresentationFrame(result, observedEventCount), viewport === this.viewport, inputs);
+                const frame = readPresentationFrame(result);
+                if (frame.reuseDrawing) {
+                    if (!this.drawing) throw new Error("Presentation has no drawing to reuse");
+                    delete frame.reuseDrawing;
+                    frame.marks = this.drawing;
+                } else this.drawing = frame.marks;
+                this.accept(frame, viewport === this.viewport, inputs);
             }
         } catch (error) { this.stop(error); }
         finally {
@@ -97,5 +100,6 @@ export class PresentationPluginSession {
         this.closed = true;
         this.inputs = [];
         this.snapshot = undefined;
+        this.drawing = undefined;
     }
 }

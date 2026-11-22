@@ -55,6 +55,13 @@ export function timelineObservationOffset(view: TimelineSamples): number {
     return (timelineSampleExtent(view) > timelineSampleCount ? 1 : 0) - view.origin.fraction;
 }
 
+/** Discrete events need only the samples inside the viewport's half-open interval. */
+export function timelineVisibleEventSpan(view: TimelineSamples): ObservationTimeSpan {
+    const beginOffset = view.origin.fraction > 0 ? 1n : 0n;
+    return { begin: String(BigInt.asIntN(64, view.origin.index + beginOffset)),
+        length: String(timelineSampleExtent(view) - beginOffset) };
+}
+
 export function signedTimelineSpans(begin: bigint, length: bigint): Array<{ begin: bigint; length: bigint; offset: bigint }> {
     const first = BigInt.asIntN(64, begin);
     const firstLength = -firstSignedSample - first;

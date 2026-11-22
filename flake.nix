@@ -60,6 +60,7 @@
           devOnlyPackages = with pkgs; [
             vscode-extensions.vadimcn.vscode-lldb
             nodejs
+            python3
             perf
             flamegraph
             valgrind
@@ -72,6 +73,8 @@
               export IV_DEV_NIXPKGS=${nixpkgs.outPath}
               export CC=${llvm.clang}/bin/clang
               export CXX=${llvm.clang}/bin/clang++
+              export IV_PRESENTATION_WASM_COMPILER=${llvm.clang-unwrapped}/bin/clang
+              export IV_PRESENTATION_WASM_LINKER=${llvm.lld}/bin/wasm-ld
               export JUCE_DIR=${pkgs.juce}
               export IV_VST3_PATH="$HOME/vst"
               export CMAKE_PREFIX_PATH="${pkgs.lib.getDev llvm.llvm}:${pkgs.lib.getDev llvm.clang-unwrapped}:${pkgs.lib.getLib pkgs.libpulseaudio}:''${CMAKE_PREFIX_PATH:-}"

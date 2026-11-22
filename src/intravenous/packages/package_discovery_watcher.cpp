@@ -4,6 +4,7 @@
 #include <intravenous/module/package_manifest.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -43,11 +44,23 @@ bool is_manifest_name(std::string_view name)
 }
 } // namespace
 
-PackageDiscoveryWatcher::PackageDiscoveryWatcher(std::vector<std::filesystem::path> roots)
+PackageDiscoveryWatcher::PackageDiscoveryWatcher(std::vector<std::filesystem::path> roots,
+    std::vector<std::filesystem::path> development_roots)
     : fd_(open_inotify())
     , roots_(std::move(roots))
+    , development_roots_(std::move(development_roots))
 {
+    for (auto& root : roots_) root = watch_key(root);
+    for (auto& root : development_roots_) root = watch_key(root);
     refresh_coverage();
+}
+
+bool PackageDiscoveryWatcher::watches_presentations(std::filesystem::path const& path) const
+{
+    return std::ranges::any_of(development_roots_, [&](auto const& root) {
+        auto const relative = path.lexically_relative(root);
+        return !relative.empty() && *relative.begin() != "..";
+    });
 }
 
 void PackageDiscoveryWatcher::ensure_watch(
@@ -118,6 +131,10 @@ void PackageDiscoveryWatcher::add_root_coverage(
             it.disable_recursion_pending();
             continue;
         }
+        if (entry.path().filename() == IV_PACKAGE_PRESENTATIONS_DIR) {
+            it.disable_recursion_pending();
+            if (!watches_presentations(entry.path())) continue;
+        }
         ensure_watch(entry.path(), desired_paths);
     }
 }
@@ -177,28 +194,39 @@ PackageDiscoveryEvents PackageDiscoveryWatcher::consume_events()
                 if ((event->mask & IN_Q_OVERFLOW) != 0) {
                     result.coverage_may_have_changed = true;
                     result.declarations_may_have_changed = true;
+                    result.presentations_may_have_changed = true;
                     continue;
                 }
 
-                auto const watched = path_by_watch_.contains(event->wd);
+                auto const watched = path_by_watch_.find(event->wd);
                 if ((event->mask & IN_IGNORED) != 0) {
                     if (auto retired = retired_watch_descriptors_.find(event->wd);
                         retired != retired_watch_descriptors_.end()) {
                         retired_watch_descriptors_.erase(retired);
                         continue;
                     }
-                    if (watched) {
+                    if (watched != path_by_watch_.end()) {
                         forget_watch(event->wd);
                         result.coverage_may_have_changed = true;
                         result.declarations_may_have_changed = true;
                     }
                     continue;
                 }
-                if (!watched) continue;
-
+                if (watched == path_by_watch_.end()) continue;
                 if ((event->mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_UNMOUNT)) != 0) {
                     result.coverage_may_have_changed = true;
                     result.declarations_may_have_changed = true;
+                    continue;
+                }
+
+                std::string_view name;
+                if (event->len != 0) {
+                    name = std::string_view(event->name, strnlen(event->name, event->len));
+                }
+                auto const directory = std::filesystem::path(watched->second);
+                if (directory.filename() == IV_PACKAGE_PRESENTATIONS_DIR) {
+                    if (!(event->mask & IN_ISDIR) && !name.empty() && std::filesystem::path(name).extension() == ".wasm")
+                        result.presentations_may_have_changed = true;
                     continue;
                 }
 
@@ -208,16 +236,15 @@ PackageDiscoveryEvents PackageDiscoveryWatcher::consume_events()
                     if (topology_mask != 0) {
                         result.coverage_may_have_changed = true;
                         result.declarations_may_have_changed = true;
+                        if (event->len && std::string_view(event->name) == IV_PACKAGE_PRESENTATIONS_DIR
+                            && watches_presentations(watched->second))
+                            result.presentations_may_have_changed = true;
                     }
                     continue;
                 }
 
-                std::string_view name;
-                if (event->len != 0) {
-                    name = std::string_view(
-                        event->name,
-                        strnlen(event->name, event->len));
-                }
+                if (is_manifest_name(name) && watches_presentations(directory))
+                    result.presentations_may_have_changed = true;
 
                 // File creation/removal/moves can change whether a manifest's
                 // relative entry file exists. Writes/attribute changes only

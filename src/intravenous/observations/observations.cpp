@@ -174,10 +174,11 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
                 throw std::invalid_argument("invalid or duplicate observation interest");
             if (interest.prefetch && !interest.window) throw std::invalid_argument("observation prefetch requires a window");
             auto const exact_events = interest.operation == recorded_event_timestamps_operation;
-            if (exact_events && (!interest.window || interest.source.kind != ObservationSourceKind::output
+            auto const trigger_bins = interest.operation == recorded_trigger_bins_operation;
+            if ((exact_events || trigger_bins) && (!interest.window || interest.source.kind != ObservationSourceKind::output
                 || interest.source.port_kind != PortKind::event || interest.source.channel
-                || interest.window->points || interest.window->max_depth || interest.prefetch))
-                throw std::invalid_argument("invalid recorded event timestamp observation");
+                || (exact_events && interest.window->points) || interest.window->max_depth || interest.prefetch))
+                throw std::invalid_argument("invalid recorded event observation");
             if (interest.window && (interest.source.kind == ObservationSourceKind::state_field
                 || !interest.window->length || interest.window->length > static_cast<std::uint64_t>(INT64_MAX)
                 || (!exact_events && (!interest.window->points || interest.window->points > maximum_observation_window_points))))
@@ -473,6 +474,14 @@ Json const& Observations::window_payload_locked(WindowCapture& capture)
             indices.push_back(std::to_string(index.signed_value()));
         payload["approximate"] = false;
         body["eventIndices"] = std::move(indices);
+    } else if (capture.interest.operation == recorded_trigger_bins_operation) {
+        Json bins = Json::array();
+        for (auto const& bin : result.trigger_bins) {
+            bins.push_back({{"begin", std::to_string(bin.range.begin.signed_value())},
+                {"length", std::to_string(bin.range.extent)},
+                {"first", std::to_string(bin.first.signed_value())}, {"count", std::to_string(bin.count)}});
+        }
+        body["triggerBins"] = std::move(bins);
     } else if (query.window.max_depth) {
         Json marks = Json::array(), unavailable = Json::array();
         for (auto const& event : result.events) {

@@ -47,7 +47,7 @@ TEST(Observations, RecordedEventTimestampsKeepEqualTimeEventsAndWindowOrderAcros
 
 TEST(Observations, RecordedEventTimestampsAreNotLimitedByTheSampleWindowBudget)
 {
-    auto const count = iv::maximum_observation_window_points + 2;
+    auto const count = 5000u;
     std::vector<iv::TimedEvent> timeline;
     for (std::size_t i = 0; i < count; ++i)
         timeline.push_back({iv::GlobalIndex{}.advanced_by(i), iv::TriggerEvent{}});
@@ -55,6 +55,29 @@ TEST(Observations, RecordedEventTimestampsAreNotLimitedByTheSampleWindowBudget)
     iv::project_recorded_event_timestamps(query, timeline);
     EXPECT_EQ(query.result.event_indices.size(), count);
     EXPECT_FALSE(query.result.truncated);
+}
+
+TEST(Observations, RecordedTriggerBinsKeepCountsAcrossTheSignedSeam)
+{
+    auto const low = iv::GlobalIndex::from_signed(std::numeric_limits<std::int64_t>::min());
+    auto const high = low.retreated_by(1);
+    std::vector<iv::TimedEvent> timeline(4999, {low, iv::TriggerEvent{}});
+    timeline.push_back({low.advanced_by(1), iv::TriggerEvent{}});
+    timeline.push_back({low.advanced_by(2), iv::TriggerEvent{}});
+    timeline.push_back({high, iv::TriggerEvent{}});
+    iv::ObservationWindowQuery query{.window = {high, 3, 1}};
+    iv::project_recorded_trigger_bins(query, timeline);
+    ASSERT_EQ(query.result.trigger_bins.size(), 1u);
+    auto const bin = query.result.trigger_bins.front();
+    EXPECT_EQ(bin.range, (iv::GlobalIndexRange{high, 3}));
+    EXPECT_EQ(bin.first, high);
+    EXPECT_EQ(bin.count, 5001u);
+
+    iv::ObservationWindowQuery detailed{.window = {high, 3, 12}};
+    iv::project_recorded_trigger_bins(detailed, timeline);
+    ASSERT_EQ(detailed.result.trigger_bins.size(), 3u);
+    EXPECT_EQ(detailed.result.trigger_bins.at(1).first, low);
+    EXPECT_EQ(detailed.result.trigger_bins.at(1).count, 4999u);
 }
 
 TEST(Observations, BeatGridFindsIrregularPositionsByIndexAndKeepsStridePhase)

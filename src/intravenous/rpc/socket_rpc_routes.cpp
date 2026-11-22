@@ -18,6 +18,26 @@ namespace iv {
 namespace {
 using Json = nlohmann::ordered_json;
 
+Json presentation_catalog_json(PresentationCatalog const& catalog)
+{
+    constexpr int schema_version = 2;
+    auto entries = Json::array();
+    for (auto const& presentation : catalog.entries) {
+        auto entry = Json::object();
+        if (!presentation.error.empty()) entry["error"] = presentation.error;
+        if (!presentation.id.empty()) {
+            Json manifest{{"version", schema_version}, {"id", presentation.id.substr(presentation.provider.size() + 1)},
+                {"title", presentation.title}, {"definitionIds", presentation.definition_ids}};
+            if (presentation.initial_configuration) manifest["initialConfiguration"] = *presentation.initial_configuration;
+            entry.update(Json{{"id", presentation.id}, {"provider", presentation.provider}, {"format", "wasm"},
+                {"schemaVersion", schema_version}, {"manifest", std::move(manifest)}});
+            if (!presentation.digest.empty()) entry["digest"] = presentation.digest;
+        }
+        entries.push_back(std::move(entry));
+    }
+    return {{"ready", catalog.ready}, {"entries", std::move(entries)}};
+}
+
 std::string jsonrpc_result(int id, Json result)
 {
     return Json{
@@ -281,6 +301,22 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 iv_socket_rpc_get_iv_package_definitions_event, request, builder);
             if (!builder.has_response()) builder.fail("IV package service is unavailable");
             return builder.build(id);
+        });
+    impl_->add<ListPresentationsRequest>(
+        "presentations.list", "project.read", false, false,
+        [](auto const&, int id, Context const&) {
+            std::optional<PresentationCatalog> result;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_list_presentations_event, result);
+            if (!result) throw std::runtime_error("Presentation catalog is unavailable");
+            return jsonrpc_result(id, presentation_catalog_json(*result));
+        });
+    impl_->add<FetchPresentationArtifactRequest>(
+        "presentations.fetch", "project.read", false, false,
+        [](auto const& request, int id, Context const&) {
+            std::shared_ptr<std::string const> result;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_fetch_presentation_artifact_event, request.digest, result);
+            if (!result) throw std::runtime_error("Presentation artifact is no longer available");
+            return jsonrpc_result(id, Json{{"digest", request.digest}, {"bytes", *result}});
         });
     impl_->add<CreateIvPackageRequest>(
         "ivPackages.create", "project.write", true, false,

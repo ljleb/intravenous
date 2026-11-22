@@ -141,6 +141,11 @@ export class WorkspaceSession {
     }
     private readonly graphChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeGraph = this.graphChanges.event;
+    private readonly presentationCatalogChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangePresentations = this.presentationCatalogChanges.event;
+    presentationArtifactRpc(): WorkspaceRpc | undefined {
+        return this.graphSessionStatus === "running" ? this.rpc ?? undefined : undefined;
+    }
     graphSessionStatus: LiveGraphSessionStatus = "starting";
     private readonly manualChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeManualControls = this.manualChanges.event;
@@ -512,6 +517,10 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<ServerStatusNotification>("server.status", async (params) => {
+            if (params.code === "presentationsUpdated") {
+                this.presentationCatalogChanges.fire();
+                return;
+            }
             if (params.code === "startupFailed") {
                 this.lastTerminalStatusMessage = params.message || "Startup failed";
                 this.logServerState("Startup failed", params);
@@ -1103,6 +1112,7 @@ export class WorkspaceSession {
     private setServerStatus(status: LiveGraphSessionStatus): void {
         this.provider.setSessionStatus(status);
         this.graphSessionStatus = status;
+        this.presentationCatalogChanges.fire();
         this.graphChanges.fire();
     }
 
@@ -1545,6 +1555,7 @@ export class WorkspaceSession {
         this.controlCompilationStatus.dispose();
         this.manualChanges.dispose();
         this.graphChanges.dispose();
+        this.presentationCatalogChanges.dispose();
         this.observationChanges.dispose();
         this.shuttingDown = true;
         this.rebuildStatusBar.dispose();

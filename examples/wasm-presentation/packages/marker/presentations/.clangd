@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: .
+  Remove: [-std=*]
+  Add: [-std=c17]

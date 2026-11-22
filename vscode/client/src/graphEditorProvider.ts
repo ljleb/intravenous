@@ -19,8 +19,8 @@ import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type Pl
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 import { PlaybackProfile } from "./playbackProfile";
 import type { NativeClientHelper } from "./nativeClientHelper";
-import { projectPresentationWatchPattern, readProjectPresentations } from "./projectPresentationPlugins";
-import type { PresentationScript } from "./presentationPlugin";
+import { PresentationArtifactReader } from "./presentationArtifacts";
+import type { PresentationArtifact } from "./presentationPlugin";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -45,8 +45,9 @@ export class GraphEditorProvider implements vscode.Disposable {
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly graphUiProfiles = new Map<vscode.WebviewPanel, { id: string; waits: GraphUiTimings }>();
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
-    private presentationCatalog?: Promise<PresentationScript[]>;
-    private presentationWatcher?: vscode.Disposable;
+    private presentationCatalog?: Promise<PresentationArtifact[]>;
+    private readonly presentationReader = new PresentationArtifactReader();
+    private readonly presentationChanges: vscode.Disposable;
     private readonly changed: vscode.Disposable;
     private readonly windowFocusChanged: vscode.Disposable;
     private readonly shortcutSettingChanged: vscode.Disposable;
@@ -163,6 +164,12 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
             void this.refresh();
         });
+        const reloadPresentations = () => {
+            this.presentationCatalog = undefined;
+            for (const panel of this.ready) void this.postProjectPresentations(panel);
+        };
+        this.presentationChanges = vscode.Disposable.from(session.onDidChangePresentations(reloadPresentations),
+            vscode.workspace.onDidGrantWorkspaceTrust(reloadPresentations));
         this.controlsChanged = session.onDidChangeManualControls(() => {
             for (const panel of this.ready) this.postControls(panel);
         });
@@ -763,27 +770,28 @@ export class GraphEditorProvider implements vscode.Disposable {
         const css = panel.webview.asWebviewUri(vscode.Uri.joinPath(root, "main.css"));
         panel.webview.html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${panel.webview.cspSource} data:; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src blob:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${panel.webview.cspSource} data:; style-src ${panel.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; worker-src blob:">
 <link rel="stylesheet" href="${css}"></head><body data-surface="graphEditor"><div id="app"></div>
 <script type="module" nonce="${nonce}" src="${script}"></script></body></html>`;
     }
 
     private async postProjectPresentations(panel: vscode.WebviewPanel): Promise<void> {
-        if (!this.presentationWatcher) {
-            const files = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.session.projectFolder, projectPresentationWatchPattern));
-            const reload = () => {
-                this.presentationCatalog = undefined;
-                for (const panel of this.ready) void this.postProjectPresentations(panel);
-            };
-            this.presentationWatcher = vscode.Disposable.from(files, files.onDidCreate(reload), files.onDidChange(reload),
-                files.onDidDelete(reload), vscode.workspace.onDidGrantWorkspaceTrust(reload));
+        const catalog = this.presentationCatalog ??= this.readPresentationCatalog();
+        try {
+            const plugins = await catalog;
+            if (this.ready.has(panel) && catalog === this.presentationCatalog)
+                void panel.webview.postMessage({ type: "projectPresentations", plugins } satisfies GraphEditorHostMessage);
+        } catch (error) {
+            if (this.presentationCatalog !== catalog) return;
+            this.presentationCatalog = undefined;
+            this.outputChannel.appendLine(`Presentation catalog · ${String(error)}`);
         }
-        const catalog = this.presentationCatalog ??= vscode.workspace.isTrusted
-            ? readProjectPresentations(this.session.projectFolder.fsPath, (error) => this.outputChannel.appendLine(error))
-            : Promise.resolve([]);
-        const plugins = await catalog;
-        if (this.ready.has(panel) && catalog === this.presentationCatalog)
-            void panel.webview.postMessage({ type: "projectPresentations", plugins } satisfies GraphEditorHostMessage);
+    }
+
+    private async readPresentationCatalog(): Promise<PresentationArtifact[]> {
+        if (!vscode.workspace.isTrusted || this.session.graphSessionStatus !== "running") return [];
+        const rpc = this.session.presentationArtifactRpc();
+        return rpc ? (await this.presentationReader.read(rpc, (error) => this.outputChannel.appendLine(error))).artifacts : [];
     }
 
     private postControls(panel: vscode.WebviewPanel): void {
@@ -856,7 +864,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     dispose(): void {
         this.stopClientTrace();
         this.disposed = true;
-        this.presentationWatcher?.dispose();
+        this.presentationChanges.dispose();
         clearInterval(this.playbackTimer);
         if (this.playbackProfile) clearTimeout(this.playbackProfile.timer);
         this.playbackProfile = undefined;

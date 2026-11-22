@@ -71,7 +71,6 @@ struct ResolvedPackage {
     Manifest manifest;
     std::string package_key;
     std::filesystem::path module_dir;
-    std::filesystem::path manifest_file;
     std::filesystem::path entry_file;
     PackageProvenance provenance = PackageProvenance::project_local;
     std::filesystem::path artifact_root;
@@ -757,7 +756,6 @@ class ModuleLoader::Impl {
             .manifest = std::move(manifest),
             .package_key = package_key_for(dir),
             .module_dir = dir,
-            .manifest_file = normalize(*manifest_file),
             .entry_file = entry,
             .provenance = request.provenance,
             .artifact_root = std::move(artifact_root),
@@ -982,7 +980,7 @@ class ModuleLoader::Impl {
         // definition IDs resolve through graph configuration, so provider edits do
         // not enter a consumer's C++ compilation signature.
         signature << artifact_signature_package_identity(root) << '\n'
-                  << read_text(root.manifest_file) << '\n'
+                  << "package-entry=" << root.manifest.entry.generic_string() << '\n'
                   << "package-source=" << source_tree_fingerprint(root.module_dir) << '\n';
         if (std::string_view(IV_CONFIGURED_IV_BUILDER_LIBRARY).size()) {
             signature << "builder-library="

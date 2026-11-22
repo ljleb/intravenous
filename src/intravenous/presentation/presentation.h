@@ -1,0 +1,117 @@
+#ifndef INTRAVENOUS_PRESENTATION_H
+#define INTRAVENOUS_PRESENTATION_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define IV_PRESENTATION_ABI_VERSION 3
+#define IV_PRESENTATION_DESCRIPTOR_VERSION 1
+#define IV_PRESENTATION_TIMELINE 1
+#define IV_PRESENTATION_NO_FLAGS 0
+#define IV_PRESENTATION_STRINGIFY_IMPL(Value) #Value
+#define IV_PRESENTATION_STRINGIFY(Value) IV_PRESENTATION_STRINGIFY_IMPL(Value)
+
+/* Descriptor bytes are version, ABI version, flags, then the optional
+   UTF-8 path in the icon's 16 by 16 coordinate space. */
+#if defined(__wasm32__)
+#define IV_PRESENTATION_DETAIL_DESCRIPTOR(Flags, IconAssembly) \
+    __asm__(".section .custom_section.iv.presentation,\"\",@\n" \
+        ".byte " IV_PRESENTATION_STRINGIFY(IV_PRESENTATION_DESCRIPTOR_VERSION) ", " \
+        IV_PRESENTATION_STRINGIFY(IV_PRESENTATION_ABI_VERSION) ", " IV_PRESENTATION_STRINGIFY(Flags) "\n" \
+        IconAssembly "\n.text\n")
+#else
+#define IV_PRESENTATION_DETAIL_DESCRIPTOR(Flags, IconAssembly)
+#endif
+
+#define IV_PRESENTATION_DESCRIPTOR(Flags, Icon) \
+    IV_PRESENTATION_DETAIL_DESCRIPTOR(Flags, ".ascii " IV_PRESENTATION_STRINGIFY(Icon))
+
+#ifdef __cplusplus
+extern "C" {
+#define IV_PRESENTATION_EXPORT extern "C"
+#else
+#define IV_PRESENTATION_EXPORT
+#endif
+
+#define IV_TYPEDEF_SPAN(Type, Name) typedef struct { const Type *data; uint32_t size; } Name
+typedef struct IvPresentationContext IvPresentationContext;
+typedef struct { double x, y; } IvPoint;
+typedef struct { double x, y, width, height; } IvRectangle;
+IV_TYPEDEF_SPAN(char, IvString);
+IV_TYPEDEF_SPAN(IvPoint, IvPointSpan);
+
+enum {
+    IV_GESTURE_BEGIN, IV_GESTURE_MOVE, IV_GESTURE_MODIFIERS,
+    IV_GESTURE_WHEEL, IV_GESTURE_FINISH, IV_GESTURE_CANCEL
+};
+enum { IV_SHIFT = 1, IV_ALT = 2, IV_CONTROL = 4, IV_META = 8 };
+typedef struct {
+    uint32_t id, phase, modifiers, reserved;
+    IvPoint point, delta;
+    double wheel;
+} IvGestureInput;
+IV_TYPEDEF_SPAN(IvGestureInput, IvGestureInputSpan);
+
+enum {
+    IV_INK_DEFAULT, IV_INK_FOREGROUND, IV_INK_MUTED, IV_INK_INPUT,
+    IV_INK_OUTPUT, IV_INK_SELECTION, IV_INK_HIGHLIGHT, IV_INK_WARNING,
+    IV_INK_BACKGROUND
+};
+typedef struct {
+    uint32_t id, ink;
+    IvPointSpan points;
+} IvPolyline;
+IV_TYPEDEF_SPAN(IvPolyline, IvPolylineSpan);
+
+enum { IV_DRAG_RELATIVE, IV_DRAG_ABSOLUTE };
+typedef struct {
+    uint32_t id, drag;
+    IvRectangle bounds;
+} IvDragTarget;
+IV_TYPEDEF_SPAN(IvDragTarget, IvDragTargetSpan);
+
+IvRectangle iv_content_bounds(const IvPresentationContext *context);
+bool iv_can_edit(const IvPresentationContext *context);
+IvGestureInputSpan iv_gesture_inputs(const IvPresentationContext *context);
+
+/* Calls record in memory. The host consumes the recorded batches after the
+   presentation returns. Each span can contain all items of that kind. */
+bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines);
+bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan targets);
+void iv_reuse_drawing(IvPresentationContext *context);
+void iv_set_status(IvPresentationContext *context, IvString status);
+
+typedef struct {
+    IvPolyline *polylines;
+    IvPoint *points;
+} IvPolylineBatch;
+/* Fill the descriptors and give each a subspan of points before returning. */
+IvPolylineBatch iv_reserve_polylines(IvPresentationContext *context, uint32_t polylines, uint32_t points);
+
+void *iv_session_allocate(uint32_t size);
+void iv_session_free(void *memory);
+void iv_request_save(IvPresentationContext *context);
+
+#ifdef __cplusplus
+}
+#endif
+
+/* C sessions start with zero-initialized state. An empty string requests
+   the author's initial values. Save and restore run outside the live frame. */
+#define IV_DEFINE_PRESENTATION(State, Present, Save, Restore) \
+    IV_PRESENTATION_EXPORT void *iv_create_session(void) { \
+        State *state = (State *)iv_session_allocate(sizeof(State)); \
+        if (state) *state = (State){0}; \
+        return state; \
+    } \
+    IV_PRESENTATION_EXPORT void iv_destroy_session(void *state) { iv_session_free(state); } \
+    IV_PRESENTATION_EXPORT void iv_present(void *state, IvPresentationContext *context) { Present((State *)state, context); } \
+    IV_PRESENTATION_EXPORT int32_t iv_save_state(const void *state, char *bytes, uint32_t capacity) { \
+        return Save((const State *)state, bytes, capacity); \
+    } \
+    IV_PRESENTATION_EXPORT int32_t iv_restore_state(void *state, const char *bytes, uint32_t size) { \
+        IvString serialized = {bytes, size}; \
+        return Restore((State *)state, serialized); \
+    }
+
+#endif

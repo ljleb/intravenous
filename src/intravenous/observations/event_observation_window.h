@@ -11,16 +11,49 @@
 
 namespace iv {
 
+inline auto recorded_event_begin(std::span<TimedEvent const> timeline, GlobalIndex index)
+{
+    return std::ranges::lower_bound(timeline, index, SignedGlobalIndexOrder{}, &TimedEvent::time);
+}
+
 inline void project_recorded_event_timestamps(
     ObservationWindowQuery& query, std::span<TimedEvent const> timeline)
 {
     auto& result = query.result;
     GlobalIndexRange{query.window.begin, query.window.length}.for_each_signed_order_segment([&](auto range) {
-        auto const first = std::ranges::lower_bound(timeline, range.begin, SignedGlobalIndexOrder{}, &TimedEvent::time);
+        auto const first = recorded_event_begin(timeline, range.begin);
         for (auto it = first; it != timeline.end() && range.contains(it->time); ++it) {
             result.event_indices.push_back(it->time);
         }
     });
+}
+
+inline void project_recorded_trigger_bins(
+    ObservationWindowQuery& query, std::span<TimedEvent const> timeline)
+{
+    auto const& window = query.window;
+    auto const length = window.length;
+    auto const columns = std::min<std::uint64_t>(length, window.points);
+    if (!columns || columns > maximum_observation_window_points)
+        throw std::invalid_argument("invalid recorded trigger bin count");
+    auto offset = [&](std::uint64_t column) {
+        return (length / columns) * column + (length % columns) * column / columns;
+    };
+    for (std::uint64_t column = 0; column < columns; ++column) {
+        auto const first_offset = offset(column);
+        GlobalIndexRange const bin{window.begin.advanced_by(first_offset), offset(column + 1) - first_offset};
+        ObservedTriggerBin value{.range = bin};
+        bin.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            auto const first = recorded_event_begin(timeline, segment.begin);
+            auto const end = segment.begin.advanced_by(segment.extent);
+            auto const stop = SignedGlobalIndexOrder{}(segment.begin, end)
+                ? recorded_event_begin(timeline, end) : timeline.end();
+            if (first == stop) return;
+            if (!value.count) value.first = first->time;
+            value.count += static_cast<std::uint64_t>(stop - first);
+        });
+        if (value.count) query.result.trigger_bins.push_back(value);
+    }
 }
 
 class BeatGridObservation {

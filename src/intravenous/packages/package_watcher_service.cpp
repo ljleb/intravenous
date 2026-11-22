@@ -1,6 +1,7 @@
 #include <intravenous/packages/package_watcher_service.h>
 
 #include <intravenous/packages/package_watcher.h>
+#include <intravenous/packages/package_definitions.h>
 #include <intravenous/project/runtime_project_events.h>
 
 #include <array>
@@ -43,6 +44,17 @@ std::vector<std::filesystem::path> discovery_roots(
     return roots;
 }
 
+std::vector<std::filesystem::path> development_roots(
+    std::filesystem::path const& project_root,
+    std::vector<PackageDiscoveryRoot> const& package_roots)
+{
+    std::vector<std::filesystem::path> roots{project_root};
+    for (auto const& root : package_roots) {
+        if (root.provenance == PackageProvenance::project_local) roots.push_back(root.root);
+    }
+    return roots;
+}
+
 void wait_for_event(std::array<pollfd, 4>& descriptors)
 {
     for (;;) {
@@ -64,11 +76,14 @@ void require_healthy_descriptor(pollfd const& descriptor, char const* name)
 PackageWatcherService::PackageWatcherService(
     PackageWatcher& watcher,
     std::filesystem::path project_root,
-    std::vector<PackageDiscoveryRoot> package_roots)
+    std::vector<PackageDiscoveryRoot> package_roots,
+    PackageDefinitions* definitions)
     : watcher_(&watcher)
+    , definitions_(definitions)
     , project_root_(std::move(project_root))
     , package_roots_(std::move(package_roots))
-    , discovery_watcher_(discovery_roots(project_root_, package_roots_))
+    , discovery_watcher_(discovery_roots(project_root_, package_roots_),
+          development_roots(project_root_, package_roots_))
 {}
 
 PackageWatcherService::~PackageWatcherService()
@@ -128,8 +143,8 @@ bool PackageWatcherService::synchronize_discovered_packages()
             && declarations == *last_package_declarations_) {
             return false;
         }
-        last_package_declarations_ = declarations;
-        watcher_->synchronize_discovered_packages(std::move(declarations));
+        watcher_->synchronize_discovered_packages(declarations);
+        last_package_declarations_ = std::move(declarations);
         return true;
     } catch (std::exception const& error) {
         report_discovery_error(error.what());
@@ -137,13 +152,14 @@ bool PackageWatcherService::synchronize_discovered_packages()
     }
 }
 
-void PackageWatcherService::process_pending_refresh(std::stop_token stop)
+bool PackageWatcherService::process_pending_refresh(std::stop_token stop)
 {
+    bool changed = false;
     while (!stop.stop_requested()) {
         watcher_->poll_dependency_changes();
-        if (!watcher_->has_pending_refresh()) return;
+        if (!watcher_->has_pending_refresh()) break;
         auto const plan = watcher_->prepare_refresh();
-        if (!plan) return;
+        if (!plan) break;
         if (plan->build_count > 0) publish_build_started(*plan);
 
         PackageWatcherRefreshRequest request;
@@ -156,7 +172,30 @@ void PackageWatcherService::process_pending_refresh(std::stop_token stop)
             std::scoped_lock lock(failure_mutex_);
             if (request.changed) {
                 last_refresh_failures_ = request.failed_builds;
+                changed = true;
             }
+        }
+    }
+    return changed;
+}
+
+void PackageWatcherService::refresh_presentations()
+{
+    if (!definitions_ || !last_package_declarations_) return;
+    try {
+        if (!definitions_->refresh_presentations(*last_package_declarations_)) return;
+        IV_EVENT_SOURCE(PackageWatcherService, "presentation catalog updated") {
+            IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event,
+                ProjectNotification(ProjectStatusNotification{
+                    .level = "info", .code = "presentationsUpdated", .message = "Presentation catalog updated",
+                }));
+        }
+    } catch (std::exception const& error) {
+        IV_EVENT_SOURCE(PackageWatcherService, "presentation catalog failed") {
+            IV_INVOKE_LINKER_EVENT(iv_runtime_project_notification_event,
+                ProjectNotification(ProjectStatusNotification{
+                    .level = "error", .code = "presentationCatalogFailed", .message = error.what(),
+                }));
         }
     }
 }
@@ -168,6 +207,7 @@ void PackageWatcherService::start()
         try {
             (void)synchronize_discovered_packages();
             process_pending_refresh(stop_token);
+            refresh_presentations();
 
             while (!stop_token.stop_requested()) {
                 std::array<pollfd, 4> descriptors{{
@@ -202,8 +242,10 @@ void PackageWatcherService::start()
                 require_healthy_descriptor(descriptors[1], "package dependency inotify");
                 require_healthy_descriptor(descriptors[2], "package watcher work");
 
+                bool presentations_dirty = false;
                 if ((descriptors[0].revents & POLLIN) != 0) {
                     auto const events = discovery_watcher_.consume_events();
+                    presentations_dirty = events.presentations_may_have_changed;
                     if (events.coverage_may_have_changed) {
                         // Establish watches before rescanning. Any package tree
                         // mutation after coverage installation is then either
@@ -211,7 +253,7 @@ void PackageWatcherService::start()
                         discovery_watcher_.refresh_coverage();
                     }
                     if (events.declarations_may_have_changed) {
-                        (void)synchronize_discovered_packages();
+                        presentations_dirty = synchronize_discovered_packages() || presentations_dirty;
                     }
                 }
                 if ((descriptors[1].revents & POLLIN) != 0) {
@@ -221,7 +263,7 @@ void PackageWatcherService::start()
                     work_signal_.consume();
                 }
 
-                process_pending_refresh(stop_token);
+                if (process_pending_refresh(stop_token) || presentations_dirty) refresh_presentations();
             }
         } catch (std::exception const& error) {
             report_service_error(error.what());

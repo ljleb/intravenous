@@ -421,6 +421,15 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     if (method == "ivPackages.list") {
         return parsed(GetIvPackageDefinitionsRequest{});
     }
+    if (method == "presentations.list") {
+        return parsed(ListPresentationsRequest{});
+    }
+    if (method == "presentations.fetch") {
+        auto digest = parse_string_param(params, "digest");
+        if (digest.size() != 64 || digest.find_first_not_of("0123456789abcdef") != std::string::npos)
+            throw std::invalid_argument("Expected a SHA-256 presentation digest");
+        return parsed(FetchPresentationArtifactRequest{std::move(digest)});
+    }
     if (method == "ivPackages.create") {
         return parsed(CreateIvPackageRequest{
             .name = parse_string_param(params, "name")});
@@ -597,7 +606,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                             || interest.source.kind == ObservationSourceKind::state_field)
                             throw std::invalid_argument("invalid observation window points or source");
                         interest.window->points = count.get<std::size_t>();
-                        if (event) {
+                        if (interest.operation == recorded_trigger_bins_operation) {
+                            if (!event || interest.source.kind != ObservationSourceKind::output
+                                || interest.source.channel || window.contains("maxDepth"))
+                                throw std::invalid_argument("invalid recorded trigger bin observation");
+                        } else if (event) {
                             auto const& depth = window.at("maxDepth");
                             if (interest.operation != "beat-grid" || interest.source.kind != ObservationSourceKind::input
                                 || interest.source.channel || !depth.is_number_unsigned() || depth.get<std::uint64_t>() > 255)

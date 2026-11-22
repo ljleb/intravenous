@@ -9,12 +9,14 @@
 #include <intravenous/packages/package_discovery_watcher.h>
 #include <intravenous/packages/package_pipeline_events.h>
 #include <intravenous/packages/package_watcher.h>
+#include <intravenous/packages/package_definitions.h>
 #include <intravenous/packages/package_watcher_service.h>
 #include <intravenous/app/bridges/package_watcher_service_bridge.h>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
@@ -407,6 +409,142 @@ TEST(PackageDiscoveryWatcher, QueueOverflowForcesConservativeReconciliationAndRe
     ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
     events = watcher.consume_events();
     EXPECT_TRUE(events.declarations_may_have_changed);
+}
+
+TEST(PackageDiscoveryWatcher, PresentationOnlyPackageUsesDiscoveryWithoutNativeBuilds)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace(
+        "presentation_only_package");
+    auto const package = workspace / "packages/marker";
+    auto const directory = package / "presentations";
+    auto const source = directory / "marker.c";
+    std::filesystem::create_directories(directory);
+    iv::test_support::write_text(package / "iv_package.json",
+        R"({"schema":2,"namespace":"example.marker","presentations":{"marker":{"title":"Marker","definitionIds":["builtin.beats"]}}})");
+    iv::test_support::write_text(source, "/* marker */");
+
+    auto declarations = iv::discover_iv_package_declarations(workspace, {});
+    ASSERT_EQ(declarations.size(), 1u);
+    EXPECT_TRUE(declarations.front().presentation_only);
+    EXPECT_EQ(declarations.front().package_namespace, "example.marker");
+    iv::PackageWatcher packages;
+    packages.synchronize_discovered_packages(std::move(declarations));
+    EXPECT_FALSE(packages.has_pending_refresh());
+
+    iv::PackageDiscoveryWatcher watcher({workspace}, {workspace});
+    iv::test_support::write_text(source, "/* changed marker */");
+    ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
+    EXPECT_FALSE(watcher.consume_events().presentations_may_have_changed);
+
+    auto const temporary = directory / "marker.tmp";
+    iv::test_support::write_text(temporary, "built artifact");
+    EXPECT_FALSE(watcher.consume_events().presentations_may_have_changed);
+    std::filesystem::rename(temporary, directory / "marker.wasm");
+    ASSERT_TRUE(wait_until_readable(watcher.native_handle()));
+    auto const changes = watcher.consume_events();
+    EXPECT_TRUE(changes.presentations_may_have_changed);
+    EXPECT_FALSE(changes.declarations_may_have_changed);
+
+    iv::PackageDiscoveryWatcher released_watcher({workspace});
+    iv::test_support::write_text(directory / "marker.wasm", "different artifact");
+    EXPECT_FALSE(released_watcher.consume_events().presentations_may_have_changed);
+}
+
+TEST(PresentationArtifacts, DevelopmentArtifactsReplaceByDigestAndReleasedArtifactsStayPinned)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace("presentation_artifact_publication");
+    auto const package = workspace / "packages/marker";
+    auto const directory = package / "presentations";
+    std::filesystem::create_directories(directory);
+    iv::test_support::write_text(package / "iv_package.json",
+        R"({"schema":2,"namespace":"example.marker","presentations":{"marker":{"title":"Marker","definitionIds":["builtin.beats"]}}})");
+    auto const file = directory / "marker.wasm";
+    std::string const wasm{"\0asm\1\0\0\0", 8};
+    iv::test_support::write_text(file, wasm);
+    auto declarations = iv::discover_iv_package_declarations(workspace, {});
+    ASSERT_EQ(declarations.size(), 1u);
+
+    std::array const definitions{
+        iv::IvPackageInfo{.package_namespace = "builtin", .node_type_ids = {"builtin.beats"}},
+    };
+    iv::PresentationArtifacts development;
+    iv::PresentationArtifacts released;
+    ASSERT_TRUE(development.refresh(declarations, definitions));
+    auto const first = development.list();
+    ASSERT_EQ(first.entries.size(), 1u);
+    ASSERT_TRUE(first.entries.front().error.empty()) << first.entries.front().error;
+    auto const initial_digest = first.entries.front().digest;
+    EXPECT_TRUE(development.fetch(initial_digest));
+    auto installed = declarations;
+    installed.front().provenance = iv::PackageProvenance::common;
+    ASSERT_TRUE(released.refresh(installed, definitions));
+
+    iv::test_support::write_text(file, "invalid artifact");
+    ASSERT_TRUE(development.refresh(declarations, definitions));
+    auto const invalid = development.list().entries.front();
+    EXPECT_FALSE(invalid.error.empty());
+    EXPECT_EQ(invalid.digest, initial_digest);
+    EXPECT_TRUE(development.fetch(initial_digest));
+
+    auto const replacement = wasm + std::string{"\0\2\1x", 4};
+    iv::test_support::write_text(file, replacement);
+    ASSERT_TRUE(development.refresh(declarations, definitions));
+    auto const valid = development.list().entries.front();
+    EXPECT_TRUE(valid.error.empty());
+    EXPECT_NE(valid.digest, initial_digest);
+    EXPECT_TRUE(development.fetch(valid.digest));
+    EXPECT_FALSE(released.refresh(installed, definitions));
+    EXPECT_EQ(released.list().entries.front().digest, initial_digest);
+}
+
+TEST(PackageDiscoveryWatcher, LocalCheckoutOverridesTheSameCommonPackageNamespace)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace("presentation_development_override");
+    auto const common = workspace / "common";
+    auto const released = common / "released";
+    auto const checkout = common / "checkout";
+    auto const project = workspace / "project";
+    for (auto const& path : {checkout, released}) {
+        std::filesystem::create_directories(path);
+        iv::test_support::write_text(path / "iv_package.json",
+            R"({"schema":2,"namespace":"example.marker","presentations":{"marker":{"title":"Marker","definitionIds":["builtin.beats"]}}})");
+    }
+    auto const resolved = iv::discover_iv_package_declarations(project,
+        {{.root = common, .provenance = iv::PackageProvenance::common}, {.root = checkout}});
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(resolved.front().package_root, checkout);
+    EXPECT_EQ(resolved.front().provenance, iv::PackageProvenance::project_local);
+}
+
+TEST(PackageWatcher, PresentationManifestEditsDoNotDirtyNativeBuilds)
+{
+    auto const workspace = iv::test_support::fresh_module_fixture_workspace("mixed_package_manifest_watcher");
+    auto const package = workspace / "packages/mixed";
+    std::filesystem::create_directories(package);
+    auto const manifest = package / "iv_package.json";
+    iv::test_support::write_text(package / "module.cpp", "// native entry");
+    iv::test_support::write_text(package / "replacement.cpp", "// another native entry");
+    iv::test_support::write_text(manifest, R"({"schema":2,"namespace":"test.mixed","entry":"module.cpp"})");
+    WatcherHarness harness;
+    harness.jit.respond = [](iv::PackageJitBatchRequest& request) {
+        for (auto const& declaration : request.declarations)
+            request.result.revisions.push_back(revision_for(declaration));
+    };
+    auto discover = [&] {
+        harness.watcher.synchronize_discovered_packages(iv::discover_iv_package_declarations(workspace, {}));
+        harness.watcher.poll_dependency_changes();
+    };
+    discover();
+    ASSERT_TRUE(harness.refresh());
+
+    iv::test_support::write_text(manifest,
+        R"({"schema":2,"namespace":"test.mixed","entry":"module.cpp","presentations":{"view":{"title":"View","definitionIds":["builtin.beats"]}}})");
+    discover();
+    EXPECT_FALSE(harness.watcher.has_pending_refresh());
+
+    iv::test_support::write_text(manifest, R"({"schema":2,"namespace":"test.mixed","entry":"replacement.cpp"})");
+    discover();
+    EXPECT_TRUE(harness.watcher.has_pending_refresh());
 }
 
 TEST(PackageDiscoveryWatcher, RepeatedRootMoveAndRecreationDoesNotLoseCoverage)

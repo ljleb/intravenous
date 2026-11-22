@@ -25,6 +25,8 @@ namespace iv {
         auto const filename = path.filename();
         return filename != "iv_project.jsonl"
             && filename != "iv_project.jsonl.tmp"
+            && filename != IV_PACKAGE_MANIFEST_FILE
+            && filename != "iv_package.json.tmp"
             && filename != "compile_commands.json"
             && filename != "compile_commands.json.tmp";
     }

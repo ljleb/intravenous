@@ -275,6 +275,7 @@ add_custom_command(OUTPUT "${iv_sdk_snapshot}/.snapshot"
         "${iv_sdk_snapshot}/src/intravenous"
     COMMAND "${CMAKE_COMMAND}" -E touch "${iv_sdk_snapshot}/.snapshot"
     DEPENDS "${CMAKE_CURRENT_LIST_FILE}" ${IV_PACKAGE_PCH_HEADERS} ${iv_sdk_templates}
+        "${CMAKE_CURRENT_SOURCE_DIR}/presentation/guest_runtime.c"
     VERBATIM)
 add_custom_target(intravenous_runtime_sdk DEPENDS "${iv_sdk_snapshot}/.snapshot")
 configure_file(module/template/PrepareDevRuntime.cmake.in PrepareDevRuntime.cmake @ONLY)
@@ -470,6 +471,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     app/bridges/project_graph_node_instances_bridge.cpp
     app/bridges/project_graph_package_definitions_bridge.cpp
     packages/package_definitions.cpp
+    packages/presentation_artifacts.cpp
     packages/package_jit.cpp
     packages/package_watcher.cpp
     packages/package_discovery_watcher.cpp
@@ -502,6 +504,7 @@ add_library(intravenous_tooling_runtime_objects OBJECT
     project/uuid.cpp
 )
 iv_configure_intravenous_target(intravenous_tooling_runtime_objects PUBLIC)
+target_include_directories(intravenous_tooling_runtime_objects SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 list(JOIN IV_PACKAGE_COMPILE_FLAGS " " IV_PACKAGE_COMPILE_FLAGS_COMMAND_LINE)
 target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE
     IV_CONFIGURED_MODULE_SOURCE_TEMPLATE_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
@@ -512,6 +515,8 @@ target_compile_definitions(intravenous_tooling_runtime_objects PRIVATE
 )
 target_link_libraries(intravenous_tooling_runtime_objects PRIVATE
     nlohmann_json::nlohmann_json
+    intravenous_build_cache
+    LLVMSupport
 )
 
 if(JUCE_FOUND)

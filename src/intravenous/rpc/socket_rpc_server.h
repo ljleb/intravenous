@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/build_types.h>
 #include <intravenous/linker_event.h>
+#include <intravenous/packages/presentation_artifacts.h>
 #include <intravenous/project/node_instances.h>
 #include <intravenous/project/runtime_project_api_types.h>
 #include <intravenous/rpc/socket_rpc_requests.h>
@@ -43,6 +44,8 @@ namespace iv {
         void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
     using SocketRpcGetIvPackageDefinitionsEvent =
         void (*)(GetIvPackageDefinitionsRequest const &, SocketRpcIvPackageDefinitionsResultBuilder &);
+    using SocketRpcListPresentationsEvent = void (*)(std::optional<PresentationCatalog>&);
+    using SocketRpcFetchPresentationArtifactEvent = void (*)(std::string const&, std::shared_ptr<std::string const>&);
     using SocketRpcCreateIvPackageEvent =
         void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
     using SocketRpcGetNodeInstancesEvent =
@@ -107,6 +110,8 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcListPresentationsEvent, iv_socket_rpc_list_presentations_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcFetchPresentationArtifactEvent, iv_socket_rpc_fetch_presentation_artifact_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeInstancesEvent, iv_socket_rpc_get_node_instances_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetProjectToolchainEvent, iv_socket_rpc_set_project_toolchain_event);

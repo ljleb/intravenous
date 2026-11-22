@@ -55,6 +55,12 @@ export function workspaceNodeEvents(current: () => WorkspaceRpc | null, revision
 
 
 export class WorkspaceRpc {
+    listPresentations(): Promise<{ ready: boolean; entries: unknown[] }> {
+        return this.client.request("presentations.list", {});
+    }
+    fetchPresentation(digest: string): Promise<{ digest: string; bytes: string }> {
+        return this.client.request("presentations.fetch", { digest });
+    }
     getPlayback(diagnostics = false, outputProfile?: PlaybackOutputProfileRequest): Promise<PlaybackSnapshot> {
         return this.client.request("playback.get", {
             ...(diagnostics ? { diagnostics: true } : {}),

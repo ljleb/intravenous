@@ -167,6 +167,22 @@ std::vector<IvPackageInfo> PackageDefinitions::list_packages() const
     return std::move(read.packages);
 }
 
+bool PackageDefinitions::refresh_presentations(std::span<IvPackageDeclaration const> declarations)
+{
+    auto const definitions = list_packages();
+    return presentations_.refresh(declarations, definitions);
+}
+
+void PackageDefinitions::read_presentations(std::optional<PresentationCatalog>& result) const
+{
+    result = presentations_.list();
+}
+
+void PackageDefinitions::read_presentation_artifact(std::string const& digest, std::shared_ptr<std::string const>& result) const
+{
+    result = presentations_.fetch(digest);
+}
+
 void PackageDefinitions::handle_project_graph_read(PackageDefinitionsProjectGraphRead& read) const
 {
     read.packages.clear();

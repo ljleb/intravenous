@@ -101,6 +101,13 @@ StartupConfigState StartupConfig::initialize() const
             .provenance = PackageProvenance::common,
         });
     }
+    for (auto const& root : parse_search_path_env("IV_DEVELOPMENT_PACKAGE_PATH")) {
+        auto const path = normalize_path(root);
+        std::erase_if(package_roots, [&](auto const& existing) {
+            return existing.provenance == PackageProvenance::common && existing.root == path;
+        });
+        add_package_root(package_roots, PackageDiscoveryRoot{.root = path});
+    }
 
     return StartupConfigState{
         .workspace_root = std::move(project_config.workspace_root),

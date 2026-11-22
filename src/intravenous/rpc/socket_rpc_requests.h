@@ -46,6 +46,8 @@ struct CreateNodeInstanceRequest {
     std::string configuration_source{};
 };
 struct GetIvPackageDefinitionsRequest {};
+struct ListPresentationsRequest {};
+struct FetchPresentationArtifactRequest { std::string digest; };
 struct CreateIvPackageRequest { std::string name{}; };
 struct GetNodeInstancesRequest {
     std::optional<std::filesystem::path> source_file_path {};
@@ -156,6 +158,8 @@ using SocketRpcRequestPayload = std::variant<
     RedoProjectEditRequest,
     CreateNodeInstanceRequest,
     GetIvPackageDefinitionsRequest,
+    ListPresentationsRequest,
+    FetchPresentationArtifactRequest,
     CreateIvPackageRequest,
     GetNodeInstancesRequest,
     DeleteNodeInstanceRequest,

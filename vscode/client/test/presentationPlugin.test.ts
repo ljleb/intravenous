@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { runInNewContext } from "node:vm";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createBeatsPresentation } from "../src/beatsPresentationPlugin";
 import { clickDetectorPresentationManifest, createClickDetectorPresentation } from "../src/clickDetectorPresentation";
 import { PresentationEdits, type PresentationEdit } from "../src/presentationEdits";
 import { presentationPluginVersion, readPresentationFrame, readPresentationManifest,
     type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
 import { PresentationPluginSession } from "../src/presentationPluginSession";
-import { readProjectPresentations } from "../src/projectPresentationPlugins";
+import { PresentationArtifactReader } from "../src/presentationArtifacts";
+import { createWasmPresentation, readWasmPresentationDescriptor, wasmPresentationUpdate } from "../src/wasmPresentation";
+import { createNodePresentationWorker } from "../src/nodeWasmPresentationWorker";
+import { ReloadableWasmPresentation } from "../src/reloadableWasmPresentation";
 
 const snapshot: PresentationSnapshot = {
     node: { definitionId: "builtin.beats", arguments: [120, 4, [2]], ports: [] },
@@ -23,8 +25,11 @@ test("Click Detector displays observed events at their sample positions during p
     const detect = createClickDetectorPresentation();
     const result = {
         id: "clicks", status: "ready" as const, approximate: false,
-        window: { begin: "0", length: "96000", points: 0 },
-        eventIndices: ["24000", "48000", "48000", "48002", "96000"], regions: [],
+        window: { begin: "0", length: "96000", points: 500 },
+        triggerBins: [
+            { begin: "24000", length: "192", first: "24000", count: "1" },
+            { begin: "48000", length: "192", first: "48000", count: "3" },
+        ], regions: [],
     };
     const frame = readPresentationFrame(detect({
         ...snapshot, node: { definitionId: "builtin.click_detector", arguments: [],
@@ -32,21 +37,23 @@ test("Click Detector displays observed events at their sample positions during p
         observations: { clicks: { status: "pending", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
     }, []));
     assert.equal(frame.status, "4 recorded clicks in view");
-    assert.deepEqual(frame.marks?.filter((mark) => mark.type === "rect").map(({ x }) => x), [125, 250, 250, 48002 * (500 / 96000)]);
+    assert.deepEqual(frame.marks?.filter((mark) => mark.type === "rect").map(({ x }) => x), [125, 250]);
 });
 
-test("the presentation host accepts one mark for every event in a dense recording", async () => {
+test("Click Detector renders bounded marks while preserving large recorded counts", async () => {
     const present = createClickDetectorPresentation();
-    const eventIndices = Array.from({ length: 5000 }, (_, i) => String(i));
-    const result = { id: "clicks", status: "ready" as const, approximate: false,
-        window: { begin: "0", length: "96000", points: 0 }, eventIndices, regions: [] };
+    const triggerBins = Array.from({ length: 500 }, (_, i) =>
+        ({ begin: String(i * 192), length: "192", first: String(i * 192 + 1), count: "2000" }));
+    const result = { id: "clicks", status: "ready" as const, approximate: true,
+        window: { begin: "0", length: "96000", points: 500 }, triggerBins, regions: [] };
     let frame: PresentationFrame | undefined;
     const session = new PresentationPluginSession(present, () => {}, (value) => { frame = value; }, (error) => { throw error; });
     session.update({ ...snapshot,
         observations: { clicks: { status: "ready", result, spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
     });
     await session.flush();
-    assert.equal(frame?.marks?.filter(({ type }) => type === "rect").length, eventIndices.length);
+    assert.equal(frame?.status, "1000000 recorded clicks in view");
+    assert.equal(frame?.marks?.filter(({ type }) => type === "rect").length, 500);
 });
 
 test("Beats uses the portable contract for rendering, settings and exact seek marks", () => {
@@ -215,47 +222,103 @@ test("invalid frames fail without publishing commands or visuals", async () => {
     assert.match(String(errors[0]), /Invalid presentation frame/);
 });
 
-test("a project script can be discovered and run with the same input data in a headless host", async () => {
-    const project = await mkdtemp(join(tmpdir(), "iv-presentations-"));
-    const packages = join(project, "packages");
-    const directory = join(packages, "marker", "presentations");
-    const other = join(packages, "other", "presentations");
+const marker = readFileSync(resolve(__dirname,
+    "../../../../examples/wasm-presentation/packages/marker/presentations/marker.wasm"));
+const moduleBytes = marker.toString("base64");
+
+test("the presentation reader fetches and verifies one compatible artifact per digest", async () => {
+    const digest = createHash("sha256").update(Buffer.from(moduleBytes, "base64")).digest("hex");
+    const manifest = { version: presentationPluginVersion, id: "marker", title: "Marker", definitionIds: ["builtin.beats"] };
+    const entry = { id: "example/marker", provider: "example", format: "wasm",
+        schemaVersion: presentationPluginVersion, digest, manifest };
+    const fetches: string[] = [];
+    const rpc = {
+        listPresentations: async () => ({ ready: true, entries: [entry, entry] }),
+        fetchPresentation: async (fetchDigest: string) => {
+            fetches.push(fetchDigest);
+            return { digest: fetchDigest, bytes: moduleBytes };
+        },
+    };
+    const reader = new PresentationArtifactReader();
+    const report = (error: string) => assert.fail(error);
+    const expected = { ready: true, artifacts: [{ id: entry.id, digest,
+        manifest: { ...readPresentationManifest(manifest), ...readWasmPresentationDescriptor(marker) }, bytes: moduleBytes }] };
+    assert.deepEqual(await reader.read(rpc, report), expected);
+    assert.deepEqual(await reader.read(rpc, report), expected);
+    assert.deepEqual(fetches, [digest]);
+
+    const errors: string[] = [];
+    const corrupt = { ...rpc, fetchPresentation: async () => ({ digest, bytes: "AA==" }) };
+    assert.deepEqual(await new PresentationArtifactReader().read(corrupt, (error) => errors.push(error)),
+        { ready: true, artifacts: [] });
+    assert.match(errors[0], /digest mismatch/);
+});
+
+test("the function ABI records packed geometry and reuses the drawing across worker calls", async () => {
+    const instance = createWasmPresentation(moduleBytes);
+    const worker = createNodePresentationWorker(moduleBytes);
     try {
-        await mkdir(directory, { recursive: true });
-        const manifest = { version: presentationPluginVersion, id: "example.marker", title: "Marker", definitionIds: ["builtin.beats"] };
-        const script = `function present(snapshot, inputs) {
-            const move = inputs.findLast((input) => input.type === "gesture" && input.phase === "move");
-            const x = move?.point.x ?? snapshot.state?.x ?? 10;
-            return { marks: [{ id: "marker-line", type: "polyline", points: [{ x, y: 0 }, { x, y: snapshot.viewport.height }] }],
-                commands: move ? [{ type: "state", value: { x } }] : [] };
-        }`;
-        await writeFile(join(directory, "marker.json"), JSON.stringify(manifest));
-        await writeFile(join(directory, "marker.js"), script);
-        await writeFile(join(directory, "unsupported.json"), JSON.stringify({ ...manifest, version: presentationPluginVersion + 1 }));
-        await writeFile(join(directory, "linked.json"), JSON.stringify({ ...manifest, id: "example.linked" }));
-        await symlink("marker.js", join(directory, "linked.js"));
-        await mkdir(other, { recursive: true });
-        await writeFile(join(other, "another.json"), JSON.stringify({ ...manifest, id: "example.another" }));
-        await writeFile(join(other, "another.js"), script);
-        await writeFile(join(other, "duplicate.json"), JSON.stringify(manifest));
-        await writeFile(join(other, "duplicate.js"), "function present() { return {}; }");
-        await symlink(join(packages, "marker"), join(packages, "linked-package"), "dir");
-        const errors: string[] = [];
-        const [plugin, ...others] = await readProjectPresentations(project, (error) => errors.push(error));
-        assert.deepEqual(others.map(({ manifest }) => manifest.id), ["example.another"]);
-        assert.equal(plugin.manifest.id, manifest.id);
-        assert.equal(errors.length, 3);
-        assert.match(errors.join("\n"), /linked\.json.*regular file/);
-        assert.match(errors.join("\n"), /unsupported\.json.*unsupported/);
-        assert.match(errors.join("\n"), /packages[\\/]other[\\/]presentations[\\/]duplicate\.json.*Duplicate presentation ID example\.marker/);
-        const result = runInNewContext(`${plugin.source}\npresent(snapshot, inputs)`, { snapshot, inputs: [
-            { type: "gesture", phase: "move", id: "handle", point: { x: 17, y: 4 },
-                modifiers: { shift: false, control: false, alt: false, meta: false } },
-        ] }, { timeout: 100 });
-        const frame = readPresentationFrame(structuredClone(result));
-        assert.deepEqual(frame.commands, [{ type: "state", value: { x: 17 } }]);
-        assert.deepEqual(frame.marks?.[0], { id: "marker-line", type: "polyline", points: [{ x: 17, y: 0 }, { x: 17, y: 80 }] });
+        instance.restore("");
+        const { frame } = instance.present(wasmPresentationUpdate(snapshot, []));
+        const expected = readPresentationFrame(frame);
+        assert.deepEqual(expected.marks, [{ id: "2", ink: "output", type: "packedPolyline",
+            coordinates: new Float64Array([250, 0, 250, 80]) }]);
+        assert.deepEqual(readPresentationFrame(await worker.run(snapshot, [])), expected);
+        assert.equal(readPresentationFrame(await worker.run({ ...snapshot, revision: 2 }, [])).reuseDrawing, true);
+        worker.restore(null);
+        assert.deepEqual(readPresentationFrame(await worker.run(snapshot, [])), expected);
     } finally {
-        await rm(project, { recursive: true, force: true });
+        instance.dispose();
+        worker.stop();
     }
+});
+
+test("a lane keeps the running WASM session if a replacement fails and restores state on successful replacement", async () => {
+    const failures: unknown[] = [];
+    const presentation = new ReloadableWasmPresentation(createNodePresentationWorker, (error) => {
+        if (error !== undefined) failures.push(error);
+    });
+    const width = (value: unknown) => {
+        const mark = readPresentationFrame(value).marks?.[0];
+        assert.equal(mark?.type, "packedPolyline");
+        return mark.coordinates[0];
+    };
+    try {
+        presentation.restore({ position: .25 });
+        assert.equal(width(await presentation.run(moduleBytes, snapshot, [], () => true)), 125);
+        const resized = { ...snapshot, viewport: { ...snapshot.viewport, width: 400 } };
+        assert.equal(width(await presentation.run("AA==", resized, [], () => true)), 100);
+        assert.equal(failures.length, 1);
+        // Add a custom section so this is a distinct, compatible artifact.
+        const replacement = Buffer.concat([marker, Buffer.from([0, 2, 1, 120])]).toString("base64");
+        let readyToSwitch = true;
+        const duringGesture = await presentation.run(replacement, resized, [], () => {
+            const previous = readyToSwitch;
+            readyToSwitch = false;
+            return previous;
+        });
+        assert.equal(readPresentationFrame(duringGesture).reuseDrawing, true);
+        assert.equal(width(await presentation.run(replacement, resized, [], () => true)), 100);
+    } finally {
+        presentation.dispose();
+    }
+});
+
+test("a reused drawing survives an intervening frame the host received too late to draw", async () => {
+    const marks: PresentationFrame["marks"] = [{ type: "packedPolyline", id: "2",
+        coordinates: new Float64Array([10, 0, 10, 30]) }];
+    let complete!: (value: PresentationFrame) => void;
+    let calls = 0;
+    const received: { frame: PresentationFrame; draw: boolean }[] = [];
+    const session = new PresentationPluginSession(
+        () => ++calls === 1 ? new Promise((resolve) => { complete = resolve; }) : { reuseDrawing: true },
+        () => {}, (frame, draw) => received.push({ frame, draw }), (error) => { throw error; });
+    session.update(snapshot);
+    const pending = session.flush();
+    session.update({ ...snapshot, viewport: { ...snapshot.viewport, width: 490 } });
+    complete({ marks });
+    await pending;
+    await session.flush();
+    assert.deepEqual(received.map(({ draw }) => draw), [false, true]);
+    assert.equal(received[1].frame.marks, marks);
 });

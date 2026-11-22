@@ -157,6 +157,7 @@ export class ObservationProfile {
                         ++entry.bodies;
                         entry.bytes += bytes;
                         entry.marks += (window.body.marks?.length ?? 0) + (window.body.eventIndices?.length ?? 0)
+                            + (window.body.triggerBins?.length ?? 0)
                             + (window.body.beatRuns?.reduce((count, run) => count + run.samples.length, 0) ?? 0);
                         entry.points += window.body.regions.reduce((total, region) => total + region.points.length, 0);
                         if (window.body.eventIndices && entry.received) {
@@ -182,6 +183,7 @@ export class ObservationProfile {
             const cached = window ? {
                 status: window.status, window: window.window, outdated: !!window.outdated, truncated: !!window.truncated,
                 error: window.error?.slice(0, 240), eventCount: window.eventIndices?.length,
+                triggerBins: window.triggerBins?.length,
             } : live ? { status: live.pending ? "pending" : live.available ? "available" : "unavailable" } : undefined;
             const recording = recordedEvents && {
                 count: recordedEvents.last.indices.length, window: recordedEvents.last.window,

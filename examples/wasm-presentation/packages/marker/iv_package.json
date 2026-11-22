@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "namespace": "example.marker",
+  "dependencies": [],
+  "presentations": {
+    "marker": {
+      "title": "Marker",
+      "definitionIds": [
+        "builtin.beats"
+      ]
+    }
+  }
+}

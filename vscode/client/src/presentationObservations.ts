@@ -5,7 +5,7 @@ import type { ObservationDelivery } from "./observationDelivery";
 import { observationWindowId,
     observationWindowIds, observationWindowRequests, visibleObservationRequests, type ObservationTier } from "./observationWindows";
 import type { ObservationViewportDisplay } from "./observationViewportDisplay";
-import { ObservationValues, observationSourceKey, type ObservationCapability, type ObservationHostRequest,
+import { ObservationValues, observationSourceKey, recordedTriggerBinsOperation, type ObservationCapability, type ObservationHostRequest,
     type ObservationInterest, type ObservationResponse, type ObservationSource, type ObservationTimeSpan,
     type MeterMode, type ObservationWindow, sameObservationWindow } from "./observations";
 
@@ -240,7 +240,10 @@ export class PresentationObservations {
         const next = new Set<string>();
         if (observation && tier) {
             const { source, operation, window, consumer } = observation;
-            for (const { slot, ...request } of observationWindowRequests(window, tier)) {
+            const requests = operation === recordedTriggerBinsOperation
+                ? tier === "visible" ? visibleObservationRequests(window) : []
+                : observationWindowRequests(window, tier);
+            for (const { slot, ...request } of requests) {
                 const key = observationWindowId(id, slot);
                 this.observePort(key, { source, operation, ...request }, tier === "visible" ? "viewport" : undefined, consumer);
                 next.add(key);

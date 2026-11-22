@@ -1,5 +1,5 @@
 import type { JsonValue, SerializedNodeEvent } from "./nodeEvents";
-import { recordedEventTimestampsOperation, type ObservationWindowResult } from "./observations";
+import { recordedTriggerBinsOperation, type ObservationWindowResult } from "./observations";
 import type { NodeAddress } from "./graphScope";
 import type { PresentationTime } from "./timelineSamples";
 
@@ -16,7 +16,7 @@ export type PresentationManifest = {
     initialConfiguration?: string;
     observations?: Array<{ id: string; port: string; whenConnected?: true; completeOnly?: true; group?: string } & (
         { direction: "input" | "output"; operation?: "waveform"; points: number }
-        | { direction: "output"; operation: typeof recordedEventTimestampsOperation })>;
+        | { direction: "output"; operation: typeof recordedTriggerBinsOperation })>;
 };
 
 export type PresentationPoint = { x: number; y: number };
@@ -72,6 +72,7 @@ export type PresentationInk = "foreground" | "muted" | "input" | "output" | "sel
 export type PresentationMark = { id: string; ink?: PresentationInk; opacity?: number; target?: string } & (
     | { type: "polyline"; points: PresentationPoint[]; strokeWidth?: number; dashed?: true; fill?: true;
         fade?: { from: PresentationPoint; to: PresentationPoint } }
+    | { type: "packedPolyline"; coordinates: Float64Array }
     | { type: "rect"; x: number; y: number; width: number; height: number; border?: PresentationInk }
     | { type: "circle"; x: number; y: number; radius: number; border?: PresentationInk }
     | { type: "text"; x: number; y: number; text: string });
@@ -87,6 +88,7 @@ export type PresentationCommand =
 export type PresentationFrame = {
     status?: string;
     marks?: PresentationMark[];
+    reuseDrawing?: true;
     targets?: PresentationTarget[];
     panel?: { label: string; rows: PresentationControl[][] };
     contextMenu?: { label: string; rows: PresentationControl[][] };
@@ -103,8 +105,8 @@ export type ReadPresentationSeekMarks = (window: PresentationSeekWindow) => read
 export type Present = ((snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame) & {
     openSeekReader?: () => ReadPresentationSeekMarks | undefined;
 };
-export type PresentationScript = { manifest: PresentationManifest; source: string };
-export type PresentationProgram = PresentationScript | { manifest: PresentationManifest; create: () => Present };
+export type PresentationArtifact = { id: string; manifest: PresentationManifest; digest: string; bytes: string };
+export type PresentationProgram = PresentationArtifact | { manifest: PresentationManifest; create: () => Present };
 
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown, length = 160): value is string => typeof value === "string" && value.length <= length;
@@ -129,7 +131,7 @@ export function readPresentationManifest(value: unknown): PresentationManifest |
                 && identifier(entry.id) && identifier(entry.port) && (entry.direction === "input" || entry.direction === "output")
                 && ((entry.operation === undefined || entry.operation === "waveform")
                     ? Number.isInteger(entry.points) && entry.points >= 2 && entry.points <= 1024
-                    : entry.operation === recordedEventTimestampsOperation && entry.direction === "output" && entry.points === undefined)
+                    : entry.operation === recordedTriggerBinsOperation && entry.direction === "output" && entry.points === undefined)
                 && flag(entry.whenConnected) && flag(entry.completeOnly)
                 && (entry.group === undefined || identifier(entry.group))))) return;
     const manifest: PresentationManifest = value as PresentationManifest;
@@ -164,6 +166,8 @@ function mark(value: unknown): value is PresentationMark {
         case "polyline": return list(value.points, 4096, point) && flag(value.dashed) && flag(value.fill)
             && (value.strokeWidth === undefined || (finite(value.strokeWidth) && value.strokeWidth >= 0 && value.strokeWidth <= 32))
             && (value.fade === undefined || (record(value.fade) && point(value.fade.from) && point(value.fade.to)));
+        case "packedPolyline": return value.coordinates instanceof Float64Array && value.coordinates.length <= 8192
+            && value.coordinates.length % 2 === 0 && value.coordinates.every(Number.isFinite);
         case "rect": return area(value) && ink(value.border);
         case "circle": return finite(value.x) && finite(value.y) && finite(value.radius) && value.radius >= 0 && ink(value.border);
         case "text": return finite(value.x) && finite(value.y) && text(value.text, 1024);
@@ -197,11 +201,13 @@ function panel(value: unknown): boolean {
         (row): row is PresentationControl[] => list(row, 12, control)));
 }
 
-export function readPresentationFrame(value: unknown, observedEventCount = 0): PresentationFrame {
+export function readPresentationFrame(value: unknown): PresentationFrame {
     const commandBudget = { items: 4096, characters: 65536 };
     if (!record(value) || (value.status !== undefined && !text(value.status, 512))
-        || (value.marks !== undefined && (!list(value.marks, 4096 + observedEventCount, mark)
-        || value.marks.reduce((size, entry) => size + (entry.type === "polyline" ? entry.points.length : 0), 0) > 16384))
+        || !flag(value.reuseDrawing) || (value.reuseDrawing && value.marks !== undefined)
+        || (value.marks !== undefined && (!list(value.marks, 4096, mark)
+        || value.marks.reduce((size, entry) => size + (entry.type === "polyline" ? entry.points.length
+            : entry.type === "packedPolyline" ? entry.coordinates.length / 2 : 0), 0) > 16384))
         || (value.targets !== undefined && !list(value.targets, 1024,
             (entry): entry is PresentationTarget => record(entry) && identifier(entry.id) && area(entry)
                 && (entry.drag === undefined || entry.drag === "relative" || entry.drag === "absolute")
@@ -220,10 +226,11 @@ export function readPresentationFrame(value: unknown, observedEventCount = 0): P
         || (value.seekMarks !== undefined && !list(value.seekMarks, 4096,
             (entry): entry is string => typeof entry === "string" && /^-?\d{1,19}$/.test(entry) && BigInt.asIntN(64, BigInt(entry)) === BigInt(entry))))
         throw new Error("Invalid presentation frame");
-    const { status, marks, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
+    const { status, marks, reuseDrawing, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
         wakeAfterMs, commands, seekMarks } = value as PresentationFrame;
     for (const entries of [marks, targets, settings?.rows.flat(), contextMenu?.rows.flat()]) {
         if (entries && new Set(entries.map(({ id }) => id)).size !== entries.length) throw new Error("Duplicate presentation item ID");
     }
-    return { status, marks, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, commands, seekMarks };
+    return { status, marks, ...(reuseDrawing && { reuseDrawing }), targets, panel: settings, contextMenu,
+        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, commands, seekMarks };
 }

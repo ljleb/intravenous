@@ -5,177 +5,131 @@ header, ports, input devices, viewport, playback, and project edits. The same
 presentation program can generate a frame in a desktop client or in a test
 that supplies the same input data.
 
-## Add a presentation
+## Run the marker example
 
-In a trusted Intravenous workspace, put the manifest and its matching
-JavaScript file in `packages/<package>/presentations/`. A manifest describes
-the plugin and names the node definitions that it presents. The graph editor
-reloads the catalog when those files change. The native package build skips
-this directory.
+Copy [the example project](../examples/wasm-presentation/) into a scratch
+directory and open it in the development editor. The example ships a built
+artifact. Drag the blue marker to move it within the lane. The project saves
+its position as a fraction of the lane width.
 
-This example uses the package directory `marker` and attaches a draggable
-marker to Beats. Use a stable plugin ID that is unique within the project.
-Change `definitionIds` to attach the presentation to your own node. A
-package directory that contains only presentations works without an
-`iv_package.json` or a C++ entry file in this pilot.
+To edit the marker, run the build watcher from the repository in the
+development shell. Substitute the path to the copied example.
 
-`packages/marker/presentations/marker.json`
+```sh
+marker=/path/to/example/packages/marker/presentations
+python3 scripts/build_presentation.py --watch "$marker/marker.cpp" "$marker/marker.wasm"
+```
+
+Change the marker ink and save the source. The build watcher replaces the WASM
+file after a successful build. The lane reloads automatically. The last good
+artifact stays in place when compilation fails. Use `--watch-path` to watch
+additional headers or source directories.
+
+## Declare a presentation
+
+The provider's `iv_package.json` contains an optional native `entry` and an
+optional `presentations` map. A package can supply either or both. Each key is
+the presentation's ID within the package. The server publishes it as
+`<package namespace>/<id>`. The key also determines the published file at
+`presentations/<id>.wasm`.
 
 ```json
 {
-  "version": 2,
-  "id": "example.marker",
-  "title": "Marker",
-  "definitionIds": ["builtin.beats"],
-  "icon": "M5 2v12m4-12v12",
-  "timeline": true
-}
-```
-
-`packages/marker/presentations/marker.js`
-
-```js
-let draft;
-
-function present(view, inputs) {
-    const { width, height } = view.viewport;
-    for (const input of inputs) {
-        if (input.type !== "gesture" || input.id !== "marker") continue;
-        if (input.phase === "move" || input.phase === "finish") {
-            draft = Math.max(0, Math.min(1, input.point.x / width));
-        }
-        if (input.phase === "cancel") draft = undefined;
+  "schema": 2,
+  "namespace": "example.marker",
+  "presentations": {
+    "marker": {
+      "title": "Marker",
+      "definitionIds": ["builtin.beats"]
     }
-    const x = width * (draft ?? view.state?.position ?? 0.5);
-    const committed = inputs.some(input => input.type === "gesture"
-        && input.id === "marker" && input.phase === "finish");
-    const commands = committed && draft !== undefined
-        ? [{ type: "state", value: { position: draft } }]
-        : [];
-    if (commands.length) draft = undefined;
-
-    return {
-        status: "Drag the marker",
-        marks: [
-            { type: "polyline", id: "line", ink: "output", points: [{ x, y: 0 }, { x, y: height }] },
-            { type: "rect", id: "handle", ink: "output", x: x - 4, y: 8, width: 8, height: 8 },
-        ],
-        targets: [{ id: "marker", x: x - 8, y: 0, width: 16, height }],
-        commands,
-    };
+  }
 }
 ```
 
-The optional `icon` is a path in the host's 16 by 16 header icon. Use
-`timeline: true` for a lane that follows project time. Built-in plugin IDs
-use the `builtin.` prefix. When multiple project plugins claim a definition,
-the first plugin ID in sorted order supplies its presentation.
-Set `initialConfiguration` to a configuration expression when the node picker
-needs default construction arguments. The host submits that expression
-through the normal node creation route.
+A presentation can target a public node from its package or an imported
+package. The builtin package is an implicit import. Only the defining package
+can supply `initialConfiguration`. The client currently chooses the first
+compatible presentation by identity.
 
-## Frame and input contract
+The WASM artifact contains an `iv.presentation` custom section. The first
+three bytes are descriptor version (1), WASM ABI version (3), and flags
+(bit 0 for lanes that share timeline overlays). An optional UTF-8 vector
+path follows in a 16 by 16 icon coordinate space. The client reads this
+descriptor once per digest. `IV_PRESENTATION_CLASS` emits the descriptor for
+C++ guests. C guests use `IV_PRESENTATION_DESCRIPTOR`.
 
-Version 2 supplies the time axis in samples.
-[Version 1 time coordinates](historical/project_presentation_time_v1_2026-11-22.md)
+## Build and reload
 
-- `present(snapshot, inputs)` returns a frame synchronously. The snapshot
-  includes accepted construction arguments, port metadata, the viewport,
-  display mode, edit availability, declared observations, and the lane's
-  saved JSON state. `clockMs` gives the host's current monotonic time in
-  milliseconds. Use it with `wakeAfterMs` in a frame to request another
-  update during an edit, even when the user stops moving the pointer.
-- When `viewport.time` is present, `beginSample` is a signed decimal index.
-  `beginFraction` is the fraction of a sample after that index.
-  `spanSamples` is the forward distance across the viewport in samples.
-  At one lap, the span is `2^64` and both edges represent the same position.
-  `sampleRate` gives the rate for converting distances to seconds.
-- Coordinates are measured in logical pixels from the top left of the
-  content area. Sample indices are decimal strings. A frame may include
-  polylines, rectangles, circles, text, and rectangular hit targets. Keep
-  IDs stable when geometry changes. Return `seekMarks` to use the host's
-  playhead gesture with the snap targets in the current viewport. Set
-  `timelineSnapping: true` in a timeline manifest to receive the current
-  snap marks and playhead position when a hit target's gesture starts.
-- A settings panel can contain rows of labels, knobs, choices, and actions.
-  A context menu uses those same controls. A hit target can ask for
-  primary or secondary drag, a context menu, and wheel input during a
-  drag. It receives `begin`, `move`, `modifiers`, `finish`, and `cancel`
-  with the current modifier keys. The default relative drag can use
-  pointer lock. Use `drag: "absolute"` for a rectangle selection.
-  Control input arrives as `preview`, `commit`, and `finish`.
-  Use `itemEditing` to receive item shortcuts while the lane content has
-  focus, and `valueNavigation` to receive lane-local pan, zoom, and reset.
-- A target with `cursorReturn: true` can return `drag.cursor` in its release
-  frame. The host resolves that lane coordinate against the visible area
-  and moves the cursor when the platform supports it. The host owns the
-  native pointer lock, capture, and release. A worker frame must arrive
-  within the same cursor return deadline as a built-in frame.
-- Commands may edit the lane's own node through a supported serialized node
-  event, finish an edit gesture, or update the lane's own JSON state. The
-  host accepts commands in response to user input. The server validates node
-  events and the next snapshots report accepted arguments, pending edits,
-  and any edit error.
-  Set `replacePending: true` on a gesture edit only when it supplies a full
-  replacement for earlier previews of that event in the same gesture. The
-  host can pace those updates and deliver only the newest pending value.
-  Finishing the gesture flushes that value before closing the edit.
-  For edits that depend on the result of an earlier edit, give each
-  command a unique `requestId`. The host sends back `editResult` with that
-  ID and the accepted revision or error. Use `replacePending` for
-  replaceable previews and `requestId` for edits that require a reply.
-  On history navigation or disconnect, the host sends `interrupt`.
-  Store persistent state as a JSON object through the host. A worker can
-  be discarded when its lane has been off screen for a while.
-- A manifest can declare continuous waveform observations as
-  `{ "id": "wave", "direction": "output", "port": "value", "points": 256 }`
-  entries in `observations`. The host resolves ports on the lane's node and
-  picks the observation tiers. Read the result and its visible spans from
-  `snapshot.observations.wave`. The result carries the observation status,
-  sample points, and coverage regions. A missing observation is `null`.
-  Use `whenConnected` to observe only a connected port. Use
-  `completeOnly` if a partial result should leave the previous complete
-  spans in view.
-- Use the same `group` name on observations that feed one plot. The host
-  updates the group together when one snapshot answers each visible
-  range. A ready result with empty coverage counts as an answer.
-  Without a group name, each observation updates independently.
-- The host can split one viewport observation into several server requests.
-  A span's `begin` and `end` are offsets from the start of the viewport's
-  observation window, in project samples. The interval includes `begin`.
-  It excludes `end`. `windowOffset` gives the offset of the result window
-  from that same start. It can be negative when a retained window overlaps
-  the left edge. The observation window starts at `beginSample`. For a
-  full lap with a nonzero `beginFraction`, it starts at the next sample.
-- An output observation can set `"operation": "event-timestamps"` to read
-  a concrete node's buffered sequential event output. Omit `points` for this
-  operation. Each ready span's `result.eventIndices` contains every signed
-  decimal sample index in the observed range, including equal-time events.
-  The host requests the visible range and keeps the previous complete window
-  available while the next one loads. The frame can include one additional
-  mark per observed event.
+The server loads artifacts and serves an immutable snapshot by digest through
+`presentations.list` and `presentations.fetch`. It watches manifests and
+published artifacts for project-local packages. Use
+`IV_DEVELOPMENT_PACKAGE_PATH` when starting the server or development editor
+to resolve a common package to a local checkout of the same namespace.
+Multiple paths use the same separator as `IV_MODULE_SEARCH_PATH`. Common and
+built-in packages read their presentation artifacts at package load.
 
-The VS Code host runs each project script on demand in a web worker. Supply
-one self-contained script with a top-level `present` function. Keep frames
-bounded. The host validates them before drawing or dispatching commands.
-The portable contract is defined in
-[`presentationPlugin.ts`](../vscode/client/src/presentationPlugin.ts).
+The development tool uses Clang and wasm-ld. Set
+`IV_PRESENTATION_WASM_COMPILER` and `IV_PRESENTATION_WASM_LINKER` to select
+other tool paths. The Nix development shell supplies the tools. Projects can
+also publish an artifact from their own toolchain. It must target core
+wasm32 and implement the same exports, descriptor, and memory layout.
+The runtime accepts import-free modules. Native audio package builds continue
+to use LLVM bitcode.
 
-The built-in Automation Curve uses this contract for authoring, selection,
-lane navigation, and the connected min and max traces. Beats also has a
-built-in seek reader for extrapolating past the viewport. The
-[rendering review](historical/project_presentation_rendering_review.md#automation-curve-during-the-pilot)
-records the earlier pilot status.
+VS Code fetches package presentations in a trusted workspace. The client
+checks the artifact digest and validates frames. A replacement starts in a
+separate worker and restores the lane's state before its first valid frame
+replaces the running one. A failed replacement leaves the previous lane
+running.
 
-A future presentation API extension will support typed transfers between
-lanes, starting with Automation Curve control points. See
-[Copy, cut, and paste between lanes](./node_interaction_and_presentation_communication_direction.md#copy-cut-and-paste-between-lanes).
+## Presentation function API
+
+Use [`presentation.hpp`](../src/intravenous/presentation/presentation.hpp)
+to author a C++ class. Declare a public default constructor and
+`void present(iv::presentation::Context&)`. Use
+`IV_PRESENTATION_CLASS(Type, Flags, "icon path")` to generate the C ABI entry
+points and descriptor. Omit the last argument to use the host's default icon.
+Omit both flags and icon with `IV_PRESENTATION_CLASS(Type)`.
+Define both `save` and `restore` for
+persistent state. The C SDK in
+[`presentation.h`](../src/intravenous/presentation/presentation.h) provides
+`IV_DEFINE_PRESENTATION` for a C state struct and callbacks.
+
+Both forms implement the [same C ABI](../src/intravenous/presentation/abi.h).
+The guest constructs one session with
+`iv_create_session` and destroys it with `iv_destroy_session` on normal
+teardown. Keep working data in the class or struct. The C++ `SessionBuffer`
+owns guest storage through RAII. The supplied freestanding build supports
+core C++ features. A project using the C++ standard library supplies its
+own WASM-compatible library and allocator.
+
+Use `Context::content_bounds` for the lane rectangle and `Context::gestures`
+for the ordered input batch. Gesture and target IDs are numeric. An interrupt
+appears as a cancel with ID zero. The host provides the gesture batch and one
+reusable output area for each call. The SDK records spans of polylines and drag
+targets there. Use `reserve_polylines` to fill the vertex storage directly or
+`reuse_drawing` to keep the previous drawing.
+
+Call `request_save` after a committed edit. The host stores the value from
+the separate save callback. Use
+[`state_json.h`](../src/intravenous/presentation/state_json.h) for the JSON
+codec used by the marker. Live frames use the typed function API.
+
+The example configures clangd for wasm32. If you edit the example outside
+the repository, set the include path in `compile_flags.txt` to the SDK's
+`src` directory.
+
+[Prior server-built marker](historical/project_presentation_server_build_2026-11-22.md) ·
+[Earlier JSON frame ABI](historical/project_presentation_json_frame_abi_2026-11-22.md) ·
+[Earlier JavaScript pilot](historical/project_presentation_javascript_pilot_2026-11-22.md)
 
 ## Test a presentation scenario
 
-The headless client runs the same built-in and project presentation programs.
-It validates frames and uses the shared edit queue to send node events.
-Use a copy of a trusted project because the server can save these edits.
+The headless client fetches the same package artifacts as VS Code. It validates
+frames and uses the shared edit queue to send node events. Use a copy of a
+trusted project because the server can save edits. The example project includes
+`marker-scenario.json`, which selects the marker by its published presentation
+ID and drags it to 30 percent of the lane.
 
 Create a scenario JSON file with a `snapshot` and an `inputs` array. Use
 `snapshot.node.address` to select a node in the test project. Use `inspect`

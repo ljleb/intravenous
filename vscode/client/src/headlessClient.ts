@@ -10,7 +10,8 @@ import { ManualControlInteractions } from "./manualControls";
 import { answerNodeEventRequest } from "./nodeEventMessaging";
 import { ObservationDeliveryState, type ObservationDelivery } from "./observationDelivery";
 import { answerObservationRequest } from "./observationEndpoint";
-import { recordedEventTimestampsOperation, type ObservationSource } from "./observations";
+import { recordedEventTimestampsOperation, recordedTriggerBinsOperation, type ObservationSource,
+    type ObservationWindowResult } from "./observations";
 import { PresentationObservations } from "./presentationObservations";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { WorkspaceRpc, workspaceNodeEvents } from "./workspaceRpc";
@@ -114,7 +115,7 @@ async function run(options: Options, trace?: ClientInteractionTrace) {
         await rpc.hello(`headless-${process.pid}-${owner}`, "");
         if (options.scenario) {
             const scenario = JSON.parse(await readFile(options.scenario, "utf8")) as PresentationScenario;
-            return await runPresentationScenario(options.project, rpc, nodeEvents, owner, scenario);
+            return await runPresentationScenario(rpc, nodeEvents, owner, scenario);
         }
         if (!trace) return { scope: await rpc.getGraphScope(), playback: await rpc.getPlayback(true) };
 
@@ -122,11 +123,15 @@ async function run(options: Options, trace?: ClientInteractionTrace) {
         let view = trace.view;
         const delivery = new ObservationDeliveryState();
         const recordedEvents = new Map<string, Map<string, number>>();
+        const triggerWindows = new Map<string, { source?: ObservationSource; window: ObservationWindowResult["window"];
+            bins: NonNullable<ObservationWindowResult["triggerBins"]> }>();
+        let triggerBinCount = 0;
         const eventSources = new Map<string, ObservationSource>();
         let incompleteEventWindow = false;
         observations = new PresentationObservations((request) => {
             if (request.type === "observationReconcile") for (const interest of request.interests)
-                if (interest.operation === recordedEventTimestampsOperation) eventSources.set(interest.id, interest.source);
+                if (interest.operation === recordedEventTimestampsOperation || interest.operation === recordedTriggerBinsOperation)
+                    eventSources.set(interest.id, interest.source);
             void answerObservationRequest(rpc, view, owner, request).then((reply) => observations?.receive(reply));
         });
         receiveObservation = (update) => {
@@ -136,6 +141,18 @@ async function run(options: Options, trace?: ClientInteractionTrace) {
             if (recording) for (const [id, window] of delivery.changes(owner, update).windows) {
                 if (!eventSources.has(id) || window?.status !== "ready") continue;
                 incompleteEventWindow ||= !!window.truncated;
+                if (window.triggerBins) {
+                    const key = JSON.stringify([id, window.window.begin, window.window.length, window.window.points]);
+                    const bins = window.triggerBins;
+                    const count = triggerBinCount - (triggerWindows.get(key)?.bins.length ?? 0) + bins.length;
+                    if (count > 65_536 || (!triggerWindows.has(key) && triggerWindows.size >= 1024)) {
+                        incompleteEventWindow = true;
+                        continue;
+                    }
+                    triggerBinCount = count;
+                    triggerWindows.set(key, { source: eventSources.get(id), window: window.window, bins });
+                    continue;
+                }
                 let indices = recordedEvents.get(id);
                 if (!indices) { indices = new Map(); recordedEvents.set(id, indices); }
                 const counts = new Map<string, number>();
@@ -239,7 +256,7 @@ async function run(options: Options, trace?: ClientInteractionTrace) {
             recordedEvents: [...recordedEvents].map(([id, values]) => ({ source: eventSources.get(id),
                 indices: [...values].sort(([a], [b]) => BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0)
                     .flatMap(([index, count]) => Array<string>(count).fill(index)) })),
-            incompleteEventWindow };
+            recordedTriggerWindows: [...triggerWindows.values()], incompleteEventWindow };
     } finally {
         recording = false;
         stopObserving();
@@ -256,7 +273,8 @@ async function main() {
     if (!args.length || args.includes("--help") || args.includes("-h")) { console.log(usage); return; }
     const options = parseOptions(args);
     const trace = options.trace ? await readTrace(options.trace) : undefined;
-    console.log(JSON.stringify(await run(options, trace), null, 2));
+    console.log(JSON.stringify(await run(options, trace),
+        (_key, value) => value instanceof Float64Array ? Array.from(value) : value, 2));
 }
 
 void main().catch((error) => {

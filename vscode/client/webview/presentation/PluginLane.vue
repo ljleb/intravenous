@@ -6,9 +6,10 @@ import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
+import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
 import { sampleWindow } from "../../src/sampleWaveform";
-import { timelineObservationSpan, timelineSamples } from "../../src/timelineSamples";
-import { recordedEventTimestampsOperation } from "../../src/observations";
+import { timelineSamples, timelineVisibleEventSpan } from "../../src/timelineSamples";
+import { recordedTriggerBinsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
 import { visibleCursorDestination } from "../graph/cursorReturn";
 import { useTimelineMarks, useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
@@ -28,7 +29,7 @@ import { usePresentationFrame } from "./presentationFrames";
 import { presentationDrag } from "./presentationDrag";
 import { usePresentationSize } from "./presentationSize";
 import { usePresentationState } from "./presentationStateContext";
-import { PresentationPluginWorker } from "./presentationPluginWorker";
+import { createWebPresentationWorker } from "./presentationPluginWorker";
 
 const props = defineProps<{ mode: NodeDisplayMode; program: PresentationProgram }>();
 const node = useNode();
@@ -43,9 +44,11 @@ const frame = shallowRef<PresentationFrame>();
 const state = shallowRef<PresentationSavedState>(null);
 const error = ref("");
 const editError = ref("");
+const replacementError = ref("");
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
     && !!node.value.address && node.value.loadState === "ready");
-const worker = "source" in props.program ? new PresentationPluginWorker(props.program.source) : undefined;
+const worker = "bytes" in props.program ? new ReloadableWasmPresentation(createWebPresentationWorker,
+    (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); }) : undefined;
 const present = "create" in props.program ? props.program.create() : undefined;
 let cancelDrag: (() => void) | undefined;
 const dragging = ref(false);
@@ -57,7 +60,10 @@ const waking = ref(false);
 const active = usePresentationActive(() => dragging.value || panelOpen.value || menu.key.value !== null || editsPending.value || waking.value);
 const save = usePresentationState({
     serialize: () => state.value,
-    restore: (saved) => { state.value = saved ?? null; },
+    restore: (saved) => {
+        state.value = saved ?? null;
+        worker?.restore(state.value);
+    },
 });
 const needs = props.program.manifest.observations ?? [];
 const observationGroups = new Map<string, typeof needs>();
@@ -70,11 +76,12 @@ for (const need of needs) {
 const observed = [...observationGroups.values()].map((group) => ({ group, view: usePortObservationViewports(group.map((need) => () => {
     const { address, ports } = node.value;
     const timeline = time?.value;
-    const event = need.operation === recordedEventTimestampsOperation;
+    const event = need.operation === recordedTriggerBinsOperation;
     const port = ports.find((port) => port.direction === need.direction && port.name === need.port
         && port.kind === (event ? "event" : "continuous"));
     if (!address || !timeline?.sampleRate || !port || (need.whenConnected && port.connectivity !== "connected")) return;
-    const window = event ? { ...timelineObservationSpan(timelineSamples(timeline)), points: 0 } : sampleWindow(timeline, need.points);
+    const window = event ? { ...timelineVisibleEventSpan(timelineSamples(timeline)),
+        points: Math.max(1, Math.min(1024, Math.floor(size.value?.width ?? 1))) } : sampleWindow(timeline, need.points);
     if (window) return { source: { node: address, kind: need.direction, member: need.port, portKind: event ? "event" : undefined },
         operation: need.operation ?? "waveform", window,
         completeOnly: need.completeOnly };
@@ -119,7 +126,7 @@ function fail(reason: unknown) {
     edits.dispose();
     cancelDrag?.();
     laneEdits.closeGestures();
-    worker?.stop();
+    worker?.dispose();
 }
 function accept(next: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) {
     if (cursorReply && inputs.includes(cursorReply.input)) settleCursorReply(draw ? next.drag?.cursor : undefined);
@@ -137,14 +144,18 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
     if (next.cancelDrag) cancelDrag?.();
     if (dragging.value) editor?.refreshPointerHint();
     if (draw && menu.key.value !== null && !next.contextMenu) menu.close(true);
+    if (inputs.length && !dragging.value && "bytes" in props.program
+        && worker?.hasReplacement(props.program.bytes) && snapshot.value) session.update(snapshot.value);
 }
 const job = usePresentationFrame("update", () => { void session.flush(); });
 const session = new PresentationPluginSession((snapshot, inputs) => {
     if (present) return present(snapshot, inputs);
-    return worker!.run(JSON.parse(JSON.stringify(snapshot)), inputs);
+    const program = props.program;
+    if (!("bytes" in program) || !worker) throw new Error("Missing presentation program");
+    return worker.run(program.bytes, snapshot, inputs, () => !dragging.value && props.program === program);
 }, job.schedule, accept, fail);
 
-watch((): PresentationSnapshot | undefined => {
+const snapshot = computed((): PresentationSnapshot | undefined => {
     if (error.value || !active.value || !size.value?.width || !size.value.height) return;
     const timeline = time?.value;
     const scopedNode = node.value;
@@ -159,7 +170,8 @@ watch((): PresentationSnapshot | undefined => {
         viewport: { ...size.value, time: timeline },
         observations: observations.value,
         state: state.value };
-}, (snapshot) => {
+});
+watch([snapshot, () => props.program, dragging], ([snapshot]) => {
     clearTimeout(idleTimer);
     // In-process programs can project this viewport before Vue draws it.
     // Deferring that work by another frame leaves their marks in the old view.
@@ -168,7 +180,7 @@ watch((): PresentationSnapshot | undefined => {
         // The next viewport replaces this snapshot. Keep the last frame for
         // display and release a worker that repeatedly goes off screen.
         session.suspend();
-        if (worker) idleTimer = setTimeout(() => { if (!active.value && !editsPending.value) worker.stop(); }, 2000);
+        if (worker) idleTimer = setTimeout(() => { if (!active.value && !editsPending.value) worker.suspend(); }, 2000);
     }
 }, { immediate: true });
 
@@ -334,14 +346,14 @@ onBeforeUnmount(() => {
     session.dispose();
     edits.dispose();
     cancelDrag?.();
-    worker?.stop();
+    worker?.dispose();
     laneEdits.closeGestures();
 });
 </script>
 
 <template>
     <NodeLane v-if="!program.manifest.timeline || time" :mode="mode" flush-content>
-        <div ref="surface" class="plugin-surface" :data-status-hint="error || editError || hoveredTarget?.hint || frame?.status"
+        <div ref="surface" class="plugin-surface" :data-status-hint="error || replacementError || editError || hoveredTarget?.hint || frame?.status"
             :class="{ 'plugin-seek': frame?.seekMarks }"
             :data-status-shortcuts="hoveredTarget?.shortcuts ?? (frame?.seekMarks ? 'Click/drag seek · Space ▶/Ⅱ' : undefined)"
             :style="{ cursor: hoveredTarget?.cursor }" :tabindex="frame?.itemEditing && editable ? -1 : undefined"

@@ -121,7 +121,7 @@ inline bool resolve_observation_window_source(
     CompiledGraph const* compiled = nullptr)
 {
     if (source.port_kind == PortKind::event) {
-        if (compiled && operation_id == recorded_event_timestamps_operation
+        if (compiled && (operation_id == recorded_event_timestamps_operation || operation_id == recorded_trigger_bins_operation)
             && source.kind == ObservationSourceKind::output && !source.channel) {
             auto const matches = resolve_node_address(graph, placements, source.node);
             auto const bundles = concrete_node_address_matches(graph, matches);
@@ -129,7 +129,9 @@ inline bool resolve_observation_window_source(
             auto const bundle = bundles.front();
             for (std::size_t index = 0; index < graph.node_bundles.bundle(bundle).event_output_count(); ++index) {
                 NodeBundlePortId const output{bundle, PortKind::event, index};
-                if (graph.node_bundles.resolve_event_output(output).config.name != source.member) continue;
+                auto const config = graph.node_bundles.resolve_event_output(output).config;
+                if (config.name != source.member) continue;
+                if (operation_id == recorded_trigger_bins_operation && config.type != EventTypeId::trigger) return false;
                 if (!recorded_event_window_storage(compiled->background_evaluation_plan, output)) return false;
                 query.port = output;
                 query.kind = source.kind;

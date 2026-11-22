@@ -16,11 +16,13 @@ namespace iv {
 struct PackageDiscoveryEvents {
     bool coverage_may_have_changed = false;
     bool declarations_may_have_changed = false;
+    bool presentations_may_have_changed = false;
 };
 
 class PackageDiscoveryWatcher {
     UniqueFileDescriptor fd_;
     std::vector<std::filesystem::path> roots_;
+    std::vector<std::filesystem::path> development_roots_;
     std::unordered_map<std::string, int> watch_by_path_;
     std::unordered_map<int, std::string> path_by_watch_;
     std::unordered_multiset<int> retired_watch_descriptors_;
@@ -33,9 +35,11 @@ class PackageDiscoveryWatcher {
         std::unordered_set<std::string>& desired_paths);
     void remove_stale_watches(std::unordered_set<std::string> const& desired_paths);
     void forget_watch(int descriptor) noexcept;
+    bool watches_presentations(std::filesystem::path const& path) const;
 
 public:
-    explicit PackageDiscoveryWatcher(std::vector<std::filesystem::path> roots);
+    explicit PackageDiscoveryWatcher(std::vector<std::filesystem::path> roots,
+        std::vector<std::filesystem::path> development_roots = {});
     ~PackageDiscoveryWatcher() = default;
 
     PackageDiscoveryWatcher(PackageDiscoveryWatcher const&) = delete;

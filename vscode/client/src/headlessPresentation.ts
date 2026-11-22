@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { createContext, Script } from "node:vm";
 import type { Timed } from "./clientInteractionTrace";
 import { addressKey, graphScopeWithChildren, type NodeAddress } from "./graphScope";
 import { NodeEventMessaging, answerNodeEventRequest } from "./nodeEventMessaging";
@@ -9,37 +8,40 @@ import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
 import { builtinPresentationPrograms, projectProgramsByDefinition } from "./presentationPrograms";
-import { readProjectPresentations } from "./projectPresentationPlugins";
+import { PresentationArtifactReader } from "./presentationArtifacts";
+import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
 
 export type PresentationScenario = {
     snapshot: PresentationSnapshot;
+    presentationId?: string;
     expanded?: NodeAddress[];
     inputs: Timed<PresentationInput>[];
 };
 
-export async function runPresentationScenario(project: string, rpc: WorkspaceRpc, interactions: NodeEventInteractions,
-    owner: string, { snapshot, expanded, inputs }: PresentationScenario) {
+export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: NodeEventInteractions,
+    owner: string, { snapshot, presentationId, expanded, inputs }: PresentationScenario) {
     const { address, definitionId } = snapshot.node;
     const allowEdits = snapshot.editable;
     if (!address || !Array.isArray(inputs) || inputs.length > 8192
         || inputs.some(({ atMs }, i) => !Number.isFinite(atMs) || atMs < 0 || atMs > 20_000
             || (i > 0 && inputs[i - 1].atMs > atMs))) throw new Error("Invalid presentation scenario");
-    const programs = projectProgramsByDefinition(await readProjectPresentations(project, (error) => console.error(error)));
-    const program = programs.get(definitionId) ?? builtinPresentationPrograms.get(definitionId);
+    const reader = new PresentationArtifactReader();
+    const report = (error: string) => console.error(error);
+    const deadline = performance.now() + 60_000;
+    let catalog = await reader.read(rpc, report);
+    while (!catalog.ready) {
+        if (performance.now() >= deadline) throw new Error("The presentation catalog did not become ready");
+        await delay(50);
+        catalog = await reader.read(rpc, report);
+    }
+    const program = presentationId
+        ? catalog.artifacts.find((entry) => entry.id === presentationId && entry.manifest.definitionIds.includes(definitionId))
+        : projectProgramsByDefinition(catalog.artifacts).get(definitionId) ?? builtinPresentationPrograms.get(definitionId);
     if (!program) throw new Error(`No presentation program for ${definitionId}`);
-    const present = "create" in program ? program.create() : (() => {
-        // Use the same JSON-shaped DTO that the web worker receives. A
-        // scenario runs trusted project code and uses a separate JavaScript
-        // context so that built-in and project programs have the same API.
-        const context = createContext(Object.create(null));
-        new Script(program.source).runInContext(context, { timeout: 1500 });
-        const frame = new Script("JSON.stringify(present(...JSON.parse(input)))");
-        return (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => {
-            context.input = JSON.stringify([snapshot, inputs]);
-            return JSON.parse(frame.runInContext(context, { timeout: 1500 }));
-        };
-    })();
+    const worker = "bytes" in program ? createNodePresentationWorker(program.bytes) : undefined;
+    worker?.restore(snapshot.state);
+    const present = "create" in program ? program.create() : worker!.run.bind(worker);
 
     let acceptedRevision = 0;
     let failure: unknown;
@@ -121,10 +123,11 @@ export async function runPresentationScenario(project: string, rpc: WorkspaceRpc
             await delay(5);
         }
         if (failure) throw failure;
-        return { presentation: program.manifest.id, frames, snapshot, acceptedRevision };
+        return { presentation: "id" in program ? program.id : program.manifest.id, frames, snapshot, acceptedRevision };
     } finally {
         wake.cancel();
         session.dispose();
+        worker?.stop();
         edits.queue.dispose();
         await edits.closeGestures();
         interactions.releaseOwner(owner);

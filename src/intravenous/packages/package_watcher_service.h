@@ -20,12 +20,14 @@
 
 namespace iv {
 class PackageWatcher;
+class PackageDefinitions;
 
 // Process-lifetime filesystem/discovery loop. Durable source/dependency state
 // remains in PackageWatcher; this object owns blocking poll/wakeup mechanics and
 // transient service/discovery error suppression.
 class PackageWatcherService {
     PackageWatcher* watcher_ = nullptr;
+    PackageDefinitions* definitions_ = nullptr;
     std::filesystem::path project_root_;
     std::vector<PackageDiscoveryRoot> package_roots_;
     PackageDiscoveryWatcher discovery_watcher_;
@@ -41,13 +43,15 @@ class PackageWatcherService {
     [[nodiscard]] bool synchronize_discovered_packages();
     void report_discovery_error(std::string message);
     void report_service_error(std::string message);
-    void process_pending_refresh(std::stop_token stop);
+    bool process_pending_refresh(std::stop_token stop);
+    void refresh_presentations();
 
 public:
     PackageWatcherService(
         PackageWatcher& watcher,
         std::filesystem::path project_root,
-        std::vector<PackageDiscoveryRoot> package_roots);
+        std::vector<PackageDiscoveryRoot> package_roots,
+        PackageDefinitions* definitions = nullptr);
     ~PackageWatcherService();
 
     PackageWatcherService(PackageWatcherService const&) = delete;

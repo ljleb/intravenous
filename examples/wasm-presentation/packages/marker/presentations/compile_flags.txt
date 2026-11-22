@@ -1,0 +1,5 @@
+--target=wasm32-unknown-unknown
+-ffreestanding
+-nostdlibinc
+-I../../../../../src
+-std=c++20

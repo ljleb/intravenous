@@ -10,6 +10,7 @@ export type ObservationSource = {
 };
 export type MeterMode = "level" | "value";
 export const recordedEventTimestampsOperation = "event-timestamps";
+export const recordedTriggerBinsOperation = "trigger-bins";
 export type ObservationWindow = {
     begin: string; length: string; points: number; maxDepth?: number; includeIndexedRuns?: boolean;
 };
@@ -26,6 +27,7 @@ export type ObservationWindowResult = {
     marks?: ObservedBeatMark[];
     beatRuns?: ObservedBeatRun[];
     eventIndices?: string[];
+    triggerBins?: Array<{ begin: string; length: string; first: string; count: string }>;
     unavailableRegions?: Array<{ begin: string; length: string }>;
     regions: Array<{ begin: string; length: string;
         points: Array<{ index: string; available: boolean; value?: Record<string, number | string | null> }> }>;
@@ -294,6 +296,7 @@ export class ObservationValues {
             const exactEvents = item.eventIndices !== undefined;
             if (exactEvents) this.removeReadyWindows(id, () => true);
             const units = exactEvents ? 1 : 1 + (item.marks?.length ?? 0)
+                + (item.triggerBins?.length ?? 0)
                 + (item.beatRuns?.reduce((count, run) => count + 1 + run.samples.length, 0) ?? 0)
                 + (item.unavailableRegions?.length ?? 0)
                 + item.regions.reduce((count, region) => count + 1 + region.points.length, 0);

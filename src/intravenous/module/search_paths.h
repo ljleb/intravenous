@@ -16,10 +16,11 @@ namespace iv {
 #endif
     }
 
-    inline std::vector<std::filesystem::path> parse_search_path_env()
+    inline std::vector<std::filesystem::path> parse_search_path_env(
+        char const* variable = "IV_MODULE_SEARCH_PATH")
     {
         std::vector<std::filesystem::path> roots;
-        char const* value = std::getenv("IV_MODULE_SEARCH_PATH");
+        char const* value = std::getenv(variable);
         if (!value || !*value) {
             return roots;
         }

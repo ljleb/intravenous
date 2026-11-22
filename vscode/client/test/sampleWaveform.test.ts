@@ -4,7 +4,7 @@ import test from "node:test";
 import { sampleWindow, sampleWaveform } from "../src/sampleWaveform";
 import { ObservationValues, type ObservationWindowResult } from "../src/observations";
 import { observationSpans, observationWindowRequests } from "../src/observationWindows";
-import { timelineSampleCount, timelineSamples } from "../src/timelineSamples";
+import { timelineSampleCount, timelineSamples, timelineVisibleEventSpan } from "../src/timelineSamples";
 
 function result(): ObservationWindowResult {
     return { id: "wave", window: { begin: "0", length: "10", points: 10 }, status: "ready",
@@ -24,6 +24,14 @@ test("waveform requests quantize to project samples and bound the representative
     assert.equal(sampleWindow({ ...time, sampleRate: undefined }, 512), undefined);
     assert.equal(sampleWindow({ ...time, spanSamples: -1 }, 512), undefined);
     assert.equal(sampleWindow({ ...time, spanSamples: Infinity }, 512), undefined);
+});
+test("event windows include only the samples inside fractional view boundaries", () => {
+    assert.deepEqual(timelineVisibleEventSpan({ origin: { index: -3n, fraction: .25 }, span: 3.75 }),
+        { begin: "-2", length: "3" });
+    assert.deepEqual(timelineVisibleEventSpan({ origin: { index: -3n, fraction: .25 }, span: .5 }),
+        { begin: "-2", length: "0" });
+    assert.deepEqual(timelineVisibleEventSpan({ origin: { index: 5n, fraction: .5 }, span: Number(timelineSampleCount) }),
+        { begin: "6", length: String(timelineSampleCount) });
 });
 test("waveforms keep separate paths for gaps, unavailable points and overlapping Regions", () => {
     const data = result();

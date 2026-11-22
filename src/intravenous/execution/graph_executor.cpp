@@ -2646,9 +2646,9 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
     try {
         (void)owner_.reclaim_retired_snapshots_on_background();
         auto* current = generation_chain_.get();
-        auto const exact_events = query.port.port_kind == PortKind::event && query.kind == ObservationSourceKind::output;
+        auto const recorded_events = query.port.port_kind == PortKind::event && query.kind == ObservationSourceKind::output;
         if (!current || !current->background_initialized
-            || (!exact_events && (prepared_generation_ || !preparation_queue_.empty()
+            || (!recorded_events && (prepared_generation_ || !preparation_queue_.empty()
                 || current->background.has_selected_inputs()
                 || current->background.reconciliation_required || current->background.tick_materialization_required))
             || current->graph->configured_generation.value_or(current->graph->project_generation) != query.configured_generation
@@ -2658,7 +2658,8 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
             query.complete.store(true, std::memory_order_release);
             return;
         }
-        if (!query.window.length || (!exact_events && (!query.window.points || query.window.points > maximum_observation_window_points)))
+        if (!query.window.length || (!recorded_events && !query.window.points)
+            || query.window.points > maximum_observation_window_points)
             throw std::invalid_argument("invalid background observation window");
         auto const& graph = *current->graph;
         auto const& plan = graph.background_evaluation_plan;
@@ -2678,7 +2679,12 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
                 result.data_version = version.revision;
                 result.execution_generation = graph.project_generation;
                 result.sample_rate = graph.specialization.sample_rate;
-                project_recorded_event_timestamps(query, snapshot->event_timeline(output, plan.storage.ports[*storage].event_type));
+                auto const type = plan.storage.ports[*storage].event_type;
+                auto const timeline = snapshot->event_timeline(output, type);
+                if (query.window.points) {
+                    if (type != EventTypeId::trigger) throw std::invalid_argument("trigger bins require recorded triggers");
+                    project_recorded_trigger_bins(query, timeline);
+                } else project_recorded_event_timestamps(query, timeline);
                 result.status = ObservationWindowResult::Status::ready;
             } else {
                 result.status = ObservationWindowResult::Status::unavailable;

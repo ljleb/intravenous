@@ -1037,9 +1037,10 @@ TEST_F(GraphJitRuntimeFixture, ClickDetectorRetainsPlaybackHistoryAcrossMeterCha
         .node = {.instance_id = "detector"}, .kind = ObservationSourceKind::output,
         .member = "clicks", .port_kind = PortKind::event,
     };
-    auto read_recording = [&] {
+    auto read_recording = [&](std::size_t points = 0) {
         ObservationGraphRequest observation{.windows = {{
-            source, recorded_event_timestamps_operation, {index(0), recording_frames},
+            source, points ? recorded_trigger_bins_operation : recorded_event_timestamps_operation,
+            {index(0), recording_frames, points},
         }}};
         in_event_source([&] { project.handle_observation_request(observation); });
         EXPECT_TRUE(observation.error.empty()) << observation.error;
@@ -1111,6 +1112,15 @@ TEST_F(GraphJitRuntimeFixture, ClickDetectorRetainsPlaybackHistoryAcrossMeterCha
     ASSERT_TRUE(final->complete.load(std::memory_order_acquire));
     ASSERT_EQ(final->result.status, ObservationWindowResult::Status::ready) << final->result.error;
     EXPECT_EQ(final->result.event_indices, expected);
+    auto const overview = read_recording(2);
+    ASSERT_TRUE(overview);
+    ASSERT_TRUE(overview->complete.load(std::memory_order_acquire));
+    ASSERT_EQ(overview->result.status, ObservationWindowResult::Status::ready) << overview->result.error;
+    ASSERT_EQ(overview->result.trigger_bins.size(), 2u);
+    EXPECT_EQ(overview->result.trigger_bins[0].first, expected[0]);
+    EXPECT_EQ(overview->result.trigger_bins[0].count, 3u);
+    EXPECT_EQ(overview->result.trigger_bins[1].first, expected[3]);
+    EXPECT_EQ(overview->result.trigger_bins[1].count, 2u);
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 

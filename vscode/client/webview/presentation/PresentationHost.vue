@@ -86,7 +86,7 @@ watch(
         :style="regionHeight === undefined ? undefined : { height: `${regionHeight}px`, overflow: 'hidden' }"
     >
         <NodeLane v-if="moduleBoundary" :mode="mode" module-boundary />
-        <component v-else :is="selection.component" :key="`${stateKey ?? selection.presentationId}:${selection.serial}`"
+        <component v-else :is="selection.component" :key="stateKey ?? selection.presentationId"
             :mode="mode" v-bind="selection.program ? { program: selection.program } : {}" />
     </div>
 </template>

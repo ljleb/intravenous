@@ -95,12 +95,14 @@ while the server replies in its own time. To compare with a fixed viewport,
 restore the project copy and repeat with `--steady`. This keeps the initial
 viewport interests while replaying edits.
 
-If the recorded viewport observes a Click Detector, `recordedEvents` lists
-the sample indices returned by that port. `playback.outputProfile` contains
-the stereo samples around graph switches. To compare detector events with
-switches, use the indices in the same replay. The recording starts from the
-saved graph. Changes by other panels and browser pointer handling need a live
-graph editor test.
+If the recorded viewport observes a Click Detector, `recordedTriggerWindows`
+lists the bins returned by each observed window. Each bin includes the first
+sample index and the exact event count. Windows can overlap. An exact
+`event-timestamps` interest instead reports sample indices in `recordedEvents`.
+`playback.outputProfile` contains the stereo samples around graph switches.
+Compare the samples and observations within the same replay. The recording
+starts from the saved graph. Changes by other panels and browser pointer
+handling need a live graph editor test.
 
 See [Audio continuity during observation changes](./observation_cutover_continuity_status.md)
 for the paused Saw replay and its port-state diagnosis.

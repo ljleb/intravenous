@@ -30,6 +30,8 @@ struct IvPackageDeclaration {
     // compiling. package_id continues to identify the local build/watch root.
     std::string package_namespace{};
     std::vector<std::string> package_dependencies{};
+    bool presentation_only = false;
+    std::optional<std::filesystem::path> entry{};
 
     friend bool operator==(
         IvPackageDeclaration const&,

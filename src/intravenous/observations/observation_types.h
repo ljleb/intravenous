@@ -101,6 +101,7 @@ struct LiveObservationFrame {
 inline constexpr std::size_t maximum_observation_window_points = 1024;
 inline constexpr std::size_t maximum_observation_window_values = 2048;
 inline constexpr std::string_view recorded_event_timestamps_operation = "event-timestamps";
+inline constexpr std::string_view recorded_trigger_bins_operation = "trigger-bins";
 struct ObservationWindow {
     GlobalIndex begin{};
     std::uint64_t length = 0;
@@ -124,6 +125,11 @@ struct ObservationBeatRun {
     IndexRun indices{};
     std::vector<GlobalIndex> samples{};
 };
+struct ObservedTriggerBin {
+    GlobalIndexRange range{};
+    GlobalIndex first{};
+    std::uint64_t count = 0;
+};
 struct ObservationWindowResult {
     enum class Status { ready, pending_execution, unavailable, failed } status = Status::pending_execution;
     std::uint64_t configured_generation = 0;
@@ -137,6 +143,7 @@ struct ObservationWindowResult {
     std::vector<TimedEvent> events{};
     std::vector<ObservationBeatRun> beat_runs{};
     std::vector<GlobalIndex> event_indices{};
+    std::vector<ObservedTriggerBin> trigger_bins{};
     std::vector<GlobalIndexRange> unavailable_regions{};
     std::string error{};
 };

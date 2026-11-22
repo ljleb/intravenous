@@ -4396,8 +4396,10 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                         NodeBundlePortId const port{handle, PortKind::event, index};
                         if (!recorded_event_window_storage(compiled->background_evaluation_plan, port)) continue;
                         auto const config = graph.node_bundles.resolve_event_output(port).config;
+                        auto operations = Json::array({recorded_event_timestamps_operation});
+                        if (config.type == EventTypeId::trigger) operations.push_back(recorded_trigger_bins_operation);
                         capabilities.push_back({{"nodeIndex", node_index}, {"kind", "output"}, {"portKind", "event"},
-                            {"member", config.name}, {"delivery", "window"}, {"operations", {recorded_event_timestamps_operation}}});
+                            {"member", config.name}, {"delivery", "window"}, {"operations", std::move(operations)}});
                     }
                 }
                 std::size_t index = 0;

@@ -1,0 +1,1 @@
+{"command":"nodeInstances.upsert","args":{"instance_id":"50645d7a-74a8-485f-aad5-de193445a692","definition_id":"builtin.beats","display_name":"Marker Demo","configuration_source":""}}

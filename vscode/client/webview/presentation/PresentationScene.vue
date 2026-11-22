@@ -5,6 +5,15 @@ import type { PresentationInk, PresentationMark, PresentationPoint } from "../..
 defineProps<{ marks?: PresentationMark[]; highlightedTarget?: string }>();
 
 function svgPoints(points: PresentationPoint[]) { return points.map(({ x, y }) => `${x},${y}`).join(" "); }
+const cachedPackedPaths = new WeakMap<Float64Array, string>();
+function packedSvgPoints(coordinates: Float64Array) {
+    const existing = cachedPackedPaths.get(coordinates);
+    if (existing !== undefined) return existing;
+    let points = "";
+    for (let i = 0; i < coordinates.length; i += 2) points += `${i ? " " : ""}${coordinates[i]},${coordinates[i + 1]}`;
+    cachedPackedPaths.set(coordinates, points);
+    return points;
+}
 const graphicsId = useId();
 const inkColor: Record<PresentationInk, string> = { foreground: "--vscode-foreground", muted: "--vscode-descriptionForeground",
     input: "--iv-port-input", output: "--iv-port-output", selection: "--vscode-focusBorder", highlight: "--vscode-charts-blue",
@@ -30,6 +39,8 @@ const color = (ink?: PresentationInk) => ink && `var(${inkColor[ink]})`;
                         fill: mark.fill ? color(mark.ink) : undefined,
                         strokeWidth: mark.strokeWidth, strokeDasharray: mark.dashed ? '3 3' : undefined }" />
             </template>
+            <polyline v-else-if="mark.type === 'packedPolyline'" :points="packedSvgPoints(mark.coordinates)"
+                :opacity="mark.opacity" :style="{ stroke: color(mark.ink) }" />
             <rect v-else-if="mark.type === 'rect'" :x="mark.x" :y="mark.y" :width="mark.width" :height="mark.height"
                 :opacity="mark.opacity" :style="{ fill: color(mark.ink), stroke: color(mark.border) }" />
             <circle v-else-if="mark.type === 'circle'" :cx="mark.x" :cy="mark.y" :r="mark.radius" :opacity="mark.opacity"

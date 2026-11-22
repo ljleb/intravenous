@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/packages/package_pipeline_types.h>
+#include <intravenous/packages/presentation_artifacts.h>
 
 #include <filesystem>
 #include <memory>
@@ -46,6 +47,7 @@ class PackageDefinitions {
     std::uint64_t snapshot_generation_ = 0;
     std::uint64_t completed_publication_generation_ = 0;
     std::shared_ptr<PackageDefinitionsSnapshot const> snapshot_;
+    PresentationArtifacts presentations_;
 
     [[nodiscard]] IvPackageInfo& ensure_package_locked(
         std::string const& package_id,
@@ -61,6 +63,9 @@ public:
     [[nodiscard]] IvPackageInfo create_project_package(std::string const& name) const;
     [[nodiscard]] std::shared_ptr<PackageDefinitionsSnapshot const> snapshot() const;
     void handle_project_graph_read(PackageDefinitionsProjectGraphRead& read) const;
+    bool refresh_presentations(std::span<IvPackageDeclaration const> declarations);
+    void read_presentations(std::optional<PresentationCatalog>& result) const;
+    void read_presentation_artifact(std::string const& digest, std::shared_ptr<std::string const>& result) const;
 
     // Accepts the refresh and returns the publication's project read-model
     // changes in `transaction.project_publication`.

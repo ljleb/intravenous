@@ -7159,6 +7159,18 @@ continue to govern observable behavior._
 
 ### Project-authored presentation lanes (2026-11-20)
 
+**Accepted order (2026-11-22).**
+
+1. Build a package-authored WebAssembly marker, publish its catalog entry and
+   artifact through the server, and run it in VS Code and the headless client.
+2. Move Beats and Click Detector to the same artifact path, then Automation
+   Curve. Keep the generic Default lane available in the host.
+3. Host the project graph editor in the source panel with query filtering and
+   shared addressed selection and presentation state.
+4. Add project-authored scopes with public ports and undoable structural edits.
+5. In Front 16, measure the one-lane oscillator block callback before trying
+   grouped specialization.
+
 The owner requested project-authored presentations and wants the built-in
 specialized lanes to use the same public interface. The lane declares the
 definitions it presents and supplies header metadata, including an icon.
@@ -7317,6 +7329,55 @@ before delivery. A target-specific artifact declares its architecture and
 runtime requirements and keeps the same presentation data schema. Shipping
 LLVM IR to clients would require its own compiler and target profile, plus
 an isolation mechanism for compiled code.
+
+**Published WASM artifacts and C++ SDK checkpoint (2026-11-22).**
+`iv_package.json` binds presentation IDs to node definitions. Each ID owns
+a prebuilt file in `presentations/`. The artifact carries a static timeline
+and icon descriptor. The server publishes bytes by digest and automatically
+watches project-local packages and development checkouts. The development
+tool compiles and atomically replaces the file. The client keeps the live
+lane through a failed candidate. C and C++ guests share ABI 3 with explicit
+session creation and destruction. JSON is confined to save and restore for
+live guest communication.
+
+The marker exercises this boundary. Dependencies for the remaining built-in
+migrations follow below.
+[Artifact and SDK guide](project_presentation_plugins.md) ·
+[Earlier marker implementation](historical/project_presentation_server_build_2026-11-22.md)
+
+- `createBeatsPresentation` implements `openSeekReader` as a synchronous
+  reader over the displayed `BeatGrid`. `usePlayheadSeek` asks it about
+  windows outside the viewport during a drag. A worker cannot supply that
+  answer synchronously without blocking pointer motion. Move scheduling and
+  reuse of seek windows into the host. Capture the displayed grid when a
+  drag starts and use that same grid for the entire gesture. Verify the
+  detent behavior when an outside-window result is pending before porting
+  Beats.
+- `createClickDetectorPresentation` now uses bounded `trigger-bins` windows
+  over the signed-sorted recorded output. Each occupied bin contains the first
+  sample index and the exact occurrence count. The host retains ready spans
+  while the next window loads. The remaining WASM migration needs a typed
+  observation interface. The exact `event-timestamps` query remains available
+  for callers that need every occurrence.
+- `createAutomationCurvePresentation` reads accepted control points from
+  `PresentationSnapshot.node.arguments`. The host currently obtains that
+  field from `NodeConstructionArguments` JSON. Publish a typed control-point
+  view on accepted changes before porting the editor. Keep local gesture
+  drafts and selection in the presentation session. The host already keeps
+  the min and max spans coherent. Borrow them together, with exact sample
+  indices, and keep the same windows allocated across viewport-only updates.
+  The editor also receives revision acknowledgements and supplies a cursor
+  destination on release. Preserve their ordered delivery independently of
+  whether the rendering host displays the resulting frame.
+
+The two workers currently embed `createWasmPresentation` as source text.
+That forces packet decoding to live inside one self-contained function.
+Switch to bundled worker entry points before adding the observation and edit
+interfaces, so each part of the ABI can have its own implementation and tests.
+
+The generic presentation and the current built-in lanes keep their
+existing host behavior while these dependencies are exercised.
+[Function API and marker](project_presentation_plugins.md)
 
 **Continuous edit scheduling review.** `ProjectGraph` already kept one
 replaceable `pending_graph_compile_` request. An in-flight compile could finish

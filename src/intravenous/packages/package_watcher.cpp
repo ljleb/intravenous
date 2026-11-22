@@ -95,9 +95,10 @@ PackageWatcherRefreshPlan refresh_plan(PackageJitBatchRequest const& jit_request
 }
 
 struct PackageManifest {
-    std::filesystem::path entry;
+    std::optional<std::filesystem::path> entry;
     std::string package_namespace;
     std::vector<std::string> dependencies;
+    bool has_presentations;
 };
 
 bool valid_namespace(std::string_view name)
@@ -116,16 +117,22 @@ std::optional<PackageManifest> read_manifest(std::filesystem::path const& path)
     if (!in) return std::nullopt;
     try {
         auto json = nlohmann::json::parse(in);
-        if (json.value("schema", 0) != 2 || !json.contains("entry")) return std::nullopt;
-        auto entry = std::filesystem::path(json.at("entry").get<std::string>());
-        if (entry.empty() || entry.is_absolute()) return std::nullopt;
+        if (json.value("schema", 0) != 2) return std::nullopt;
+        std::optional<std::filesystem::path> entry;
+        if (json.contains("entry")) {
+            entry = json.at("entry").get<std::string>();
+            if (entry->empty() || entry->is_absolute()) return std::nullopt;
+        }
         auto name = json.at("namespace").get<std::string>();
         auto dependencies = json.value("dependencies", std::vector<std::string>{});
         if (!valid_namespace(name) || std::ranges::any_of(dependencies,
             [&](auto const& dependency) { return !valid_namespace(dependency); })) return std::nullopt;
         std::ranges::sort(dependencies);
         if (std::ranges::adjacent_find(dependencies) != dependencies.end()) return std::nullopt;
-        return PackageManifest{std::move(entry), std::move(name), std::move(dependencies)};
+        auto const presentations = json.find("presentations");
+        auto const has_presentations = presentations != json.end()
+            && presentations->is_object() && !presentations->empty();
+        return PackageManifest{std::move(entry), std::move(name), std::move(dependencies), has_presentations};
     } catch (nlohmann::json::exception const&) {
         return std::nullopt;
     }
@@ -187,7 +194,7 @@ discover_iv_package_declarations(
     std::vector<PackageDiscoveryRoot> const& package_roots)
 {
     std::unordered_map<std::string, IvPackageDeclaration> by_id;
-    auto scan = [&](PackageDiscoveryRoot const& search_root) {
+    auto scan = [&](PackageDiscoveryRoot const& search_root, bool development_checkout = false) {
         if (search_root.provenance == PackageProvenance::built_in
             && !search_root.artifact_root) {
             throw std::runtime_error(
@@ -214,7 +221,8 @@ discover_iv_package_declarations(
             }
             auto const directory = entry.path().parent_path();
             auto manifest = read_manifest(entry.path());
-            if (!manifest || !std::filesystem::is_regular_file(directory / manifest->entry)) {
+            if (!manifest || (manifest->entry && !std::filesystem::is_regular_file(directory / *manifest->entry))
+                || (!manifest->entry && !manifest->has_presentations)) {
                 continue;
             }
             auto const normalized = normalize_path(directory);
@@ -228,9 +236,12 @@ discover_iv_package_declarations(
                     : std::nullopt,
                 .package_namespace = manifest->package_namespace,
                 .package_dependencies = manifest->dependencies,
+                .presentation_only = !manifest->entry,
+                .entry = manifest->entry,
             };
             auto const existing = by_id.find(package_id);
             if (existing == by_id.end()
+                || (development_checkout && existing->second.provenance == PackageProvenance::common)
                 || provenance_priority(declaration.provenance)
                     > provenance_priority(existing->second.provenance)) {
                 by_id.insert_or_assign(package_id, std::move(declaration));
@@ -247,11 +258,23 @@ discover_iv_package_declarations(
         .root = project_root,
         .provenance = PackageProvenance::project_local,
     });
-    for (auto const& root : package_roots) scan(root);
+    for (auto const& root : package_roots) {
+        if (root.provenance != PackageProvenance::project_local) scan(root);
+    }
+    for (auto const& root : package_roots) {
+        if (root.provenance == PackageProvenance::project_local) scan(root, true);
+    }
 
+    std::unordered_set<std::string> local_namespaces;
+    for (auto const& [_, declaration] : by_id) {
+        if (declaration.provenance == PackageProvenance::project_local)
+            local_namespaces.insert(declaration.package_namespace);
+    }
     std::vector<IvPackageDeclaration> result;
     result.reserve(by_id.size());
     for (auto& [_, declaration] : by_id) {
+        if (declaration.provenance == PackageProvenance::common
+            && local_namespaces.contains(declaration.package_namespace)) continue;
         result.push_back(std::move(declaration));
     }
     std::ranges::sort(result, {}, &IvPackageDeclaration::package_id);
@@ -344,6 +367,7 @@ void PackageWatcher::handle_required_definitions_changed(
             if (auto manifest = read_manifest(package_root / IV_PACKAGE_MANIFEST_FILE)) {
                 declaration.package_namespace = manifest->package_namespace;
                 declaration.package_dependencies = manifest->dependencies;
+                declaration.entry = manifest->entry;
             }
             retained_package_declarations_by_id_.insert_or_assign(
                 package_id,
@@ -368,6 +392,7 @@ void PackageWatcher::synchronize_discovered_packages(
     std::unordered_map<std::string, IvPackageDeclaration> next_discovered;
     next_discovered.reserve(declarations.size());
     for (auto& declaration : declarations) {
+        if (declaration.presentation_only) continue;
         if (declaration.package_id.empty()) {
             throw std::runtime_error("discovered IV package has an empty package ID");
         }
@@ -377,6 +402,7 @@ void PackageWatcher::synchronize_discovered_packages(
                 throw std::runtime_error("package declaration namespace disagrees with manifest: " + declaration.package_root.string());
             declaration.package_namespace = manifest->package_namespace;
             declaration.package_dependencies = manifest->dependencies;
+            declaration.entry = manifest->entry;
         }
         if (declaration.artifact_root) {
             declaration.artifact_root = normalize_path(*declaration.artifact_root);
