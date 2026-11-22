@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 4
+#define IV_PRESENTATION_ABI_VERSION 5
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
 #define IV_PRESENTATION_NO_FLAGS 0
@@ -92,18 +92,79 @@ typedef struct {
 } IvDragTarget;
 IV_TYPEDEF_SPAN(IvDragTarget, IvDragTargetSpan);
 
+typedef struct {
+    int64_t begin_sample;
+    double begin_fraction, span_samples;
+    uint32_t sample_rate;
+} IvTimelineView;
+
+IV_TYPEDEF_SPAN(double, IvNumberSpan);
+enum { IV_NUMERIC_UNAVAILABLE, IV_NUMERIC_SCALAR, IV_NUMERIC_SEQUENCE };
+typedef struct {
+    IvNumberSpan values;
+    uint32_t kind;
+} IvNumericValue;
+IV_TYPEDEF_SPAN(IvNumericValue, IvNumericValueSpan);
+
+enum { IV_CONTROL_PREVIEW, IV_CONTROL_COMMIT, IV_CONTROL_FINISH };
+typedef struct {
+    IvString id;
+    double value;
+    uint32_t phase, has_value;
+} IvControlInput;
+IV_TYPEDEF_SPAN(IvControlInput, IvControlInputSpan);
+
+enum { IV_SETTING_TEXT, IV_SETTING_KNOB, IV_SETTING_ACTION };
+enum { IV_SETTING_INTEGER = 1, IV_SETTING_DISABLED = 2 };
+typedef struct {
+    IvString id, label;
+    uint32_t row, kind, flags;
+    double value, min, max, default_value;
+} IvSetting;
+IV_TYPEDEF_SPAN(IvSetting, IvSettingSpan);
+typedef struct { IvString label; IvSettingSpan settings; } IvSettingsPanel;
+
+typedef struct { IvString name; IvNumericValue value; } IvNumericField;
+IV_TYPEDEF_SPAN(IvNumericField, IvNumericFieldSpan);
+enum { IV_EDIT_REPLACE_PENDING = 1, IV_EDIT_FINISH = 2 };
+enum { IV_MAX_NUMERIC_EDITS = 32 };
+typedef struct {
+    IvString nominal_id, fingerprint, gesture;
+    IvNumericFieldSpan fields;
+    uint32_t flags;
+} IvNumericNodeEdit;
+IV_TYPEDEF_SPAN(IvNumericNodeEdit, IvNumericNodeEditSpan);
+
+IV_TYPEDEF_SPAN(uint64_t, IvStrideSpan);
+enum { IV_GRID_SEEK = 1, IV_GRID_LABEL_MAJOR = 2 };
+typedef struct {
+    uint64_t period_numerator, period_denominator;
+    IvStrideSpan strides;
+    IvNumberSpan line_starts;
+    double minimum_spacing, opacity;
+    uint32_t ink, flags;
+} IvTimelineGrid;
+
 IvRectangle iv_content_bounds(const IvPresentationContext *context);
 bool iv_can_edit(const IvPresentationContext *context);
 IvGestureInputSpan iv_gesture_inputs(const IvPresentationContext *context);
 uint32_t iv_lane_mode(const IvPresentationContext *context);
 IvStringSpan iv_connected_inputs(const IvPresentationContext *context);
 IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationContext *context);
+IvTimelineView iv_timeline_view(const IvPresentationContext *context);
+IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context);
+IvControlInputSpan iv_control_inputs(const IvPresentationContext *context);
+bool iv_edits_pending(const IvPresentationContext *context);
+bool iv_edit_failed(const IvPresentationContext *context);
 
 /* Calls record in memory. The host consumes the recorded batches after the
    presentation returns. Each span can contain all items of that kind. */
 bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines);
 bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts);
 bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan targets);
+bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel);
+bool iv_submit_numeric_edits(IvPresentationContext *context, IvNumericNodeEditSpan edits);
+bool iv_set_timeline_grid(IvPresentationContext *context, const IvTimelineGrid *grid);
 void iv_reuse_drawing(IvPresentationContext *context);
 void iv_set_status(IvPresentationContext *context, IvString status);
 

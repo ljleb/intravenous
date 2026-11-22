@@ -38,7 +38,7 @@ export class WasmPresentationWorker {
                 clearTimeout(timeout);
                 if (reply?.frame && reply.savedState !== undefined && !this.restoring) {
                     this.state = reply.savedState;
-                    reply.frame.commands = [{ type: "state", value: reply.savedState }];
+                    (reply.frame.commands ??= []).push({ type: "state", value: reply.savedState });
                 }
                 resolve(reply?.frame);
             }, (error) => {

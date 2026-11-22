@@ -7,6 +7,7 @@ import type { NodeEventInteractions } from "./nodeEventInteractions";
 import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
+import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
 import { builtinPresentationPrograms, projectProgramsByDefinition } from "./presentationPrograms";
 import { PresentationArtifactReader } from "./presentationArtifacts";
 import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
@@ -97,7 +98,10 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
     }, (frame, draw, inputs) => {
         if (draw) {
             if (frames.length >= 8192) throw new Error("The presentation scenario produced too many frames");
-            frames.push(frame);
+            const { time, width, height } = snapshot.viewport;
+            const grid = frame.timelineGrid && time
+                ? renderPresentationTimelineGrid(frame.timelineGrid, time, width, height, snapshot.mode === "editable") : undefined;
+            frames.push(grid ? { ...frame, marks: [...grid.marks, ...frame.marks ?? []] } : frame);
         }
         if (!inputs.length && !wake.pending) return;
         edits.accept(frame, (state) => {

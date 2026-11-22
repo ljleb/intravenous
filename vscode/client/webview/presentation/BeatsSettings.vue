@@ -1,31 +1,84 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import type { BeatGrid } from "../../src/beatGrid";
-import { beatSettingsRows, editBeatSetting } from "../../src/beatsPresentationPlugin";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { beatBpm, readBeatGrid, type BeatGrid } from "../../src/beatGrid";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
-import type { PresentationInput } from "../../src/presentationPlugin";
+import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "../../src/presentationPlugin";
+import { PresentationPluginSession } from "../../src/presentationPluginSession";
+import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
+import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineWindow } from "../timeline/timelineContext";
 import { useBeatGridEditing } from "./beatGridEditingContext";
 import PresentationControls from "./PresentationControls.vue";
+import { usePresentationFrame } from "./presentationFrames";
+import { createWebPresentationWorker } from "./presentationPluginWorker";
+import { shippedPresentation } from "./presentations";
 
-const props = defineProps<{ target: NodeAddress; grid: BeatGrid }>();
+const props = defineProps<{ target: NodeAddress; grid: BeatGrid; open: boolean }>();
 const emit = defineEmits<{ done: [] }>();
 const time = useTimelineWindow();
+const editor = useOptionalGraphEditor();
+const sampleRate = computed(() => time?.value.sampleRate);
 const { edits, version } = useBeatGridEditing();
-const preview = computed(() => { void version.value; return edits.view(props.target) ?? props.grid; });
-const error = computed(() => { void version.value; return edits.error(props.target); });
-const rows = computed(() => beatSettingsRows(preview.value, time?.value.sampleRate ?? undefined));
+const program = computed(() => shippedPresentation("builtin/beats"));
+const panel = shallowRef<PresentationFrame["panel"]>();
+const failure = ref("");
+const error = computed(() => { void version.value; return failure.value || edits.error(props.target); });
+const worker = new ReloadableWasmPresentation(createWebPresentationWorker, (reason) => {
+    failure.value = reason === undefined ? "" : String(reason);
+});
+const job = usePresentationFrame("update", () => { void session.flush(); });
+const session = new PresentationPluginSession((snapshot, inputs) => {
+    if (!program.value) throw new Error("Beats settings are unavailable");
+    return worker.run(program.value.bytes, snapshot, inputs, () => true);
+}, job.schedule, (frame) => {
+    panel.value = frame.panel;
+    for (const command of frame.commands ?? []) {
+        if (command.type === "finish") {
+            void edits.finish(props.target);
+            continue;
+        }
+        if (command.type !== "edit") continue;
+        // The ruler's internal preview uses the same pending grid as its
+        // observation overlay and retains the existing shared edit transport.
+        const payload = command.event.payload;
+        if (!payload || Array.isArray(payload) || typeof payload !== "object") continue;
+        const grid = readBeatGrid([payload.bpm, payload.beats_per_bar, payload.subdivisions]);
+        if (grid) edits.update(props.target, grid, !!command.gesture);
+    }
+}, (reason) => { failure.value = String(reason); });
+const snapshot = computed<PresentationSnapshot | undefined>(() => {
+    void version.value;
+    if (!props.open || !program.value) return;
+    const draft = edits.draft(props.target);
+    const grid = draft ?? props.grid;
+    return { node: { address: props.target, definitionId: "builtin.beats",
+        arguments: [beatBpm(grid), grid.beatsPerBar, grid.subdivisions], ports: [] },
+        revision: 0, mode: "editable", editable: true, editsPending: !!draft, editError: error.value,
+        viewport: { width: 1, height: 1, time: sampleRate.value === undefined ? undefined :
+            { beginSample: "0", beginFraction: 0, spanSamples: 1, sampleRate: sampleRate.value } },
+        observations: {}, state: null };
+});
+watch([snapshot, program], ([value]) => { if (value) session.update(value); }, { immediate: true });
+const unregisterInterrupt = editor?.registerPresentationInterrupt((reason) => {
+    if (program.value && (props.open || session.pending)) session.interrupt(reason);
+});
 
-function change(input: Extract<PresentationInput, { type: "control" }>) {
-    if (input.phase === "finish") { void edits.finish(props.target); return; }
-    const next = editBeatSetting(preview.value, input, time?.value.sampleRate ?? undefined);
-    if (next) edits.update(props.target, next, input.phase === "preview");
+function change(input: Extract<PresentationInput, { type: "control" }>) { session.input(input); }
+async function finish() {
+    await session.whenIdle();
+    await edits.finish(props.target);
 }
+async function done() {
+    await finish();
+    emit("done");
+}
+defineExpose({ finish });
+onBeforeUnmount(() => { unregisterInterrupt?.(); session.dispose(); worker.dispose(); });
 </script>
 
 <template>
-    <PresentationControls :rows="rows" :identity="`${addressKey(target)}:beats`" editable @input="change" />
-    <button class="beat-settings-done" type="button" tabindex="-1" @click="emit('done')">Done</button>
+    <PresentationControls v-if="panel" :rows="panel.rows" :identity="`${addressKey(target)}:beats`" editable @input="change" />
+    <button class="beat-settings-done" type="button" tabindex="-1" @click="done">Done</button>
     <span v-if="error" role="alert" class="beat-settings-error">{{ error }}</span>
 </template>
 

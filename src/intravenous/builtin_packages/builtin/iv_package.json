@@ -4,6 +4,10 @@
   "namespace": "builtin",
   "dependencies": [],
   "presentations": {
+    "beats": {
+      "title": "Beats",
+      "definitionIds": ["builtin.beats"]
+    },
     "click_detector": {
       "title": "Click Detector",
       "definitionIds": [

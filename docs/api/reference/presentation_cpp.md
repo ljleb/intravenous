@@ -43,6 +43,13 @@ rendering.
 | `gestures()` | `Span<const IvGestureInput>` |
 | `connected_inputs()` | `Span<const IvString>` of connected input names |
 | `observed_trigger_columns()` | `Span<const IvObservedTriggerColumns>` for manifest bindings |
+| `timeline_view()` | `IvTimelineView` with exact first sample, span, and project sample rate |
+| `numeric_arguments()` | `Span<const IvNumericValue>` in constructor argument order |
+| `control_inputs()` | `Span<const IvControlInput>` in delivery order |
+| `edits_pending()`, `edit_failed()` | Preview and accepted edit state from the host |
+| `set_settings_panel(panel)` | Copy the panel and its controls |
+| `submit_numeric_edits(edits)` | Submit a `Span<const IvNumericNodeEdit>` |
+| `set_timeline_grid(grid)` | Submit an `IvTimelineGrid` for host projection |
 | `draw_polylines(lines)` | Copy a `Span<const IvPolyline>` to the arena |
 | `reserve_polylines(lines, points)` | Return an `IvPolylineBatch` with writable descriptor and point pointers |
 | `draw_texts(texts)` | Copy a `Span<const IvText>` into the drawing |
@@ -70,4 +77,5 @@ disabled. If a package uses a C++ standard library, it must supply a
 WASM-compatible build and allocator that satisfy the import-free ABI.
 
 [Marker using saved state and direct reservations](../../../examples/wasm-presentation/packages/marker/presentations/marker.cpp) ·
-[Click Detector reading typed observations and drawing text](../../../src/intravenous/builtin_packages/builtin/presentations/click_detector.cpp)
+[Click Detector reading typed observations and drawing text](../../../src/intravenous/builtin_packages/builtin/presentations/click_detector.cpp) ·
+[Beats using the settings, editing, and grid API](../../../src/intravenous/builtin_packages/builtin/presentations/beats.cpp)

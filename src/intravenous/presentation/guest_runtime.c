@@ -104,6 +104,11 @@ IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationCont
 {
     return context->trigger_columns;
 }
+IvTimelineView iv_timeline_view(const IvPresentationContext *context) { return context->timeline; }
+IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context) { return context->arguments; }
+IvControlInputSpan iv_control_inputs(const IvPresentationContext *context) { return context->controls; }
+bool iv_edits_pending(const IvPresentationContext *context) { return (context->edit_state & 1u) != 0; }
+bool iv_edit_failed(const IvPresentationContext *context) { return (context->edit_state & 2u) != 0; }
 
 static void *reserve_output(IvPresentationContext *context, uint32_t size)
 {
@@ -114,6 +119,103 @@ static void *reserve_output(IvPresentationContext *context, uint32_t size)
     }
     context->used = start + size;
     return context->storage + start;
+}
+
+static bool copy_string(IvPresentationContext *context, IvString *text, uint32_t limit)
+{
+    if (text->size > limit) {
+        context->error = 1;
+        return false;
+    }
+    char *copy = reserve_output(context, text->size);
+    if (!copy) return false;
+    for (uint32_t i = 0; i < text->size; ++i) copy[i] = text->data[i];
+    text->data = copy;
+    return true;
+}
+
+static bool copy_numbers(IvPresentationContext *context, IvNumberSpan *values, uint32_t limit)
+{
+    if (values->size > limit) {
+        context->error = 1;
+        return false;
+    }
+    double *copy = reserve_output(context, values->size * sizeof(double));
+    if (!copy) return false;
+    for (uint32_t i = 0; i < values->size; ++i) copy[i] = values->data[i];
+    values->data = copy;
+    return true;
+}
+
+bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel)
+{
+    if (context->panel || panel.settings.size > 256) {
+        context->error = 1;
+        return false;
+    }
+    IvSettingsPanel *record = reserve_output(context, sizeof(*record));
+    IvSetting *settings = reserve_output(context, panel.settings.size * sizeof(*settings));
+    if (context->error || !copy_string(context, &panel.label, 160)) return false;
+    for (uint32_t i = 0; i < panel.settings.size; ++i) {
+        settings[i] = panel.settings.data[i];
+        if (!copy_string(context, &settings[i].id, 160)
+            || !copy_string(context, &settings[i].label, 1024)) return false;
+    }
+    *record = (IvSettingsPanel){panel.label, {settings, panel.settings.size}};
+    context->panel = record;
+    return true;
+}
+
+bool iv_submit_numeric_edits(IvPresentationContext *context, IvNumericNodeEditSpan edits)
+{
+    if (!edits.size) return true;
+    if (edits.size > IV_MAX_NUMERIC_EDITS) {
+        context->error = 1;
+        return false;
+    }
+    IvRecordedNumericEdits *batch = reserve_output(context, sizeof(*batch));
+    IvNumericNodeEdit *values = reserve_output(context, edits.size * sizeof(*values));
+    if (context->error) return false;
+    for (uint32_t i = 0; i < edits.size; ++i) {
+        IvNumericNodeEdit edit = edits.data[i];
+        if (edit.fields.size > 64) {
+            context->error = 1;
+            return false;
+        }
+        IvNumericField *fields = reserve_output(context, edit.fields.size * sizeof(*fields));
+        if (context->error || !copy_string(context, &edit.nominal_id, 1024)
+            || !copy_string(context, &edit.fingerprint, 1024) || !copy_string(context, &edit.gesture, 160)) return false;
+        for (uint32_t field = 0; field < edit.fields.size; ++field) {
+            fields[field] = edit.fields.data[field];
+            if (!copy_string(context, &fields[field].name, 160)
+                || !copy_numbers(context, &fields[field].value.values, 1024)) return false;
+        }
+        edit.fields.data = fields;
+        values[i] = edit;
+    }
+    *batch = (IvRecordedNumericEdits){.values = {values, edits.size}};
+    if (context->last_edits) context->last_edits->next = batch;
+    else context->edits = batch;
+    context->last_edits = batch;
+    return true;
+}
+
+bool iv_set_timeline_grid(IvPresentationContext *context, const IvTimelineGrid *grid)
+{
+    if (context->grid || !grid->strides.size || grid->strides.size > 32
+        || grid->line_starts.size != grid->strides.size || (context->flags & IV_REUSE_DRAWING)) {
+        context->error = 1;
+        return false;
+    }
+    IvTimelineGrid *record = reserve_output(context, sizeof(*record));
+    uint64_t *strides = reserve_output(context, grid->strides.size * sizeof(*strides));
+    if (context->error) return false;
+    *record = *grid;
+    if (!copy_numbers(context, &record->line_starts, 32)) return false;
+    for (uint32_t i = 0; i < grid->strides.size; ++i) strides[i] = grid->strides.data[i];
+    record->strides.data = strides;
+    context->grid = record;
+    return true;
 }
 
 IvPolylineBatch iv_reserve_polylines(IvPresentationContext *context, uint32_t polylines, uint32_t points)
@@ -209,7 +311,7 @@ bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts)
 
 void iv_reuse_drawing(IvPresentationContext *context)
 {
-    if (context->drawing || context->texts) context->error = 1;
+    if (context->drawing || context->texts || context->grid) context->error = 1;
     context->flags |= IV_REUSE_DRAWING;
 }
 

@@ -106,9 +106,11 @@ const snapTimeline = computed(() => managedTimeline(scope.value));
 const customInput = computed(() => gridMode.value === "custom" && snapTimeline.value
     ? semanticNodeFromScopeChild(snapTimeline.value, scope.value) : null);
 const { edits: beatEdits, version: beatEditsVersion } = useBeatGridEditing();
+const gridSettings = ref<InstanceType<typeof BeatsSettings>>();
+const gridSettingsOpen = ref(false);
 async function setGridMode(mode: TimelineGridMode) {
     if (!scope.value.editable || gridMode.value === mode) return;
-    if (beatsNode.value) await beatEdits.finish(beatsNode.value.address);
+    await gridSettings.value?.finish();
     webviewApi.postMessage({ type: "setTimelineSnapMode", mode });
 }
 const laneHeight = computed(() => viewport.value.laneHeight);
@@ -825,7 +827,8 @@ onBeforeUnmount(() => {
                 <TimeRuler :window="timeWindow" :marks="timelineMarks" :beat-strengths="beatStrengths" :beat-labels="beatLabels"
                     :open-beat-reader="openBeatReader" playback style="height: 100%" />
                 <LaneSettings :label="gridLabel" dialog-label="Timeline snap mode"
-                    hint="Choose the timeline grid and snapping" :width="240" :preferred-height="settingsGrid ? 300 : 104" v-slot="{ close }">
+                    hint="Choose the timeline grid and snapping" :width="240" :preferred-height="settingsGrid ? 300 : 104"
+                    @toggle="gridSettingsOpen = $event" v-slot="{ close }">
                     <div class="timeline-grid-choices">
                         <button v-for="{ mode, label, description } in gridModes" :key="mode" type="button" tabindex="-1"
                             :disabled="!scope.editable" :aria-pressed="gridMode === mode" @click="setGridMode(mode)">
@@ -833,7 +836,7 @@ onBeforeUnmount(() => {
                         </button>
                     </div>
                     <BeatsSettings v-if="gridMode === 'beats' && scope.editable && beatsNode && settingsGrid"
-                        :target="beatsNode.address" :grid="settingsGrid" @done="close" />
+                        ref="gridSettings" :target="beatsNode.address" :grid="settingsGrid" :open="gridSettingsOpen" @done="close" />
                 </LaneSettings>
             </div>
         </header>

@@ -1,6 +1,7 @@
+import { regularTimelineGridTicks } from "./presentationTimelineGrid";
 import { automationSampleIndex, automationSampleOffset } from "./automationCurveGeometry";
 import type { ObservationWindowResult, ObservedBeatMark, ObservedBeatRun } from "./observations";
-import { firstSignedSample as timelineBegin, timelineSampleCount as timelineExtent } from "./timelineSamples";
+import { firstSignedSample as timelineBegin } from "./timelineSamples";
 
 const bpmScale = 1_000_000;
 const maximumBeatSubdivisions = 1024;
@@ -130,93 +131,23 @@ export function customBeatRulerLabels(marks: readonly { index: bigint; x: number
         bar === undefined ? [] : [{ x, depth, text: bar, key: String(index) }]), width);
 }
 
-export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }>(
-    candidates: readonly Mark[], width: number, spacing = minimumBeatMarkSpacing,
-): Mark[] {
-    const displayed = new Map<number, Mark>();
-    for (const mark of [...candidates].sort((a, b) => a.depth - b.depth || a.x - b.x)) {
-        const slot = Math.floor(mark.x / spacing);
-        let overlaps = false;
-        for (let neighbor = slot - 1; neighbor <= slot + 1; ++neighbor) {
-            const accepted = displayed.get(neighbor);
-            if (accepted && Math.abs(accepted.x - mark.x) < spacing) {
-                overlaps = true;
-                break;
-            }
-        }
-        if (!overlaps) displayed.set(slot, mark);
-    }
-    // A near-edge mark can suppress another mark without becoming a visible
-    // snap target itself.
-    return [...displayed.values()].filter(({ x }) => x >= 0 && x < width).sort((a, b) => a.x - b.x);
-}
+export { selectVisibleGridMarks as selectVisibleBeatMarks } from "./presentationTimelineGrid";
 
 // Preview Beats::tock_coverage using the accepted constructor values. Keep
 // calculation in sample indexes so independently drawn windows share marks.
 export function beatGridTicks(grid: BeatGrid, window: { spanSeconds: number }
     & ({ beginSeconds: number } | { beginSample: bigint; beginFraction?: number }),
     sampleRate: number, width: number): BeatGridTick[] {
-    const { spanSeconds } = window;
-    if (!(spanSeconds > 0 && width >= 1) || !Number.isFinite(width)) return [];
-    const minimumSpacing = Math.max(minimumBeatMarkSpacing, width / 800);
-    const margin = spanSeconds * Math.min(.25, minimumSpacing / width);
-    const indexAt = (seconds: number) => {
-        if ("beginSeconds" in window) return automationSampleIndex(window.beginSeconds, sampleRate, seconds);
-        const offset = automationSampleIndex(seconds, sampleRate, (window.beginFraction ?? 0) / sampleRate);
-        return offset === undefined ? undefined : window.beginSample + offset;
-    };
-    const secondsAt = (index: bigint) => "beginSeconds" in window
-        ? automationSampleOffset(index, window.beginSeconds, sampleRate)
-        : (Number(index - window.beginSample) - (window.beginFraction ?? 0)) / sampleRate;
-    const begin = indexAt(-margin);
-    const end = indexAt(spanSeconds + margin);
-    if (begin === undefined || end === undefined || spanSeconds > Number(timelineExtent) / sampleRate) return [];
-
-    // Depth zero marks bars, depth one marks beats, and each following
-    // stride divides the preceding interval by the configured factor.
+    const origin = "beginSeconds" in window
+        ? automationSampleIndex(window.beginSeconds, sampleRate) : window.beginSample;
+    if (origin === undefined) return [];
+    const fraction = "beginSeconds" in window
+        ? -automationSampleOffset(origin, window.beginSeconds, sampleRate) * sampleRate : window.beginFraction ?? 0;
     const strides = [1n];
     for (const factor of [...grid.subdivisions].reverse()) strides.unshift(strides[0] * BigInt(factor));
     const beatStride = strides[0];
-    const barStride = beatStride * BigInt(grid.beatsPerBar);
-    strides.unshift(barStride);
-    const numerator = BigInt(sampleRate) * 60n * BigInt(bpmScale);
-    const denominator = grid.scaledBpm * beatStride;
-    if (numerator < denominator) return [];
-
-    const spacing = (stride: bigint) => Number(stride * numerator / denominator) / sampleRate / spanSeconds * width;
-    let step = barStride;
-    if (spacing(barStride) < minimumSpacing) {
-        // Thin dense bars by powers of two, retaining the bar at sample zero.
-        while (spacing(step) < minimumSpacing) step *= 2n;
-    } else {
-        // Include candidates around the visibility threshold so actual sample
-        // positions decide spacing, including the producer's sample rounding.
-        for (const stride of strides) {
-            if (spacing(stride) < minimumSpacing / 2) break;
-            step = stride;
-        }
-    }
-
-    const rounding = denominator / 2n;
-    const markAtOrAfter = (sample: bigint) => -floorDivide(rounding - sample * denominator, step * numerator);
-    const ticks: BeatGridTick[] = [];
-    // A view spanning the signed seam sees opposite timeline ends next to
-    // each other. Match the producer's mark phase independently on each side.
-    const firstCycle = floorDivide(begin - timelineBegin, timelineExtent);
-    const lastCycle = floorDivide(end - timelineBegin, timelineExtent);
-    for (let cycle = firstCycle; cycle <= lastCycle; cycle++) {
-        const offset = cycle * timelineExtent;
-        const first = cycle === firstCycle ? begin - offset : timelineBegin;
-        const last = cycle === lastCycle ? end - offset : timelineBegin + timelineExtent - 1n;
-        const limit = markAtOrAfter(last + 1n);
-        for (let tick = markAtOrAfter(first); tick < limit; tick++) {
-            const mark = tick * step;
-            const sample = floorDivide(mark * numerator + rounding, denominator);
-            const x = secondsAt(sample + offset) / spanSeconds * width;
-            if (x < -minimumSpacing || x > width + minimumSpacing) continue;
-            const depth = strides.findIndex((stride) => mark % stride === 0n);
-            ticks.push({ x, depth, sample, bar: depth === 0 ? mark / barStride + 1n : undefined });
-        }
-    }
-    return selectVisibleBeatMarks(ticks, width, minimumSpacing);
+    strides.unshift(beatStride * BigInt(grid.beatsPerBar));
+    return regularTimelineGridTicks({ numerator: BigInt(sampleRate) * 60n * BigInt(bpmScale),
+        denominator: grid.scaledBpm * beatStride, strides, minimumSpacing: minimumBeatMarkSpacing },
+    { origin: { index: origin, fraction }, span: window.spanSeconds * sampleRate }, width);
 }

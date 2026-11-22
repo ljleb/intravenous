@@ -23,6 +23,19 @@ public:
     IvRectangle content_bounds() const { return iv_content_bounds(context_); }
     bool can_edit() const { return iv_can_edit(context_); }
     uint32_t lane_mode() const { return iv_lane_mode(context_); }
+    IvTimelineView timeline_view() const { return iv_timeline_view(context_); }
+    Span<IvNumericValue const> numeric_arguments() const
+    {
+        auto const args = iv_numeric_arguments(context_);
+        return {args.data, args.size};
+    }
+    Span<IvControlInput const> control_inputs() const
+    {
+        auto const inputs = iv_control_inputs(context_);
+        return {inputs.data, inputs.size};
+    }
+    bool edits_pending() const { return iv_edits_pending(context_); }
+    bool edit_failed() const { return iv_edit_failed(context_); }
     Span<IvString const> connected_inputs() const
     {
         auto const inputs = iv_connected_inputs(context_);
@@ -54,6 +67,12 @@ public:
     {
         return iv_register_drag_targets(context_, {targets.data, targets.size});
     }
+    bool set_settings_panel(IvSettingsPanel panel) const { return iv_set_settings_panel(context_, panel); }
+    bool submit_numeric_edits(Span<IvNumericNodeEdit const> edits) const
+    {
+        return iv_submit_numeric_edits(context_, {edits.data, edits.size});
+    }
+    bool set_timeline_grid(IvTimelineGrid const& grid) const { return iv_set_timeline_grid(context_, &grid); }
     void reuse_drawing() const { iv_reuse_drawing(context_); }
     void set_status(IvString status) const { iv_set_status(context_, status); }
     void request_save() const { iv_request_save(context_); }

@@ -1,11 +1,9 @@
 import { automationCurvePresentationManifest, createAutomationCurvePresentation } from "./automationCurvePresentation";
-import { beatsPresentationManifest, createBeatsPresentation } from "./beatsPresentationPlugin";
 import type { PresentationArtifact, PresentationProgram } from "./presentationPlugin";
 
 export const genericPresentationId = "iv.generic";
 
 export const builtinPresentationPrograms = new Map<string, PresentationProgram>([
-    ["builtin.beats", { manifest: beatsPresentationManifest, create: createBeatsPresentation }],
     ["builtin.automation.curve", { manifest: automationCurvePresentationManifest, create: createAutomationCurvePresentation }],
 ]);
 

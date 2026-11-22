@@ -44,18 +44,27 @@ uses a clipped bin. This work belongs to the host because it already owns
 the viewport, cache, and signed sample-index wrap. See the
 [column projection](../../../vscode/client/src/presentationTriggerColumns.ts).
 
-## What this port adds to the API
+## Why the host projects the Beats grid
 
-Click Detector needed typed trigger input, input connection status, lane
-mode, and text output. It reuses the existing polyline batch for click
-markers. The host continues to own playback, subscriptions, and theme
-colors. The artifact carries its own icon and declares participation in
-the host's timeline overlays.
+The [Beats presentation](../../../src/intravenous/builtin_packages/builtin/presentations/beats.cpp)
+reads numeric constructor arguments and accepts input from its settings
+controls. A preview updates the guest's draft and submits a complete
+`SetBeatGrid` node event. The host uses the event identity and fingerprint to
+validate it, groups successive previews into one undo gesture, and keeps
+the final edit pending until accepted arguments arrive.
+When project history interrupts editing, the host drops queued inputs and
+discards any edit commands from the frame already running. The guest
+receives a cancellation and clears its preview.
 
-The trigger view is useful for display. Consumers that need exact positions
-or event payloads still need an event observation interface. The next
-built-in ports also need typed beat and sample observations, seeking,
-authoring inputs, edit replies, and cursor return. The Click Detector
-does not need any of those functions. See the
-[migration notes](../../implementation_fronts_direction.md) for the planned
-ownership of those operations.
+The guest declares a rational sample period, subdivision strides, and
+drawing style. The host projects that grid at the current zoom and captures
+the displayed grid when playhead seeking begins. During that drag, the
+host calculates off-screen detents from the same captured declaration.
+Both operations can continue while the worker is busy. Custom ruler grids
+still get their marks through server observations because their event
+positions can depend on arbitrary upstream nodes.
+
+Typed sample observations, exact event payloads, per-edit replies, and
+cursor return are separate surfaces. See the
+[migration notes](../../implementation_fronts_direction.md) for Automation
+Curve's requirements.

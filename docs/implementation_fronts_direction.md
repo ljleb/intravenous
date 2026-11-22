@@ -7347,14 +7347,16 @@ will need a different observation view.
 [Authoring APIs](api/README.md) ·
 [Previous ABI 3 checkpoint](historical/project_presentation_abi3_guide_2026-11-22.md)
 
-- `createBeatsPresentation` implements `openSeekReader` as a synchronous
-  reader over the displayed `BeatGrid`. `usePlayheadSeek` asks it about
-  windows outside the viewport during a drag. A worker cannot supply that
-  answer synchronously without blocking pointer motion. Move scheduling and
-  reuse of seek windows into the host. Capture the displayed grid when a
-  drag starts and use that same grid for the entire gesture. Verify the
-  detent behavior when an outside-window result is pending before porting
-  Beats.
+**Beats WASM checkpoint (2026-11-22).** The bundled Beats presentation
+publishes an `IvTimelineGrid` with a rational sample period and a hierarchy
+of strides. `PluginLane` projects it for the current viewport and
+`usePlayheadSeek` captures the projection's grid for off-screen detents
+during a gesture. The settings panel belongs to the guest in both the
+Beats lane and the ruler. The host translates typed numeric edits to the
+existing node-event protocol and drains their undo gesture on release.
+Custom ruler grids continue to observe their actual input events.
+[ABI 4 layout and earlier seek design](historical/presentation_abi4_layout_2026-11-22.md)
+
 - `createAutomationCurvePresentation` reads accepted control points from
   `PresentationSnapshot.node.arguments`. The host currently obtains that
   field from `NodeConstructionArguments` JSON. Publish a typed control-point
@@ -7366,10 +7368,11 @@ will need a different observation view.
   destination on release. Preserve their ordered delivery independently of
   whether the rendering host displays the resulting frame.
 
-The remaining WASM migration needs typed beat and sample observations,
-host-mediated seeking and edits, and cursor return. The Click Detector
-port records which of its needs were shared across presentations in the
-[ownership explanation](api/explanation/presentation_execution.md).
+The Automation Curve port still needs typed control-point and sample
+views, structured edits with per-request replies, and cursor return.
+Exact event payloads from arbitrary streams are a separate observation
+interface. The [ownership explanation](api/explanation/presentation_execution.md)
+describes the contracts exercised by Click Detector and Beats.
 
 **Continuous edit scheduling review.** `ProjectGraph` already kept one
 replaceable `pending_graph_compile_` request. An in-flight compile could finish

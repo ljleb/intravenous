@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createBeatsPresentation } from "../src/beatsPresentationPlugin";
+import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../src/presentationTimelineGrid";
+import { SetBeatGrid } from "../src/generated/beatsEvents";
+import { serializeNodeEvent } from "../src/nodeEvents";
 import { PresentationEdits, type PresentationEdit } from "../src/presentationEdits";
 import { presentationPluginVersion, readPresentationFrame, readPresentationManifest,
     type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
@@ -76,39 +78,66 @@ test("Click Detector bounds drawing while preserving large counts and hides its 
     } finally { instance.dispose(); }
 });
 
-test("Beats uses the portable contract for rendering, settings and exact seek marks", () => {
-    const present = createBeatsPresentation();
-    const first = readPresentationFrame(present(snapshot, []));
-    assert.equal(first.panel?.label, "120 BPM");
-    assert.ok(first.seekMarks?.includes("24000"));
-    assert.equal(first.marks?.find(({ id }) => id === "beat:24000")?.type, "polyline");
+const beats = readFileSync(resolve(__dirname,
+    "../../../../src/intravenous/builtin_packages/builtin/presentations/beats.wasm")).toString("base64");
 
-    const second = readPresentationFrame(present(snapshot, [
-        { type: "control", id: "bpm", phase: "preview", value: 140 },
-        { type: "control", id: "bpm", phase: "preview", value: 150 },
-        { type: "control", id: "bpm", phase: "finish" },
-    ]));
-    assert.equal(second.panel?.label, "150 BPM");
-    const edit = second.commands?.[0];
-    assert.equal(second.commands?.length, 2);
-    assert.equal(edit?.type, "edit");
-    assert.equal(edit.gesture, "bpm");
-    assert.equal(edit.replacePending, true);
-    assert.deepEqual(edit.event.payload, { bpm: 150, beats_per_bar: 4, subdivisions: [2] });
-    assert.deepEqual(second.commands[1], { type: "finish", gesture: "bpm" });
-    assert.equal(present({ ...snapshot, editsPending: true }, []).panel?.label, "150 BPM");
-    const read = present.openSeekReader?.();
-    assert.ok(read?.({ first: "96000", length: "96000", sampleRate: 48000, width: 500 }).includes("115200"));
-    assert.equal(present(snapshot, []).panel?.label, "120 BPM");
-    assert.deepEqual(present({ ...snapshot, editable: false }, [
-        { type: "control", id: "bpm", phase: "commit", value: 150 },
-    ]).commands, []);
+test("the Beats artifact supplies settings and an exact grid that the host can seek without a worker", async () => {
+    const worker = createNodePresentationWorker(beats);
+    const view = snapshot.viewport.time!;
+    const run = async (state: PresentationSnapshot, inputs: PresentationInput[] = []) =>
+        readPresentationFrame(await worker.run(state, inputs));
+    try {
+        const first = await run(snapshot);
+        assert.equal(first.panel?.label, "120 BPM");
+        assert.ok(first.timelineGrid?.seek);
+        const display = renderPresentationTimelineGrid(first.timelineGrid, view, 500, 80, true);
+        assert.ok(display.samples.includes(24000n));
+        assert.equal(display.marks.find(({ id }) => id === "grid:24000")?.type, "polyline");
+
+        const second = await run(snapshot, [
+            { type: "control", id: "bpm", phase: "preview", value: 140 },
+            { type: "control", id: "bpm", phase: "preview", value: 150 },
+            { type: "control", id: "bpm", phase: "finish" },
+        ]);
+        assert.equal(second.panel?.label, "150 BPM");
+        const edit = second.commands?.[0];
+        assert.equal(second.commands?.length, 2);
+        assert.equal(edit?.type, "edit");
+        assert.equal(edit.gesture, "bpm");
+        assert.equal(edit.replacePending, true);
+        assert.deepEqual(edit.event, serializeNodeEvent(SetBeatGrid({ bpm: 150, beats_per_bar: 4, subdivisions: [2] })));
+        assert.deepEqual(second.commands[1], { type: "finish", gesture: "bpm" });
+        assert.equal((await run({ ...snapshot, editsPending: true })).panel?.label, "150 BPM");
+        assert.ok(second.timelineGrid);
+        const read = openPresentationTimelineReader(second.timelineGrid);
+        const remote = { first: 96000n, length: 96000n };
+        assert.equal((await run(snapshot)).panel?.label, "120 BPM");
+        assert.ok(read.marks(remote, 48000, 500).includes(115200n));
+        assert.equal((await run({ ...snapshot, editable: false }, [
+            { type: "control", id: "bpm", phase: "commit", value: 150 },
+        ])).commands, undefined);
+
+        const edited = await run(snapshot, [
+            { type: "control", id: "add", phase: "commit" },
+            { type: "control", id: "subdivision:1", phase: "commit", value: 3 },
+            { type: "control", id: "remove:0", phase: "commit" },
+        ]);
+        assert.equal(edited.commands?.length, 3);
+        assert.deepEqual(edited.commands?.at(-1), {
+            type: "edit", gesture: undefined, replacePending: undefined,
+            event: serializeNodeEvent(SetBeatGrid({ bpm: 120, beats_per_bar: 4, subdivisions: [3] })),
+        });
+        assert.equal(edited.panel?.rows.length, 4);
+    } finally { worker.stop(); }
 });
 
 test("full-state Beats previews reach the backend during a drag and flush the latest value at release", async () => {
-    const present = createBeatsPresentation();
+    const instance = createWasmPresentation(beats);
+    instance.restore("");
     const preview = (bpm: number) => {
-        const command = present(snapshot, [{ type: "control", id: "bpm", phase: "preview", value: bpm }]).commands?.[0];
+        const command = instance.present(wasmPresentationUpdate(snapshot, [
+            { type: "control", id: "bpm", phase: "preview", value: bpm },
+        ])).frame?.commands?.[0];
         assert.equal(command?.type, "edit");
         return command;
     };
@@ -154,6 +183,7 @@ test("full-state Beats previews reach the backend during a drag and flush the la
     assert.equal(alarm, undefined);
     assert.equal(edits.pending, false);
     assert.deepEqual(sent, [a, b, c, finish]);
+    instance.dispose();
 });
 
 test("ordered edits separate replaceable previews from each other", async () => {
@@ -169,25 +199,22 @@ test("ordered edits separate replaceable previews from each other", async () => 
     assert.deepEqual(sent, commands);
 });
 
-test("a synchronous presentation draws each new viewport without waiting for another frame", () => {
-    const accepted: PresentationFrame[] = [];
-    const session = new PresentationPluginSession(createBeatsPresentation(),
-        () => assert.fail("Viewport update queued another frame"),
-        (frame, draw) => { assert.equal(draw, true); accepted.push(frame); }, (error) => assert.fail(String(error)));
-    const beat = (frame: PresentationFrame) => frame.marks?.find(({ id }) => id === "beat:24000");
-
-    session.update(snapshot, "immediate");
-    assert.equal(accepted.length, 1);
-    const first = beat(accepted[0]);
-    assert.equal(first?.type, "polyline");
-    assert.deepEqual(first.points.at(-1), { x: 125, y: 80 });
-
-    session.update({ ...snapshot, viewport: { ...snapshot.viewport, height: 160,
-        time: { beginSample: "0", beginFraction: 0, spanSamples: 48000, sampleRate: 48000 } } }, "immediate");
-    assert.equal(accepted.length, 2);
-    const zoomed = beat(accepted[1]);
-    assert.equal(zoomed?.type, "polyline");
-    assert.deepEqual(zoomed.points.at(-1), { x: 250, y: 160 });
+test("the host projects Beats immediately at a new zoom without another guest frame", () => {
+    const instance = createWasmPresentation(beats);
+    instance.restore("");
+    try {
+        const frame = readPresentationFrame(instance.present(wasmPresentationUpdate(snapshot, [])).frame);
+        const grid = frame.timelineGrid!;
+        const view = snapshot.viewport.time!;
+        const beat = (marks: ReturnType<typeof renderPresentationTimelineGrid>["marks"]) =>
+            marks.find(({ id }) => id === "grid:24000");
+        const first = beat(renderPresentationTimelineGrid(grid, view, 500, 80, true).marks);
+        assert.equal(first?.type, "polyline");
+        assert.deepEqual(first.points.at(-1), { x: 125, y: 80 });
+        const zoomed = beat(renderPresentationTimelineGrid(grid, { ...view, spanSamples: 48000 }, 500, 160, true).marks);
+        assert.equal(zoomed?.type, "polyline");
+        assert.deepEqual(zoomed.points.at(-1), { x: 250, y: 160 });
+    } finally { instance.dispose(); }
 });
 
 test("a slow presentation preserves gesture ordering while coalescing viewport changes", async () => {
@@ -229,7 +256,10 @@ test("a slow presentation preserves gesture ordering while coalescing viewport c
 });
 
 test("invalid frames fail without publishing commands or visuals", async () => {
-    assert.throws(() => readPresentationFrame({ seekMarks: ["9223372036854775808"] }), /Invalid presentation frame/);
+    assert.throws(() => readPresentationFrame({ timelineGrid: {
+        numerator: "48000", denominator: "0", strides: ["1"], lineStarts: [0],
+        opacity: .84, minimumSpacing: 8, seek: true, labelMajor: true,
+    } }), /Invalid presentation frame/);
     assert.throws(() => readPresentationFrame({ marks: [
         { type: "rect", id: "spot", x: 0, y: 0, width: 1, height: 1 },
         { type: "text", id: "spot", text: "spot", x: 0, y: 0 },
@@ -240,6 +270,30 @@ test("invalid frames fail without publishing commands or visuals", async () => {
     session.update(snapshot);
     await session.flush();
     assert.match(String(errors[0]), /Invalid presentation frame/);
+});
+
+test("history discards queued controls and the commands from an in-flight worker frame", async () => {
+    const control = { type: "control", id: "bpm", phase: "preview", value: 144 } as const;
+    const inputs: Array<readonly PresentationInput[]> = [];
+    const accepted: Array<readonly PresentationInput[]> = [];
+    const replies: Array<(value: PresentationFrame) => void> = [];
+    const session = new PresentationPluginSession((_, batch) => {
+        inputs.push(batch);
+        return new Promise<PresentationFrame>((resolve) => replies.push(resolve));
+    }, () => {}, (_, __, batch) => accepted.push(batch), (error) => assert.fail(String(error)));
+    session.update(snapshot);
+    session.input(control);
+    const inFlight = session.flush();
+    session.input(control);
+    session.interrupt("history");
+    replies[0]({ commands: [{ type: "finish", gesture: "bpm" }] });
+    await inFlight;
+    const interruption = session.flush();
+    replies[1]({});
+    await interruption;
+    assert.deepEqual(inputs, [[control], [{ type: "interrupt", reason: "history" }]]);
+    assert.deepEqual(accepted, [[{ type: "interrupt", reason: "history" }]]);
+    session.dispose();
 });
 
 const marker = readFileSync(resolve(__dirname,

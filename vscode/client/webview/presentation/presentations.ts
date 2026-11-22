@@ -20,6 +20,7 @@ presentations.register({ presentationId: "builtin.timeline", displayName: "Timel
 
 const hosted = markRaw(PluginLane);
 const projectPrograms = shallowRef(new Map<string, PresentationArtifact>());
+const shippedPrograms = shallowRef(new Map<string, PresentationArtifact>());
 
 export function replaceProjectPresentations(plugins: PresentationArtifact[]): void {
     const next = new Map<string, PresentationArtifact>();
@@ -30,6 +31,15 @@ export function replaceProjectPresentations(plugins: PresentationArtifact[]): vo
             && JSON.stringify(existing.manifest) === JSON.stringify(plugin.manifest) ? existing : plugin);
     }
     projectPrograms.value = next;
+    const previousShipped = shippedPrograms.value;
+    shippedPrograms.value = new Map(plugins.filter(({ id }) => id.startsWith("builtin/")).map((artifact) => {
+        const existing = previousShipped.get(artifact.id);
+        return [artifact.id, existing?.digest === artifact.digest ? existing : artifact];
+    }));
+}
+
+export function shippedPresentation(id: string): PresentationArtifact | undefined {
+    return shippedPrograms.value.get(id);
 }
 
 export function selectPresentation(definitionId: string) {

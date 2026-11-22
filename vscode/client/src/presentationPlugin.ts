@@ -85,6 +85,12 @@ export type PresentationCommand =
     | { type: "finish"; gesture: string; requestId?: string }
     | { type: "state"; value: PresentationSavedState };
 
+export type PresentationTimelineGrid = {
+    numerator: string; denominator: string; strides: string[];
+    lineStarts: number[]; minimumSpacing: number; opacity: number;
+    ink?: PresentationInk; seek: boolean; labelMajor: boolean;
+};
+
 export type PresentationFrame = {
     status?: string;
     marks?: PresentationMark[];
@@ -97,14 +103,10 @@ export type PresentationFrame = {
     drag?: { hint?: string; shortcuts?: string; cursor?: PresentationPoint };
     cancelDrag?: true;
     wakeAfterMs?: number;
-    seekMarks?: string[];
+    timelineGrid?: PresentationTimelineGrid;
     commands?: PresentationCommand[];
 };
-export type PresentationSeekWindow = { first: string; length: string; sampleRate: number; width: number };
-export type ReadPresentationSeekMarks = (window: PresentationSeekWindow) => readonly string[];
-export type Present = ((snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame) & {
-    openSeekReader?: () => ReadPresentationSeekMarks | undefined;
-};
+export type Present = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame;
 export type PresentationArtifact = { id: string; manifest: PresentationManifest; digest: string; bytes: string };
 export type PresentationProgram = PresentationArtifact | { manifest: PresentationManifest; create: () => Present };
 
@@ -201,6 +203,22 @@ function panel(value: unknown): boolean {
         (row): row is PresentationControl[] => list(row, 12, control)));
 }
 
+function timelineGrid(value: unknown): value is PresentationTimelineGrid | undefined {
+    if (value === undefined) return true;
+    const positiveInteger = (entry: unknown): entry is string =>
+        typeof entry === "string" && /^[1-9]\d{0,19}$/.test(entry) && BigInt(entry) < (1n << 64n);
+    if (!record(value) || !positiveInteger(value.numerator) || !positiveInteger(value.denominator)
+        || BigInt(value.numerator) < BigInt(value.denominator)
+        || !list(value.strides, 32, positiveInteger) || value.strides.at(-1) !== "1"
+        || !list(value.lineStarts, 32, (entry): entry is number => finite(entry) && entry >= 0 && entry <= 1)
+        || value.lineStarts.length !== value.strides.length
+        || !finite(value.minimumSpacing) || value.minimumSpacing < 1 || value.minimumSpacing > 128
+        || !finite(value.opacity) || value.opacity < 0 || value.opacity > 1
+        || typeof value.seek !== "boolean" || typeof value.labelMajor !== "boolean" || !ink(value.ink)) return false;
+    return value.strides.every((stride, index, strides) => index === 0
+        || BigInt(strides[index - 1]) % BigInt(stride) === 0n);
+}
+
 export function readPresentationFrame(value: unknown): PresentationFrame {
     const commandBudget = { items: 4096, characters: 65536 };
     if (!record(value) || (value.status !== undefined && !text(value.status, 512))
@@ -223,14 +241,13 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
             || (value.drag.shortcuts !== undefined && !text(value.drag.shortcuts, 256))))
         || (value.commands !== undefined && !list(value.commands, 32,
             (entry): entry is PresentationCommand => command(entry, commandBudget)))
-        || (value.seekMarks !== undefined && !list(value.seekMarks, 4096,
-            (entry): entry is string => typeof entry === "string" && /^-?\d{1,19}$/.test(entry) && BigInt.asIntN(64, BigInt(entry)) === BigInt(entry))))
+        || !timelineGrid(value.timelineGrid) || (value.reuseDrawing && value.timelineGrid))
         throw new Error("Invalid presentation frame");
     const { status, marks, reuseDrawing, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
-        wakeAfterMs, commands, seekMarks } = value as PresentationFrame;
+        wakeAfterMs, commands, timelineGrid: grid } = value as PresentationFrame;
     for (const entries of [marks, targets, settings?.rows.flat(), contextMenu?.rows.flat()]) {
         if (entries && new Set(entries.map(({ id }) => id)).size !== entries.length) throw new Error("Duplicate presentation item ID");
     }
     return { status, marks, ...(reuseDrawing && { reuseDrawing }), targets, panel: settings, contextMenu,
-        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, commands, seekMarks };
+        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, commands, timelineGrid: grid };
 }

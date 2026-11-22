@@ -22,6 +22,11 @@ typedef struct IvRecordedTexts {
     struct IvRecordedTexts *next;
 } IvRecordedTexts;
 
+typedef struct IvRecordedNumericEdits {
+    IvNumericNodeEditSpan values;
+    struct IvRecordedNumericEdits *next;
+} IvRecordedNumericEdits;
+
 struct IvPresentationContext {
     double width, height;
     IvGestureInputSpan gestures;
@@ -35,6 +40,13 @@ struct IvPresentationContext {
     IvObservedTriggerColumnSpan trigger_columns;
     IvStringSpan connected_inputs;
     uint32_t mode;
+    uint32_t edit_state;
+    IvTimelineView timeline;
+    IvNumericValueSpan arguments;
+    IvControlInputSpan controls;
+    IvSettingsPanel *panel;
+    IvRecordedNumericEdits *edits, *last_edits;
+    IvTimelineGrid *grid;
 };
 
 #if defined(__wasm32__)
@@ -47,7 +59,7 @@ _Static_assert(sizeof(IvRecordedDragTargets) == 12, "target batch layout");
 _Static_assert(sizeof(IvText) == 32, "text layout");
 _Static_assert(sizeof(IvRecordedTexts) == 12, "text batch layout");
 _Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation layout");
-_Static_assert(sizeof(IvPresentationContext) == 104, "frame layout");
+_Static_assert(sizeof(IvPresentationContext) == 168, "frame layout");
 _Static_assert(offsetof(IvPresentationContext, gestures) == 16, "input layout");
 _Static_assert(offsetof(IvPresentationContext, storage) == 32, "arena layout");
 _Static_assert(offsetof(IvPresentationContext, drawing) == 48, "drawing layout");
@@ -57,6 +69,18 @@ _Static_assert(offsetof(IvPresentationContext, texts) == 72, "text output layout
 _Static_assert(offsetof(IvPresentationContext, trigger_columns) == 80, "observation input layout");
 _Static_assert(offsetof(IvPresentationContext, connected_inputs) == 88, "port input layout");
 _Static_assert(offsetof(IvPresentationContext, mode) == 96, "lane mode layout");
+_Static_assert(offsetof(IvPresentationContext, timeline) == 104, "timeline input layout");
+_Static_assert(offsetof(IvPresentationContext, arguments) == 136, "argument layout");
+_Static_assert(offsetof(IvPresentationContext, controls) == 144, "control input layout");
+_Static_assert(offsetof(IvPresentationContext, panel) == 152, "panel layout");
+_Static_assert(offsetof(IvPresentationContext, edits) == 156, "edit layout");
+_Static_assert(offsetof(IvPresentationContext, grid) == 164, "grid layout");
+_Static_assert(sizeof(IvNumericValue) == 12, "numeric argument layout");
+_Static_assert(sizeof(IvControlInput) == 24, "control event layout");
+_Static_assert(sizeof(IvSetting) == 64, "setting layout");
+_Static_assert(sizeof(IvNumericField) == 20, "field layout");
+_Static_assert(sizeof(IvNumericNodeEdit) == 36, "node edit layout");
+_Static_assert(sizeof(IvTimelineGrid) == 56, "timeline grid layout");
 #endif
 
 #ifdef __cplusplus

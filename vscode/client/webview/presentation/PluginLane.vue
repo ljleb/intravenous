@@ -6,6 +6,7 @@ import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
+import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { timelineSamples, timelineVisibleEventSpan } from "../../src/timelineSamples";
@@ -184,17 +185,16 @@ watch([snapshot, () => props.program, dragging], ([snapshot]) => {
     }
 }, { immediate: true });
 
-const seek = usePlayheadSeek(surface, () => frame.value?.seekMarks ? time?.value : undefined,
-    () => frame.value?.seekMarks?.map(BigInt) ?? [], () => {
-        const read = present?.openSeekReader?.();
-        if (!read) return;
-        let cached: { first: bigint; length: bigint; marks: bigint[] } | undefined;
-        return { marks({ first, length }, sampleRate, width) {
-            if (cached?.first !== first || cached.length !== length) {
-                cached = { first, length, marks: read({ first: String(first), length: String(length), sampleRate, width }).map(BigInt) };
-            }
-            return cached.marks;
-        } };
+const timelineGrid = computed(() => {
+    const grid = frame.value?.timelineGrid, view = time?.value, bounds = size.value;
+    if (grid && view && bounds) return renderPresentationTimelineGrid(grid, view, bounds.width, bounds.height, props.mode === "editable");
+});
+const laneMarks = computed(() => timelineGrid.value
+    ? [...timelineGrid.value.marks, ...frame.value?.marks ?? []] : frame.value?.marks);
+const seek = usePlayheadSeek(surface, () => frame.value?.timelineGrid?.seek ? time?.value : undefined,
+    () => timelineGrid.value?.samples ?? [], () => {
+        const grid = frame.value?.timelineGrid;
+        return grid?.seek ? openPresentationTimelineReader(grid) : undefined;
     });
 const hovered = ref<string>();
 const activeTarget = ref<string>();
@@ -292,10 +292,10 @@ function dismissContext() {
 const unregisterInterrupt = editor?.registerPresentationInterrupt((reason) => {
     menu.close();
     settleCursorReply();
-    const discarded = edits.discardPending();
-    for (const { requestId } of discarded) if (requestId)
-        session.input({ type: "editResult", requestId, error: "Presentation edit interrupted" });
-    session.input({ type: "interrupt", reason }, present ? "immediate" : "frame");
+    const replies: PresentationInput[] = [];
+    for (const { requestId } of edits.discardPending()) if (requestId)
+        replies.push({ type: "editResult", requestId, error: "Presentation edit interrupted" });
+    session.interrupt(reason, replies, present ? "immediate" : "frame");
     cancelDrag?.();
 });
 watch(editable, (enabled) => { if (!enabled) menu.close(); });
@@ -354,13 +354,13 @@ onBeforeUnmount(() => {
 <template>
     <NodeLane v-if="!program.manifest.timeline || time" :mode="mode" flush-content>
         <div ref="surface" class="plugin-surface" :data-status-hint="error || replacementError || editError || hoveredTarget?.hint || frame?.status"
-            :class="{ 'plugin-seek': frame?.seekMarks }"
-            :data-status-shortcuts="hoveredTarget?.shortcuts ?? (frame?.seekMarks ? 'Click/drag seek · Space ▶/Ⅱ' : undefined)"
+            :class="{ 'plugin-seek': frame?.timelineGrid?.seek }"
+            :data-status-shortcuts="hoveredTarget?.shortcuts ?? (frame?.timelineGrid?.seek ? 'Click/drag seek · Space ▶/Ⅱ' : undefined)"
             :style="{ cursor: hoveredTarget?.cursor }" :tabindex="frame?.itemEditing && editable ? -1 : undefined"
             :data-lane-item-editor="frame?.itemEditing && editable ? '' : undefined"
             @pointerdown.self="pointerDown" @pointermove.self="hover" @pointerleave="hovered = undefined"
             @contextmenu.self="openContext" @keydown="itemShortcut">
-            <PresentationScene :marks="frame?.marks" :highlighted-target="hoveredTarget?.id" />
+            <PresentationScene :marks="laneMarks" :highlighted-target="hoveredTarget?.id" />
             <LaneSettings v-if="frame?.panel && node.address && mode === 'editable' && !error" :label="frame.panel.label"
                 dialog-label="Lane settings" :hint="editError || frame.status || frame.panel.label" :width="236" :preferred-height="260"
                 @toggle="(open) => { panelOpen = open; if (open) menu.close(); }">

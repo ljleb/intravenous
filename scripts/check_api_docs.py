@@ -46,8 +46,9 @@ def compile_examples(build):
     with tempfile.TemporaryDirectory(prefix="iv-api-docs-") as work:
         scratch = Path(work)
         c = extract_examples(DOCS / "tutorials/presentation_c.md", scratch)["diagonal.c"]
+        builtins = ROOT / "src/intravenous/builtin_packages/builtin/presentations"
         sources = [c, ROOT / "examples/wasm-presentation/packages/marker/presentations/marker.cpp",
-                   ROOT / "src/intravenous/builtin_packages/builtin/presentations/click_detector.cpp"]
+                   builtins / "click_detector.cpp", builtins / "beats.cpp"]
         for source in sources:
             run(sys.executable, ROOT / "scripts/build_presentation.py", source, scratch / (source.stem + ".wasm"))
 

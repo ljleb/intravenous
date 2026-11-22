@@ -28,15 +28,22 @@ export class PresentationPluginSession {
     private viewport = "";
     private inputs: PresentationInput[] = [];
     private drawing: PresentationFrame["marks"];
+    private timelineGrid: PresentationFrame["timelineGrid"];
     private dirty = false;
     private running = false;
     private closed = false;
+    private interruption = 0;
+    private idleWaiters: Array<() => void> = [];
 
     constructor(private readonly run: Run, private readonly schedule: () => void,
         private readonly accept: (frame: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) => void,
         private readonly fail: (error: unknown) => void) {}
 
     get pending(): boolean { return !this.closed && (this.dirty || this.running || this.inputs.length > 0); }
+
+    whenIdle(): Promise<void> {
+        return this.pending ? new Promise((resolve) => { this.idleWaiters.push(resolve); }) : Promise.resolve();
+    }
 
     update(snapshot: PresentationSnapshot, pacing: "frame" | "immediate" = "frame"): void {
         this.snapshot = snapshot;
@@ -57,7 +64,23 @@ export class PresentationPluginSession {
         else this.request();
     }
 
-    suspend(): void { this.dirty = false; }
+    interrupt(reason: "history" | "disconnected", replies: PresentationInput[] = [],
+        pacing: "frame" | "immediate" = "frame"): void {
+        if (this.closed) return;
+        ++this.interruption;
+        this.inputs = replies;
+        this.input({ type: "interrupt", reason }, pacing);
+    }
+
+    suspend(): void {
+        this.dirty = false;
+        this.resolveIdle();
+    }
+
+    private resolveIdle(): void {
+        if (this.pending) return;
+        for (const resolve of this.idleWaiters.splice(0)) resolve();
+    }
 
     private request(): void {
         if (!this.closed && !this.running && this.snapshot && (this.dirty || this.inputs.length)) this.schedule();
@@ -70,6 +93,7 @@ export class PresentationPluginSession {
         const inputs = this.inputs;
         this.inputs = [];
         const viewport = this.viewport;
+        const interruption = this.interruption;
         const snapshot = this.snapshot;
         try {
             const reply = this.run({ ...snapshot, clockMs: performance.now() }, inputs);
@@ -80,12 +104,17 @@ export class PresentationPluginSession {
                     if (!this.drawing) throw new Error("Presentation has no drawing to reuse");
                     delete frame.reuseDrawing;
                     frame.marks = this.drawing;
-                } else this.drawing = frame.marks;
-                this.accept(frame, viewport === this.viewport, inputs);
+                    frame.timelineGrid = this.timelineGrid;
+                } else {
+                    this.drawing = frame.marks;
+                    this.timelineGrid = frame.timelineGrid;
+                }
+                if (interruption === this.interruption) this.accept(frame, viewport === this.viewport, inputs);
             }
         } catch (error) { this.stop(error); }
         finally {
             this.running = false;
+            this.resolveIdle();
             this.request();
         }
     }
@@ -101,5 +130,7 @@ export class PresentationPluginSession {
         this.inputs = [];
         this.snapshot = undefined;
         this.drawing = undefined;
+        this.timelineGrid = undefined;
+        this.resolveIdle();
     }
 }
