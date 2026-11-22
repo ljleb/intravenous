@@ -21,6 +21,27 @@ constexpr auto visible_window_retry = std::chrono::milliseconds(250);
 constexpr auto prefetched_window_retry = std::chrono::seconds(2);
 constexpr std::size_t maximum_scopes = 64;
 
+Json observation_window_json(ObservationWindow const& window)
+{
+    Json result{{"begin", std::to_string(window.begin.signed_value())},
+        {"length", std::to_string(window.length)}, {"points", window.points}};
+    if (window.max_depth) result["maxDepth"] = *window.max_depth;
+    if (window.include_indexed_runs) result["includeIndexedRuns"] = true;
+    return result;
+}
+
+Json beat_run_json(ObservationBeatRun const& run)
+{
+    Json samples = Json::array();
+    for (auto const sample : run.samples) samples.push_back(std::to_string(sample.signed_value()));
+    return {{"source", run.source}, {"regionIndex", run.region_index},
+        {"regionBegin", std::to_string(run.region.begin.signed_value())},
+        {"regionLength", std::to_string(run.region.extent)},
+        {"eventCount", std::to_string(run.event_count)}, {"depth", run.depth},
+        {"firstEventIndex", std::to_string(run.indices.first)}, {"step", std::to_string(run.indices.step)},
+        {"samples", std::move(samples)}};
+}
+
 Json project_value(RawObservationValue const& value)
 {
     Json result = Json::object();
@@ -161,6 +182,9 @@ void Observations::handle_protocol(ObservationProtocolRequest& request)
                 || !interest.window->length || interest.window->length > static_cast<std::uint64_t>(INT64_MAX)
                 || (!exact_events && (!interest.window->points || interest.window->points > maximum_observation_window_points))))
                 throw std::invalid_argument("invalid observation window");
+            if (interest.window && interest.window->include_indexed_runs
+                && (interest.operation != "beat-grid" || !interest.window->max_depth))
+                throw std::invalid_argument("indexed runs require a beat-grid observation");
         };
         for (auto const& interest : request.interests) validate(interest);
         ids.clear();
@@ -268,7 +292,8 @@ void Observations::update_subscriptions_locked()
             }
             auto const& window = *interest.window;
             auto [position, inserted] = windows_.try_emplace(
-                WindowKey{interest.source, interest.operation, window.begin.bits(), window.length, window.points, window.max_depth});
+                WindowKey{interest.source, interest.operation, window.begin.bits(), window.length,
+                    window.points, window.max_depth, window.include_indexed_runs});
             auto& capture = position->second;
             if (inserted) capture.interest = interest;
             if (capture.subscribers++ == 0) {
@@ -436,8 +461,7 @@ Json const& Observations::window_payload_locked(WindowCapture& capture)
         : result.status == ObservationWindowResult::Status::pending_execution ? "pending"
         : result.status == ObservationWindowResult::Status::unavailable ? "unavailable" : "failed";
     Json payload{
-        {"window", {{"begin", std::to_string(query.window.begin.signed_value())},
-            {"length", std::to_string(query.window.length)}, {"points", query.window.points}}},
+        {"window", observation_window_json(query.window)},
         {"status", status}, {"approximate", true}, {"truncated", result.truncated},
         {"semanticVersion", std::to_string(result.semantic_version)}, {"dataVersion", std::to_string(result.data_version)},
         {"sampleRate", result.sample_rate}, {"paceExponent", result.pace_exponent},
@@ -461,8 +485,12 @@ Json const& Observations::window_payload_locked(WindowCapture& capture)
         }
         payload["approximate"] = false;
         payload["window"]["maxMarks"] = query.window.points;
-        payload["window"]["maxDepth"] = query.window.max_depth.value_or(0);
         body["marks"] = std::move(marks);
+        if (query.window.include_indexed_runs) {
+            Json runs = Json::array();
+            for (auto const& run : result.beat_runs) runs.push_back(beat_run_json(run));
+            body["beatRuns"] = std::move(runs);
+        }
         body["unavailableRegions"] = std::move(unavailable);
     }
     if (result.status == ObservationWindowResult::Status::ready) {
@@ -511,12 +539,9 @@ void Observations::publish_deliveries_locked(CollectedExecution const& execution
                     windows.push_back(std::move(payload));
                     batch.bodies.push_back(capture->body);
                 } else {
-                    Json window{{"begin", std::to_string(interest.window->begin.signed_value())},
-                        {"length", std::to_string(interest.window->length)}, {"points", interest.window->points}};
-                    if (interest.window->max_depth) window["maxDepth"] = *interest.window->max_depth;
                     windows.push_back({{"id", interest.id}, {"status", "pending"},
                         {"approximate", interest.source.port_kind != PortKind::event},
-                        {"window", std::move(window)}});
+                        {"window", observation_window_json(*interest.window)}});
                 }
                 continue;
             }

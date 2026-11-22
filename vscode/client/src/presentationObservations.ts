@@ -218,7 +218,8 @@ export class PresentationObservations {
         else this.explicitConsumers.delete(id);
         const previous = this.explicit.get(id);
         const sameSource = previous && next && observationSourceKey(previous.source) === observationSourceKey(next.source)
-            && previous.operation === next.operation && previous.window?.maxDepth === next.window?.maxDepth;
+            && previous.operation === next.operation && previous.window?.maxDepth === next.window?.maxDepth
+            && !!previous.window?.includeIndexedRuns === !!next.window?.includeIndexedRuns;
         if (sameSource && sameObservationWindow(previous.window, next.window) && previous.prefetch === next.prefetch
             && previous.prefetchRank === next.prefetchRank) return;
         this.recording?.sink({ type: "port", id, observation: next, scheduling, consumer });

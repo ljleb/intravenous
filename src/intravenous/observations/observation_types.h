@@ -2,6 +2,7 @@
 
 #include <intravenous/observation.h>
 #include <intravenous/graph/port_ids.h>
+#include <intravenous/node/region_selection.h>
 #include <intravenous/project/project_connection_types.h>
 
 #include <array>
@@ -105,6 +106,7 @@ struct ObservationWindow {
     std::uint64_t length = 0;
     std::size_t points = 0;
     std::optional<std::uint8_t> max_depth{};
+    bool include_indexed_runs = false;
     bool operator==(ObservationWindow const&) const = default;
 };
 struct ObservationWindowRegion {
@@ -112,6 +114,15 @@ struct ObservationWindowRegion {
     std::vector<std::pair<GlobalIndex, ObservationCaptureState>> values{};
     // Projection-local identity within the result's semantic and data version.
     std::vector<std::size_t> region_key{};
+};
+struct ObservationBeatRun {
+    std::size_t source = 0;
+    std::size_t region_index = 0;
+    GlobalIndexRange region{};
+    std::uint64_t event_count = 0;
+    std::uint8_t depth = 0;
+    IndexRun indices{};
+    std::vector<GlobalIndex> samples{};
 };
 struct ObservationWindowResult {
     enum class Status { ready, pending_execution, unavailable, failed } status = Status::pending_execution;
@@ -124,6 +135,7 @@ struct ObservationWindowResult {
     bool truncated = false;
     std::vector<ObservationWindowRegion> regions{};
     std::vector<TimedEvent> events{};
+    std::vector<ObservationBeatRun> beat_runs{};
     std::vector<GlobalIndex> event_indices{};
     std::vector<GlobalIndexRange> unavailable_regions{};
     std::string error{};

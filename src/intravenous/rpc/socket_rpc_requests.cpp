@@ -581,6 +581,11 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                         throw std::invalid_argument("invalid observation window range");
                     bool const event = interest.source.port_kind == PortKind::event;
                     interest.window = ObservationWindow{GlobalIndex::from_signed(begin), length};
+                    if (auto const runs = window.find("includeIndexedRuns"); runs != window.end()) {
+                        if (interest.operation != "beat-grid" || !runs->is_boolean())
+                            throw std::invalid_argument("indexed runs require a beat-grid observation and a boolean flag");
+                        interest.window->include_indexed_runs = runs->get<bool>();
+                    }
                     if (interest.operation == recorded_event_timestamps_operation) {
                         if (!event || interest.source.kind != ObservationSourceKind::output || interest.source.channel
                             || window.contains("points") || window.contains("maxMarks") || window.contains("maxDepth"))

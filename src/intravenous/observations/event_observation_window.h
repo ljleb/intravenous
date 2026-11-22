@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numeric>
 
 namespace iv {
 
@@ -31,9 +32,14 @@ class BeatGridObservation {
     struct IndexedWindow {
         graph_jit::BackgroundPortIndex output;
         std::size_t region;
-        GlobalIndex origin;
+        GlobalIndexRange range;
+        std::uint64_t event_count;
         std::uint8_t depth;
         std::array<Search, 2> bounds;
+    };
+    struct IndexedSelection {
+        IndexedWindow window;
+        IndexRun run;
     };
     struct PositionalWindow {
         graph_jit::PublicEventCoverageInputView::Source source;
@@ -45,8 +51,54 @@ class BeatGridObservation {
     graph_jit::PublicEventCoverageInputView const& input_;
     graph_jit::BackgroundEvaluationPlan const& plan_;
     std::vector<PositionalWindow> positional_;
-    std::vector<IndexedRegionDemand> indexed_;
+    std::vector<IndexedSelection> indexed_;
     std::size_t mark_budget_;
+
+    static auto mark_order(TimedEvent const& event)
+    {
+        return std::pair{SignedGlobalIndexOrder::key(event.time), std::get<BeatEvent>(event.value).depth};
+    }
+
+    void project_indexed_runs()
+    {
+        auto& result = query_.result;
+        auto& events = result.events;
+        std::vector<std::uint8_t> retained;
+        if (events.size() > mark_budget_) {
+            // Preserve the plain observation's time and depth budget. The
+            // retained events can split a run at the signed timeline seam.
+            std::vector<std::size_t> ordered(events.size());
+            std::iota(ordered.begin(), ordered.end(), std::size_t{0});
+            std::ranges::partial_sort(ordered, ordered.begin() + mark_budget_, {}, [&](auto index) {
+                return std::pair{mark_order(events[index]), index};
+            });
+            retained.resize(events.size());
+            for (std::size_t index = 0; index < mark_budget_; ++index) retained[ordered[index]] = 1;
+            result.truncated = true;
+        }
+        auto keep = [&](std::size_t index) { return retained.empty() || retained[index]; };
+        std::size_t offset = 0;
+        for (auto const& [window, selected] : indexed_) {
+            ObservationBeatRun* current = nullptr;
+            for (std::uint64_t slot = 0; slot < selected.count; ++slot, ++offset) {
+                if (!keep(offset)) {
+                    current = nullptr;
+                    continue;
+                }
+                if (!current) current = &result.beat_runs.emplace_back(ObservationBeatRun{
+                    .source = window.output, .region_index = window.region, .region = window.range,
+                    .event_count = window.event_count, .depth = window.depth,
+                    .indices = {selected.first + slot * selected.step, 0, selected.step},
+                });
+                current->samples.push_back(events[offset].time);
+                ++current->indices.count;
+            }
+        }
+        std::size_t count = 0;
+        for (auto index = offset; index < events.size(); ++index)
+            if (keep(index)) events[count++] = std::move(events[index]);
+        events.resize(count);
+    }
 
 public:
     BeatGridObservation(ObservationWindowQuery& query, graph_jit::PublicEventCoverageInputView const& input,
@@ -98,7 +150,7 @@ public:
                     auto const first = range.begin.forward_distance_to(part.begin);
                     auto const last = first + part.extent;
                     auto const count = metadata->event_count;
-                    windows.push_back({source.output, index, range.begin, beat->depth, {{
+                    windows.push_back({source.output, index, range, count, beat->depth, {{
                         {0, first == 0 ? 0 : count, first},
                         {last == range.extent ? count : 0, count, last},
                     }}});
@@ -122,7 +174,7 @@ public:
             for (std::size_t i = 0; i < requests.size(); ++i) {
                 auto const [window, bound] = searches[i];
                 auto const middle = requests[i].runs.front().first;
-                if (window->origin.forward_distance_to(values[i].front().time) < bound->time_offset)
+                if (window->range.begin.forward_distance_to(values[i].front().time) < bound->time_offset)
                     bound->first = middle + 1;
                 else
                     bound->last = middle;
@@ -164,8 +216,8 @@ public:
             for (auto const& window : level) {
                 auto const run = selection(window, stride);
                 if (!run.count) continue;
-                indexed_.push_back({window.output, window.region, {run}});
-                roots.indexed_output_demands.push_back(indexed_.back());
+                indexed_.push_back({window, run});
+                roots.indexed_output_demands.push_back({window.output, window.region, {run}});
                 remaining -= static_cast<std::size_t>(run.count);
             }
             if (stride > 1) {
@@ -186,15 +238,13 @@ public:
             auto const* beat = std::get_if<BeatEvent>(&event.value);
             if (beat && beat->depth <= *query_.window.max_depth) result.events.push_back(event);
         };
-        for (auto const& demand : indexed_) {
-            auto const runs = frame.indexed_events(demand.port);
-            for (auto const selected : demand.runs) {
-                for (std::uint64_t slot = 0; slot < selected.count; ++slot) {
-                    auto const index = selected.first + slot * selected.step;
-                    auto const* event = details::read_prepared_event(runs, demand.region_index, index);
-                    if (!event) throw std::logic_error("beat-grid occurrence was not prepared");
-                    add(*event);
-                }
+        for (auto const& [window, selected] : indexed_) {
+            auto const runs = frame.indexed_events(window.output);
+            for (std::uint64_t slot = 0; slot < selected.count; ++slot) {
+                auto const index = selected.first + slot * selected.step;
+                auto const* event = details::read_prepared_event(runs, window.region, index);
+                if (!event) throw std::logic_error("beat-grid occurrence was not prepared");
+                result.events.push_back(*event);
             }
         }
         for (auto const& window : positional_) {
@@ -222,9 +272,8 @@ public:
             if (selected_region) selected->for_each_region(*selected_region, window.range, receive);
             else selected->for_each(window.range, receive);
         }
-        std::ranges::sort(result.events, {}, [](TimedEvent const& event) {
-            return std::pair{SignedGlobalIndexOrder::key(event.time), std::get<BeatEvent>(event.value).depth};
-        });
+        if (query_.window.include_indexed_runs && !indexed_.empty()) project_indexed_runs();
+        std::ranges::sort(result.events, {}, mark_order);
         if (result.events.size() > mark_budget_) {
             result.events.resize(mark_budget_);
             result.truncated = true;

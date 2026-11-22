@@ -156,7 +156,8 @@ export class ObservationProfile {
                     if (entry) {
                         ++entry.bodies;
                         entry.bytes += bytes;
-                        entry.marks += (window.body.marks?.length ?? 0) + (window.body.eventIndices?.length ?? 0);
+                        entry.marks += (window.body.marks?.length ?? 0) + (window.body.eventIndices?.length ?? 0)
+                            + (window.body.beatRuns?.reduce((count, run) => count + run.samples.length, 0) ?? 0);
                         entry.points += window.body.regions.reduce((total, region) => total + region.points.length, 0);
                         if (window.body.eventIndices && entry.received) {
                             const previous = entry.recordedEvents;

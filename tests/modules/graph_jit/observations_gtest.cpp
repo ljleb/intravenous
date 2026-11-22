@@ -652,13 +652,20 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
         if (input.type != EventTypeId::beat) continue;
         ASSERT_TRUE(input.reconstructible);
         ASSERT_EQ(input.sources.size(), 1u);
-        auto& query = collection.windows.emplace_back(std::make_shared<ObservationWindowQuery>());
-        query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
-        query->kind = ObservationSourceKind::input;
-        query->port = input.port;
-        query->window = {.begin = index(0), .length = 44101, .points = 32, .max_depth = 2};
+        for (auto const window : std::array{
+            ObservationWindow{.begin = index(0), .length = 44101, .points = 32, .max_depth = 2},
+            ObservationWindow{.begin = index(0), .length = 44101, .points = 32, .max_depth = 2, .include_indexed_runs = true},
+            ObservationWindow{.begin = index(-3000000), .length = 6000001, .points = 4, .max_depth = 0},
+            ObservationWindow{.begin = index(-3000000), .length = 6000001, .points = 4, .max_depth = 0, .include_indexed_runs = true},
+        }) {
+            auto& query = collection.windows.emplace_back(std::make_shared<ObservationWindowQuery>());
+            query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
+            query->kind = ObservationSourceKind::input;
+            query->port = input.port;
+            query->window = window;
+        }
     }
-    ASSERT_EQ(collection.windows.size(), 2u);
+    ASSERT_EQ(collection.windows.size(), 8u);
 
     GraphExecutor executor(resources);
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
@@ -681,9 +688,28 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
         auto& marks = observed.emplace_back();
         for (auto const& event : query->result.events)
             marks.emplace_back(event.time.signed_value(), std::get<BeatEvent>(event.value).depth);
+        if (query->window.include_indexed_runs) {
+            EXPECT_TRUE(query->result.events.empty());
+            ASSERT_FALSE(query->result.beat_runs.empty());
+            for (auto const& run : query->result.beat_runs) {
+                EXPECT_EQ(run.indices.count, run.samples.size());
+                EXPECT_TRUE(run.indices.fits(run.event_count));
+                if (query->window.points == 4) EXPECT_GT(run.indices.step, 1u);
+                for (auto const sample : run.samples) {
+                    EXPECT_TRUE(run.region.contains(sample));
+                    marks.emplace_back(sample.signed_value(), run.depth);
+                }
+            }
+            std::ranges::sort(marks);
+        } else {
+            EXPECT_TRUE(query->result.beat_runs.empty());
+        }
     }
-    std::ranges::sort(observed);
-    EXPECT_EQ(observed, (std::vector<std::vector<Mark>>{
+    for (std::size_t query = 0; query < observed.size(); query += 2)
+        EXPECT_EQ(observed[query], observed[query + 1]) << "Query " << query;
+    std::vector fine{observed[0], observed[4]};
+    std::ranges::sort(fine);
+    EXPECT_EQ(fine, (std::vector<std::vector<Mark>>{
         {{0, 0}, {7350, 2}, {14700, 2}, {22050, 1}, {29400, 2}, {36750, 2}, {44100, 1}},
         {{0, 0}, {22050, 2}, {44100, 1}},
     }));

@@ -45,7 +45,7 @@ const requestedMarker = computed(() => markerPosition(dragPreview.value === null
         <svg v-if="playback || marks?.length" class="ruler-playheads">
             <GridGuides v-if="showBeats && marks" :marks="marks" :strengths="beatStrengths"
                 :mark-key="timelineMarkKey" :position="timelineMarkPosition" :start="beatLineStart" />
-            <text v-for="label in showBeats ? beatLabels : []" :key="label.text" class="beat-label"
+            <text v-for="label in showBeats ? beatLabels : []" :key="label.key ?? label.text" class="beat-label"
                 :x="label.x + 4" y="11">{{ label.text }}</text>
 
             <TimelinePlayhead v-if="playback" :window="window" ruler />

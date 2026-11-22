@@ -1,4 +1,5 @@
 import { automationSampleIndex, automationSampleOffset } from "./automationCurveGeometry";
+import type { ObservationWindowResult, ObservedBeatMark, ObservedBeatRun } from "./observations";
 
 const bpmScale = 1_000_000;
 const maximumBeatSubdivisions = 1024;
@@ -59,16 +60,29 @@ function floorDivide(value: bigint, divisor: bigint): bigint {
 }
 
 export type BeatGridTick = { x: number; depth: number; sample: bigint; bar?: bigint };
-export type BeatRulerLabel = { x: number; text: string };
+export type BeatRulerLabel = { x: number; text: string; key?: string };
+export type ObservedRulerMark = ObservedBeatMark & { bar?: string };
+
+function layoutBeatRulerLabels(candidates: Array<BeatRulerLabel & { depth: number }>, width: number): BeatRulerLabel[] {
+    // Give bar numbers room before considering the individual beat labels.
+    candidates.sort((a, b) => a.depth - b.depth || a.x - b.x);
+    const labels: Array<BeatRulerLabel & { right: number }> = [];
+    for (const { depth, ...label } of candidates) {
+        const { x, text } = label;
+        const right = x + text.length * 7 + 10;
+        if (x < 0 || right > width || labels.some((label) => x < label.right && label.x < right)) continue;
+        labels.push({ ...label, right });
+    }
+    return labels.sort((a, b) => a.x - b.x).map(({ right, ...label }) => label);
+}
 
 export function beatRulerLabels(grid: BeatGrid, marks: readonly { index: bigint; depth: number; x: number }[],
     sampleRate: number, width: number): BeatRulerLabel[] {
     const numerator = BigInt(sampleRate) * 60n * BigInt(bpmScale);
     const beatsPerBar = BigInt(grid.beatsPerBar);
-    // Give bar numbers room before considering the individual beat labels.
-    const candidates = marks.filter(({ depth }) => depth < 2).sort((a, b) => a.depth - b.depth || a.x - b.x);
-    const labels: Array<BeatRulerLabel & { right: number }> = [];
-    for (const { index, depth, x } of candidates) {
+    const candidates: Array<BeatRulerLabel & { depth: number }> = [];
+    for (const { index, depth, x } of marks) {
+        if (depth >= 2) continue;
         const beat = floorDivide(index * grid.scaledBpm + numerator / 2n, numerator);
         const bar = floorDivide(beat, beatsPerBar);
         const beatInBar = beat - bar * beatsPerBar;
@@ -77,11 +91,44 @@ export function beatRulerLabels(grid: BeatGrid, marks: readonly { index: bigint;
         if ((depth === 0) !== (beatInBar === 0n)
             || floorDivide(beat * numerator + grid.scaledBpm / 2n, grid.scaledBpm) !== index) continue;
         const text = depth === 0 ? String(bar + 1n) : `${bar + 1n}.${beatInBar + 1n}`;
-        const right = x + text.length * 7 + 10;
-        if (x < 0 || right > width || labels.some((label) => x < label.right && label.x < right)) continue;
-        labels.push({ x, text, right });
+        candidates.push({ x, text, depth });
     }
-    return labels.sort((a, b) => a.x - b.x).map(({ x, text }) => ({ x, text }));
+    return layoutBeatRulerLabels(candidates, width);
+}
+
+const decodedBeatRuns = new WeakMap<ObservedBeatRun, readonly ObservedRulerMark[]>();
+const emptyBeatMarks: readonly ObservedRulerMark[] = [];
+
+function decodeBeatRun(run: ObservedBeatRun): ObservedRulerMark[] {
+    if (run.depth !== 0) return run.samples.map((index) => ({ index, depth: run.depth }));
+    const origin = BigInt(run.regionBegin);
+    const count = BigInt(run.eventCount);
+    const first = BigInt(run.firstEventIndex) + 1n;
+    const step = BigInt(run.step);
+    // Use signed distance from this Region's start, including when its
+    // samples cross the timeline's signed boundary.
+    const hasSecondHalf = BigInt(run.regionLength) > -timelineBegin;
+    return run.samples.map((index, slot) => {
+        const negative = hasSecondHalf && BigInt.asIntN(64, BigInt(index) - origin) < 0n;
+        return { index, depth: run.depth, bar: String(first + BigInt(slot) * step - (negative ? count : 0n)) };
+    });
+}
+
+export function beatObservationMarks(result: Pick<ObservationWindowResult, "beatRuns" | "marks">): readonly ObservedRulerMark[] {
+    if (!result.beatRuns?.length) return result.marks ?? emptyBeatMarks;
+    return [...(result.marks ?? []), ...result.beatRuns.flatMap((run) => {
+        const decoded = decodedBeatRuns.get(run);
+        if (decoded) return decoded;
+        const marks = decodeBeatRun(run);
+        decodedBeatRuns.set(run, marks);
+        return marks;
+    })];
+}
+
+export function customBeatRulerLabels(marks: readonly { index: bigint; x: number; depth: number; bar?: string }[],
+    width: number): BeatRulerLabel[] {
+    return layoutBeatRulerLabels(marks.flatMap(({ index, x, depth, bar }) =>
+        bar === undefined ? [] : [{ x, depth, text: bar, key: String(index) }]), width);
 }
 
 export function selectVisibleBeatMarks<Mark extends { x: number; depth: number }>(

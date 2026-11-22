@@ -45,6 +45,15 @@ void publish_definitions_snapshot(
     in_event_source([&] { return project_graph.handle_node_definitions_snapshot_changed(change); });
 }
 
+void expect_same_configuration(iv::ProjectGraph const& project_graph, iv::ProjectGraphGeneration const& expected)
+{
+    // Execution status can publish a new snapshot of the same configuration.
+    auto const current = project_graph.current_generation();
+    ASSERT_TRUE(current);
+    EXPECT_EQ(current->configured_generation, expected.configured_generation);
+    EXPECT_EQ(current->graph, expected.graph);
+}
+
 using Json = nlohmann::ordered_json;
 
 constexpr char persisted_original_definition_id[] =
@@ -729,12 +738,12 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     EXPECT_EQ(original[3]["args"]["memory"]["beats"][0], 120);
 
     auto const generation = project_graph.current_generation();
-    ASSERT_TRUE(generation);
+    ASSERT_TRUE(generation && generation->graph);
     iv::ProjectLaneView const view{{{.instance_id = "curve"}, "curve"}, R"({"pan":8})"};
     iv::ProjectEditBatch adjust;
     adjust.lane_views.push_back({view.id, view});
     edit(adjust);
-    EXPECT_EQ(project_graph.current_generation(), generation);
+    expect_same_configuration(project_graph, *generation);
     EXPECT_THROW(undo(), std::runtime_error);
 
     iv::ProjectEditBatch duplicate;
@@ -792,7 +801,7 @@ TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGr
     nest.lane_order = std::vector<iv::NodeAddress>{{.instance_id = "module"}, {.instance_id = "lane"}};
     nest.lane_parents = std::vector<iv::ProjectLaneParent>{{"lane", {.instance_id = "module"}}};
     ASSERT_NO_THROW(apply(nest));
-    EXPECT_EQ(project_graph.current_generation(), generation);
+    expect_same_configuration(project_graph, *generation);
     auto const nested = save();
     ASSERT_EQ(nested.size(), 4u);
     EXPECT_EQ(nested[3]["command"], "projectPresentation.setLaneParents");
@@ -806,11 +815,12 @@ TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGr
     iv::ProjectAckBuilder undo;
     in_event_source([&] { project_graph.handle_project_undo(undo); });
     ASSERT_NO_THROW(undo.build());
+    expect_same_configuration(project_graph, *generation);
     EXPECT_EQ(save().size(), 2u);
     iv::ProjectAckBuilder redo;
     in_event_source([&] { project_graph.handle_project_redo(redo); });
     ASSERT_NO_THROW(redo.build());
-    EXPECT_EQ(project_graph.current_generation(), generation);
+    expect_same_configuration(project_graph, *generation);
     EXPECT_EQ(save(), nested);
     ASSERT_TRUE(persistence.load().empty());
     EXPECT_EQ(save(), nested);

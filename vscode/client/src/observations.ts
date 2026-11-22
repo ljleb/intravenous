@@ -10,13 +10,21 @@ export type ObservationSource = {
 };
 export type MeterMode = "level" | "value";
 export const recordedEventTimestampsOperation = "event-timestamps";
-export type ObservationWindow = { begin: string; length: string; points: number; maxDepth?: number };
+export type ObservationWindow = {
+    begin: string; length: string; points: number; maxDepth?: number; includeIndexedRuns?: boolean;
+};
+export type ObservedBeatMark = { index: string; depth: number };
+export type ObservedBeatRun = {
+    source: number; regionIndex: number; regionBegin: string; regionLength: string; eventCount: string;
+    depth: number; firstEventIndex: string; step: string; samples: string[];
+};
 export type ObservationTimeSpan = Pick<ObservationWindow, "begin" | "length">;
 export type ObservationWindowResult = {
     id: string; window: ObservationWindow; status: "pending" | "ready" | "unavailable" | "failed";
     approximate: boolean; truncated?: boolean; outdated?: boolean; semanticVersion?: string; dataVersion?: string;
     sampleRate?: number; paceExponent?: number; executionGeneration?: string; error?: string;
-    marks?: Array<{ index: string; depth: number }>;
+    marks?: ObservedBeatMark[];
+    beatRuns?: ObservedBeatRun[];
     eventIndices?: string[];
     unavailableRegions?: Array<{ begin: string; length: string }>;
     regions: Array<{ begin: string; length: string;
@@ -67,7 +75,7 @@ function compareReadyWindows(left: ReadyWindow, right: ReadyWindow): number {
 }
 
 function windowSource({ source, operation, window }: Pick<ObservationInterest, "source" | "operation" | "window">): string {
-    return JSON.stringify([observationSourceKey(source), operation, window?.maxDepth]);
+    return JSON.stringify([observationSourceKey(source), operation, window?.maxDepth, !!window?.includeIndexedRuns]);
 }
 
 // A host scope replaces its complete desired set. It never lets an older
@@ -174,8 +182,8 @@ export class ObservationValues {
         const consider = (ready: ReadyWindow) => {
             const { result } = ready;
             if ((completeOnly && result.truncated) || !windowsOverlap(result.window, visible)) return;
-            const { begin, length, points, maxDepth } = result.window;
-            const key = JSON.stringify([begin, length, points, maxDepth]);
+            const { begin, length, points, maxDepth, includeIndexedRuns } = result.window;
+            const key = JSON.stringify([begin, length, points, maxDepth, !!includeIndexedRuns]);
             const previous = selected.get(key);
             if (!previous || compareReadyWindows(ready, previous) >= 0) selected.set(key, ready);
         };
@@ -278,6 +286,7 @@ export class ObservationValues {
             const exactEvents = item.eventIndices !== undefined;
             if (exactEvents) this.removeReadyWindows(id, () => true);
             const units = exactEvents ? 1 : 1 + (item.marks?.length ?? 0)
+                + (item.beatRuns?.reduce((count, run) => count + 1 + run.samples.length, 0) ?? 0)
                 + (item.unavailableRegions?.length ?? 0)
                 + item.regions.reduce((count, region) => count + 1 + region.points.length, 0);
             if (units <= retainedWindowUnitsLimit) {
@@ -314,5 +323,6 @@ export class ObservationValues {
 }
 
 export function sameObservationWindow(left: ObservationWindow | undefined, right: ObservationWindow | undefined): boolean {
-    return left?.begin === right?.begin && left?.length === right?.length && left?.points === right?.points && left?.maxDepth === right?.maxDepth;
+    return left?.begin === right?.begin && left?.length === right?.length && left?.points === right?.points
+        && left?.maxDepth === right?.maxDepth && !!left?.includeIndexedRuns === !!right?.includeIndexedRuns;
 }

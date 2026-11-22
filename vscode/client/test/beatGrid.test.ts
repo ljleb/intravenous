@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beatBpm, beatGridTicks, beatRulerLabels, maximumBeatBpm, maximumBeatSubdivisionCount, readBeatGrid } from "../src/beatGrid";
+import { beatBpm, beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels,
+    maximumBeatBpm, maximumBeatSubdivisionCount, readBeatGrid } from "../src/beatGrid";
 import { BeatGridEditing } from "../src/beatGridEditing";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
 import type { GraphScope } from "../src/graphScope";
@@ -55,6 +56,46 @@ test("ruler labels keep bar numbers when the adjacent beats are crowded", () => 
         { index: 96000n, depth: 1, x: 80 },
     ];
     assert.deepEqual(beatRulerLabels(grid, marks, 48000, 105), [{ x: 0, text: "1" }, { x: 50, text: "2" }]);
+});
+
+test("Custom ruler labels use each Region's start and keep their numbers when a query skips bars", () => {
+    const positive = { source: 1, regionIndex: 1, regionBegin: "0", regionLength: "1000", eventCount: "20",
+        depth: 0, firstEventIndex: "4", step: "4", samples: ["201", "404", "602"] };
+    const marks = beatObservationMarks({
+        marks: [{ index: "10", depth: 0 }],
+        beatRuns: [
+            { ...positive, regionIndex: 0, regionBegin: "-1000", firstEventIndex: "15", samples: ["-207", "-47"] },
+            positive,
+            { ...positive, source: 2, regionBegin: "200", firstEventIndex: "0", samples: ["250"] },
+            { ...positive, depth: 1, samples: ["223"] },
+        ],
+    });
+    assert.deepEqual(marks, [
+        { index: "10", depth: 0 },
+        { index: "-207", depth: 0, bar: "16" }, { index: "-47", depth: 0, bar: "20" },
+        { index: "201", depth: 0, bar: "5" }, { index: "404", depth: 0, bar: "9" },
+        { index: "602", depth: 0, bar: "13" },
+        { index: "250", depth: 0, bar: "1" }, { index: "223", depth: 1 },
+    ]);
+    assert.deepEqual(beatObservationMarks({ beatRuns: [{ ...positive, firstEventIndex: "8", samples: ["404"] }] }),
+        [{ index: "404", depth: 0, bar: "9" }]);
+    assert.deepEqual(customBeatRulerLabels(marks.map(({ index, ...mark }) => ({ ...mark,
+        index: BigInt(index), x: (Number(index) + 210) / 2 })), 300), [
+        { x: 1.5, text: "16", key: "-207" }, { x: 81.5, text: "20", key: "-47" },
+        { x: 205.5, text: "5", key: "201" }, { x: 230, text: "1", key: "250" },
+    ]);
+});
+
+test("Custom ruler labels count backward from a Region's own halfway point", () => {
+    const half = 1n << 63n;
+    const origin = half - 10n;
+    const samples = [20n, half - 1n, half, half + 20n, half + 100n]
+        .map((offset) => String(BigInt.asIntN(64, origin + offset)));
+    const run = { source: 1, regionIndex: 0, regionBegin: String(origin), regionLength: String(half + 101n),
+        eventCount: "10", depth: 0, firstEventIndex: "1", step: "2", samples };
+    assert.deepEqual(beatObservationMarks({ beatRuns: [run] }).map(({ bar }) => bar), ["2", "4", "-4", "-2", "0"]);
+    assert.deepEqual(beatObservationMarks({ beatRuns: [{ ...run, firstEventIndex: "7", samples: [samples[3]] }] }),
+        [{ index: samples[3], depth: 0, bar: "-2" }]);
 });
 
 test("zooming out hides dense subdivisions before beats and keeps the bar origin", () => {

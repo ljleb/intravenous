@@ -31,6 +31,30 @@ test("status-only patches keep the window data and removals clear individual rea
     assert.deepEqual(state.changes("viewport").windows, []);
 });
 
+test("indexed beat bodies survive delivery patches and are cached separately from flat marks", () => {
+    const values = new ObservationValues("viewport");
+    const window = { begin: "0", length: "64", points: 8, maxDepth: 0 };
+    const request = { id: "beats", source: { node: { instanceId: "timeline" }, kind: "input" as const, member: "beats" },
+        operation: "beat-grid", window };
+    const optIn = { ...window, includeIndexedRuns: true };
+    const run = { source: 1, regionIndex: 0, regionBegin: "0", regionLength: "100", eventCount: "4",
+        depth: 0, firstEventIndex: "0", step: "2", samples: ["0", "50"] };
+    values.expectWindows([{ ...request, window: optIn }]);
+    values.receive({ ...initial, scopes: { viewport: { windows: { beats: {
+        window: optIn, status: "ready", approximate: false, body: { regions: [], beatRuns: [run] },
+    } } } } });
+    values.receive({ ...initial, snapshot: false, scopes: { viewport: { windows: { beats: { outdated: true } } } } });
+    assert.deepEqual(values.windowForDisplay("beats")?.beatRuns, [run]);
+
+    values.expectWindows([request]);
+    assert.equal(values.windowForDisplay("beats"), undefined);
+    values.receive({ ...initial, snapshot: false, scopes: { viewport: { windows: { beats: {
+        window, status: "ready", approximate: false, body,
+    } } } } });
+    assert.equal(values.windowForDisplay("beats")?.marks, body.marks);
+    assert.equal(values.windowForDisplay("beats")?.beatRuns, undefined);
+});
+
 test("a later snapshot repairs missed patches and replays the current panel state", () => {
     const host = new ObservationDeliveryState();
     host.receive(initial);

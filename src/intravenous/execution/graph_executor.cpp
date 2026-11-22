@@ -2623,12 +2623,14 @@ void GraphExecutor::BackgroundExecutor::process_event_windows(
     } catch (std::exception const& error) {
         for (auto* item : batch) {
             item->result.events.clear();
+            item->result.beat_runs.clear();
             item->result.error = error.what();
             item->result.status = ObservationWindowResult::Status::failed;
         }
     } catch (...) {
         for (auto* item : batch) {
             item->result.events.clear();
+            item->result.beat_runs.clear();
             item->result.error = "background event observation failed";
             item->result.status = ObservationWindowResult::Status::failed;
         }

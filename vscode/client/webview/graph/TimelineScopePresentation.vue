@@ -22,8 +22,8 @@ import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
 import { timelineBeatObservationWindow } from "../../src/timelineGeometry";
-import { beatGridTicks, beatRulerLabels, minimumBeatMarkSpacing, readBeatGrid, sameBeatGrid, selectVisibleBeatMarks,
-    type BeatGrid } from "../../src/beatGrid";
+import { beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels, minimumBeatMarkSpacing,
+    readBeatGrid, sameBeatGrid, selectVisibleBeatMarks, type BeatGrid, type ObservedRulerMark } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
 import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition, type TimelineMark,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
@@ -37,7 +37,7 @@ import { cursorWarpAnchor, type CursorWarpAnchor } from "./cursorReturn";
 import { usePlayback } from "../timeline/playbackContext";
 import { useObservations, usePortObservationViewport } from "../presentation/observationContext";
 import { predictedObservationRows } from "../../src/observationWindows";
-import { sameObservationWindow, type ObservationWindow, type ObservationWindowResult } from "../../src/observations";
+import { sameObservationWindow, type ObservationWindow } from "../../src/observations";
 import { automationSampleIndex, automationSampleOffset } from "../../src/automationCurveGeometry";
 import { webviewApi } from "../host";
 
@@ -221,7 +221,8 @@ const timeWindow = computed(() => {
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
 const observedTimeline = computed(() => scope.value.timelineNodes?.find(isTimelineSnapAddress));
-const decodedBeatMarks = new WeakMap<NonNullable<ObservationWindowResult["marks"]>, Array<Pick<TimelineMark, "index" | "depth">>>();
+type ProjectedBeatMark = TimelineMark & Pick<ObservedRulerMark, "bar">;
+const decodedBeatMarks = new WeakMap<readonly ObservedRulerMark[], Array<Omit<ProjectedBeatMark, "x">>>();
 const beatViewport = computed(() => {
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
     if (gridMode.value === "seconds" || !sampleRate || timeWidth.value <= 0) return undefined;
@@ -232,7 +233,8 @@ const beatViewport = computed(() => {
 const visibleBeatWindow = computed<ObservationWindow | undefined>((previous) => {
     const visible = beatViewport.value;
     if (!visible) return;
-    const window = timelineBeatObservationWindow(visible.first, visible.length, timeWidth.value, false);
+    const plain = timelineBeatObservationWindow(visible.first, visible.length, timeWidth.value, false);
+    const window = plain && gridMode.value === "custom" ? { ...plain, includeIndexedRuns: true } : plain;
     return sameObservationWindow(window, previous) ? previous : window;
 });
 const beatWindows = usePortObservationViewport(() => {
@@ -260,38 +262,51 @@ const previewGrid = computed<BeatGrid | undefined>((previous) => {
         return previous;
     return undefined;
 });
-const observedBeatMarks = computed<NonNullable<ObservationWindowResult["marks"]>>((previous) => {
+const observedBeatMarks = computed<readonly ObservedRulerMark[]>((previous) => {
     const window = visibleBeatWindow.value, observation = beatWindows.value;
     if (!window || !observation) return [];
     const origin = BigInt(window.begin);
     const marks = observation.spans.flatMap(({ result, begin, end }) =>
-        (result.marks ?? []).filter(({ index }) => {
+        beatObservationMarks(result).filter(({ index }) => {
             const offset = BigInt.asIntN(64, BigInt(index) - origin);
             return begin <= offset && offset < end;
         }));
     if (previous?.length === marks.length && marks.every((mark, index) => mark === previous[index])) return previous;
     return marks;
 });
-function projectBeatMarks(raw: NonNullable<ObservationWindowResult["marks"]>, first: bigint,
+function projectBeatMarks(raw: readonly ObservedRulerMark[], first: bigint,
     pixelsPerSample: number, width: number, originX = 0) {
     let marks = decodedBeatMarks.get(raw);
     if (!marks) {
-        marks = raw.map(({ index, depth }) => ({ index: BigInt(index), depth }));
+        marks = raw.map(({ index, depth, bar }) => ({ index: BigInt(index), depth, bar }));
         decodedBeatMarks.set(raw, marks);
     }
-    const candidates = marks.map(({ index, depth }) => ({ index, depth,
-        x: originX + Number(BigInt.asIntN(64, index - first)) * pixelsPerSample }))
-        .filter(({ x }) => x >= -minimumBeatMarkSpacing && x <= width + minimumBeatMarkSpacing);
+    const candidates: ProjectedBeatMark[] = [];
+    const barMarks = new Map<bigint, ProjectedBeatMark>();
+    for (const mark of marks) {
+        const x = originX + Number(BigInt.asIntN(64, mark.index - first)) * pixelsPerSample;
+        if (x < -minimumBeatMarkSpacing || x > width + minimumBeatMarkSpacing) continue;
+        const candidate = { ...mark, x };
+        if (mark.depth === 0) {
+            const previous = barMarks.get(mark.index);
+            if (previous) {
+                if (previous.bar !== mark.bar) previous.bar = undefined;
+                continue;
+            }
+            barMarks.set(mark.index, candidate);
+        }
+        candidates.push(candidate);
+    }
     return selectVisibleBeatMarks(candidates, width);
 }
-const timelineMarks = computed<readonly TimelineMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
+const timelineMarks = computed<readonly ProjectedBeatMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
     if (gridMode.value === "seconds") return [];
     const { beginSeconds, spanSeconds, sampleRate } = timeWindow.value;
     const visible = beatViewport.value;
     const width = timeWidth.value;
     if (!sampleRate || !visible) return [];
     const draft = previewGrid.value;
-    let displayed: TimelineMark[];
+    let displayed: ProjectedBeatMark[];
     if (draft) {
         displayed = beatGridTicks(draft, { beginSeconds, spanSeconds }, sampleRate, width)
             .map(({ sample, depth, x }) => ({ index: sample, depth, x }));
@@ -301,8 +316,8 @@ const timelineMarks = computed<readonly TimelineMark[]>((previous) => profileGra
         const originX = automationSampleOffset(visible.first, beginSeconds, sampleRate) / spanSeconds * width;
         displayed = projectBeatMarks(observedBeatMarks.value, visible.first, pixelsPerSample, width, originX);
     }
-    if (previous?.length === displayed.length && displayed.every(({ index, depth, x }, i) =>
-        index === previous[i].index && depth === previous[i].depth && x === previous[i].x)) return previous;
+    if (previous?.length === displayed.length && displayed.every(({ index, depth, x, bar }, i) =>
+        index === previous[i].index && depth === previous[i].depth && x === previous[i].x && bar === previous[i].bar)) return previous;
     return displayed;
 }));
 function openBeatReader(): SeekBeatReader | undefined {
@@ -324,7 +339,7 @@ function openBeatReader(): SeekBeatReader | undefined {
     if (!observations || !node || mode === "seconds") return;
     const id = observations.portObservationId();
     let requested: ObservationWindow | undefined;
-    let cache: { raw: NonNullable<ObservationWindowResult["marks"]>; first: bigint; length: bigint; targets: bigint[] } | undefined;
+    let cache: { raw: readonly ObservedRulerMark[]; first: bigint; length: bigint; targets: bigint[] } | undefined;
     const close = () => {
         requested = undefined;
         observations.observePort(id, undefined, "viewport");
@@ -356,11 +371,13 @@ function openBeatReader(): SeekBeatReader | undefined {
 provideTimelineMarks(timelineMarks);
 const beatStrengths = computed(() => gridGuideStrengths(timelineMarks.value, timelineMarkPosition));
 const beatLabels = computed(() => {
+    // Reserve room for the ruler's settings button.
+    const width = timeWidth.value - 56;
+    if (gridMode.value === "custom") return customBeatRulerLabels(timelineMarks.value, width);
     const sampleRate = timeWindow.value.sampleRate;
     const grid = previewGrid.value ?? settingsGrid.value;
     if (gridMode.value !== "beats" || !grid || !sampleRate) return [];
-    // Reserve room for the ruler's settings button.
-    return beatRulerLabels(grid, timelineMarks.value, sampleRate, timeWidth.value - 56);
+    return beatRulerLabels(grid, timelineMarks.value, sampleRate, width);
 });
 const valueNavigationTargets = new Map<Element, LaneValueNavigation>();
 provideTimelineNavigation({ wheel, beginMiddleDrag, registerValueNavigation(element, lane) {

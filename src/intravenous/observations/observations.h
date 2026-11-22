@@ -52,7 +52,7 @@ class Observations {
         bool submitted = false;
     };
     using WindowKey = std::tuple<ObservationSource, std::string, std::uint64_t, std::uint64_t,
-        std::size_t, std::optional<std::uint8_t>>;
+        std::size_t, std::optional<std::uint8_t>, bool>;
     std::map<WindowKey, WindowCapture> windows_{};
     std::vector<WindowCapture*> window_order_{};
     bool subscriptions_changed_ = false;

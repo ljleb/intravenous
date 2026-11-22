@@ -457,6 +457,22 @@ Timeline. Use its receiving-port timing and Coverage. At coincident sample
 indices, use the smallest `BeatEvent.depth`. Each viewport selects the marks
 at its zoom level and uses the same list for the ruler and snap gestures.
 
+The `beat-grid` window can request `includeIndexedRuns`. In that response,
+each run of indexed marks carries its source output and Region identifiers,
+Region start and length, event count, depth, first event index, and stride.
+The run lists its sample positions once. Marks read by time stay in `marks`.
+Subscribers that omit the option receive the flat list of sample positions and
+depths.
+
+The Custom ruler numbers the bars in each indexed depth-zero Region from
+its start. Recover each bar's event index from the run's first index and
+stride. Add one to get the bar number in the first half of the sample circle
+relative to the Region start. In the second half, also subtract the Region's
+total event count so the last bar there is 0. Marks read by time supply lines
+and snap targets.
+Coincident bar marks with conflicting labels share one line without a number.
+[Earlier sample-zero labels](./historical/custom_beat_labels_before_region_relative_numbering_2026-11-22.md).
+
 The viewport picks marks by a minimum horizontal pixel distance at its current
 scale. Closer candidates give way to coarser marks. The Beats preview uses the
 same distance rule. A query may include marks beyond the viewport so the
