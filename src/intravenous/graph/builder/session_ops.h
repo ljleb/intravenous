@@ -74,10 +74,11 @@ iv_builder_event_port_sources(EventPortRef const&);
 [[nodiscard]] EventPortRef iv_builder_detach_event_port(
     EventPortRef const&, std::size_t loop_extra_latency);
 void iv_builder_apply_ttl(BuilderSession*, NodeBundleHandle, std::size_t samples);
-void iv_builder_annotate_node(
+std::optional<std::size_t> iv_builder_annotate_node(
     BuilderSession*, NodeBundleHandle, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::string_view declaration_name = {}, std::uint32_t declaration_line = 0);
+    std::string_view declaration_name, std::uint32_t declaration_line,
+    bool declares_ref, std::optional<std::size_t> upstream, bool no_lane);
 void iv_builder_annotate_node_input(
     BuilderSession*, NodeBundleHandle, PortKind, std::string_view port_name,
     std::string_view declaration_identity, std::string_view file_path,
@@ -85,17 +86,17 @@ void iv_builder_annotate_node_input(
 void iv_builder_annotate_sample_port(
     SamplePortRef const&, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::uint32_t declaration_line);
+    std::uint32_t declaration_line, bool no_lane);
 void iv_builder_annotate_event_port(
     EventPortRef const&, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::uint32_t declaration_line);
+    std::uint32_t declaration_line, bool no_lane);
 void iv_builder_annotate_public_sample_input(
     SamplePortRef const&, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::uint32_t declaration_line);
+    std::uint32_t declaration_line, bool no_lane);
 void iv_builder_annotate_public_event_input(
     EventPortRef const&, std::string_view declaration_identity,
     std::string_view file_path, std::uint32_t begin, std::uint32_t end,
-    std::uint32_t declaration_line);
+    std::uint32_t declaration_line, bool no_lane);
 } // namespace iv::details

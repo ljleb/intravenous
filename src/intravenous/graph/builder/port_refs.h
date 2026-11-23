@@ -74,7 +74,7 @@ struct SamplePortRef {
       std::optional<Sample> initial_value = std::nullopt) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t,
-      uint32_t declaration_line = 0) const;
+      uint32_t declaration_line = 0, bool no_lane = false) const;
   std::string to_string() const;
 };
 
@@ -103,8 +103,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const {
-    _port._annotate_source_info(id, file, begin, end, declaration_line);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Channel>
@@ -130,8 +130,8 @@ public:
   constexpr SamplePortRef const& port() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const {
-    _port._annotate_source_info(id, file, begin, end, declaration_line);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 };
 
@@ -163,8 +163,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const {
-    _port._annotate_source_info(id, file, begin, end, declaration_line);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Member>
@@ -188,8 +188,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const {
-    _port._annotate_source_info(id, file, begin, end, declaration_line);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 };
 
@@ -223,7 +223,7 @@ struct PublicSampleInputRef {
   void _annotate_source_info(
       std::string_view declaration_identity,
       std::string_view file_path,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const;
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const;
 };
 
 // Keep the public-input identity for source annotations while exposing
@@ -243,8 +243,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _input.port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const {
-    _input._annotate_source_info(id, file, begin, end, declaration_line);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _input._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Channel>
@@ -295,7 +295,7 @@ struct EventPortRef {
   EventPortRef detach(size_t loop_extra_latency = 1) const;
   void _annotate_source_info(
       std::string_view, std::string_view, uint32_t, uint32_t,
-      uint32_t declaration_line = 0) const;
+      uint32_t declaration_line = 0, bool no_lane = false) const;
   std::string to_string() const;
 };
 
@@ -310,6 +310,6 @@ struct PublicEventInputRef {
   void _annotate_source_info(
       std::string_view declaration_identity,
       std::string_view file_path,
-      uint32_t begin, uint32_t end, uint32_t declaration_line = 0) const;
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const;
 };
 } // namespace iv

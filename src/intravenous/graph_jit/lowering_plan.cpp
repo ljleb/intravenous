@@ -347,6 +347,7 @@ std::string manual_control_migration_identity(
     ConfiguredManualControl const& control)
 {
     if (!planned.stable_identity) return {};
+    // The owner and authored control identify the binding across selection reordering.
     std::ostringstream out;
     out << "graphjit.manual_control:"
         << migration_identity_fields(*planned.stable_identity)
@@ -362,7 +363,6 @@ std::string manual_control_migration_identity(
         } else if constexpr (std::same_as<T, ProjectSymbolicMemberSelector>) out << ":member=" << entry.index;
         else out << ":child=" << entry.name.size() << ':' << entry.name;
     }, selector);
-    out << ":selection=" << control.concrete_selection_index;
     return std::move(out).str();
 }
 

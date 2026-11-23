@@ -46,6 +46,10 @@ struct SymbolicNodeRecord {
   std::vector<SymbolicSampleOutputPortMapping> sample_outputs{};
   std::vector<SymbolicEventPortMapping> event_inputs{};
   std::vector<SymbolicEventPortMapping> event_outputs{};
+
+  constexpr bool has_lane() const {
+    return std::ranges::none_of(source_infos, &SourceInfo::no_lane);
+  }
 };
 
 struct GraphBuilderSymbolicSampleInputPort {

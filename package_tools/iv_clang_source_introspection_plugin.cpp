@@ -13,6 +13,8 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Lex/Lexer.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/TemplateDeduction.h"
 #include "clang/UnifiedSymbolResolution/USRGeneration.h"
@@ -29,7 +31,9 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -457,6 +461,30 @@ private:
     ASTContext& context_;
     SourceManager& source_manager_;
     std::filesystem::path core_source_dir_;
+};
+
+using NoLaneMarkers = llvm::DenseSet<unsigned>;
+
+class NoLaneMacroCallbacks final : public PPCallbacks {
+public:
+    NoLaneMacroCallbacks(Preprocessor& preprocessor, NoLaneMarkers& markers)
+        : preprocessor_(preprocessor), markers_(markers)
+    {}
+
+    void MacroExpands(Token const& name, MacroDefinition const&, SourceRange range,
+        MacroArgs const*) override
+    {
+        if (!name.getIdentifierInfo() || name.getIdentifierInfo()->getName() != "IV_NO_LANE")
+            return;
+        auto const& source = preprocessor_.getSourceManager();
+        auto const end = source.getExpansionLoc(range.getEnd());
+        auto const next = Lexer::findNextToken(end, source, preprocessor_.getLangOpts());
+        if (next) markers_.insert(next->getLocation().getRawEncoding());
+    }
+
+private:
+    Preprocessor& preprocessor_;
+    NoLaneMarkers& markers_;
 };
 
 struct RefAnnotation {
@@ -925,9 +953,11 @@ public:
     FunctionInstrumenter(
         CompilerInstance& compiler,
         SourceModel const& sources,
-        bool source_annotations)
+        bool source_annotations,
+        NoLaneMarkers const& no_lane_markers)
         : compiler_(compiler), context_(compiler.getASTContext()),
-          sources_(sources), source_annotations_(source_annotations)
+          sources_(sources), source_annotations_(source_annotations),
+          no_lane_markers_(no_lane_markers)
     {}
 
     void instrument(FunctionDecl* function)
@@ -972,6 +1002,9 @@ private:
     ASTContext& context_;
     SourceModel const& sources_;
     bool source_annotations_ = true;
+    NoLaneMarkers const& no_lane_markers_;
+    // Each retained range is the outermost marked statement at that location.
+    std::map<unsigned, unsigned> no_lane_ranges_;
     llvm::DenseSet<FunctionDecl*> instrumented_;
     llvm::DenseSet<CXXMemberCallExpr*> diagnosed_module_inputs_;
     FunctionTemplateDecl* source_annotation_template_ = nullptr;
@@ -1003,6 +1036,23 @@ private:
     Stmt* transform_statement(Stmt* statement)
     {
         if (!statement) return nullptr;
+        if (!no_lane_markers_.empty()) {
+            auto const& source = context_.getSourceManager();
+            auto const begin = source.getExpansionLoc(statement->getBeginLoc());
+            auto const end = source.getExpansionLoc(statement->getEndLoc());
+            auto const first = begin.getRawEncoding();
+            auto const last = end.getRawEncoding();
+            if (begin.isValid() && end.isValid() && first <= last
+                && no_lane_markers_.contains(first)
+                && source.getFileID(begin) == source.getFileID(end)) {
+                auto const next = no_lane_ranges_.upper_bound(first);
+                if (next == no_lane_ranges_.begin() || std::prev(next)->second < last) {
+                    auto const after = no_lane_ranges_.upper_bound(last);
+                    no_lane_ranges_.erase(no_lane_ranges_.lower_bound(first), after);
+                    no_lane_ranges_.emplace_hint(after, first, last);
+                }
+            }
+        }
         if (auto* lambda = dyn_cast<LambdaExpr>(statement)) {
             instrument(lambda->getCallOperator());
             return statement;
@@ -1014,6 +1064,13 @@ private:
             if (*it) *it = transform_statement(*it);
         }
         return statement;
+    }
+
+    bool has_no_lane(SourceLocation location) const
+    {
+        auto const offset = context_.getSourceManager().getExpansionLoc(location).getRawEncoding();
+        auto const next = no_lane_ranges_.upper_bound(offset);
+        return next != no_lane_ranges_.begin() && offset <= std::prev(next)->second;
     }
 
     CompoundStmt* transform_compound(CompoundStmt* compound)
@@ -1204,7 +1261,7 @@ private:
         if (!callee) return nullptr;
         auto const declaration_line = annotation.is_declaration
             ? context_.getSourceManager().getSpellingLineNumber(location) : 0u;
-        llvm::SmallVector<Expr*, 7> arguments{
+        llvm::SmallVector<Expr*, 9> arguments{
             pointer,
             make_string(annotation.declaration_identity, location),
             make_string(annotation.span.file, location),
@@ -1212,6 +1269,10 @@ private:
             make_u32(annotation.span.end, location),
             make_string(annotation.declaration->getNameAsString(), location),
             make_u32(declaration_line, location),
+            new (context_) CXXBoolLiteralExpr(
+                annotation.is_declaration && !annotation.declaration->getType()->isReferenceType(),
+                context_.BoolTy, location),
+            new (context_) CXXBoolLiteralExpr(has_no_lane(location), context_.BoolTy, location),
         };
         auto result = sema().BuildCallExpr(
             nullptr, callee, location, arguments, location);
@@ -2759,13 +2820,19 @@ public:
         bool source_introspection)
         : compiler_(compiler),
           sources_(compiler.getASTContext(), std::move(core_source_dir)),
-          instrumenter_(compiler, sources_, source_introspection),
+          instrumenter_(compiler, sources_, source_introspection, no_lane_markers_),
           mutation_listener_(
               compiler,
               std::move(metadata_dir),
               &instrumenter_),
           package_definition_rewriter_(compiler)
-    {}
+    {
+        if (source_introspection) {
+            auto& preprocessor = compiler.getPreprocessor();
+            preprocessor.addPPCallbacks(
+                std::make_unique<NoLaneMacroCallbacks>(preprocessor, no_lane_markers_));
+        }
+    }
 
     bool HandleTopLevelDecl(DeclGroupRef declarations) override
     {
@@ -2821,6 +2888,7 @@ public:
 private:
     CompilerInstance& compiler_;
     SourceModel sources_;
+    NoLaneMarkers no_lane_markers_;
     FunctionInstrumenter instrumenter_;
     ModuleMutationListener mutation_listener_;
     PackageDefinitionCollector package_definition_rewriter_;

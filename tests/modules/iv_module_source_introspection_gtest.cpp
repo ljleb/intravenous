@@ -829,6 +829,63 @@ namespace {
     expect_declaration("sink", 21);
 }
 
+TEST(IvModuleSourceIntrospection, NoLaneKeepsHiddenDeclarationsAddressableInSource)
+{
+    auto const workspace = shared_inline_module_workspace(
+        "iv_module_source_introspection_no_lane",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void no_lane_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const visible = details::configure_concrete_node<Constant>(g, 0.25f);
+        IV_NO_LANE auto const hiddenCopy = visible;
+        IV_NO_LANE NodeRef assigned;
+        assigned = details::configure_concrete_node<Constant>(g, 0.5f).node_ref();
+
+        SamplePortRef block_output;
+        IV_NO_LANE {
+            auto const nested = details::configure_concrete_node<Constant>(g, 0.75f);
+            {
+                auto const hiddenPort = nested[0];
+                block_output = hiddenPort;
+                (void)visible;
+            }
+        }
+        g.outputs("copy"_P = hiddenCopy, "assigned"_P = assigned, "block"_P = block_output);
+    }
+}
+)");
+
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const source = app.query_by_spans(module_cpp,
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 23, .column = 1}}});
+    std::set<std::string> source_names;
+    for (auto const& node : source.nodes) {
+        for (auto const& span : node.source_spans) source_names.insert(source_text(span));
+    }
+
+    iv::SocketRpcGraphScopeResultBuilder scope_builder;
+    in_event_source([&] {
+        app.project_graph.handle_socket_rpc_get_graph_scope(
+            {.expanded = {{.instance_id = "instance:1"}}}, scope_builder);
+    });
+    auto const reply = nlohmann::ordered_json::parse(scope_builder.build(1));
+    ASSERT_TRUE(reply.contains("result")) << reply.dump();
+    auto const& children = reply.at("result").at("childScopes").at(0).at("nodes");
+    std::set<std::string> lane_names;
+    for (auto const& node : children) lane_names.insert(node.value("childSourceLabel", std::string{}));
+    EXPECT_TRUE(lane_names.contains("visible"));
+    for (auto const* name : {"hiddenCopy", "assigned", "nested", "hiddenPort"}) {
+        EXPECT_TRUE(source_names.contains(name)) << name;
+        EXPECT_FALSE(lane_names.contains(name)) << name;
+    }
+}
+
 TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
 {
     auto const workspace = shared_inline_module_workspace(

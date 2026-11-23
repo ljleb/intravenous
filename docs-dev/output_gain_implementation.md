@@ -414,3 +414,81 @@ storage-changing mock executable. One hovers an input after output settlement.
 The other changes hover while the settling transition is blocked, then checks
 that completion prepares the latest input without activating it. The owner
 must rebuild and run C++ tests. No builds or tests were run by the agent.
+
+## Open design question about overlapping symbolic outputs, 2026-11-23
+
+`ProjectSampleConnection::outputs` retains the selected symbolic address.
+`apply_sample_connection()` resolves those addresses and deduplicates their
+concrete channels. `ConfiguredSampleConnectionSource` retains the channel and
+detach information. At that point GraphJit cannot distinguish a connection
+made through symbolic output A from one made through symbolic output B when
+they resolve to the same channel. The current output-gain precedence therefore
+selects a single control for both consumers. A live gesture can temporarily
+change which control wins.
+
+Combining settled factors before fan-out would apply both gains to every
+consumer. A branch between two gain stages needs the upstream signal at that
+branch. If A and B expose separately adjustable outputs, the proposed design
+first preserves the selected output through connection resolution, then lowers
+each routed signal with its own gain. This includes deciding how explicit
+selections through both aliases contribute to the same input, and how
+source-authored connections identify the output. After that, lowering can
+share transformed signals among consumers of the same output and consider
+folding consecutive settled gains on a route with no intermediate consumers.
+Tick interpolation and prepared Tock reads must agree on the selected route.
+
+## Recording serial output routes, 2026-11-23
+
+The initial analysis below is superseded by the
+[named occurrence decision](#named-node-ref-occurrences-2026-11-23).
+
+The owner accepted the [route and folding requirements](./graph_jit_direction.md#output-gain-specialization-owner-requirement-2026-11-16).
+The remaining authoring question is how to specify that one symbolic output
+forwards another. `GraphBuilderSymbolicNodes::attach_bundle_member()` maps each
+`SymbolicNodeRecord` directly to concrete bundle ports. `NodeRef::operator[]`
+passes the bundle and output index to `iv_builder_sample_port_from_output()`.
+`GraphBuilderState::record_configured_sample_connection()` receives the resulting
+channels and detach descriptors. Preserving the source selection in
+`ProjectSampleConnection::outputs` distinguishes project connections through A
+and B. It supplies no upstream link establishing that B forwards A and no
+selected output for an existing C++ connection made through `NodeRef`.
+
+The recommended approach is explicit output forwarding in the builder. It
+would give a forwarded output an upstream output identity and let the same
+concrete port support parallel exposures. Check whether the named-output
+boundary created by `GraphBuilderPublicPorts::define_sample_outputs()` can
+represent that forwarding before adding a new authoring operation.
+Ordinary `NodeRef` aliases can
+continue to name bundles without modifying the signal. An alternative is to
+give named aliases forwarding semantics. That would require preserving alias
+lineage through reference copies and projections, and adding a source name
+could affect an authored signal route.
+
+Settle the authoring rule before implementing output identity through the
+builder, imports and project connection resolution. Then GraphJit can connect
+routes to their gain controls, share transformed signals across their consumers,
+and fold unobserved settled stages. The compiler should keep individual live
+interpolation state and select coherent prepared values for Tick and Tock.
+
+## Named node ref occurrences, 2026-11-23
+
+The owner chose ordinary copy syntax and a DAG over the occurrences of named
+`NodeRef` values. The builder records each occurrence with an optional upstream
+index on the same `NodeBundle`. `NodeRef` copies retain that index. Declaration
+annotations advance it and use annotations continue to record source spans.
+The graph keeps repeated occurrences of a symbolic declaration separate and
+retains them through scope snapshots, frozen invocation copies, imports and
+the binary archive. Gain execution still uses concrete ports.
+
+The source plugin emits annotations after the enclosing statement. In a
+multi-declarator statement such as `auto a = make_node(), b = a;`, `b` may
+copy `a` before `a` has an occurrence index. Fix annotation timing or preserve
+copy provenance before annotation before using that form for gain routing.
+Earlier source spans and bundle memberships cannot reconstruct that choice.
+
+`ProjectNodePortMatcher` can select a declaration and concrete member. A
+repeated declaration on one member can now have several forwarding occurrences,
+and the project selector needs a rule for selecting or exposing them. The next
+step is to retain selected occurrences through `SamplePortRef` and configured
+sample connections, including the project-connection selection rule. GraphJit
+gain composition and folding depend on those selected sources.

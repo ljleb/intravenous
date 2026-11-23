@@ -497,12 +497,14 @@ try {
     record_builder_failure(value, std::current_exception(), {});
     throw;
 }
-void iv_builder_annotate_node(
+std::optional<std::size_t> iv_builder_annotate_node(
     BuilderSession* value, NodeBundleHandle handle, std::string_view id,
     std::string_view file, std::uint32_t begin, std::uint32_t end,
-    std::string_view name, std::uint32_t declaration_line)
+    std::string_view name, std::uint32_t declaration_line, bool declares_ref,
+    std::optional<std::size_t> upstream, bool no_lane)
 try {
-    session(value).annotate_node(handle, id, file, begin, end, name, declaration_line);
+    return session(value).annotate_node(handle, id, file, begin, end, name,
+        declaration_line, declares_ref, upstream, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});
@@ -522,10 +524,10 @@ try {
 }
 void iv_builder_annotate_sample_port(
     SamplePortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line, bool no_lane)
 try {
     session(port.session).annotate_sample_port_source_info(
-        port, id, file, begin, end, declaration_line);
+        port, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -533,10 +535,10 @@ try {
 }
 void iv_builder_annotate_event_port(
     EventPortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line, bool no_lane)
 try {
     session(port.session).annotate_event_port_source_info(
-        port, id, file, begin, end, declaration_line);
+        port, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -544,10 +546,10 @@ try {
 }
 void iv_builder_annotate_public_sample_input(
     SamplePortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line, bool no_lane)
 try {
     session(port.session).annotate_public_sample_input_source_info(
-        port, id, file, begin, end, declaration_line);
+        port, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -555,10 +557,10 @@ try {
 }
 void iv_builder_annotate_public_event_input(
     EventPortRef const& port, std::string_view id, std::string_view file,
-    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line)
+    std::uint32_t begin, std::uint32_t end, std::uint32_t declaration_line, bool no_lane)
 try {
     session(port.session).annotate_public_event_input_source_info(
-        port, id, file, begin, end, declaration_line);
+        port, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(port.session, std::current_exception(), {});
@@ -640,7 +642,7 @@ try {
         result._annotate_source_info(
             info.declaration_identity,
             info.span.file_path, info.span.begin, info.span.end,
-            info.declaration_name, info.declaration_line);
+            info.declaration_name, info.declaration_line, false, info.no_lane);
     }
     return result;
 } catch (...) {
@@ -1192,7 +1194,8 @@ void GraphBuilder::annotate_node(
     NodeBundleHandle handle, std::string_view id, std::string_view file,
     uint32_t begin, uint32_t end)
 try {
-    details::iv_builder_annotate_node(_session, handle, id, file, begin, end);
+    details::iv_builder_annotate_node(
+        _session, handle, id, file, begin, end, {}, 0, false, std::nullopt, false);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::record_builder_failure(_session, std::current_exception(), {});

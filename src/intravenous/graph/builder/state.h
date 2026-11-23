@@ -188,18 +188,20 @@ public:
   void apply_ttl(NodeBundleHandle, size_t);
 
   // ---- annotations ------------------------------------------------------
-  void annotate_node(NodeBundleHandle, std::string_view, std::string_view,
-      uint32_t, uint32_t, std::string_view, uint32_t declaration_line);
+  std::optional<std::size_t> annotate_node(NodeBundleHandle, std::string_view,
+      std::string_view, uint32_t, uint32_t, std::string_view,
+      uint32_t declaration_line, bool declares_ref, std::optional<std::size_t> upstream,
+      bool no_lane);
   void annotate_node_input_source_info(NodeBundleHandle, PortKind,
       std::string_view, std::string_view, std::string_view, uint32_t, uint32_t);
   void annotate_public_sample_input_source_info(SamplePortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line, bool no_lane);
   void annotate_public_event_input_source_info(EventPortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line, bool no_lane);
   void annotate_sample_port_source_info(SamplePortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line, bool no_lane);
   void annotate_event_port_source_info(EventPortRef const&,
-      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line);
+      std::string_view, std::string_view, uint32_t, uint32_t, uint32_t declaration_line, bool no_lane);
 
   // ---- host introspection -----------------------------------------------
   using VacantSampleInput = GraphBuilderVacantSampleInput;
@@ -276,8 +278,6 @@ private:
   static std::string symbolic_record_key(
       std::uint64_t name_space, std::string_view source_identity,
       std::string_view type_identity);
-  void attach_symbolic_bundle_member(
-      NodeBundleHandle, std::string_view source_identity, SourceInfo const*);
   void attach_symbolic_input_source_info(
       NodeBundleHandle, std::string_view source_identity, PortKind,
       std::string_view port_name, SourceInfo const&);

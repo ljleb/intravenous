@@ -4137,6 +4137,8 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             auto const& graph = *generation->graph;
             auto const matches = resolve_node_address(graph, generation->placements, address);
             if (matches.size() != 1) continue;
+            if (matches.front().kind == ProjectNodePathMatch::Kind::symbolic_node
+                && !graph.symbolic_nodes.record(matches.front().symbolic_node).has_lane()) continue;
             auto& child_scope = scope.child_scopes.emplace_back(ProjectGraphChildScope{.subject = address});
             if (matches.front().kind == ProjectNodePathMatch::Kind::bundle) {
                 if (auto const boundary = graph.node_bundles.bundle(matches.front().bundle).subgraph_boundary_handle()) {
@@ -4145,12 +4147,14 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 }
             }
             for (auto const& child : project_child_nodes(graph, matches.front())) {
+                auto const* record = child.symbolic_node ? &graph.symbolic_nodes.record(*child.symbolic_node) : nullptr;
+                if (record && !record->has_lane()) continue;
                 auto child_address = address;
                 child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
                 std::optional<NodeAddress> membership_address;
                 std::optional<std::size_t> symbolic_member_count;
                 std::optional<ProjectGraphScopeSource> declaration_source;
-                if (!child.symbolic_node) {
+                if (!record) {
                     auto const placement = generation->placements.find(address.instance_id);
                     if (placement != generation->placements.end()) {
                         auto path = project_member_path(graph, placement->second.root, child.bundle);
@@ -4163,12 +4167,11 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     if (!std::ranges::contains(addresses, child_address))
                         addresses.insert(addresses.begin(), child_address);
                 } else {
-                    auto const& record = graph.symbolic_nodes.record(*child.symbolic_node);
-                    auto const declaration = std::ranges::find_if(record.source_infos,
+                    auto const declaration = std::ranges::find_if(record->source_infos,
                         [](SourceInfo const& info) {
                             return info.declaration_line != 0 && !info.span.file_path.empty();
                         });
-                    if (declaration != record.source_infos.end()) {
+                    if (declaration != record->source_infos.end()) {
                         declaration_source = ProjectGraphScopeSource{
                             .file_path = declaration->span.file_path,
                             .line = declaration->declaration_line,
@@ -4179,26 +4182,26 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     if (selected.size() == 1) {
                         auto const& members = selected.front().symbolic_member_indices;
                         symbolic_member_count = members.size();
-                        if (record.type_identity == "sample-port" || record.type_identity == "event-port") {
+                        if (record->type_identity == "sample-port" || record->type_identity == "event-port") {
                             auto includes_bundle = [&](NodeBundleHandle bundle) {
-                                return std::ranges::any_of(members, [&](auto index) { return record.node_bundle_handles[index] == bundle; });
+                                return std::ranges::any_of(members, [&](auto index) { return record->node_bundle_handles[index] == bundle; });
                             };
                             auto matcher = [&](std::size_t port_index) {
                                 return ProjectNodePortMatcher{.instance_id = child_address.instance_id,
                                     .path = child_address.path, .port = {.index = port_index}};
                             };
-                            for (auto const& output : record.sample_outputs) for (auto const channel : output.channels) {
+                            for (auto const& output : record->sample_outputs) for (auto const channel : output.channels) {
                                 if (includes_bundle(channel.bundle))
                                     expanded_aliases.sample[{channel.bundle, channel.port, channel.channel}].push_back(matcher(output.index));
                             }
-                            for (auto const& output : record.event_outputs) for (auto const port : output.node_bundle_ports) {
+                            for (auto const& output : record->event_outputs) for (auto const port : output.node_bundle_ports) {
                                 if (includes_bundle(port.node_bundle_handle))
                                     expanded_aliases.event[{port.node_bundle_handle, port.port_index}].push_back(matcher(output.index));
                             }
                         } else {
                             // NodeRef mappings preserve their member port indexes.
                             for (auto const index : members)
-                                expanded_children[record.node_bundle_handles[index]].push_back(child_address);
+                                expanded_children[record->node_bundle_handles[index]].push_back(child_address);
                         }
                     }
                 }
@@ -4206,8 +4209,8 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 auto const* registered = graph.node_bundles.registered_node_type_identity(child.bundle);
                 auto const definition_id = bundle.is_subgraph() ? bundle.subgraph_kind()
                     : registered ? std::string_view(registered->node_type_id) : std::string_view{};
-                auto interface = child.symbolic_node
-                    ? read_symbolic_node_interface(graph.node_bundles, graph.symbolic_nodes.record(*child.symbolic_node), child.bundle)
+                auto interface = record
+                    ? read_symbolic_node_interface(graph.node_bundles, *record, child.bundle)
                     : read_node_instance_interface(graph.node_bundles, child.bundle);
                 interface.has_children = child.symbolic_node || interface.has_children || bundle.is_tiled();
                 auto& node = child_scope.nodes.emplace_back(ProjectGraphScopeNode{

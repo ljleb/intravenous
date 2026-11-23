@@ -97,10 +97,10 @@ std::string SamplePortRef::to_string() const
 
 void SamplePortRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, uint32_t declaration_line) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line, bool no_lane) const
 try {
     if (session)
-        details::iv_builder_annotate_sample_port(*this, id, file, begin, end, declaration_line);
+        details::iv_builder_annotate_sample_port(*this, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::iv_builder_record_failure(session, std::current_exception(), {});
@@ -165,10 +165,10 @@ std::string EventPortRef::to_string() const
 
 void EventPortRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, uint32_t declaration_line) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line, bool no_lane) const
 try {
     if (session)
-        details::iv_builder_annotate_event_port(*this, id, file, begin, end, declaration_line);
+        details::iv_builder_annotate_event_port(*this, id, file, begin, end, declaration_line, no_lane);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::iv_builder_record_failure(session, std::current_exception(), {});
@@ -177,20 +177,20 @@ try {
 
 void PublicSampleInputRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, uint32_t declaration_line) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line, bool no_lane) const
 {
     if (port.session)
         details::iv_builder_annotate_public_sample_input(
-            port, id, file, begin, end, declaration_line);
+            port, id, file, begin, end, declaration_line, no_lane);
 }
 
 void PublicEventInputRef::_annotate_source_info(
     std::string_view id, std::string_view file,
-    uint32_t begin, uint32_t end, uint32_t declaration_line) const
+    uint32_t begin, uint32_t end, uint32_t declaration_line, bool no_lane) const
 {
     if (port.session)
         details::iv_builder_annotate_public_event_input(
-            port, id, file, begin, end, declaration_line);
+            port, id, file, begin, end, declaration_line, no_lane);
 }
 
 NodeRef::NodeRef(GraphBuilder const& graph_builder, size_t index)
@@ -212,6 +212,7 @@ NodeRef::NodeRef(NodeRef const& other)
     : _session(other._session)
     , _index(other._index)
     , _has_source_identity(other._has_source_identity)
+    , _node_ref_occurrence(other._node_ref_occurrence)
     , _has_message_path(other._has_message_path)
     , _message_path(other._message_path)
 {}
@@ -220,6 +221,7 @@ NodeRef::NodeRef(NodeRef&& other) noexcept
     : _session(std::exchange(other._session, nullptr))
     , _index(std::exchange(other._index, 0))
     , _has_source_identity(std::exchange(other._has_source_identity, false))
+    , _node_ref_occurrence(std::exchange(other._node_ref_occurrence, std::nullopt))
     , _has_message_path(std::exchange(other._has_message_path, false))
     , _message_path(std::move(other._message_path))
 {}
@@ -229,6 +231,7 @@ NodeRef NodeRef::_clone_handle() const
     if (!_session) return NodeRef{};
     NodeRef result(_session, _index);
     result._has_source_identity = _has_source_identity;
+    result._node_ref_occurrence = _node_ref_occurrence;
     result._has_message_path = _has_message_path;
     result._message_path = _message_path;
     return result;
@@ -521,6 +524,7 @@ NodeRef& NodeRef::operator=(NodeRef const& rhs)
     _session = rhs._session;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _node_ref_occurrence = rhs._node_ref_occurrence;
     _has_message_path = rhs._has_message_path;
     _message_path = rhs._message_path;
     return *this;
@@ -539,6 +543,7 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
     _session = rhs._session;
     _index = rhs._index;
     _has_source_identity = rhs._has_source_identity;
+    _node_ref_occurrence = std::exchange(rhs._node_ref_occurrence, std::nullopt);
     _has_message_path = rhs._has_message_path;
     _message_path = std::move(rhs._message_path);
     rhs._session = nullptr;
@@ -552,12 +557,13 @@ NodeRef& NodeRef::operator=(NodeRef&& rhs)
 void NodeRef::_annotate_source_info(
     std::string_view id, std::string_view file,
     uint32_t begin, uint32_t end, std::string_view name,
-    uint32_t declaration_line) const
+    uint32_t declaration_line, bool declares_ref, bool no_lane) const
 try {
     _has_source_identity = _has_source_identity || !id.empty();
     if (_session) {
-        details::iv_builder_annotate_node(
-            _session, _index, id, file, begin, end, name, declaration_line);
+        _node_ref_occurrence = details::iv_builder_annotate_node(
+            _session, _index, id, file, begin, end, name, declaration_line,
+            declares_ref, _node_ref_occurrence, no_lane);
     }
 } catch (...) {
     // An exception leaving a session operation fails the session.

@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <vector>
@@ -213,6 +214,53 @@ TEST(ConfiguredGraphEmbedding, PreservesScopedSymbolicIdentityInsteadOfFlattenin
     EXPECT_TRUE(std::ranges::contains(right_inverse, second.symbolic_node(0)));
     EXPECT_FALSE(std::ranges::contains(left_inverse, second.symbolic_node(0)));
     EXPECT_FALSE(std::ranges::contains(right_inverse, first.symbolic_node(0)));
+}
+
+TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclarations)
+{
+    using namespace iv;
+    GraphBuilder root;
+    auto const outside = details::configure_concrete_node<Pass>(root);
+    outside._annotate_source_info("outside", "/tmp/child.cpp", 1, 2);
+    auto nested = root.nested();
+    auto const first = details::configure_concrete_node<Pass>(nested);
+    _annotate_source_info_after_statement(&first, "first", "/tmp/child.cpp", 3, 4, "a", 2, true, false);
+    _annotate_source_info_after_statement(&first, "first", "/tmp/child.cpp", 9, 10, "a", 0, false, false);
+    auto const second = first;
+    _annotate_source_info_after_statement(&second, "second", "/tmp/child.cpp", 5, 6, "b", 3, true, false);
+    auto const repeated = second;
+    _annotate_source_info_after_statement(&repeated, "first", "/tmp/child.cpp", 3, 4, "a", 2, true, false);
+    auto const branch = first.node_ref();
+    _annotate_source_info_after_statement(&branch, "branch", "/tmp/child.cpp", 7, 8, "c", 4, true, false);
+    EXPECT_EQ(first.node_bundle_handle(), repeated.node_bundle_handle());
+    EXPECT_EQ(first.node_bundle_handle(), branch.node_bundle_handle());
+    nested.outputs("out"_P = repeated);
+
+    auto const child = nested.configured_graph();
+    ASSERT_TRUE(child.has_value());
+    auto const& records = child->symbolic_nodes.records();
+    ASSERT_EQ(records.size(), 3u);
+    ASSERT_EQ(records[0].source_identity, "first");
+    ASSERT_EQ(records[0].node_bundle_handles.size(), 1u);
+    auto const bundle = records[0].node_bundle_handles.front();
+    auto const check_occurrences = [](NodeBundle const& node, std::size_t first_record,
+                                       std::size_t second_record, std::size_t branch_record) {
+        auto const expected = std::array{
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = first_record},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = second_record, .upstream = 0},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = first_record, .upstream = 1},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = branch_record, .upstream = 0},
+        };
+        EXPECT_TRUE(std::ranges::equal(node.node_ref_occurrences(), expected));
+    };
+    check_occurrences(child->node_bundles.bundle(bundle), 0, 1, 2);
+
+    (void)root.subgraph(std::move(nested), "live");
+    auto const embedded = root.embed(*child, "frozen");
+    root.outputs();
+    auto const configured = std::move(root).finish();
+    check_occurrences(configured.node_bundles.bundle(embedded.node_bundle(bundle)),
+        embedded.symbolic_node(0), embedded.symbolic_node(1), embedded.symbolic_node(2));
 }
 
 TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)

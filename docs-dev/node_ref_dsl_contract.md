@@ -8,8 +8,9 @@ The DSL has two different node contexts.
   source-configured declaration is annotated. It owns source identity, source
   spans, symbolic ports, and explicit membership of node bundles. It is not an
   executable node and it is not a value returned by `GraphBuilder::node`.
-- A **node reference** is a move-only builder-time value. It refers to exactly
-  one node bundle in one `GraphBuilder` and creates or inspects graph wiring.
+- A **node reference** is a copyable builder-time value. It refers to exactly
+  one node bundle in its `BuilderSession` and creates or inspects graph wiring.
+  Assignment can initialize an empty reference.
 
 A node bundle is exactly one concrete node, one tiled set of concrete nodes,
 or one subgraph node. Concrete nodes and individual tiles are execution
@@ -25,7 +26,7 @@ TypedNodeRef<Node>
 TiledNodeRef<Node, ChannelType>
 ```
 
-`NodeRef` is the move-only common base and contains an erased bundle handle.
+`NodeRef` is the common base and contains an erased bundle handle.
 `TypedNodeRef<Node>` adds `Node`'s constexpr port shape for a concrete bundle.
 `TiledNodeRef<Node, C>` adds `Node`'s constexpr port shape, the promoted
 channel type `C`, and typed access to its concrete member bundles.
@@ -34,8 +35,38 @@ channel type `C`, and typed access to its concrete member bundles.
 and `g.node<"stable.id", ChannelType>(...)`.
 Type-based construction can return a typed or tiled reference for a private
 leaf. The CRTP implementation helper is internal.
-Typed refs derive from `NodeRef`, but an erased handle for an lvalue is made by
-`node_ref()`, not by copying or slicing a node ref.
+Typed refs derive from `NodeRef`. `node_ref()` produces an erased handle for
+the same bundle. See the [earlier move-only contract](historical/node_ref_move_only_contract_2026-11-23.md).
+
+### Named occurrences and output forwarding
+
+The owner approved recording output forwarding through individual `NodeRef`
+occurrences on 2026-11-23. Copying a ref preserves its concrete bundle. Naming
+the copied value in package source records a new occurrence and its upstream
+occurrence on that bundle. A symbolic record can group several occurrences
+of the same declaration. Forwarding edges go from earlier to later
+occurrences, so revisiting a declaration can preserve distinct signal routes.
+Source references and C++ reference aliases can attach source spans to the
+symbolic record without creating a forwarding occurrence.
+
+### Lane visibility
+
+`IV_NO_LANE` before a declaration or block suppresses the dedicated graph
+lanes for declarations introduced in the marked statement. A declaration
+keeps its usual C++ scope. A reference to a declaration outside the marked
+statement keeps that declaration's lane visibility.
+
+```cpp
+IV_NO_LANE auto const helper = g.node<"sine">();
+
+IV_NO_LANE {
+    auto const another_helper = g.node<"sine">();
+}
+```
+
+The marker preserves symbolic identity, source navigation, and the behavior
+of authored connections and saved controls. The graph scope omits the lane
+when it lists the module's children. Remaining lanes keep their source order.
 
 ## Common bundle API
 

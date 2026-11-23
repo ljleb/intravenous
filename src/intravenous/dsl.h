@@ -15,6 +15,9 @@
 
 #include <cstddef>
 
+// The package source plugin reads this marker before the next statement.
+#define IV_NO_LANE
+
 namespace iv {
     template<class Fn>
     constexpr void _define_public_sample_outputs_with_source_info(
@@ -137,17 +140,19 @@ namespace iv {
         char const* declaration_identity,
         char const* file_path,
         uint32_t begin,
-        uint32_t end, char const* declaration_name, uint32_t declaration_line)
+        uint32_t end, char const* declaration_name, uint32_t declaration_line,
+        bool declares_ref, bool no_lane)
     {
         using Value = std::remove_cv_t<Ref>;
         if constexpr (std::is_base_of_v<NodeRef, Value>) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end, declaration_name, declaration_line);
+                declaration_identity, file_path, begin, end, declaration_name,
+                declaration_line, declares_ref, no_lane);
         } else if constexpr (requires {
-            ref->_annotate_source_info(declaration_identity, file_path, begin, end, declaration_line);
+            ref->_annotate_source_info(declaration_identity, file_path, begin, end, declaration_line, no_lane);
         }) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end, declaration_line);
+                declaration_identity, file_path, begin, end, declaration_line, no_lane);
         } else {
             static_assert(false, "unsupported source-annotatable DSL reference");
         }

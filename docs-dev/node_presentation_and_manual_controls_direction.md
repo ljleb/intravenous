@@ -712,11 +712,14 @@ definition API and supported behaviors are open for later design.
 A symbolic knob stores one value and applies it to the ports in its mapping.
 An explicitly enabled or edited concrete member input takes precedence at
 its port. An enabled symbolic input takes precedence over an implicit
-member default. A concrete member output gain takes precedence when its
-value differs from unity.
-A temporary drag takes precedence over settled controls. If two controls of
-the same kind and specificity still overlap, the first saved control takes
-precedence.
+member default. A temporary input drag takes precedence over settled input
+controls. If two input controls of the same specificity still overlap, the
+first saved control takes precedence.
+
+Each output gain applies to its output route. A live output gesture changes
+that gain while the other gains on the route retain their values. See the
+[output gain specialization contract](./graph_jit_direction.md#output-gain-specialization-owner-requirement-2026-11-16)
+and the [former overlap precedence](historical/overlapping_output_gain_precedence_2026-11-23.md).
 
 See the [superseded input rules](historical/coverage_before_instance_knob_fallback_2026-11-18.md)
 for the previous port-level fallback policy.

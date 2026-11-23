@@ -84,6 +84,10 @@ struct ArchiveFixture {
         auto const gain = iv::programmatic::declare_input(graph, "gain", 0.25f);
         auto const source = iv::details::configure_concrete_node<iv::Constant>(
             graph, iv::Sample{0.75f});
+        source._annotate_source_info("archive-source", "/tmp/archive-module.cpp", 1, 2);
+        auto const alias = source;
+        alias._annotate_source_info("archive-source-alias", "/tmp/archive-module.cpp",
+            3, 4, "alias", 2, true, true);
         auto const source_handle = source.node_bundle_handle();
         auto const pass = iv::details::configure_concrete_node<Pass>(graph);
         pass(gain);
@@ -126,6 +130,19 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_EQ(
         registered_identity->provider_package_root,
         "/tmp/iv-test-provider");
+
+    auto const& source = decoded.symbolic_nodes.records().front();
+    ASSERT_EQ(source.source_identity, "archive-source");
+    ASSERT_EQ(source.node_bundle_handles.size(), 1u);
+    auto const occurrences = decoded.node_bundles.bundle(source.node_bundle_handles.front())
+        .node_ref_occurrences();
+    ASSERT_EQ(occurrences.size(), 2u);
+    EXPECT_FALSE(occurrences[0].upstream.has_value());
+    EXPECT_EQ(occurrences[1].upstream, 0u);
+    EXPECT_TRUE(source.has_lane());
+    auto const& alias = decoded.symbolic_nodes.record(occurrences[1].symbolic_node_handle);
+    EXPECT_EQ(alias.source_identity, "archive-source-alias");
+    EXPECT_FALSE(alias.has_lane());
 
     auto const symbolic_record = std::ranges::find_if(
         decoded.symbolic_nodes.records(),
@@ -173,7 +190,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(corrupt), std::runtime_error);
 
     auto previous_version = fixture.archive.bytes;
-    auto const obsolete_version = std::uint32_t{7};
+    auto const obsolete_version = std::uint32_t{4};
     std::memcpy(previous_version.data() + sizeof(std::uint32_t),
         &obsolete_version, sizeof(obsolete_version));
     EXPECT_THROW(fixture.decode(previous_version), std::runtime_error);

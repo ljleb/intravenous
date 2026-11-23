@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 3;
+inline constexpr std::uint32_t archive_version = 5;
 
 class Writer {
 public:
@@ -181,13 +181,14 @@ inline void write_source_info(Writer& w, SourceInfo const& value)
     w.pod(value.span.end);
     w.string(value.declaration_name);
     w.pod(value.declaration_line);
+    w.flag(value.no_lane);
 }
 
 inline SourceInfo read_source_info(Reader& r)
 {
     return {.declaration_identity = r.string(), .span = {
         .file_path = r.string(), .begin = r.pod<std::uint32_t>(), .end = r.pod<std::uint32_t>()},
-        .declaration_name = r.string(), .declaration_line = r.pod<std::uint32_t>()};
+        .declaration_name = r.string(), .declaration_line = r.pod<std::uint32_t>(), .no_lane = r.flag()};
 }
 
 template<class Range> void write_source_infos(Writer& w, Range const& values)
@@ -859,6 +860,11 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         ++bundle_count;
         write_enum(bundles, view.kind);
         bundles.list(view.symbolic_node_handles, [&](std::size_t value) { bundles.size(value); });
+        bundles.list(view.node_ref_occurrences, [&](ConfiguredNodeRefOccurrence const& occurrence) {
+            bundles.size(occurrence.symbolic_node_handle);
+            bundles.flag(occurrence.upstream.has_value());
+            if (occurrence.upstream) bundles.size(*occurrence.upstream);
+        });
         write_source_infos(bundles, view.source_infos);
         if (view.kind == ConfiguredNodeBundleKind::concrete) {
             if (!view.node_storage || !*view.node_storage || !view.code_key || !view.ports)
@@ -1066,6 +1072,11 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         ConfiguredNodeBundleRecord record;
         record.kind = read_enum<ConfiguredNodeBundleKind>(reader);
         record.symbolic_node_handles = read_list<std::size_t>(reader, [&] { return reader.size(); });
+        record.node_ref_occurrences = read_list<ConfiguredNodeRefOccurrence>(reader, [&] {
+            ConfiguredNodeRefOccurrence occurrence{.symbolic_node_handle = reader.size()};
+            if (reader.flag()) occurrence.upstream = reader.size();
+            return occurrence;
+        });
         record.source_infos = read_source_infos(reader);
         if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
@@ -1206,6 +1217,14 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     });
     auto symbolic_nodes = read_list<SymbolicNodeRecord>(reader, [&] { return read_symbolic_node(reader); });
     reader.finish();
+    for (auto const& bundle : bundles) {
+        for (std::size_t index = 0; index < bundle.node_ref_occurrences.size(); ++index) {
+            auto const& occurrence = bundle.node_ref_occurrences[index];
+            if (occurrence.symbolic_node_handle >= symbolic_nodes.size()
+                || (occurrence.upstream && *occurrence.upstream >= index))
+                throw std::runtime_error("configured graph archive has an invalid NodeRef occurrence");
+        }
+    }
     return {.identity = GraphBuilderIdentity{std::move(identity)},
         .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
         .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),

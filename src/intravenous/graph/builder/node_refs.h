@@ -95,6 +95,7 @@ namespace iv {
         // table. The façade only needs this bit to preserve the one-time
         // initialization rule for annotated symbolic refs.
         mutable bool _has_source_identity = false;
+        mutable std::optional<size_t> _node_ref_occurrence{};
         bool _has_message_path = false;
         std::vector<ProjectNodePathSelector> _message_path{};
 
@@ -195,7 +196,9 @@ namespace iv {
             uint32_t begin,
             uint32_t end,
             std::string_view declaration_name = {},
-            uint32_t declaration_line = 0
+            uint32_t declaration_line = 0,
+            bool declares_ref = true,
+            bool no_lane = false
         ) const;
         void _annotate_input_source_info(
             PortKind,
@@ -237,6 +240,7 @@ namespace iv {
             }
             Derived result(this->_session, this->_index);
             result._has_source_identity = this->_has_source_identity;
+            result._node_ref_occurrence = this->_node_ref_occurrence;
             result._has_message_path = this->_has_message_path;
             result._message_path = this->_message_path;
             return result;
@@ -411,6 +415,7 @@ namespace iv {
             }
             Self result(this->_session, this->_index);
             result._has_source_identity = this->_has_source_identity;
+            result._node_ref_occurrence = this->_node_ref_occurrence;
             result._has_message_path = this->_has_message_path;
             result._message_path = this->_message_path;
             return result;

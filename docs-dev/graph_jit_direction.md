@@ -2091,6 +2091,19 @@ realtime-only connections and Tock for all connections when any path requires
 background preparation. See the [current output gain contract](./output_gain_implementation.md#accepted-contract)
 and the [earlier observation contract](./historical/output_gain_before_connection_observation_2026-11-19.md).
 
+The owner approved route-based gain composition on 2026-11-23. A consumer
+receives the gains on the route it selects. Parallel outputs can expose the
+same concrete signal with independent gains. On a serial route, a consumer
+tapping an intermediate output receives the gains up to that output. The
+wiring determines these routes independently of the order of knob edits.
+
+GraphJit should fold consecutive settled gains into one scalar where no
+consumer reads an intermediate value. If a control becomes interactive,
+specialization can unfold the relevant gain so its live value keeps its own
+interpolation. Keep each authored control's value and identity through folding
+and unfolding. Reuse a prepared gain snapshot where background consumers
+require it. See the [builder and connection status](./output_gain_implementation.md#named-node-ref-occurrences-2026-11-23).
+
 ## Lowering boundary
 
 The lowering result should carry immutable metadata sufficient for runtime work

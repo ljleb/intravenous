@@ -25,6 +25,15 @@
 
 namespace iv {
 class GraphBuilderState;
+
+struct ConfiguredNodeRefOccurrence {
+  std::size_t symbolic_node_handle = 0;
+  // An earlier occurrence on the same bundle. The index is local to that bundle.
+  std::optional<std::size_t> upstream{};
+
+  bool operator==(ConfiguredNodeRefOccurrence const&) const = default;
+};
+
 template<class Config>
 struct SamplePortDescriptor {
   Config config{};
@@ -177,6 +186,9 @@ public:
 
   constexpr std::vector<size_t> &symbolic_node_handles();
   constexpr std::vector<size_t> const &symbolic_node_handles() const;
+  constexpr std::span<ConfiguredNodeRefOccurrence const> node_ref_occurrences() const {
+    return _node_ref_occurrences;
+  }
   constexpr NodeSourceAnnotations &source_annotations();
   constexpr NodeSourceAnnotations const &source_annotations() const;
 
@@ -195,6 +207,7 @@ private:
   std::optional<NodeBundlePortId> _output_gain_source{};
   // Memberships are kept in acquisition order for graph-revision matching.
   std::vector<size_t> _symbolic_node_handles{};
+  std::vector<ConfiguredNodeRefOccurrence> _node_ref_occurrences{};
   NodeSourceAnnotations _source_annotations{};
 
   friend class GraphBuilderNodeBundles;
@@ -254,6 +267,7 @@ struct ConfiguredNodeBundleRecord {
   size_t subgraph_event_output_count = 0;
 
   std::vector<size_t> symbolic_node_handles{};
+  std::vector<ConfiguredNodeRefOccurrence> node_ref_occurrences{};
   std::vector<SourceInfo> source_infos{};
 };
 
@@ -297,6 +311,7 @@ struct ConfiguredNodeBundleView {
   size_t subgraph_event_output_count = 0;
 
   std::span<size_t const> symbolic_node_handles{};
+  std::span<ConfiguredNodeRefOccurrence const> node_ref_occurrences{};
   std::span<SourceInfo const> source_infos{};
 };
 
@@ -1121,6 +1136,8 @@ constexpr void NodeBundle::import_into(size_t node_bundle_offset, size_t symboli
     }
   }, *_payload);
   for (auto& handle : _symbolic_node_handles) handle += symbolic_node_offset;
+  for (auto& occurrence : _node_ref_occurrences)
+    occurrence.symbolic_node_handle += symbolic_node_offset;
 }
 
 template<class Map>
@@ -1513,6 +1530,11 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::copy_range(
       }
       record -= record_begin;
     }
+    for (auto& occurrence : copy._node_ref_occurrences) {
+      if (occurrence.symbolic_node_handle < record_begin)
+        details::error("copied NodeRef occurrence belongs to an outside symbolic node");
+      occurrence.symbolic_node_handle -= record_begin;
+    }
     result._bundles.push_back(std::move(copy));
   }
   return result;
@@ -1526,6 +1548,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         .resolved_module_input = bundle._resolved_module_input,
         .output_gain_source = bundle._output_gain_source,
         .symbolic_node_handles = bundle._symbolic_node_handles,
+        .node_ref_occurrences = bundle._node_ref_occurrences,
         .source_infos = bundle._source_annotations.infos,
     };
     std::visit([&](auto const& payload) {
@@ -1651,6 +1674,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       break;
     }
     bundle._symbolic_node_handles = record.symbolic_node_handles;
+    bundle._node_ref_occurrences = record.node_ref_occurrences;
     bundle._source_annotations.infos = record.source_infos;
     result._bundles.push_back(std::move(bundle));
   }

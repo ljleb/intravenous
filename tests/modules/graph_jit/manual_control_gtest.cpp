@@ -428,6 +428,61 @@ TEST_F(GraphJitRuntimeFixture,
     EXPECT_EQ(sums, (std::array<float, 2>{6.0f, 8.0f}));
 }
 
+TEST_F(GraphJitRuntimeFixture, ManualControlStateFollowsTheMatchedNodeWhenSelectionOrderChanges)
+{
+    auto const base = configured_module_graph(*revision, graph_jit_reused_sample_arena_module_id);
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+    graph->identity.value = "manual-selection-order";
+    for (iv::NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        if (!graph->node_bundles.bundle(bundle).is_concrete()) continue;
+        auto const inputs = graph->node_bundles.typed_ports(bundle).sample_inputs();
+        if (inputs.size() != 1 || inputs.front().name != "in") continue;
+        graph->project_leaf_instances.emplace(bundle, "consumer:" + std::to_string(bundle));
+        graph->manual_controls.push_back({
+            .id = {.node = {.instance_id = "consumers"}, .port_name = "in"},
+            .input = {bundle, iv::PortKind::sample, 0},
+            .concrete_selection_index = graph->manual_controls.size(),
+            .settled_value = iv::Sample{0.5f},
+            .participation = iv::ManualControlParticipation::participate_with_connections,
+            .dynamic = true,
+        });
+    }
+    ASSERT_EQ(graph->manual_controls.size(), 2u);
+    auto reordered = std::make_shared<iv::ConfiguredGraph>(*graph);
+    std::swap(reordered->manual_controls[0].concrete_selection_index,
+        reordered->manual_controls[1].concrete_selection_index);
+    std::ranges::reverse(reordered->manual_controls);
+
+    auto before = compile_graph(graph, 397);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 398, .graph = reordered, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    ASSERT_EQ(before.compiled_graph->manual_controls.size(), 2u);
+    ASSERT_EQ(after.compiled_graph->manual_controls.size(), 2u);
+
+    auto prior = before.compiled_graph->node_layout.create_storage(resources);
+    prior.initialize();
+    auto current = after.compiled_graph->node_layout.create_storage(resources);
+    auto migration = current.prepare_migration_from(prior);
+    for (auto const& binding : after.compiled_graph->manual_controls) {
+        auto const& prior_bindings = before.compiled_graph->manual_controls;
+        auto const match = std::ranges::find_if(prior_bindings, [&](auto const& candidate) {
+            return candidate.configured.input == binding.configured.input;
+        });
+        ASSERT_NE(match, prior_bindings.end());
+        EXPECT_NE(match->configured.concrete_selection_index, binding.configured.concrete_selection_index);
+        EXPECT_TRUE(std::ranges::any_of(migration.raw_region_transfers, [&](auto const& transfer) {
+            return transfer.previous_offset == match->state_storage_offset
+                && transfer.current_offset == binding.state_storage_offset;
+        }));
+    }
+    migration.commit();
+}
+
 TEST_F(GraphJitRuntimeFixture, ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation)
 {
     auto constant = compile_graph(configured_module_manual_fanout(*revision, false), 390);
