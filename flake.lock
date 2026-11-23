@@ -7,16 +7,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1795397461,
-        "narHash": "sha256-Pma0/GzwlBNZehQlJ+3CANbBx604g3crceKUle322WU=",
+        "lastModified": 1795400138,
+        "narHash": "sha256-90MhFDL2gXbRbV6Z4oLkBAaAHgiq/rRtk7ZTMfjpLLg=",
         "owner": "ljleb",
         "repo": "dagdocdiff",
-        "rev": "23579ae6ab0fdb7ed2fe0b50fedec1ed67f50cd0",
+        "rev": "7c746fcfdec393002e2c68fd7137f253f581a673",
         "type": "github"
       },
       "original": {
         "owner": "ljleb",
-        "ref": "1.12.0",
+        "ref": "1.13.0",
         "repo": "dagdocdiff",
         "type": "github"
       }

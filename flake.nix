@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     dagdocdiff = {
-      url = "github:ljleb/dagdocdiff/1.12.0";
+      url = "github:ljleb/dagdocdiff/1.13.0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
