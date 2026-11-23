@@ -256,6 +256,83 @@ TEST_F(GraphJitRuntimeFixture, CoverageManualInputAddsDataOnlyInGaps)
     }
 }
 
+TEST_F(GraphJitRuntimeFixture, CoverageManualInputMigratesUntilItsValueChanges)
+{
+    auto configured = configured_graph_with_manual_input("iv.test.replay.coverage_manual_window", "coverage", .25f);
+    ASSERT_TRUE(configured);
+    ASSERT_EQ(configured->manual_controls.size(), 1u);
+    auto const bundle_count = configured->node_bundles.size();
+    configured->project_invocations.emplace(iv::NodeAddress{.instance_id = "fixture"},
+        iv::ConfiguredInvocationBundles{
+            .first = 1, .count = bundle_count - 1, .birth_snapshot = 1, .frozen_invocation_id = 1,
+        });
+    auto predecessor = jit->compile({.project_generation = 1, .graph = configured,
+        .definitions = definitions, .configured_bundles = {1, bundle_count}});
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
+    auto const& previous = *predecessor.compiled_graph;
+    auto const& previous_plan = previous.background_evaluation_plan;
+    auto const previous_manual = std::ranges::find(previous_plan.ports, std::string{"manual"},
+        &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(previous_manual, previous_plan.ports.end());
+    ASSERT_TRUE(previous_manual->stable_identity && previous_manual->accumulators.output_change);
+
+    iv::BackgroundCoverageState previous_coverage(previous_plan.accumulators.output_change_count);
+    iv::BackgroundPropagationWorkspace previous_propagation(previous_plan, previous.specialization.sample_rate);
+    iv::CoveragePropagationRequest initial_roots;
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node)
+        initial_roots.locally_changed_nodes.push_back(node);
+    auto initial = previous_propagation.prepare(previous.background_operations, previous_coverage, initial_roots);
+    auto const fallback_coverage = initial.output_coverages()[*previous_manual->accumulators.output_change];
+    ASSERT_TRUE(fallback_coverage.contains(index(18)));
+    ASSERT_FALSE(fallback_coverage.contains(index(20)));
+    (void)previous_propagation.commit(previous_coverage, std::move(initial));
+
+    for (bool value_changed : {false, true}) {
+        SCOPED_TRACE(value_changed);
+        auto next_configuration = std::make_shared<iv::ConfiguredGraph>(*configured);
+        if (value_changed) next_configuration->manual_controls.front().settled_value = .75f;
+        auto successor = jit->handle_project_graph_transaction({
+            .successor = {.project_generation = 2, .graph = next_configuration,
+                .definitions = definitions, .configured_bundles = {2, bundle_count}},
+            .predecessor = predecessor.compiled_graph,
+        });
+        ASSERT_TRUE(successor.succeeded())
+            << (successor.diagnostics.empty() ? "" : successor.diagnostics.front().message);
+        auto const& next = *successor.compiled_graph;
+        auto const& next_plan = next.background_evaluation_plan;
+        auto const manual = std::ranges::find(next_plan.ports, std::string{"manual"},
+            &iv::graph_jit::BackgroundPortPlan::name);
+        ASSERT_NE(manual, next_plan.ports.end());
+        EXPECT_EQ(manual->stable_identity, previous_manual->stable_identity);
+        ASSERT_TRUE(manual->accumulators.output_change);
+
+        iv::BackgroundCoverageState next_coverage(next_plan.accumulators.output_change_count);
+        auto migration = next_coverage.prepare_migration_from(previous_coverage, next_plan, previous_plan);
+        EXPECT_TRUE(std::ranges::any_of(migration.outputs, [&](auto const& transfer) {
+            return transfer.previous == *previous_manual->accumulators.output_change
+                && transfer.current == *manual->accumulators.output_change;
+        }));
+        migration.commit();
+        auto roots = migration.take_reconciliation_roots();
+        EXPECT_EQ(std::ranges::contains(roots.locally_changed_nodes, manual->node), value_changed);
+        iv::BackgroundPropagationWorkspace next_propagation(next_plan, next.specialization.sample_rate);
+        auto const prepared = next_propagation.prepare(next.background_operations, next_coverage, roots);
+        EXPECT_EQ(prepared.output_coverages()[*manual->accumulators.output_change], fallback_coverage);
+        auto const manual_port = static_cast<std::size_t>(manual - next_plan.ports.begin());
+        auto const& output_changes = prepared.result().output_changes;
+        auto const change = std::ranges::find(output_changes, manual_port,
+            &iv::PropagatedOutputChange::port);
+        if (value_changed) {
+            ASSERT_NE(change, output_changes.end());
+            EXPECT_TRUE(change->changed.contains(index(18)));
+            EXPECT_FALSE(change->changed.contains(index(20)));
+        } else {
+            EXPECT_TRUE(change == output_changes.end() || change->changed.empty());
+        }
+    }
+}
+
 TEST_F(GraphJitRuntimeFixture, AutomationFeedsAModuleInputAcrossRollingPlaybackWindows)
 {
     auto compiled = compile("iv.test.automation.rolling", 713);

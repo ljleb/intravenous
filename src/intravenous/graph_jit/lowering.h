@@ -53,7 +53,7 @@ struct NodeImplementation {
     NodeCodeKey code_key{};
     std::shared_ptr<PackageRevision const> revision{};
     std::uint64_t provider_version = 0;
-    std::shared_ptr<void const> configuration_identity{};
+    NodeConfigurationIdentity configuration_identity{};
     PackageCode const* package = nullptr;
 
     std::size_t state_size = 0;

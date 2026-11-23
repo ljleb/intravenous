@@ -2380,7 +2380,11 @@ public:
             };
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = stage.bundle, .native_background_node = true,
-                .configuration_identity = stage.value, .node_data = stage.value.get(),
+                .identity = {.node_type_id = coverage_manual_node_type},
+                .configuration_identity = CompilerSampleConfiguration{
+                    .bits = std::bit_cast<std::uint32_t>(stage.value->value),
+                },
+                .node_data = stage.value.get(),
                 .declare_node = operations.declare_node,
                 .tock_coverage = imported.callback(operations.tock_coverage),
                 .tock_coverage_batch = imported.callback(operations.tock_coverage_batch),

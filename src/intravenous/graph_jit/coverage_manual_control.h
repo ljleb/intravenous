@@ -7,6 +7,8 @@
 
 namespace iv::graph_jit::detail {
 
+inline constexpr char coverage_manual_node_type[] = "compiler.coverage_manual_control";
+
 struct CoverageManualSource {
     NodeBundleHandle bundle;
     std::shared_ptr<Sample const> value;
@@ -39,7 +41,7 @@ inline auto expand_coverage_manual_controls(ConfiguredGraph& graph)
         ConcreteNode node{
             .ports = {.input_configs = {make_input_config(input)}, .output_configs = {make_output_config(output)}},
             .node_storage = value, .node_size = sizeof(Sample), .node_alignment = alignof(Sample),
-            .type_identity = NodeTypeIdentity{.value = "compiler.coverage_manual_control"},
+            .type_identity = NodeTypeIdentity{.value = coverage_manual_node_type},
         };
         PortConstraintRef const in{PortConstraintDirection::input, PortKind::sample, 0};
         PortConstraintRef const out{PortConstraintDirection::output, PortKind::sample, 0};

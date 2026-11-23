@@ -115,11 +115,17 @@ std::vector<GlobalIndexRange> input_region_ranges(std::span<BackgroundInputRegio
 }
 
 bool shares_configuration_identity(
-    std::shared_ptr<void const> const& left,
-    std::shared_ptr<void const> const& right) noexcept
+    graph_jit::NodeConfigurationIdentity const& left,
+    graph_jit::NodeConfigurationIdentity const& right) noexcept
 {
-    return left && right && left.get() == right.get()
-        && !left.owner_before(right) && !right.owner_before(left);
+    if (auto const* sample = std::get_if<graph_jit::CompilerSampleConfiguration>(&left)) {
+        auto const* other = std::get_if<graph_jit::CompilerSampleConfiguration>(&right);
+        return other && *sample == *other;
+    }
+    auto const& owner = std::get<std::shared_ptr<void const>>(left);
+    auto const* other = std::get_if<std::shared_ptr<void const>>(&right);
+    return owner && other && *other && owner.get() == other->get()
+        && !owner.owner_before(*other) && !other->owner_before(owner);
 }
 
 // Authored outputs and compiler-owned public-input resolution outputs occupy
@@ -232,8 +238,9 @@ bool node_local_semantics_equal(
         && ((current.resolved_module_input && current.resolved_module_input == previous.resolved_module_input)
             || (!current.resolved_module_input && !previous.resolved_module_input
                 && current.implementation_identity == previous.implementation_identity
-                && current.provider_version != 0
                 && current.provider_version == previous.provider_version
+                && (current.provider_version != 0
+                    || std::holds_alternative<graph_jit::CompilerSampleConfiguration>(current.configuration_identity))
                 && shares_configuration_identity(current.configuration_identity, previous.configuration_identity)))
         && current.authored_tock_execution == previous.authored_tock_execution
         && current.replays_tick == previous.replays_tick

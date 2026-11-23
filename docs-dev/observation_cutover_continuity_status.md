@@ -180,6 +180,13 @@ bundles when its parent rebuilds to replace a sibling. The project regression
 also imports the rebuilt parent again and checks the child's relocated bundle
 range and preserved state-transfer identity.
 
+`ConnectionTopology` now derives a generated Coverage manual producer's
+identity from its input owner's `StableConcreteNodeId` and the input port.
+`BackgroundCoverageState` compares the producer's immutable `Sample` bits during
+migration. An unchanged value can reuse the predecessor's output coverage. A
+value change keeps the producer's identity and marks its fallback regions
+changed. The GraphJit regression covers both cases across configured snapshots.
+
 ## Optional migration declaration
 
 An explicit Tick migration declaration is a possible later API change. A

@@ -5,8 +5,10 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace iv::graph_jit {
@@ -45,6 +47,16 @@ struct StableConcreteNodeId {
 // One assigned identity per original configured bundle, before lowering adds
 // compiler-owned bundles. Accepted revisions pass this table to their successors.
 using BundleMigrationIdentities = std::vector<std::optional<StableConcreteNodeId>>;
+
+// Package configurations are immutable allocations. Compiler-generated
+// Sample configurations can compare the value copied into their callback.
+struct CompilerSampleConfiguration {
+    std::uint32_t bits = 0;
+    bool operator==(CompilerSampleConfiguration const&) const = default;
+};
+
+using NodeConfigurationIdentity =
+    std::variant<std::shared_ptr<void const>, CompilerSampleConfiguration>;
 
 // The concrete node's fields of a migration identity string. Each string is
 // prefixed with its length, so two different nodes never encode alike.

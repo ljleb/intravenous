@@ -454,11 +454,14 @@ protected:
             configured_module_graph(*revision, module_id), generation);
     }
 
-    iv::GraphJitCompileResult compile_with_manual_input(
-        std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value,
+    std::shared_ptr<iv::ConfiguredGraph> configured_graph_with_manual_input(
+        std::string_view module_id, std::string_view name, iv::Sample value,
         bool override_connections = false)
     {
-        auto configured = std::make_shared<iv::ConfiguredGraph>(*configured_module_graph(*revision, module_id));
+        auto const fixture = configured_module_graph(*revision, module_id);
+        EXPECT_NE(fixture, nullptr);
+        if (!fixture) return {};
+        auto configured = std::make_shared<iv::ConfiguredGraph>(*fixture);
         for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
             auto const& node = configured->node_bundles.bundle(bundle);
             if (!node.is_concrete() && !node.is_subgraph()) continue;
@@ -473,7 +476,14 @@ protected:
             }
         }
         EXPECT_EQ(configured->manual_controls.size(), 1u);
-        return compile_graph(std::move(configured), generation);
+        return configured;
+    }
+
+    iv::GraphJitCompileResult compile_with_manual_input(
+        std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value,
+        bool override_connections = false)
+    {
+        return compile_graph(configured_graph_with_manual_input(module_id, name, value, override_connections), generation);
     }
 };
 

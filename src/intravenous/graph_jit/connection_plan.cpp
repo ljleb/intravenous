@@ -304,6 +304,17 @@ std::expected<void, std::string> inventory_nodes(
     auto identity_for = [&](NodeBundleHandle bundle) -> std::optional<StableConcreteNodeId> {
         return bundle < identities.size() ? identities[bundle] : std::nullopt;
     };
+    auto identity_for_port_node = [&](NodeBundleHandle generated, NodeBundlePortId port,
+                                      std::string_view name) -> std::optional<StableConcreteNodeId> {
+        auto const owner = identity_for(port.node_bundle_handle);
+        if (!owner) return std::nullopt;
+        return StableConcreteNodeId{
+            .graph = std::string(graph.node_bundles.bundle(generated).type_identity()) + ':'
+                + migration_identity_fields(*owner),
+            .symbolic_node = std::string(name),
+            .direct_member = port.port_index,
+        };
+    };
     bool root_boundary_seen = false;
     std::size_t bundle = 0;
     std::string error;
@@ -374,22 +385,15 @@ std::expected<void, std::string> inventory_nodes(
             }
             auto stable_identity = identity_for(current);
             if (auto control = coverage_control_inputs.find(current); control != coverage_control_inputs.end()) {
-                auto const& input = control->second;
-                stable_identity = StableConcreteNodeId{
-                    .graph = "compiler.coverage_manual_control:" + std::to_string(input.port_index),
-                    .direct_member = input.node_bundle_handle,
-                    .configuration_snapshot = configured_bundles.snapshot,
-                };
+                auto const input = control->second;
+                stable_identity = identity_for_port_node(current, input,
+                    graph.node_bundles.resolve_sample_input(input).config.name);
             }
             if (view.output_gain_source) {
                 auto const source = *view.output_gain_source;
-                if (auto owner = identity_for(source.node_bundle_handle)) {
-                    auto const name = graph.node_bundles.resolve_sample_output(source).config.name;
-                    stable_identity = StableConcreteNodeId{
-                        .graph = std::string(graph.node_bundles.bundle(current).type_identity()) + ':'
-                            + migration_identity_fields(*owner),
-                        .symbolic_node = name, .direct_member = source.port_index};
-                }
+                if (auto derived = identity_for_port_node(current, source,
+                        graph.node_bundles.resolve_sample_output(source).config.name))
+                    stable_identity = std::move(derived);
             }
             std::optional<StableInputPortId> module_input;
             if (view.resolved_module_input) {

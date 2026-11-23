@@ -260,10 +260,15 @@ std::string activity_migration_identity(
         << ":provider=" << implementation.provider_version
         << ":code=" << implementation.code_key.low << '.'
         << implementation.code_key.high
-        << ":config="
-        << reinterpret_cast<std::uintptr_t>(
-            implementation.configuration_identity.get())
-        << ":ttl=" << activity.ttl_samples
+        << ":config=";
+    auto const& configuration = implementation.configuration_identity;
+    if (auto const* sample = std::get_if<CompilerSampleConfiguration>(&configuration)) {
+        out << "sample:" << sample->bits;
+    } else {
+        out << reinterpret_cast<std::uintptr_t>(
+            std::get<std::shared_ptr<void const>>(configuration).get());
+    }
+    out << ":ttl=" << activity.ttl_samples
         << ":storage=" << activity.storage_size
         << '.' << activity.storage_alignment;
     for (std::size_t input = 0;

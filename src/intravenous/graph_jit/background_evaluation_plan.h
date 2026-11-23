@@ -269,7 +269,7 @@ struct BackgroundNodePlan {
     // arguments and their recursive definition closure reusable.
     RegisteredNodeTypeIdentity implementation_identity{};
     std::uint64_t provider_version = 0;
-    std::shared_ptr<void const> configuration_identity{};
+    NodeConfigurationIdentity configuration_identity{};
 
     // Authored Tock nodes execute their imported F/R/T callbacks. Replay nodes
     // use authored F/R mapping for non-pointwise inputs, or compiler-provided
