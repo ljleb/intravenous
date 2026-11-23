@@ -705,11 +705,16 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
 {
     auto const workspace = fresh_workspace("project_persistence_lane_presentation");
     auto const project_file = workspace / "iv_project.jsonl";
+    std::string lane_state = R"({"pan":3e0,"values":[1e10)";
+    for (int index = 1; index < 20'000; ++index) lane_state += ",1e10";
+    lane_state += "]}";
+    auto lane_view = nlohmann::ordered_json::parse(
+        R"({"command":"projectPresentation.setLaneView","args":{"address":{"instance_id":"curve","path":[]},"presentation_id":"curve","state":null}})");
+    lane_view["args"]["state"] = lane_state;
     write_text(project_file,
-        R"({"command":"nodeInstances.upsert","args":{"instance_id":"curve","definition_id":"iv.test.persistence.original"}})" "\n"
-        R"({"command":"projectPresentation.setLaneOrder","args":{"order":[{"instance_id":"curve","path":[]}]}})" "\n"
-        R"({"command":"projectPresentation.setLaneView","args":{"address":{"instance_id":"curve","path":[]},"presentation_id":"curve","state":{"pan":3}}})" "\n"
-        R"({"command":"projectPresentation.setTimelineSnapMemory","args":{"memory":{"beats":[120,4,[2]]}}})" "\n");
+        std::string{R"({"command":"nodeInstances.upsert","args":{"instance_id":"curve","definition_id":"iv.test.persistence.original"}})" "\n"
+            R"({"command":"projectPresentation.setLaneOrder","args":{"order":[{"instance_id":"curve","path":[]}]}})" "\n"}
+        + lane_view.dump() + "\n" + R"({"command":"projectPresentation.setTimelineSnapMemory","args":{"memory":{"beats":[120,4,[2]]}}})" "\n");
     iv::ProjectPersistence persistence(workspace, startup_for(workspace));
     iv::NodeInstances instances;
     iv::GraphConnections graph_connections;
@@ -737,7 +742,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     auto const original = save_commands();
     ASSERT_EQ(original.size(), 4u);
     EXPECT_EQ(original[1]["args"]["order"][0]["instance_id"], "curve");
-    EXPECT_EQ(original[2]["args"]["state"]["pan"], 3);
+    EXPECT_EQ(original[2]["args"]["state"], lane_state);
     EXPECT_EQ(original[3]["args"]["memory"]["beats"][0], 120);
 
     auto const generation = project_graph.current_generation();
@@ -757,7 +762,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     ASSERT_EQ(copied.size(), 6u);
     EXPECT_EQ(copied[2]["args"]["order"][1]["instance_id"], "copy");
     EXPECT_EQ(copied[3]["args"]["address"]["instance_id"], "copy");
-    EXPECT_EQ(copied[3]["args"]["state"]["pan"], 8);
+    EXPECT_EQ(copied[3]["args"]["state"], view.state_json);
 
     // A later pan on the copy does not prevent undo from removing the copy.
     auto changed = view;
@@ -769,7 +774,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     auto const undone = save_commands();
     ASSERT_EQ(undone.size(), 4u);
     EXPECT_EQ(undone[1]["args"]["order"].size(), 1u);
-    EXPECT_EQ(undone[2]["args"]["state"]["pan"], 8);
+    EXPECT_EQ(undone[2]["args"]["state"], view.state_json);
 }
 
 TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGraph)

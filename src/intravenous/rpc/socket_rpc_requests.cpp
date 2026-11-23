@@ -353,7 +353,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
                 auto key = parse_project_lane_view_id(operation_params, names);
                 auto const& state = operation_params.at("state");
                 std::optional<ProjectLaneView> view;
-                if (!state.is_null()) view = ProjectLaneView{key, encode_project_presentation_object(state)};
+                if (!state.is_null()) view = ProjectLaneView{key, parse_project_lane_view_state(state)};
                 batch.lane_views.push_back({std::move(key), std::move(view)});
                 continue;
             }

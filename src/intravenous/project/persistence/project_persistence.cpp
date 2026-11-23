@@ -434,7 +434,7 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                 if (args.at("state").is_null()) {
                     if (existing != presentation.lane_views.end()) presentation.lane_views.erase(existing);
                 } else {
-                    auto state = encode_project_presentation_object(args.at("state"));
+                    auto state = parse_project_lane_view_state(args.at("state"));
                     if (existing == presentation.lane_views.end())
                         presentation.lane_views.push_back({std::move(key), std::move(state)});
                     else existing->state_json = std::move(state);

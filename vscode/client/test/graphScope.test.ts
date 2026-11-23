@@ -69,7 +69,7 @@ test("zoom keeps the graph point under the cursor fixed, including at zoom limit
 
 test("project presentation preserves lane addresses and local values independently of navigation", () => {
     const address = { instanceId: "source", path: [{ kind: "tiledChild" as const, name: "left" }] };
-    const state = { pan: -4, zoom: { factor: 2, center: .25 } };
+    const state = '{"pan":-4,"zoom":{"factor":2,"center":2.5e-1}}';
     const presentation = { laneOrder: [address], laneViews: [{ address, presentationId: "curve", state }],
         laneParents: [{ instanceId: "modulation", parent: address }], timelineSnapMemory: {} };
     const view = readGraphViewState(presentation);

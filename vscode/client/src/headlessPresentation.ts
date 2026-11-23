@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Timed } from "./clientInteractionTrace";
-import { addressKey, graphScopeWithChildren, type NodeAddress, type PresentationState } from "./graphScope";
+import { addressKey, graphScopeWithChildren, type NodeAddress } from "./graphScope";
 import { NodeEventMessaging, answerNodeEventRequest } from "./nodeEventMessaging";
 import type { NodeEventInteractions } from "./nodeEventInteractions";
 import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
-import { parsePresentationState, serializePresentationState } from "./presentationStateJson";
+import { parsePresentationState, serializePresentationState, type PresentationStateValue } from "./presentationStateJson";
 import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "./presentationSecondsRuler";
 import { projectProgramsByDefinition } from "./presentationPrograms";
@@ -16,7 +16,7 @@ import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
 
 export type PresentationScenario = {
-    snapshot: Omit<PresentationSnapshot, "state"> & { state: PresentationState | null };
+    snapshot: Omit<PresentationSnapshot, "state"> & { state: PresentationStateValue };
     presentationId?: string;
     expanded?: NodeAddress[];
     inputs: Timed<PresentationInput>[];

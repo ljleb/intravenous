@@ -1,5 +1,6 @@
 import { inject, provide, type InjectionKey, type Ref } from "vue";
-import type { GraphLayout, NodeAddress, Point, PresentationState } from "../../src/graphScope";
+import type { GraphLayout, NodeAddress, Point } from "../../src/graphScope";
+import type { SerializedPresentationState } from "../../src/presentationStateJson";
 import type { GraphScope } from "../../src/graphScope";
 import type { GraphLane } from "../../src/laneSelection";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
@@ -37,8 +38,8 @@ export type KnobClipboard = {
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
     save: () => void;
-    readPresentationState: (key: string) => PresentationState | undefined;
-    presentationStateChanged: (key: string, serialize: () => PresentationState | null) => void;
+    readPresentationState: (key: string) => string | undefined;
+    presentationStateChanged: (key: string, state: SerializedPresentationState) => void;
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;
     lanes: Readonly<Ref<GraphLane[]>>;

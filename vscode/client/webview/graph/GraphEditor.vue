@@ -2,7 +2,7 @@
 import { provideObservations } from "../presentation/observationContext";
 import { ClientInteractionRecorder, observationConfiguration } from "../../src/clientInteractionTrace";
 import { PresentationObservations } from "../../src/presentationObservations";
-import { copyPresentationState } from "../../src/presentationStateJson";
+import type { SerializedPresentationState } from "../../src/presentationStateJson";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
     GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
@@ -10,8 +10,7 @@ import { ObservationProfile } from "../../src/observationProfile";
 import { GraphUiRecording } from "./graphUiRecording";
 import { usePresentationFrame } from "../presentation/presentationFrames";
 import { ObservationDeliverySequence } from "../../src/observationDelivery";
-import { addressKey, graphScopeNodeLabel, isProjectInstance, newGraphLayout, readGraphViewState, type NodeAddress, type Point,
-    type PresentationState } from "../../src/graphScope";
+import { addressKey, graphScopeNodeLabel, isProjectInstance, newGraphLayout, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -658,7 +657,7 @@ const dropPreviewWires = computed(() => {
     return target ? previewWires.value.map((wire) => ({ ...wire, target,
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
-const changedPresentationStates = shallowReactive(new Map<string, () => PresentationState | null>());
+const changedPresentationStates = shallowReactive(new Map<string, SerializedPresentationState>());
 const pendingPresentation = new Map<number, { patch: GraphPresentationPatch; revision?: number }>();
 let nextPresentationRequest = 0;
 function updateProjectPresentation() {
@@ -687,10 +686,7 @@ function updateProjectPresentation() {
 }
 function save(laneOrder?: readonly string[], laneParents?: Record<string, string>) {
     if (!laneOrder && !laneParents && !changedPresentationStates.size) return;
-    const presentationStates: GraphPresentationPatch["presentationStates"] = {};
-    for (const [key, serialize] of changedPresentationStates) {
-        presentationStates[key] = copyPresentationState(serialize());
-    }
+    const presentationStates = Object.fromEntries(changedPresentationStates);
     changedPresentationStates.clear();
     const patch = { presentationStates, laneOrder: laneOrder && [...laneOrder], laneParents };
     const requestId = ++nextPresentationRequest;
@@ -718,10 +714,9 @@ let finishedProjectHistoryRequest = 0;
 provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() => projectHistoryRequest.value !== undefined),
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
-        const state = pending ? pending() : layout.value.presentationStates[key];
-        return state ? copyPresentationState(state) ?? undefined : undefined;
+        return pending === undefined ? layout.value.presentationStates[key] : pending ?? undefined;
     },
-    presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
+    presentationStateChanged: (key, state) => changedPresentationStates.set(key, state),
     finishPointerLock: (release, lockOrigin, follow, error) => cursorReturn.finish(release, lockOrigin, follow, error),
     startObjectDrag, takeCursorReturnTrace,
     refreshPointerHint: publishInteractionHint,

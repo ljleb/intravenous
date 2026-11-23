@@ -64,8 +64,18 @@ inline nlohmann::ordered_json project_lane_view_json(
     return {
         {"address", node_address_json(view.id.address, names)},
         {field, view.id.presentation_id},
-        {"state", nlohmann::ordered_json::parse(view.state_json)},
+        {"state", view.state_json},
     };
+}
+
+inline std::string parse_project_lane_view_state(nlohmann::ordered_json const& value)
+{
+    if (!value.is_string()) throw std::invalid_argument("lane view state must contain serialized JSON");
+    auto const& state = value.get_ref<std::string const&>();
+    if (state.size() > 128 * 1024) throw std::invalid_argument("lane view state exceeds 128 KiB");
+    if (!nlohmann::ordered_json::parse(state).is_object())
+        throw std::invalid_argument("lane view state must encode a JSON object");
+    return state;
 }
 
 inline std::string encode_project_presentation_object(nlohmann::ordered_json const& value)

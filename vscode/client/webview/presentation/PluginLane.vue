@@ -6,7 +6,7 @@ import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationArtifact, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
-import { parsePresentationState, serializePresentationState, type SerializedPresentationState } from "../../src/presentationStateJson";
+import type { SerializedPresentationState } from "../../src/presentationStateJson";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "../../src/presentationSecondsRuler";
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
@@ -61,9 +61,9 @@ const editsPending = ref(false);
 const waking = ref(false);
 const active = usePresentationActive(() => dragging.value || panelOpen.value || menu.key.value !== null || editsPending.value || waking.value);
 const save = usePresentationState({
-    serialize: () => parsePresentationState(state.value),
+    serialize: () => state.value,
     restore: (saved) => {
-        state.value = serializePresentationState(saved ?? null);
+        state.value = saved ?? null;
         worker.restore(state.value);
     },
 });

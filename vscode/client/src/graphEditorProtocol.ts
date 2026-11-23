@@ -3,7 +3,8 @@ import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
 import type { GraphUiProfileSummary } from "./graphUiProfile";
 import type { ManualControlAction, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import type { GraphLaneCopy, GraphScope, NodeAddress, PresentationState } from "./graphScope";
+import type { GraphLaneCopy, GraphScope, NodeAddress } from "./graphScope";
+import type { SerializedPresentationState } from "./presentationStateJson";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
@@ -28,7 +29,7 @@ export type CursorReturnMessage =
     | { type: "cursorReturnSkipped"; detail: string };
 
 export type GraphPresentationPatch = {
-    presentationStates: Record<string, PresentationState | null>;
+    presentationStates: Record<string, SerializedPresentationState>;
     laneOrder?: string[];
     laneParents?: Record<string, string>;
 };

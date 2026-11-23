@@ -1,6 +1,6 @@
 import type { ManualControlDescriptor } from "./manualControls";
 import type { ContinuousValueAlternative } from "./graphModel";
-import type { JsonValue } from "./nodeEvents";
+import type { SerializedPresentationState } from "./presentationStateJson";
 import { readTimelineViewport, type TimelineViewport } from "./timelineViewport";
 
 export type NodeAddress = { instanceId: string; path?: Array<Record<string, unknown>> };
@@ -99,12 +99,10 @@ export type GraphScope = {
 };
 export type Point = { x: number; y: number };
 export type GraphLaneCopy = { sourceInstanceId: string; instanceId: string };
-export type PresentationState = { [name: string]: JsonValue };
-export type PresentationStates = Record<string, PresentationState>;
 export type ProjectLaneView = {
     address: NodeAddress;
     presentationId: string;
-    state: PresentationState;
+    state: string;
 };
 export type ProjectPresentation = {
     laneOrder: NodeAddress[];
@@ -113,7 +111,7 @@ export type ProjectPresentation = {
     timelineSnapMemory: import("./timelineSnap").TimelineSnapMemory;
 };
 export type GraphViewState = {
-    presentationStates: PresentationStates;
+    presentationStates: Record<string, string>;
     laneOrder: string[];
     laneParents: Record<string, string>;
 };
@@ -157,7 +155,7 @@ export function addressFromKey(key: string): NodeAddress {
     return { instanceId, path };
 }
 
-export function laneViewFromKey(key: string, state: PresentationState | null): Omit<ProjectLaneView, "state"> & { state: PresentationState | null } {
+export function laneViewFromKey(key: string, state: SerializedPresentationState): Omit<ProjectLaneView, "state"> & { state: SerializedPresentationState } {
     const [presentationId, instanceId, path] = JSON.parse(key) as [string, string, NodeAddress["path"]];
     return { address: { instanceId, path }, presentationId, state };
 }

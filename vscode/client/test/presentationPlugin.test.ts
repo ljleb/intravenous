@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../src/presentationTimelineGrid";
+import { laneViewFromKey, presentationStateKey, readGraphViewState } from "../src/graphScope";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
 import { PlacePoint } from "../src/generated/automationEvents";
 import { serializeNodeEvent } from "../src/nodeEvents";
@@ -12,7 +13,7 @@ import { PresentationLaneEdits } from "../src/presentationLaneEdits";
 import { presentationPluginVersion, readPresentationFrame, readPresentationManifest,
     type PresentationCommand, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../src/presentationPluginSession";
-import { copyPresentationState, maxPresentationStateBytes, serializePresentationState, stringifyPresentationState } from "../src/presentationStateJson";
+import { maxPresentationStateBytes, serializePresentationState } from "../src/presentationStateJson";
 import { PresentationArtifactReader } from "../src/presentationArtifacts";
 import { createWasmPresentation, readWasmPresentationDescriptor, wasmPresentationUpdate } from "../src/wasmPresentation";
 import { createNodePresentationWorker } from "../src/nodeWasmPresentationWorker";
@@ -548,24 +549,22 @@ test("a discarded Marker save is rolled back in the live worker and on restart o
     } finally { session.dispose(); presentation.dispose(); }
 });
 
-test("a remounted WASM lane restores a negative zero coordinate from copied state", async () => {
+test("a remounted WASM lane restores the original compact JSON and its negative zero", async () => {
+    const address = { instanceId: "marker" };
+    const key = presentationStateKey(address, "marker");
+    const state = `{"position":-0,"values":[${"1e10,".repeat(19999)}1e10]}`;
+    assert.ok(Buffer.byteLength(state) <= maxPresentationStateBytes);
+    assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(state))) > maxPresentationStateBytes);
+    const laneView = laneViewFromKey(key, state);
+    const reopened = JSON.parse(JSON.stringify({ laneOrder: [], laneViews: [laneView], timelineSnapMemory: {} }));
+    const restored = readGraphViewState(reopened).presentationStates[key];
+    assert.equal(restored, state);
     const worker = createNodePresentationWorker(moduleBytes);
-    const position = async () => {
-        const frame = readPresentationFrame(await worker.run(snapshot, []));
+    try {
+        const frame = readPresentationFrame(await worker.run({ ...snapshot, state: restored }, []));
         const line = frame.marks?.[0];
         assert.equal(line?.type, "packedPolyline");
-        return line.coordinates[0];
-    };
-    try {
-        const saved = { position: -0 };
-        worker.restore(serializePresentationState(saved));
-        assert.ok(Object.is(await position(), -0));
-        worker.stop();
-        const restored = copyPresentationState(saved);
-        assert.notEqual(restored, saved);
-        assert.notEqual(stringifyPresentationState(restored), stringifyPresentationState({ position: 0 }));
-        worker.restore(serializePresentationState(restored));
-        assert.ok(Object.is(await position(), -0));
+        assert.ok(Object.is(line.coordinates[0], -0));
     } finally { worker.stop(); }
 });
 

@@ -1,11 +1,11 @@
 import type { JsonValue } from "./nodeEvents";
-import type { PresentationState } from "./graphScope";
 
+export type PresentationStateValue = { [name: string]: JsonValue } | null;
 export type SerializedPresentationState = string | null;
 export const maxPresentationStateBytes = 128 * 1024;
 const encoder = new TextEncoder();
 
-export function parsePresentationState(state: SerializedPresentationState): PresentationState | null {
+export function parsePresentationState(state: SerializedPresentationState): PresentationStateValue {
     return state === null ? null : JSON.parse(state);
 }
 
@@ -25,8 +25,8 @@ export function readPresentationSave(value: unknown): SerializedPresentationStat
     return value;
 }
 
-export function serializePresentationState(state: PresentationState | null): SerializedPresentationState {
-    return state === null ? null : stringifyPresentationState(state);
+export function serializePresentationState(state: PresentationStateValue): SerializedPresentationState {
+    return state === null ? null : json(state);
 }
 
 function json(value: JsonValue): string {
@@ -37,12 +37,4 @@ function json(value: JsonValue): string {
         return `{${members.join(",")}}`;
     }
     return JSON.stringify(value);
-}
-
-export function stringifyPresentationState(state: PresentationState | null): string {
-    return json(state);
-}
-
-export function copyPresentationState(state: PresentationState | null): PresentationState | null {
-    return JSON.parse(stringifyPresentationState(state));
 }

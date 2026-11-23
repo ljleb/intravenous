@@ -1,9 +1,9 @@
 import { inject, provide, type InjectionKey } from "vue";
-import type { PresentationState } from "../../src/graphScope";
+import type { SerializedPresentationState } from "../../src/presentationStateJson";
 
 type PresentationStateCallbacks = {
-    serialize(): PresentationState | null;
-    restore(state: PresentationState | undefined): void;
+    serialize(): SerializedPresentationState;
+    restore(state: string | undefined): void;
 };
 type RegisterPresentationState = (callbacks: PresentationStateCallbacks) => (saveNow?: boolean) => void;
 const key: InjectionKey<RegisterPresentationState> = Symbol("presentationState");

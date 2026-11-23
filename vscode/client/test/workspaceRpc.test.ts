@@ -83,7 +83,7 @@ test("lane view patches and save on blur do not require a graph revision", async
     const client = { request: async (method, params) => { calls.push({ method, params }); } } as unknown as JsonRpcSocketClient;
     const rpc = new WorkspaceRpc(client, () => 23);
     const operations = [{ method: "projectPresentation.setLaneView",
-        params: { address: { instanceId: "curve", path: [] }, presentationId: "curve", state: { pan: -4 } } }];
+        params: { address: { instanceId: "curve", path: [] }, presentationId: "curve", state: '{"pan":-4}' } }];
     await rpc.applyProjectEdit(operations, null);
     await rpc.saveProject(true);
     await rpc.saveProject();
