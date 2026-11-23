@@ -1,23 +1,23 @@
 {
   "nodes": {
-    "dagdocdiff": {
+    "c-docc": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "lastModified": 1795400138,
-        "narHash": "sha256-90MhFDL2gXbRbV6Z4oLkBAaAHgiq/rRtk7ZTMfjpLLg=",
+        "lastModified": 1795402550,
+        "narHash": "sha256-u+kD9TuQ5Z/z+gWMntfmTEwTsLdWFMwWBPI8VVaI1Co=",
         "owner": "ljleb",
-        "repo": "dagdocdiff",
-        "rev": "7c746fcfdec393002e2c68fd7137f253f581a673",
+        "repo": "c-docc",
+        "rev": "11b3aa5d03781d8fdc47da18c55818932748b643",
         "type": "github"
       },
       "original": {
         "owner": "ljleb",
-        "ref": "1.13.0",
-        "repo": "dagdocdiff",
+        "ref": "0.0.1",
+        "repo": "c-docc",
         "type": "github"
       }
     },
@@ -39,7 +39,7 @@
     },
     "root": {
       "inputs": {
-        "dagdocdiff": "dagdocdiff",
+        "c-docc": "c-docc",
         "nixpkgs": "nixpkgs"
       }
     }
