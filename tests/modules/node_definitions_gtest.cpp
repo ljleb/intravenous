@@ -286,9 +286,7 @@ TEST(NodeDefinitions, PublicationReturnsTheProjectRebuildsReadModelChanges)
     iv::NodeDefinitions definitions;
     NodeDefinitionsWitness witness;
     witness.reply = iv::ProjectGraphPublication{
-        .instances = std::vector<iv::IvModuleInstanceInfo>{
-            iv::IvModuleInstanceInfo{.instance_id = "instance:rebuilt"},
-        },
+        .instances_changed = true,
     };
     node_definitions_witness_bridge::scope witness_scope{definitions, witness};
 

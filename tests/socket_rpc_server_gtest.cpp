@@ -772,12 +772,14 @@ TEST(SocketRpcServer, TransferExhaustionRejectsAnEditBeforeItCommits)
     harness.node_instances.large_configurations.store(true);
     using Json = nlohmann::ordered_json;
     for (int id = 10; id < 14; ++id) {
-        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "nodeInstances.get"}}.dump() + "\n");
+        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "nodeInstances.get"},
+            {"params", Json::object()}}.dump() + "\n");
         auto const reply = Json::parse(harness.read_response(id));
-        ASSERT_TRUE(reply.contains("resultChunk"));
+        ASSERT_TRUE(reply.contains("resultChunk")) << reply.value("error", Json(nullptr));
     }
     harness.write_request(R"({"jsonrpc":"2.0","id":14,"method":"nodeInstances.delete","params":{"instanceId":"other"}})" "\n");
     auto const error = Json::parse(harness.read_response(14)).at("error");
+    EXPECT_EQ(error.at("message"), "finish reading outstanding RPC results before editing the project");
     EXPECT_EQ(error.at("data").at("currentRevision"), 0);
     EXPECT_EQ(harness.server.revision(), 0u);
     // A rejected mutation cannot publish nodeInstances.updated.
