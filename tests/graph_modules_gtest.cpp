@@ -208,7 +208,7 @@ ConfiguredGraph configure_continuous_domain_introspection()
 }
 
 struct IntrospectionRegressionSnapshot {
-    bool virtual_node_is_preserved = false;
+    bool symbolic_node_is_preserved = false;
     bool continuous_ports_are_preserved = false;
     bool event_ports_are_preserved = false;
     bool registered_definition_id_is_preserved = false;
@@ -220,16 +220,16 @@ IntrospectionRegressionSnapshot introspection_regression_snapshot()
     auto const metadata = build_graph_introspection_metadata(configured);
     IntrospectionRegressionSnapshot result;
 
-    result.virtual_node_is_preserved = metadata.virtual_nodes.size() == 1
-        && metadata.virtual_nodes.front().source_identity == "sum"
-        && metadata.virtual_nodes.front().continuous_inputs.size() == 1
-        && metadata.virtual_nodes.front().continuous_outputs.size() == 1;
+    result.symbolic_node_is_preserved = metadata.symbolic_nodes.size() == 1
+        && metadata.symbolic_nodes.front().source_identity == "sum"
+        && metadata.symbolic_nodes.front().continuous_inputs.size() == 1
+        && metadata.symbolic_nodes.front().continuous_outputs.size() == 1;
     result.registered_definition_id_is_preserved =
-        metadata.virtual_nodes.size() == 1
-        && metadata.virtual_nodes.front().definition_id
+        metadata.symbolic_nodes.size() == 1
+        && metadata.symbolic_nodes.front().definition_id
             == "iv.test.introspection.sum"
-        && metadata.virtual_nodes.front().members.size() == 1
-        && metadata.virtual_nodes.front().members.front().definition_id
+        && metadata.symbolic_nodes.front().members.size() == 1
+        && metadata.symbolic_nodes.front().members.front().definition_id
             == "iv.test.introspection.sum";
 
     result.continuous_ports_are_preserved =
@@ -828,10 +828,10 @@ TEST(GraphModules, PublicInputCanFeedPublicOutputWithoutAnInternalNode)
                   configured.node_bundles).size(), 1u);
 }
 
-TEST(GraphModules, RuntimeIntrospectionPreservesVirtualAndPublicPorts)
+TEST(GraphModules, RuntimeIntrospectionPreservesSymbolicAndPublicPorts)
 {
     auto snapshot = introspection_regression_snapshot();
-    EXPECT_TRUE(snapshot.virtual_node_is_preserved);
+    EXPECT_TRUE(snapshot.symbolic_node_is_preserved);
     EXPECT_TRUE(snapshot.continuous_ports_are_preserved);
     EXPECT_TRUE(snapshot.event_ports_are_preserved);
     EXPECT_TRUE(snapshot.registered_definition_id_is_preserved);
@@ -841,8 +841,8 @@ TEST(GraphModules, RuntimeIntrospectionPreservesContinuousValueTypeDomains)
 {
     auto const configured = configure_continuous_domain_introspection();
     auto const metadata = build_graph_introspection_metadata(configured);
-    ASSERT_EQ(metadata.virtual_nodes.size(), 1u);
-    auto const& node = metadata.virtual_nodes.front();
+    ASSERT_EQ(metadata.symbolic_nodes.size(), 1u);
+    auto const& node = metadata.symbolic_nodes.front();
     ASSERT_EQ(node.continuous_inputs.size(), 1u);
     ASSERT_EQ(node.continuous_outputs.size(), 1u);
     auto const& input_types = node.continuous_inputs.front().value_types;

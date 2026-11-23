@@ -2650,7 +2650,7 @@ TEST_F(
         auto const output_id = iv::graph_jit::StableOutputPortId{
             .node = {
                 .graph = "persisted-replay-probe",
-                .virtual_node = "source",
+                .symbolic_node = "source",
             },
             .kind = iv::PortKind::sample,
             .port_name = "output",
@@ -3212,11 +3212,11 @@ TEST_F(
     StableOutputCoverageMigrationReadsThePredecessorAfterItsFinalDrain)
 {
     auto previous_plan = background_fanin_plan();
-    auto stable_output = [](std::string virtual_node) {
+    auto stable_output = [](std::string symbolic_node) {
         return iv::graph_jit::StableOutputPortId{
             .node = {
                 .graph = "coverage-migration",
-                .virtual_node = std::move(virtual_node),
+                .symbolic_node = std::move(symbolic_node),
             },
             .kind = iv::PortKind::sample,
             .port_name = "output",
@@ -3280,7 +3280,7 @@ TEST_F(
     auto const stable_output = iv::graph_jit::StableOutputPortId{
         .node = {
             .graph = "event-production-migration",
-            .virtual_node = "source",
+            .symbolic_node = "source",
         },
         .kind = iv::PortKind::event,
         .port_name = "output",
@@ -3316,7 +3316,7 @@ TEST_F(
     auto stable_node = [](std::string id) {
         return iv::graph_jit::StableConcreteNodeId{
             .graph = "semantic-reconciliation",
-            .virtual_node = std::move(id),
+            .symbolic_node = std::move(id),
         };
     };
     auto unchanged_source = std::make_shared<int>(1);
@@ -3396,7 +3396,7 @@ TEST_F(BackgroundCoveragePropagationFixture, ModuleInputResolutionKeepsItsSemant
     using namespace iv;
     using namespace iv::graph_jit;
     StableInputPortId origin{
-        .node = {.graph = "public-inputs", .virtual_node = "module"},
+        .node = {.graph = "public-inputs", .symbolic_node = "module"},
         .kind = PortKind::sample, .port_name = "gain", .port_index = 3,
     };
     BackgroundEvaluationPlan previous_plan;
@@ -3447,7 +3447,7 @@ TEST_F(
     for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
         auto const stable = iv::graph_jit::StableConcreteNodeId{
             .graph = "sample-rate-reconciliation",
-            .virtual_node = "node-" + std::to_string(node),
+            .symbolic_node = "node-" + std::to_string(node),
         };
         previous_plan.nodes[node].stable_identity = stable;
         current_plan.nodes[node].stable_identity = stable;
@@ -3480,7 +3480,7 @@ TEST_F(
     auto stable_node = [](std::string id) {
         return iv::graph_jit::StableConcreteNodeId{
             .graph = "connection-reconciliation",
-            .virtual_node = std::move(id),
+            .symbolic_node = std::move(id),
         };
     };
     auto stable_output = [&](std::size_t node) {
@@ -3602,7 +3602,7 @@ TEST_F(
     auto const stable_source = iv::graph_jit::StableOutputPortId{
         .node = {
             .graph = "read-latency-reconciliation",
-            .virtual_node = "source",
+            .symbolic_node = "source",
         },
         .kind = iv::PortKind::sample,
         .port_name = "output",
@@ -3611,7 +3611,7 @@ TEST_F(
     auto const stable_input = iv::graph_jit::StableInputPortId{
         .node = {
             .graph = "read-latency-reconciliation",
-            .virtual_node = "sink",
+            .symbolic_node = "sink",
         },
         .kind = iv::PortKind::sample,
         .port_name = "input",
@@ -3630,7 +3630,7 @@ TEST_F(
     for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node) {
         auto const stable_node = iv::graph_jit::StableConcreteNodeId{
             .graph = "read-latency-reconciliation",
-            .virtual_node = std::string{stable_node_names[node]},
+            .symbolic_node = std::string{stable_node_names[node]},
         };
         previous_plan.nodes[node].stable_identity = stable_node;
         current_plan.nodes[node].stable_identity = stable_node;
@@ -3639,11 +3639,11 @@ TEST_F(
         previous_plan.nodes[node].configuration_identity = semantic_owners[node];
         current_plan.nodes[node].configuration_identity = semantic_owners[node];
     }
-    auto stable_output = [&](std::string virtual_node) {
+    auto stable_output = [&](std::string symbolic_node) {
         return iv::graph_jit::StableOutputPortId{
             .node = {
                 .graph = "read-latency-reconciliation",
-                .virtual_node = std::move(virtual_node),
+                .symbolic_node = std::move(symbolic_node),
             },
             .kind = iv::PortKind::sample,
             .port_name = "output",

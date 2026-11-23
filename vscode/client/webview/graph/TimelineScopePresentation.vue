@@ -51,8 +51,8 @@ const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModule
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
 }
-function openVirtualNodeSource(address: NodeAddress) {
-    webviewApi.postMessage({ type: "openVirtualNodeSource", nodeKey: addressKey(address) });
+function openSymbolicNodeSource(address: NodeAddress) {
+    webviewApi.postMessage({ type: "openSymbolicNodeSource", nodeKey: addressKey(address) });
 }
 const children = computed(() => profileGraphUi("Build lane presentation data", () => {
     const boundaries = new Set(scope.value.childScopes?.filter((scope) => scope.hasBoundary).map(({ subject }) => addressKey(subject)));
@@ -866,8 +866,8 @@ onBeforeUnmount(() => {
                     + (depth ? `, module nesting depth ${depth}` : '')">
                 <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneContentHeight" module-boundary />
                 <PresentationHost v-else :node="semantic" :region-height="laneContentHeight" lane
-                    :open-source="child.virtualNode && child.declarationSource
-                        ? () => openVirtualNodeSource(child.address) : undefined"
+                    :open-source="child.symbolicNode && child.declarationSource
+                        ? () => openSymbolicNodeSource(child.address) : undefined"
                     :rename-lane="scope.editable && isProjectInstance(child.address)
                         ? (name, previousName) => renameLane(child.instance.instanceId, name, previousName) : undefined"
                     @copy-debug-details="copyNodeDebugDetails(child.address)" />

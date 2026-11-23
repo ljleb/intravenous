@@ -18,7 +18,7 @@
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/snapshot_error.h>
 #include <intravenous/graph/builder/subgraphs.hpp>
-#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/builder/symbolic_nodes.hpp>
 
 #include <algorithm>
 #include <array>
@@ -68,10 +68,10 @@ public:
     details::BuilderScopeId id = details::root_builder_scope_id;
     details::BuilderScopeKind kind = details::BuilderScopeKind::root;
     GraphBuilderPublicPorts ports{0};
-    // Root and definition scopes own a virtual-record namespace. Subgraph
+    // Root and definition scopes own a symbolic-record namespace. Subgraph
     // scopes share the namespace of their enclosing definition, so repeated
     // declarations of one module source group as they always have.
-    std::uint64_t virtual_namespace = 0;
+    std::uint64_t symbolic_namespace = 0;
     // First bundle of the namespace owner. Frozen embeddings qualify their
     // records relative to it, so the qualification is the same wherever the
     // owning module is constructed or imported.
@@ -149,7 +149,7 @@ public:
   // Non-destructive closedness-checked copy of an open scope.
   [[nodiscard]] std::expected<ConfiguredGraph, ConfiguredGraphSnapshotError>
   snapshot_scope(details::BuilderScopeId) const;
-  void qualify_virtual_records(std::size_t begin, std::string_view qualifier);
+  void qualify_symbolic_records(std::size_t begin, std::string_view qualifier);
 
   // ---- refs and connections ---------------------------------------------
   [[nodiscard]] SamplePortRef require_sample_port(SamplePortRef const&) const;
@@ -205,26 +205,26 @@ public:
   using VacantSampleInput = GraphBuilderVacantSampleInput;
   using VacantEventInput = GraphBuilderVacantEventInput;
   using VacantInputs = GraphBuilderVacantInputs;
-  using VirtualSampleInput = GraphBuilderVirtualSampleInput;
-  using VirtualEventInput = GraphBuilderVirtualEventInput;
-  using VirtualInputs = GraphBuilderVirtualInputs;
-  using VirtualSampleInputChannel = GraphBuilderVirtualSampleInputChannel;
-  using VirtualSampleInputFamily = GraphBuilderVirtualSampleInputFamily;
-  using VirtualSampleInputFamilies = GraphBuilderVirtualSampleInputFamilies;
-  using VirtualSampleOutput = GraphBuilderVirtualSampleOutput;
-  using VirtualEventOutput = GraphBuilderVirtualEventOutput;
-  using VirtualOutputs = GraphBuilderVirtualOutputs;
-  using VirtualSampleOutputChannel = GraphBuilderVirtualSampleOutputChannel;
-  using VirtualSampleOutputFamily = GraphBuilderVirtualSampleOutputFamily;
-  using VirtualSampleOutputFamilies = GraphBuilderVirtualSampleOutputFamilies;
-  using VirtualPorts = GraphBuilderVirtualPorts;
+  using SymbolicSampleInput = GraphBuilderSymbolicSampleInput;
+  using SymbolicEventInput = GraphBuilderSymbolicEventInput;
+  using SymbolicInputs = GraphBuilderSymbolicInputs;
+  using SymbolicSampleInputChannel = GraphBuilderSymbolicSampleInputChannel;
+  using SymbolicSampleInputFamily = GraphBuilderSymbolicSampleInputFamily;
+  using SymbolicSampleInputFamilies = GraphBuilderSymbolicSampleInputFamilies;
+  using SymbolicSampleOutput = GraphBuilderSymbolicSampleOutput;
+  using SymbolicEventOutput = GraphBuilderSymbolicEventOutput;
+  using SymbolicOutputs = GraphBuilderSymbolicOutputs;
+  using SymbolicSampleOutputChannel = GraphBuilderSymbolicSampleOutputChannel;
+  using SymbolicSampleOutputFamily = GraphBuilderSymbolicSampleOutputFamily;
+  using SymbolicSampleOutputFamilies = GraphBuilderSymbolicSampleOutputFamilies;
+  using SymbolicPorts = GraphBuilderSymbolicPorts;
 
   VacantInputs vacant_inputs() const;
-  VirtualInputs virtual_inputs() const;
-  VirtualSampleInputFamilies virtual_sample_input_families() const;
-  VirtualOutputs virtual_outputs() const;
-  VirtualSampleOutputFamilies virtual_sample_output_families() const;
-  VirtualPorts virtual_ports() const;
+  SymbolicInputs symbolic_inputs() const;
+  SymbolicSampleInputFamilies symbolic_sample_input_families() const;
+  SymbolicOutputs symbolic_outputs() const;
+  SymbolicSampleOutputFamilies symbolic_sample_output_families() const;
+  SymbolicPorts symbolic_ports() const;
   GraphBuilderPublicContinuousPortFamilies public_sample_input_families() const;
   bool public_sample_input_is_connected(size_t port_index) const;
   std::vector<GraphBuilderPublicEventInput> public_event_inputs() const;
@@ -234,11 +234,11 @@ public:
   std::vector<GraphBuilderPublicEventOutput> public_event_outputs() const;
 
   [[nodiscard]] std::size_t bundle_count() const noexcept { return _node_bundles.size(); }
-  [[nodiscard]] std::size_t virtual_record_count() const noexcept { return _virtual_nodes.size(); }
+  [[nodiscard]] std::size_t symbolic_record_count() const noexcept { return _symbolic_nodes.size(); }
   // Live graph tables, for host-side semantic path resolution while the
   // session is still constructing.
   [[nodiscard]] GraphBuilderNodeBundles const& node_bundles() const noexcept { return _node_bundles; }
-  [[nodiscard]] GraphBuilderVirtualNodes const& virtual_nodes() const noexcept { return _virtual_nodes; }
+  [[nodiscard]] GraphBuilderSymbolicNodes const& symbolic_nodes() const noexcept { return _symbolic_nodes; }
 
   // The root scope is the complete graph. Finishing requires every nested
   // scope to be closed.
@@ -267,18 +267,18 @@ private:
   [[nodiscard]] std::uint64_t current_namespace() const noexcept;
 
 
-  // Namespace-aware get-or-create for live virtual records.
-  VirtualNodeHandle virtual_record(std::string_view source_identity, std::string_view type_identity);
-  VirtualNodeHandle append_virtual_record(
+  // Namespace-aware get-or-create for live symbolic records.
+  SymbolicNodeHandle symbolic_record(std::string_view source_identity, std::string_view type_identity);
+  SymbolicNodeHandle append_symbolic_record(
       std::string_view source_identity, std::string_view type_identity,
       std::uint64_t name_space);
   void index_imported_records(std::size_t begin);
-  static std::string virtual_record_key(
+  static std::string symbolic_record_key(
       std::uint64_t name_space, std::string_view source_identity,
       std::string_view type_identity);
-  void attach_virtual_bundle_member(
+  void attach_symbolic_bundle_member(
       NodeBundleHandle, std::string_view source_identity, SourceInfo const*);
-  void attach_virtual_input_source_info(
+  void attach_symbolic_input_source_info(
       NodeBundleHandle, std::string_view source_identity, PortKind,
       std::string_view port_name, SourceInfo const&);
 
@@ -290,12 +290,12 @@ private:
   GraphBuilderNodeBundles _node_bundles;
   GraphBuilderConnections _connections;
   GraphBuilderAnnotations _annotations;
-  GraphBuilderVirtualNodes _virtual_nodes;
-  // Parallel to the virtual-node records: the live namespace that may still
+  GraphBuilderSymbolicNodes _symbolic_nodes;
+  // Parallel to the symbolic-node records: the live namespace that may still
   // coalesce new members into each record. Imported records receive a
   // namespace of their own and never coalesce with live declarations.
-  std::vector<std::uint64_t> _virtual_namespaces;
-  std::unordered_map<std::string, VirtualNodeHandle> _virtual_record_index;
+  std::vector<std::uint64_t> _symbolic_namespaces;
+  std::unordered_map<std::string, SymbolicNodeHandle> _symbolic_record_index;
   std::vector<ScopeFrame> _scopes;
   details::BuilderScopeId _next_scope_id = 1;
   std::uint64_t _next_namespace = 1;

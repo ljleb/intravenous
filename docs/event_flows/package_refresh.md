@@ -30,7 +30,7 @@ flowchart TD
     ND -->|"one immutable versioned NodeDefinitionsSnapshot + definitions diff ⇄ ProjectGraphPublication"| PG
 
     PG -->|"1. reconfigure/embed complete desired node batch against exactly this snapshot ⇄ instance changes"| NI
-    PG -->|"2. definitions diff + changed instance declarations ⇄ virtual-node replacements"| IMSI
+    PG -->|"2. definitions diff + changed instance declarations ⇄ symbolic-node replacements"| IMSI
     PG -->|"3. re-resolve/apply complete desired connection batch"| GC
     PG -->|"4. successor ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
     PG -->|"5. stage one compiled execution generation"| GE

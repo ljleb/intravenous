@@ -457,7 +457,10 @@ TEST(PresentationArtifacts, DevelopmentArtifactsReplaceByDigestAndReleasedArtifa
     auto const directory = package / "presentations";
     std::filesystem::create_directories(directory);
     iv::test_support::write_text(package / "iv_package.json",
-        R"({"schema":2,"namespace":"example.marker","presentations":{"marker":{"title":"Marker","definitionIds":["builtin.beats"]}}})");
+        R"({"schema":2,"namespace":"example.marker","presentations":{"marker":{"title":"Marker","definitionIds":["builtin.beats"],
+          "observations":[{"id":"lower","direction":"input","port":"min","operation":"waveform","points":512,
+                           "group":"bounds","whenConnected":true,"completeOnly":true},
+                          {"id":"upper","direction":"output","port":"value","operation":"waveform","points":1024,"group":"bounds"}]}}})");
     auto const file = directory / "marker.wasm";
     std::string const wasm{"\0asm\1\0\0\0", 8};
     iv::test_support::write_text(file, wasm);
@@ -473,6 +476,16 @@ TEST(PresentationArtifacts, DevelopmentArtifactsReplaceByDigestAndReleasedArtifa
     auto const first = development.list();
     ASSERT_EQ(first.entries.size(), 1u);
     ASSERT_TRUE(first.entries.front().error.empty()) << first.entries.front().error;
+    auto const& observations = first.entries.front().observations;
+    ASSERT_EQ(observations.size(), 2u);
+    EXPECT_EQ(observations[0], (iv::PresentationObservationBinding{
+        .id = "lower", .port = "min", .direction = "input", .operation = "waveform",
+        .points = 512, .group = "bounds", .when_connected = true, .complete_only = true,
+    }));
+    EXPECT_EQ(observations[1], (iv::PresentationObservationBinding{
+        .id = "upper", .port = "value", .direction = "output", .operation = "waveform",
+        .points = 1024, .group = "bounds",
+    }));
     auto const initial_digest = first.entries.front().digest;
     EXPECT_TRUE(development.fetch(initial_digest));
     auto installed = declarations;

@@ -247,7 +247,7 @@ TEST(SocketRpcRequestParser, ParsesProjectSaveRequest)
 TEST(SocketRpcRequestParser, ParsesManualControlDurableAndInteractionRequests)
 {
     auto const upsert = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":40,"method":"manualControls.upsert","params":{"node":{"instanceId":"instance:synth","path":[{"kind":"virtualNode","sourceIdentity":"voice"}]},"inputName":"gain","value":0.625,"participation":"participateWithConnections","enabled":true}})");
+        R"({"jsonrpc":"2.0","id":40,"method":"manualControls.upsert","params":{"node":{"instanceId":"instance:synth","path":[{"kind":"symbolicNode","sourceIdentity":"voice"}]},"inputName":"gain","value":0.625,"participation":"participateWithConnections","enabled":true}})");
     auto const* durable = std::get_if<iv::UpsertManualControlRequest>(
         &upsert.payload);
     ASSERT_NE(durable, nullptr);
@@ -425,7 +425,7 @@ TEST(SocketRpcRequestParser, ParsesDeleteNodeInstanceRequest)
 TEST(SocketRpcRequestParser, ParsesStructuredSampleConnectionMutation)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":36,"method":"graphConnections.upsert","params":{"connection":{"kind":"sample","connectionId":"sample:main","sourceType":"stereo","outputs":[{"instanceId":"source","path":[{"kind":"virtualNode","sourceIdentity":"processor","typeIdentity":"filter"},{"kind":"virtualMember","index":1},{"kind":"tiledChild","name":"right"}],"port":{"name":"audio","index":2,"channel":1}}],"targetType":"mono","inputs":[{"instanceId":"target","path":[],"port":{"name":"audio"}}]}}})");
+        R"({"jsonrpc":"2.0","id":36,"method":"graphConnections.upsert","params":{"connection":{"kind":"sample","connectionId":"sample:main","sourceType":"stereo","outputs":[{"instanceId":"source","path":[{"kind":"symbolicNode","sourceIdentity":"processor","typeIdentity":"filter"},{"kind":"symbolicMember","index":1},{"kind":"tiledChild","name":"right"}],"port":{"name":"audio","index":2,"channel":1}}],"targetType":"mono","inputs":[{"instanceId":"target","path":[],"port":{"name":"audio"}}]}}})");
 
     EXPECT_EQ(parsed.request_id, 36);
     auto const* request = std::get_if<iv::UpsertGraphConnectionRequest>(
@@ -439,11 +439,11 @@ TEST(SocketRpcRequestParser, ParsesStructuredSampleConnectionMutation)
     EXPECT_EQ(connection->target_type, iv::ChannelTypeId::mono);
     ASSERT_EQ(connection->outputs.size(), 1u);
     ASSERT_EQ(connection->outputs[0].path.size(), 3u);
-    auto const* virtual_node = std::get_if<iv::ProjectVirtualNodeSelector>(
+    auto const* symbolic_node = std::get_if<iv::ProjectSymbolicNodeSelector>(
         &connection->outputs[0].path[0]);
-    ASSERT_NE(virtual_node, nullptr);
-    EXPECT_EQ(virtual_node->source_identity, "processor");
-    EXPECT_EQ(virtual_node->type_identity, "filter");
+    ASSERT_NE(symbolic_node, nullptr);
+    EXPECT_EQ(symbolic_node->source_identity, "processor");
+    EXPECT_EQ(symbolic_node->type_identity, "filter");
     EXPECT_EQ(connection->outputs[0].port.channel, 1u);
 }
 
@@ -461,7 +461,7 @@ TEST(SocketRpcRequestParser, ParsesGraphConnectionDeleteMutation)
 TEST(SocketRpcRequestParser, ParsesTypedNodeMessageDispatch)
 {
     auto const parsed = iv::parse_socket_rpc_request(
-        R"({"jsonrpc":"2.0","id":41,"method":"nodeMessages.dispatch","params":{"target":{"instanceId":"instance:voice","path":[{"kind":"virtualNode","sourceIdentity":"filter"},{"kind":"virtualMember","index":2}]},"eventTypeNominalId":"c:@S@SetCutoff","eventTypeDefinitionFingerprint":"0123456789abcdef","payload":{"cutoff":1800.0}}})");
+        R"({"jsonrpc":"2.0","id":41,"method":"nodeMessages.dispatch","params":{"target":{"instanceId":"instance:voice","path":[{"kind":"symbolicNode","sourceIdentity":"filter"},{"kind":"symbolicMember","index":2}]},"eventTypeNominalId":"c:@S@SetCutoff","eventTypeDefinitionFingerprint":"0123456789abcdef","payload":{"cutoff":1800.0}}})");
 
     auto const* request = std::get_if<iv::DispatchNodeMessageRequest>(
         &parsed.payload);
@@ -469,7 +469,7 @@ TEST(SocketRpcRequestParser, ParsesTypedNodeMessageDispatch)
     EXPECT_EQ(parsed.request_id, 41);
     EXPECT_EQ(request->target.instance_id, "instance:voice");
     ASSERT_EQ(request->target.path.size(), 2u);
-    auto const* member = std::get_if<iv::ProjectVirtualMemberSelector>(
+    auto const* member = std::get_if<iv::ProjectSymbolicMemberSelector>(
         &request->target.path[1]);
     ASSERT_NE(member, nullptr);
     EXPECT_EQ(member->index, 2u);
@@ -663,7 +663,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
 {
     iv::SocketRpcGraphQueryResultBuilder builder;
     iv::ProjectQueryResult result;
-    result.nodes.push_back(iv::VirtualNodeInfo {
+    result.nodes.push_back(iv::SymbolicNodeInfo {
         .id = "node-1",
         .kind = "Oscillator",
         .source_identity = "src-1",
@@ -679,7 +679,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
             },
         },
         .continuous_inputs = {
-            iv::VirtualContinuousPortInfo {
+            iv::SymbolicContinuousPortInfo {
                 .name = "frequency",
                 .index = 1,
                 .value_types = {
@@ -701,20 +701,20 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
                     iv::FFTBlockContinuousValueExtension::IntrospectionMetadata{},
                 },
                 .channel_type = iv::ChannelTypeId::mono,
-                .binding = iv::VirtualPortBinding::interface,
+                .binding = iv::SymbolicPortBinding::interface,
             },
         },
         .event_inputs = {
-            iv::VirtualEventPortInfo{
+            iv::SymbolicEventPortInfo{
                 .name = "trigger",
                 .index = 2,
                 .type = iv::EventTypeId::trigger,
-                .binding = iv::VirtualPortBinding::virtual_input,
+                .binding = iv::SymbolicPortBinding::symbolic_input,
             },
         },
         .member_count = 1,
         .members = {
-            iv::VirtualNodeMemberInfo {
+            iv::SymbolicNodeMemberInfo {
                 .index = 4,
                 .backing_node_id = "backing-1",
             },
@@ -757,7 +757,7 @@ TEST(SocketRpcGraphQueryResultBuilder, SerializesNodes)
     EXPECT_FALSE(continuous.contains("hasConcreteOverride"));
     EXPECT_FALSE(continuous.contains("stateValue"));
     EXPECT_EQ(node["eventInputs"][0]["eventType"], "trigger");
-    EXPECT_EQ(node["eventInputs"][0]["binding"], "virtualInput");
+    EXPECT_EQ(node["eventInputs"][0]["binding"], "symbolicInput");
     EXPECT_EQ(node["members"][0]["index"], 4);
     EXPECT_EQ(node["definitionId"], "iv.test.oscillator");
 }

@@ -11,7 +11,7 @@ struct ConfiguredGraphSnapshotError {
     open_nested_scope,
     // The view does not denote an open scope of its session.
     closed_scope,
-    // A connection, expression, or virtual-node record of the scope refers to a
+    // A connection, expression, or symbolic-node record of the scope refers to a
     // node bundle outside the scope (a free graph capture).
     free_graph_capture,
     // Construction inside the scope mutated graph state that belongs to an

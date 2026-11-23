@@ -18,12 +18,12 @@ class IvModuleInstancesSourceFileFilterBuilder;
 struct IvModuleSourceIntrospectionProjectGraphRequest;
 class SocketRpcGraphQueryResultBuilder;
 class SocketRpcRegionQueryResultBuilder;
-class SocketRpcVirtualNodeResultBuilder;
-class SocketRpcVirtualNodesResultBuilder;
+class SocketRpcSymbolicNodeResultBuilder;
+class SocketRpcSymbolicNodesResultBuilder;
 struct GraphQueryBySpansRequest;
 struct GraphQueryActiveRegionsRequest;
-struct GetVirtualNodeRequest;
-struct GetVirtualNodesRequest;
+struct GetSymbolicNodeRequest;
+struct GetSymbolicNodesRequest;
 
 struct SourceTextLineMap {
     std::string text;
@@ -38,8 +38,8 @@ struct LoadedGraphIntrospectionIndex {
     std::string definition_id;
     std::filesystem::path module_root;
     std::string module_id;
-    std::vector<IntrospectionVirtualNode> virtual_nodes;
-    std::unordered_map<std::string, size_t> virtual_node_index_by_id;
+    std::vector<IntrospectionSymbolicNode> symbolic_nodes;
+    std::unordered_map<std::string, size_t> symbolic_node_index_by_id;
     std::unordered_set<std::string> dependency_file_paths;
 };
 
@@ -55,15 +55,15 @@ class IvModuleSourceIntrospection {
     std::pair<uint32_t, uint32_t>
     byte_range_for(std::string const &normalized_path, SourceRange const &range) const;
     LiveSourceSpan to_live_span(SourceSpan const &span) const;
-    VirtualNodeInfo to_virtual_node(
-        IntrospectionVirtualNode const &node,
+    SymbolicNodeInfo to_symbolic_node(
+        IntrospectionSymbolicNode const &node,
         std::string const &instance_id) const;
 
 public:
     IvModuleSourceIntrospection() = default;
 
     // Applies one ProjectGraph root build's definition and instance-declaration
-    // changes and returns the virtual-node replacements they cause.
+    // changes and returns the symbolic-node replacements they cause.
     void handle_project_graph_source_introspection(
         IvModuleSourceIntrospectionProjectGraphRequest &request);
     ProjectQueryResult
@@ -77,11 +77,11 @@ public:
     [[nodiscard]] bool definition_uses_source_file(
         std::string const &definition_id,
         std::filesystem::path const &file_path) const;
-    VirtualNodeInfo get_virtual_node(std::string const &node_id) const;
-    std::vector<VirtualNodeInfo>
-    get_virtual_nodes(std::vector<std::string> const &node_ids) const;
-    std::vector<VirtualNodeInfo>
-    get_virtual_nodes_for_instances(std::vector<IvModuleInstanceInfo> const &instances) const;
+    SymbolicNodeInfo get_symbolic_node(std::string const &node_id) const;
+    std::vector<SymbolicNodeInfo>
+    get_symbolic_nodes(std::vector<std::string> const &node_ids) const;
+    std::vector<SymbolicNodeInfo>
+    get_symbolic_nodes_for_instances(std::vector<IvModuleInstanceInfo> const &instances) const;
     void handle_iv_module_instances_source_file_filter(
         std::filesystem::path const &source_file_path,
         std::vector<IvModuleInstanceInfo> const &instances,
@@ -92,11 +92,11 @@ public:
     void handle_socket_rpc_graph_query_active_regions(
         GraphQueryActiveRegionsRequest const &request,
         SocketRpcRegionQueryResultBuilder &builder) const;
-    void handle_socket_rpc_get_virtual_node(
-        GetVirtualNodeRequest const &request,
-        SocketRpcVirtualNodeResultBuilder &builder) const;
-    void handle_socket_rpc_get_virtual_nodes(
-        GetVirtualNodesRequest const &request,
-        SocketRpcVirtualNodesResultBuilder &builder) const;
+    void handle_socket_rpc_get_symbolic_node(
+        GetSymbolicNodeRequest const &request,
+        SocketRpcSymbolicNodeResultBuilder &builder) const;
+    void handle_socket_rpc_get_symbolic_nodes(
+        GetSymbolicNodesRequest const &request,
+        SocketRpcSymbolicNodesResultBuilder &builder) const;
 };
 } // namespace iv

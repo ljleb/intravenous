@@ -22,10 +22,10 @@ typedef struct IvRecordedTexts {
     struct IvRecordedTexts *next;
 } IvRecordedTexts;
 
-typedef struct IvRecordedNumericEdits {
-    IvNumericNodeEditSpan values;
-    struct IvRecordedNumericEdits *next;
-} IvRecordedNumericEdits;
+typedef struct IvRecordedEdits {
+    IvNodeEdit value;
+    struct IvRecordedEdits *next;
+} IvRecordedEdits;
 
 struct IvPresentationContext {
     double width, height;
@@ -45,8 +45,12 @@ struct IvPresentationContext {
     IvNumericValueSpan arguments;
     IvControlInputSpan controls;
     IvSettingsPanel *panel;
-    IvRecordedNumericEdits *edits, *last_edits;
+    IvRecordedEdits *edits, *last_edits;
     IvTimelineGrid *grid;
+    uint64_t revision;
+    IvEditReplySpan edit_replies;
+    uint32_t edit_count;
+    IvObservedWaveformSpan waveforms;
 };
 
 #if defined(__wasm32__)
@@ -59,7 +63,7 @@ _Static_assert(sizeof(IvRecordedDragTargets) == 12, "target batch layout");
 _Static_assert(sizeof(IvText) == 32, "text layout");
 _Static_assert(sizeof(IvRecordedTexts) == 12, "text batch layout");
 _Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation layout");
-_Static_assert(sizeof(IvPresentationContext) == 168, "frame layout");
+_Static_assert(sizeof(IvPresentationContext) == 200, "frame layout");
 _Static_assert(offsetof(IvPresentationContext, gestures) == 16, "input layout");
 _Static_assert(offsetof(IvPresentationContext, storage) == 32, "arena layout");
 _Static_assert(offsetof(IvPresentationContext, drawing) == 48, "drawing layout");
@@ -75,11 +79,20 @@ _Static_assert(offsetof(IvPresentationContext, controls) == 144, "control input 
 _Static_assert(offsetof(IvPresentationContext, panel) == 152, "panel layout");
 _Static_assert(offsetof(IvPresentationContext, edits) == 156, "edit layout");
 _Static_assert(offsetof(IvPresentationContext, grid) == 164, "grid layout");
+_Static_assert(offsetof(IvPresentationContext, revision) == 168, "revision layout");
+_Static_assert(offsetof(IvPresentationContext, edit_replies) == 176, "edit replies layout");
+_Static_assert(offsetof(IvPresentationContext, edit_count) == 184, "edit count layout");
+_Static_assert(offsetof(IvPresentationContext, waveforms) == 188, "waveform layout");
+_Static_assert(sizeof(IvWaveformPoint) == 24, "waveform point layout");
+_Static_assert(sizeof(IvWaveformRegion) == 32 && offsetof(IvWaveformRegion, points) == 20, "waveform region layout");
+_Static_assert(sizeof(IvObservedWaveform) == 32, "observed waveform layout");
 _Static_assert(sizeof(IvNumericValue) == 12, "numeric argument layout");
 _Static_assert(sizeof(IvControlInput) == 24, "control event layout");
 _Static_assert(sizeof(IvSetting) == 64, "setting layout");
-_Static_assert(sizeof(IvNumericField) == 20, "field layout");
-_Static_assert(sizeof(IvNumericNodeEdit) == 36, "node edit layout");
+_Static_assert(sizeof(IvConvertedScalar) == 24, "converted scalar layout");
+_Static_assert(sizeof(IvNodeEdit) == 20, "node edit layout");
+_Static_assert(sizeof(IvRecordedEdits) == 24, "recorded edit layout");
+_Static_assert(sizeof(IvEditReply) == 24, "edit reply layout");
 _Static_assert(sizeof(IvTimelineGrid) == 56, "timeline grid layout");
 #endif
 

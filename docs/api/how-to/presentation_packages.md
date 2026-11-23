@@ -54,6 +54,26 @@ Use a buffered Tick trigger output. If the observation is unavailable,
 check the node ID, the port name, and the output declaration.
 [Shipped binding](../../../src/intravenous/builtin_packages/builtin/iv_package.json)
 
+## Bind a waveform input or output
+
+Declare `operation: "waveform"`, choose an input or output, and request
+between 2 and 1,024 points in the visible view. Use `whenConnected: true`
+when an unconnected port needs no subscription. Give related bindings the
+same `group` when they must agree on the selected observation windows. Use
+`completeOnly: true` to keep the previous complete view while a replacement
+is pending.
+
+```json
+{"id":"value","port":"value","direction":"output","operation":"waveform","points":512}
+```
+
+In C++, use `frame.observed_waveform(id)` to access its Regions. Draw each
+Region independently and clip to its half-open `begin` and `end` offsets.
+The view can carry retained data during refresh. The host owns requests,
+prefetching, and selection of retained windows.
+[Waveform records](../reference/presentation_c_abi.md#host-context-and-borrowed-views) ·
+[Placement example](../../../examples/wasm-presentation/packages/marker/presentations/placement.cpp)
+
 ## Test a presentation scenario
 
 Use a scratch copy of the project. Set `IV_TEST_SERVER` to the matching

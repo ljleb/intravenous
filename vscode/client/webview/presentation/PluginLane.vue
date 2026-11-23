@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
-import type { PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
+import type { PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
     PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
@@ -12,7 +12,7 @@ import { sampleWindow } from "../../src/sampleWaveform";
 import { timelineSamples, timelineVisibleEventSpan } from "../../src/timelineSamples";
 import { recordedTriggerBinsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
-import { visibleCursorDestination } from "../graph/cursorReturn";
+import { presentationCursorPoint, visibleCursorDestination } from "../graph/cursorReturn";
 import { useTimelineMarks, useTimelineNavigation, useTimelineWindow, type LaneValueNavigation } from "../timeline/timelineContext";
 import { usePlayback } from "../timeline/playbackContext";
 import { usePlayheadSeek } from "../timeline/usePlayheadSeek";
@@ -87,20 +87,20 @@ const observed = [...observationGroups.values()].map((group) => ({ group, view: 
         operation: need.operation ?? "waveform", window,
         completeOnly: need.completeOnly };
 })) }));
-const observations = computed(() => Object.fromEntries(observed.flatMap(({ group, view }) => group.map(({ id }, index): [string, PresentationObservation | null] => {
+const observations = computed(() => Object.fromEntries(observed.flatMap(({ group, view }) => group.map(({ id, operation = "waveform" }, index): [string, PresentationObservation | null] => {
     const observation = view.value[index];
     if (!observation) return [id, null];
     const spans = observation.spans.map(({ begin, end, windowOffset, result }) =>
         ({ begin: String(begin), end: String(end), windowOffset: String(windowOffset), result }));
-    return [id, { ...observation, spans }];
+    return [id, { ...observation, operation, spans }];
 }))));
 const acceptedRevision = ref(0);
 const wake = new PresentationWake(() => session.input({ type: "wake" }));
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
-let cursorReply: { input: PresentationGestureInput; resolve: (point: PresentationPoint | undefined) => void } | undefined;
+let cursorReply: { input: PresentationGestureInput; resolve: (point: PresentationCursor | undefined) => void } | undefined;
 
-function settleCursorReply(point?: PresentationPoint) {
+function settleCursorReply(point?: PresentationCursor) {
     cursorReply?.resolve(point);
     cursorReply = undefined;
 }
@@ -130,7 +130,12 @@ function fail(reason: unknown) {
     worker?.dispose();
 }
 function accept(next: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) {
-    if (cursorReply && inputs.includes(cursorReply.input)) settleCursorReply(draw ? next.drag?.cursor : undefined);
+    if (cursorReply && inputs.includes(cursorReply.input)) {
+        const cursor = next.drag?.cursor;
+        // A timeline destination can be projected into the latest viewport
+        // even when the frame's drawing was superseded during the release.
+        settleCursorReply(cursor && (draw || "sample" in cursor) ? cursor : undefined);
+    }
     const continuing = inputs.length > 0 || waking.value;
     const deferredState = !!present && inputs.length > 0
         && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
@@ -229,7 +234,7 @@ function pointerDown(event: PointerEvent) {
     if (frame.value?.itemEditing) surface.value.focus({ preventScroll: true });
     menu.close();
     settleCursorReply();
-    let released: Promise<PresentationPoint | undefined> | undefined;
+    let released: Promise<PresentationCursor | undefined> | undefined;
     cancelDrag = editor.startObjectDrag(event, presentationDrag(event, box, target, (input) => {
         if (input.phase === "begin" && props.program.manifest.timelineSnapping && time?.value) input.snapping = {
             marks: (timelineMarks?.value ?? []).map(({ index }) => String(index)),
@@ -251,15 +256,15 @@ function pointerDown(event: PointerEvent) {
         hideCursor: target.hideCursor,
         hint: () => frame.value?.drag?.hint ? { text: frame.value.drag.hint, shortcuts: frame.value.drag.shortcuts } : undefined,
         cursorReturn: target.cursorReturn ? () => {
-            const locate = (point: PresentationPoint | undefined) => {
+            const locate = (point: PresentationCursor | undefined) => {
                 const element = surface.value;
                 if (!point || !element?.isConnected) {
                     trace?.log("Presentation point has no visible destination", { point, connected: element?.isConnected ?? false });
                     return null;
                 }
                 const bounds = element.getBoundingClientRect();
-                const requested = { x: bounds.left + point.x, y: bounds.top + point.y };
-                const destination = visibleCursorDestination(element, requested);
+                const requested = presentationCursorPoint(point, bounds, time?.value);
+                const destination = requested && visibleCursorDestination(element, requested);
                 trace?.log("Resolved presentation point destination", { point, requested, destination });
                 return destination;
             };

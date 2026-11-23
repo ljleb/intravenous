@@ -1,13 +1,13 @@
-import type { VirtualNode } from "../src/graphModel";
+import type { SymbolicNode } from "../src/graphModel";
 import type { LiveGraphInstance } from "../src/liveGraphProtocol";
 
 // The nodes of the selected instance, or every node when no instance is
 // selected or the selected instance has no node at the current source
 // selection.
 export function visibleNodes(
-    nodes: readonly VirtualNode[],
+    nodes: readonly SymbolicNode[],
     selectedInstanceId: string | null,
-): VirtualNode[] {
+): SymbolicNode[] {
     if (!selectedInstanceId) {
         return [...nodes];
     }

@@ -22,12 +22,12 @@ import {
     SourcePosition,
     SourceRange,
     SourceSpan,
-    VirtualContinuousPort,
-    VirtualEventPort,
-    VirtualNode,
-    VirtualNodeMember,
-    VirtualPortBinding,
-    VirtualPortConnectivity,
+    SymbolicContinuousPort,
+    SymbolicEventPort,
+    SymbolicNode,
+    SymbolicNodeMember,
+    SymbolicPortBinding,
+    SymbolicPortConnectivity,
 } from "./graphModel";
 import { LiveGraphControlMessage, LiveGraphSessionStatus } from "./liveGraphProtocol";
 import { Duplex } from "stream";
@@ -67,8 +67,8 @@ function orderWithInsertedLanes(scope: GraphScope, insertions: readonly { instan
 type LiveGraphProviderLike = {
     setSessionStatus(status: LiveGraphSessionStatus): void;
     setInstances(instances: IvModuleInstanceInfo[]): void;
-    setNodes(nodes: VirtualNode[]): void;
-    upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
+    setNodes(nodes: SymbolicNode[]): void;
+    upsertNodes(nodes: SymbolicNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setPackageRoot(packageRoot: string | null): void;
 };
@@ -501,7 +501,7 @@ export class WorkspaceSession {
         });
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
-            const nodes = this.parseVirtualNodes(params.nodes);
+            const nodes = this.parseSymbolicNodes(params.nodes);
             const replaceInstanceIds = Array.isArray(params.replaceInstanceIds)
                 ? params.replaceInstanceIds.filter((value): value is string => typeof value === "string")
                 : [];
@@ -657,16 +657,16 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualPortConnectivity(
+    private parseSymbolicPortConnectivity(
         payload: unknown,
-    ): VirtualPortConnectivity | null {
+    ): SymbolicPortConnectivity | null {
         return payload === "disconnected" || payload === "connected"
             || payload === "mixed" ? payload : null;
     }
 
-    private parseVirtualPortBinding(payload: unknown): VirtualPortBinding | null {
+    private parseSymbolicPortBinding(payload: unknown): SymbolicPortBinding | null {
         return payload === "interface" || payload === "none"
-            || payload === "virtualInput" || payload === "virtualOutput"
+            || payload === "symbolicInput" || payload === "symbolicOutput"
             || payload === "mixed"
             ? payload : null;
     }
@@ -740,14 +740,14 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualContinuousPort(
+    private parseSymbolicContinuousPort(
         payload: unknown,
-    ): VirtualContinuousPort | null {
+    ): SymbolicContinuousPort | null {
         if (!payload || typeof payload !== "object") return null;
         const candidate = payload as Record<string, unknown>;
-        const connectivity = this.parseVirtualPortConnectivity(
+        const connectivity = this.parseSymbolicPortConnectivity(
             candidate.connectivity);
-        const binding = this.parseVirtualPortBinding(candidate.binding);
+        const binding = this.parseSymbolicPortBinding(candidate.binding);
         if (typeof candidate.index !== "number"
             || !Number.isSafeInteger(candidate.index)
             || candidate.index < 0
@@ -776,12 +776,12 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualEventPort(payload: unknown): VirtualEventPort | null {
+    private parseSymbolicEventPort(payload: unknown): SymbolicEventPort | null {
         if (!payload || typeof payload !== "object") return null;
         const candidate = payload as Record<string, unknown>;
-        const connectivity = this.parseVirtualPortConnectivity(
+        const connectivity = this.parseSymbolicPortConnectivity(
             candidate.connectivity);
-        const binding = this.parseVirtualPortBinding(candidate.binding);
+        const binding = this.parseSymbolicPortBinding(candidate.binding);
         if (typeof candidate.index !== "number"
             || !Number.isSafeInteger(candidate.index)
             || candidate.index < 0
@@ -800,7 +800,7 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualNodeMember(payload: unknown): VirtualNodeMember | null {
+    private parseSymbolicNodeMember(payload: unknown): SymbolicNodeMember | null {
         if (!payload || typeof payload !== "object") {
             return null;
         }
@@ -812,21 +812,21 @@ export class WorkspaceSession {
             typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
             definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
             continuousInputs: Array.isArray(candidate.continuousInputs)
-                ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
+                ? candidate.continuousInputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                 : undefined,
             continuousOutputs: Array.isArray(candidate.continuousOutputs)
-                ? candidate.continuousOutputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
+                ? candidate.continuousOutputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                 : undefined,
             eventInputs: Array.isArray(candidate.eventInputs)
-                ? candidate.eventInputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
+                ? candidate.eventInputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                 : undefined,
             eventOutputs: Array.isArray(candidate.eventOutputs)
-                ? candidate.eventOutputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
+                ? candidate.eventOutputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                 : undefined,
         };
     }
 
-    private parseVirtualNodes(payload: unknown): VirtualNode[] {
+    private parseSymbolicNodes(payload: unknown): SymbolicNode[] {
         if (!Array.isArray(payload)) {
             return [];
         }
@@ -839,7 +839,7 @@ export class WorkspaceSession {
                 ? candidate.sourceSpans.map((span) => this.parseSourceSpan(span)).filter((span): span is SourceSpan => span !== null)
                 : undefined;
             const members = Array.isArray(candidate.members)
-                ? candidate.members.map((member) => this.parseVirtualNodeMember(member)).filter((member): member is VirtualNodeMember => member !== null)
+                ? candidate.members.map((member) => this.parseSymbolicNodeMember(member)).filter((member): member is SymbolicNodeMember => member !== null)
                 : undefined;
             return [{
                 id: typeof candidate.id === "string" ? candidate.id : undefined,
@@ -850,16 +850,16 @@ export class WorkspaceSession {
                 definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
                 sourceSpans,
                 continuousInputs: Array.isArray(candidate.continuousInputs)
-                    ? candidate.continuousInputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
+                    ? candidate.continuousInputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                     : undefined,
                 continuousOutputs: Array.isArray(candidate.continuousOutputs)
-                    ? candidate.continuousOutputs.map((port) => this.parseVirtualContinuousPort(port)).filter((port): port is VirtualContinuousPort => port !== null)
+                    ? candidate.continuousOutputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                     : undefined,
                 eventInputs: Array.isArray(candidate.eventInputs)
-                    ? candidate.eventInputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
+                    ? candidate.eventInputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                     : undefined,
                 eventOutputs: Array.isArray(candidate.eventOutputs)
-                    ? candidate.eventOutputs.map((port) => this.parseVirtualEventPort(port)).filter((port): port is VirtualEventPort => port !== null)
+                    ? candidate.eventOutputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                     : undefined,
                 memberCount: typeof candidate.memberCount === "number" ? candidate.memberCount : undefined,
                 members,
@@ -1340,7 +1340,7 @@ export class WorkspaceSession {
         await this.rpc.disableProjectAutosave();
     }
 
-    updatePrimaryHighlight(nodes: VirtualNode[]): void {
+    updatePrimaryHighlight(nodes: SymbolicNode[]): void {
         if (!Array.isArray(nodes) || nodes.length === 0) {
             this.highlighter.clearPrimary();
             return;
@@ -1362,7 +1362,7 @@ export class WorkspaceSession {
         }));
     }
 
-    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<VirtualNode[]> {
+    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<SymbolicNode[]> {
         if (!this.rpc || !editor) {
             return [];
         }
@@ -1402,7 +1402,7 @@ export class WorkspaceSession {
     // even when focus moves to a webview. Backend node-change notifications
     // carry instance-wide deltas, so they must be reprojected through this
     // query before updating the panel.
-    private async refreshLastQuery(): Promise<VirtualNode[]> {
+    private async refreshLastQuery(): Promise<SymbolicNode[]> {
         if (!this.rpc || !this.lastQuery) {
             return [];
         }
@@ -1419,7 +1419,7 @@ export class WorkspaceSession {
             return [];
         }
         this.lastQueryError = "";
-        const nodes = sortNodesByRelevance(this.parseVirtualNodes(result.nodes), query);
+        const nodes = sortNodesByRelevance(this.parseSymbolicNodes(result.nodes), query);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);

@@ -162,7 +162,7 @@ test("open node gestures use their target and interaction ID across project revi
     for (const target of [
         { instanceId: "curve" },
         { instanceId: "curve", path: [] },
-        { instanceId: "curve", path: [{ kind: "virtualNode", sourceIdentity: "inner" }] },
+        { instanceId: "curve", path: [{ kind: "symbolicNode", sourceIdentity: "inner" }] },
     ]) {
         calls.length = 0;
         const original = structuredClone(target);

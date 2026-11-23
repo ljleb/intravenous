@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { VirtualNode } from "../src/graphModel";
-import { liveGraphInstances, upsertVirtualNodes } from "../src/liveGraphModel";
+import { SymbolicNode } from "../src/graphModel";
+import { liveGraphInstances, upsertSymbolicNodes } from "../src/liveGraphModel";
 import { instanceLabel, visibleNodes } from "../webview/liveGraphView";
 
 test("liveGraphInstances keeps only records with an instance ID", () => {
@@ -40,14 +40,14 @@ test("instanceLabel prefers the display name and marks unrealized instances", ()
         "Lead [loading]");
 });
 
-test("upsertVirtualNodes replaces whole instances and then nodes by ID", () => {
-    const current: VirtualNode[] = [
+test("upsertSymbolicNodes replaces whole instances and then nodes by ID", () => {
+    const current: SymbolicNode[] = [
         { id: "a:1", instanceId: "a", kind: "Old" },
         { id: "a:2", instanceId: "a", kind: "Removed" },
         { id: "b:1", instanceId: "b", kind: "Kept" },
         { id: "c:1", instanceId: "c", kind: "Old" },
     ];
-    const updated = upsertVirtualNodes(
+    const updated = upsertSymbolicNodes(
         current,
         [
             { id: "a:1", instanceId: "a", kind: "New" },
@@ -61,7 +61,7 @@ test("upsertVirtualNodes replaces whole instances and then nodes by ID", () => {
 });
 
 test("visibleNodes falls back to every node when the selection has none", () => {
-    const nodes: VirtualNode[] = [
+    const nodes: SymbolicNode[] = [
         { id: "a:1", instanceId: "a" },
         { id: "b:1", instanceId: "b" },
     ];

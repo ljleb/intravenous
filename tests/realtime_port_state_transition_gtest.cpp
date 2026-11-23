@@ -82,7 +82,7 @@ iv::graph_jit::RealtimePortStateRequirement requirement(
     iv::PortKind kind,
     iv::graph_jit::PortDirection direction,
     iv::graph_jit::RealtimePortStateRole role,
-    std::string virtual_node,
+    std::string symbolic_node,
     std::string port_name,
     std::optional<std::size_t> channel)
 {
@@ -99,7 +99,7 @@ iv::graph_jit::RealtimePortStateRequirement requirement(
         .stable_identity = iv::graph_jit::StableRealtimePortStateId{
             .node = iv::graph_jit::StableConcreteNodeId{
                 .graph = "root",
-                .virtual_node = std::move(virtual_node),
+                .symbolic_node = std::move(symbolic_node),
                 .direct_member = 2,
             },
             .direction = direction,

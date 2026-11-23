@@ -4,11 +4,21 @@ import type { CursorReturnMessage, CursorReturnPolicy } from "../src/graphEditor
 import { PointerLockExitGuard } from "../src/pointerLockExitGuard";
 import { timelineSampleFraction } from "../src/timelineGeometry";
 import { timelineSampleAt, timelineSampleCount, timelineSamples } from "../src/timelineSamples";
-import { cursorWarpAnchor, PointerLockCursorReturn, visibleCursorDestination } from "../webview/graph/cursorReturn";
+import { cursorWarpAnchor, PointerLockCursorReturn, presentationCursorPoint, visibleCursorDestination } from "../webview/graph/cursorReturn";
 
 const origin = { x: 10, y: 20 };
 const anchor = cursorWarpAnchor({ pointerType: "mouse", screenX: 100, screenY: 200 }, 1.5)!;
 const destination = () => ({ x: 40, y: 16 });
+
+test("a presentation cursor reply follows an exact sample across the signed seam and a viewport change", () => {
+    const landing = { sample: String(-(1n << 63n) + 3n), yFraction: .25 };
+    const bounds = { left: 20, top: 30, width: 100, height: 200 };
+    const time = { beginSample: String((1n << 63n) - 2n), beginFraction: 0, spanSamples: 10 };
+    assert.deepEqual(presentationCursorPoint(landing, bounds, time), { x: 70, y: 80 });
+    assert.deepEqual(presentationCursorPoint(landing, { ...bounds, width: 160 },
+        { ...time, beginSample: String(-(1n << 63n)), spanSamples: 6 }), { x: 100, y: 80 });
+});
+
 function harness() {
     let locked = true;
     const guard = new PointerLockExitGuard();

@@ -40,8 +40,8 @@ struct ProjectGraphScopeSource {
 struct ProjectGraphScopeNode {
     NodeAddress address{};
     std::optional<NodeAddress> membership_address{};
-    bool virtual_node = false;
-    std::optional<std::size_t> virtual_member_count{};
+    bool symbolic_node = false;
+    std::optional<std::size_t> symbolic_member_count{};
     // The project instance owns the address. For a source-owned child, the
     // selector path identifies the row within that instance.
     IvModuleInstanceInfo instance{};

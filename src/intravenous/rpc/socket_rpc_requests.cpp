@@ -281,12 +281,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return parsed(GraphQueryActiveRegionsRequest{
             .file_path = parse_string_param(params, "filePath")});
     }
-    if (method == "graph.getVirtualNode") {
-        return parsed(GetVirtualNodeRequest{
+    if (method == "graph.getSymbolicNode") {
+        return parsed(GetSymbolicNodeRequest{
             .node_id = parse_string_param(params, "nodeId")});
     }
-    if (method == "graph.getVirtualNodes") {
-        return parsed(GetVirtualNodesRequest{
+    if (method == "graph.getSymbolicNodes") {
+        return parsed(GetSymbolicNodesRequest{
             .node_ids = parse_string_array_param(params, "nodeIds")});
     }
     if (method == "graph.getScope") {

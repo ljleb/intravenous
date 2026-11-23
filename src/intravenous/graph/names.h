@@ -69,7 +69,7 @@ constexpr std::string stable_identity_suffix(std::string_view value)
     return std::string(digits + begin, digits + sizeof(digits));
 }
 
-constexpr std::string typed_virtual_node_id(
+constexpr std::string typed_symbolic_node_id(
     std::string_view source_identity,
     std::string_view type_identity)
 {

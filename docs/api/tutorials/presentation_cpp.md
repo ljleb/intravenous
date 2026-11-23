@@ -5,13 +5,16 @@ lane reload. Use a development shell in the repository. Set up the
 editor and its dependencies as described in [Run Intravenous for
 development](../../development_run.md).
 
-1. Make a scratch copy in the repository and open it with the development
-   launcher. The copy includes the marker's built WebAssembly file.
+1. Make a scratch copy in the repository, build its presentation
+   artifacts, and open it with the development launcher.
 
    ```sh
    mkdir -p build-release
    scratch=$(mktemp -d "$PWD/build-release/iv-marker.XXXXXX")
    cp -R examples/wasm-presentation/. "$scratch/"
+   marker="$scratch/packages/marker/presentations"
+   python3 scripts/build_presentation.py "$marker/marker.cpp" "$marker/marker.wasm"
+   python3 scripts/build_presentation.py "$marker/placement.cpp" "$marker/placement.wasm"
    scripts/run_dev.sh "$scratch"
    ```
 
@@ -38,3 +41,5 @@ You have changed the guest's drawing and reloaded it with its saved state.
 The source in the example is also compiled by the
 [documentation check](../how-to/validate_docs.md).
 [Marker source](../../../examples/wasm-presentation/packages/marker/presentations/marker.cpp)
+
+Next, [send a node event from a C++ presentation](presentation_event.md).

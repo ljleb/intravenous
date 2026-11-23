@@ -6,7 +6,7 @@ scope lookup, named tiled children, and no `ProjectSubgraphSelector`. Structured
 persistence and wire adapters remain follow-up work._
 
 This document supplements [graph_builder.md](./historical/graph_builder.md),
-[virtual_nodes_channel_aware_graph_direction.md](./historical/virtual_nodes_channel_aware_graph_direction.md),
+[Earlier symbolic node design](./historical/virtual_nodes_channel_aware_graph_direction.md),
 and [project_graph_application_architecture.md](./project_graph_application_architecture.md).
 
 The implemented live-child/frozen-child importer described here is the current
@@ -24,30 +24,30 @@ substantial optimization/profiling iteration has been completed.
 > in its `BuilderSession`; only frozen `ConfiguredGraph` placement still goes through
 > the importer described below. A registered-definition cache hit places the cached
 > contents directly in the caller's scope without a synthetic wrapper subgraph, and
-> imported virtual-node IDs are qualified by their placement path or by their
+> imported symbolic-node IDs are qualified by their placement path or by their
 > subgraph handle relative to the enclosing module, rather than by a session handle.
 > The text below records the checkpoint that preceded the migration.
 
 The builder now imports a frozen `ConfiguredGraph` directly; it does not rebuild
 a temporary child `GraphBuilder`. Live-child and frozen-child insertion use the
 same component importer for node bundles, sample/event connections, detach
-state, and virtual-node state. Each frozen placement returns an explicit
+state, and symbolic-node state. Each frozen placement returns an explicit
 `ConfiguredGraphEmbedding` containing the synthetic parent root scope plus
-local-to-parent node-bundle/scope and virtual-node translations.
+local-to-parent node-bundle/scope and symbolic-node translations.
 
-Imported virtual-node records are cloned/remapped one-for-one and receive a
+Imported symbolic-node records are cloned/remapped one-for-one and receive a
 scope-qualified introspection ID. Their source and type identities remain
 unchanged. This is deliberate: two embeddings of the same cached configured
-graph may contain the same local virtual declaration, but lowering must not
-coalesce those declarations back into one root-scope virtual node. Nested
+graph may contain the same local symbolic declaration, but lowering must not
+coalesce those declarations back into one root-scope symbolic node. Nested
 subgraph bundles and tiled child bundles continue to translate through the
 node-bundle mapping.
 
 `GraphConnections` now consumes these preserved identities through structured project
 matchers and `resolve_project_node_path()`. The implemented path uses scope-local
-`ProjectVirtualNodeSelector`, indexed
-`ProjectVirtualMemberSelector`, and named `ProjectTiledChildSelector` records. A selected
-virtual node supplies the route into its backing subgraph. The semantic path does not
+`ProjectSymbolicNodeSelector`, indexed
+`ProjectSymbolicMemberSelector`, and named `ProjectTiledChildSelector` records. A selected
+symbolic node supplies the route into its backing subgraph. The semantic path does not
 use `ProjectSubgraphSelector`. The port matcher remains separate and selects a port plus
 an optional sample channel.
 
@@ -77,7 +77,7 @@ frozen ConfiguredGraph --------/
 
 The importer must preserve every semantic component represented by
 `ConfiguredGraph`: node bundles, public interfaces, internal sample/event
-connections, detach state, virtual nodes, annotations/source identity, nested
+connections, detach state, symbolic nodes, annotations/source identity, nested
 subgraph scope, and tiled-child structure.
 
 ## Local handles remain local
@@ -100,7 +100,7 @@ The mapping should cover every kind of identity needed by recursive project
 path resolution, not only a root bundle offset. At minimum this includes:
 
 - graph/scope handles;
-- virtual-node handles;
+- symbolic-node handles;
 - node-bundle handles;
 - concrete child-node handles where separately represented;
 - tiled child identity.
@@ -109,41 +109,41 @@ The exact representation may use compact offsets where the mapping is truly
 contiguous, but callers should consume an explicit translation API rather than
 reconstructing offsets ad hoc.
 
-## Preserve scope-local virtual-node identity
+## Preserve scope-local symbolic-node identity
 
 Explicit nested child navigation is required by persistent project connections and
 configuration references.
 
-Current behavior that imports child virtual nodes into one flattened parent
-identity space is insufficient. A virtual identity named `filter` inside two
+Current behavior that imports child symbolic nodes into one flattened parent
+identity space is insufficient. A symbolic identity named `filter` inside two
 different child scopes must remain distinguishable.
 
 `GraphBuilder` and `ConfiguredGraph` therefore need an explicit nested scope model. The
 representation can evolve, but it must preserve these invariants:
 
-> Virtual-node identity is resolved relative to a graph/subgraph scope, and
+> Symbolic-node identity is resolved relative to a graph/subgraph scope, and
 > embedding preserves the complete scope tree.
 
-> `ProjectVirtualNodeSelector` examines only direct virtual nodes in the current subject
+> `ProjectSymbolicNodeSelector` examines only direct symbolic nodes in the current subject
 > scope. It does not search descendant scopes.
 
 A conceptual structure is:
 
 ```text
 root scope
-  virtual "voices"
+  symbolic "voices"
     direct member 0 -> child subgraph scope
-      virtual "filter"
+      symbolic "filter"
     direct member 1 -> child subgraph scope
-      virtual "filter"
+      symbolic "filter"
 ```
 
-Those two `filter` virtual nodes are different path targets even if their local
+Those two `filter` symbolic nodes are different path targets even if their local
 source/type identity is the same.
 
 ## Direct-member order is stable identity
 
-A virtual node can represent several direct members. Once project persistence
+A symbolic node can represent several direct members. Once project persistence
 can select a member by index, that order is externally observable stable
 identity.
 
@@ -224,11 +224,11 @@ that improves type safety.
 
 The node path is an ordered sequence of semantic selectors. It contains:
 
-- Scope-local `ProjectVirtualNodeSelector` records.
-- Indexed `ProjectVirtualMemberSelector` records.
+- Scope-local `ProjectSymbolicNodeSelector` records.
+- Indexed `ProjectSymbolicMemberSelector` records.
 - Named `ProjectTiledChildSelector` records.
 
-Each addressable subgraph has a backing virtual node. Selecting that virtual node makes
+Each addressable subgraph has a backing symbolic node. Selecting that symbolic node makes
 its subgraph the subject of the next selector. The semantic path does not select a
 subgraph by its structural kind and index, so it does not contain
 `ProjectSubgraphSelector`.
@@ -236,7 +236,7 @@ subgraph by its structural kind and index, so it does not contain
 A serialized debug/UI spelling may resemble:
 
 ```text
-&<uuid>.virtual-a.virtual-b[4]#left.virtual-c:main:0
+&<uuid>.symbolic-a.symbolic-b[4]#left.symbolic-c:main:0
 ```
 
 but project state should use structured fields rather than making one string the
@@ -246,9 +246,9 @@ normative parser/ABI.
 
 `ProjectNodePortMatcher` does not denote exactly one concrete channel.
 
-Each path step transforms a set of candidate nodes and scopes. A virtual node can
+Each path step transforms a set of candidate nodes and scopes. A symbolic node can
 contain several direct members. Later steps apply to every surviving candidate. A
-virtual-node step searches only direct virtual nodes in each candidate scope.
+symbolic-node step searches only direct symbolic nodes in each candidate scope.
 
 Conceptually:
 
@@ -318,9 +318,9 @@ continue to prove at least:
    preserving its local identities;
 3. the returned translation maps resolve every preserved local object needed by
    project paths;
-4. nested virtual-node scopes survive embedding and remain separate namespaces;
+4. nested symbolic-node scopes survive embedding and remain separate namespaces;
 5. direct-member order is preserved;
 6. tiled children remain structurally identifiable after embedding;
-7. paths can navigate virtual -> member -> named tile -> virtual repeatedly without a
+7. paths can navigate symbolic node -> member -> named tile -> symbolic node repeatedly without a
    structural `ProjectSubgraphSelector`;
 8. port-channel selection remains distinct from tile-child selection.

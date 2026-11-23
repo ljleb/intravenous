@@ -474,7 +474,7 @@ write_void()
 Recording uses buffer-backed, overwrite-at-addressed-position semantics. It does
 not append or offset subsequent data and has no generic recorder arm/start/stop
 policy. The shared background buffer-realization service may select sparse
-page-backed virtual mappings, segmented backing, or another compatible
+page-backed symbolic mappings, segmented backing, or another compatible
 implementation; a recording is not assigned a distinct realization type or a
 permanent RAM-residency guarantee. Its authoritative committed contents must
 remain recoverable even when an optional prepared RAM view is reclaimed. See

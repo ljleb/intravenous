@@ -27,7 +27,7 @@ flowchart TD
     PP -->|"2. one normalized replay batch ⇄ ProjectGraphPublication (not published)"| PG
     PP -->|"3. project loaded"| PA
     PG -->|"1. replace/update desired instance batch; populate root builder ⇄ instance changes"| NI
-    PG -->|"2. replayed instance declarations ⇄ virtual-node replacements"| IMSI
+    PG -->|"2. replayed instance declarations ⇄ symbolic-node replacements"| IMSI
     PG -->|"3. replace/update desired connection batch; apply against complete embeddings"| GC
     PG -->|"4. commit configured interfaces; queue immutable inputs"| WORK["ProjectGraph serialized compiler worker (separate cause)"]
     WORK -->|"compile current target"| GJ

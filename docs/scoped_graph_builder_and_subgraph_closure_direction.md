@@ -12,7 +12,7 @@ architectural step._
 > [implementation_fronts_direction.md](./implementation_fronts_direction.md), and the
 > migration in this document is implemented and verified; Front 12 closed on
 > 2026-11-06. The front's record lists the implementation decisions taken within this
-> direction (path-qualified virtual IDs, wrapper-free registered invocations) and the
+> direction (path-qualified symbolic IDs, wrapper-free registered invocations) and the
 > deferred nested `node_reference` extension (F12-7). The transactional rollback this
 > direction originally required was replaced on 2026-11-06 by stopping the
 > configuration pass on failure; see "Construction failure stops the configuration
@@ -95,7 +95,7 @@ BuilderSession
         sample/event expression tables
         public/interface boundary state
         annotations/source metadata
-        virtual-node/introspection records
+        symbolic-node/introspection records
         configuration lifetimes
         package/definition configuration context
         nested scope stack
@@ -226,7 +226,7 @@ continue parent
 ```
 
 The scope hierarchy is semantic infrastructure, not merely exception-handling
-state. It supplies nested placement identity, virtual-node disambiguation, and
+state. It supplies nested placement identity, symbolic-node disambiguation, and
 the boundary required to decide whether a scope can be snapshotted independently.
 
 ## Refs become session-owned
@@ -422,7 +422,7 @@ self-contained and snapshotable.
 
 `ConfiguredGraph` is a completed reusable configuration value. It may contain
 its own bundles, its own connections, nested scope structure, public boundaries,
-virtual-node/introspection records, annotations, and configuration data.
+symbolic-node/introspection records, annotations, and configuration data.
 
 It must never contain:
 
@@ -474,7 +474,7 @@ reference escapes the scope subtree, including:
 - sample/event connection ports in an ancestor/outside scope;
 - public output expressions that reference outside bundles;
 - detach/feedback expressions that reference outside the subtree;
-- virtual/introspection membership that cannot be represented locally;
+- symbolic/introspection membership that cannot be represented locally;
 - configuration objects containing illegal live builder/session references;
 - any equivalent future graph-semantic reference.
 
@@ -674,28 +674,28 @@ Consequences:
 - Snapshot closedness (see the snapshot API section) is purely structural. No
   transaction exists whose effects outside the scope a snapshot could miss.
 
-## Virtual-node identity must become scope-aware
+## Symbolic-node identity must become scope-aware
 
-Cache hits and cache misses must not produce different virtual-node grouping.
+Cache hits and cache misses must not produce different symbolic-node grouping.
 
-Today live virtual-node creation can coalesce by source/type identity across a
+Today live symbolic-node creation can coalesce by source/type identity across a
 builder state, while imported frozen graphs are deliberately cloned/remapped with
 scope-qualified introspection identity. If cache misses begin constructing
-multiple independent modules directly in one session, source-identical virtual
+multiple independent modules directly in one session, source-identical symbolic
 nodes from separate module scopes must not accidentally collapse together while
 cache-hit imports remain distinct.
 
 The future identity must therefore include semantic construction scope:
 
 ```text
-virtual identity =
+symbolic identity =
     enclosing semantic scope path
     + source declaration identity
     + concrete type identity
 ```
 
 Within one semantic scope, repeated concrete members generated from the same
-annotated declaration may still belong to one virtual node when that is the
+annotated declaration may still belong to one symbolic node when that is the
 existing source-level meaning. Across independent module/subgraph scopes they do
 not coalesce.
 
@@ -783,7 +783,7 @@ A frozen placement continues to:
 - append/copy the configured graph's local bundles into the live session;
 - translate configured-local handles to fresh live handles;
 - import sample/event connections, detach state, public boundary data,
-  annotations, virtual-node state, and nested scope identity;
+  annotations, symbolic-node state, and nested scope identity;
 - return explicit translation/embedding information where project matchers need
   it.
 
@@ -805,7 +805,7 @@ gate at the top of this document is reached. During the later migration:
 - live captures may make one nested scope unsnapshotable while a larger enclosing
   scope remains snapshotable;
 - cache-hit import and cache-miss direct construction must be tested for semantic
-  equivalence, especially virtual-node and matcher-visible hierarchy identity.
+  equivalence, especially symbolic-node and matcher-visible hierarchy identity.
 
 No cache layer is allowed to make `ConfiguredGraph` heterogeneous or partially
 resolved in order to preserve hit rate.
@@ -839,7 +839,7 @@ A useful argument or closure may be synchronous/constructible without having a
 stable hash/equality representation. Reconfigure rather than rejecting valid
 construction.
 
-### Global source-only virtual identity
+### Global source-only symbolic identity
 
 Do not let direct same-session construction coalesce independent nested module
 instances merely because their annotated source/type identities match. Scope is
@@ -856,7 +856,7 @@ has established the performance baseline, the intended builder migration order i
 3. add the session-owned LIFO construction-scope stack (the transactional
    checkpoints/rollback originally planned here were replaced on 2026-11-06 by
    stopping the configuration pass on failure);
-4. make virtual-node identity scope-aware before cache misses can construct
+4. make symbolic-node identity scope-aware before cache misses can construct
    multiple independent modules directly in one session;
 5. add `SubgraphClosure` and the single semantic `g.subgraph(...)` surface while
    retaining separate direct implementations for the frozen and callable closure
@@ -893,7 +893,7 @@ This direction is complete when all of the following are true:
   same session and reject different sessions;
 - a construction failure stops the configuration pass, module code cannot resume
   a session after one, and no partial graph from a failed pass is published;
-- direct cache misses and frozen cache hits produce equivalent nested/virtual
+- direct cache misses and frozen cache hits produce equivalent nested/symbolic
   identity visible to project matchers and introspection;
 - higher-order `SubgraphClosure` arguments can be invoked repeatedly in deeper
   scopes without foreign/deferred graph references;

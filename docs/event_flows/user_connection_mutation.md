@@ -49,7 +49,7 @@ realtime pass boundary.
 
 ## Matcher semantics
 
-`GraphConnections` resolves the stored structured path through nested virtual
+`GraphConnections` resolves the stored structured path through nested symbolic
 nodes, ordered direct members, tiled child selectors, nested subgraph scopes,
 and finally the named port/optional port channel selector.
 

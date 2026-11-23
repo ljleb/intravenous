@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { VirtualNode } from "../src/graphModel";
+import { SymbolicNode } from "../src/graphModel";
 import {
     bindingSummary,
     nodeDescription,
@@ -10,9 +10,9 @@ import {
     portGroups,
     portTypeSummary,
 } from "../webview/presentation/nodeSummary";
-import { semanticNodeFromScopeChild, semanticNodeFromVirtualNode } from "../webview/presentation/semanticNode";
+import { semanticNodeFromScopeChild, semanticNodeFromSymbolicNode } from "../webview/presentation/semanticNode";
 
-function oscillator(): VirtualNode {
+function oscillator(): SymbolicNode {
     const sample = { type: "Sample", rank: 0, channelCapability: "audio" as const };
     return {
         id: "instance-1::node-1",
@@ -59,7 +59,7 @@ function oscillator(): VirtualNode {
                 index: 1,
                 name: "frequency",
                 connectivity: "disconnected",
-                binding: "virtualInput",
+                binding: "symbolicInput",
                 valueTypes: [sample],
             }],
             eventInputs: [{
@@ -73,8 +73,8 @@ function oscillator(): VirtualNode {
     };
 }
 
-test("semanticNodeFromVirtualNode orders inputs before outputs and keeps port indices", () => {
-    const node = semanticNodeFromVirtualNode(oscillator());
+test("semanticNodeFromSymbolicNode orders inputs before outputs and keeps port indices", () => {
+    const node = semanticNodeFromSymbolicNode(oscillator());
 
     assert.equal(node.definitionId, "iv.test.oscillator");
     assert.deepEqual(
@@ -87,23 +87,23 @@ test("semanticNodeFromVirtualNode orders inputs before outputs and keeps port in
         ]);
     assert.equal(node.members.length, 1);
     assert.equal(node.members[0].index, 7);
-    // A member without its own kind takes the virtual node's kind.
+    // A member without its own kind takes the symbolic node's kind.
     assert.equal(node.members[0].kind, "Oscillator");
     assert.deepEqual(
         node.members[0].ports.map((port) => `${port.direction}:${port.binding}`),
-        ["input:virtualInput", "input:mixed"]);
+        ["input:symbolicInput", "input:mixed"]);
 });
 
 test("port summaries describe types, bindings, and connectivity", () => {
-    const node = semanticNodeFromVirtualNode(oscillator());
+    const node = semanticNodeFromSymbolicNode(oscillator());
     const [frequency, gate] = node.ports;
 
     assert.equal(portTypeSummary(frequency), "Sample • mono");
     assert.equal(portTypeSummary(gate), "trigger");
     assert.equal(portDescription(frequency), "Sample • mono • graph interface • disconnected");
-    assert.equal(bindingSummary("virtualInput", "disconnected"), "follow virtual input");
-    assert.equal(bindingSummary("virtualOutput", "connected"), "virtual output");
-    assert.equal(bindingSummary("mixed", "mixed"), "mixed built-in and virtual input");
+    assert.equal(bindingSummary("symbolicInput", "disconnected"), "follow symbolic input");
+    assert.equal(bindingSummary("symbolicOutput", "connected"), "symbolic output");
+    assert.equal(bindingSummary("mixed", "mixed"), "mixed built-in and symbolic input");
     assert.equal(bindingSummary("none", "connected"), "built-in connection");
     assert.equal(bindingSummary("none", "disconnected"), "disconnected");
 
@@ -118,9 +118,9 @@ test("port summaries describe types, bindings, and connectivity", () => {
 });
 
 test("node identity comes from the source identity, then the node ID", () => {
-    const node = semanticNodeFromVirtualNode(oscillator());
+    const node = semanticNodeFromSymbolicNode(oscillator());
     assert.equal(nodeIdentitySummary(node), "Oscillator");
-    assert.equal(nodeDescription(node), "virtual • Oscillator • 2 concrete nodes");
+    assert.equal(nodeDescription(node), "symbolic • Oscillator • 2 concrete nodes");
     assert.equal(
         nodeIdentitySummary({ ...node, sourceIdentity: "", id: "instance-1::voice@Filter" }),
         "Filter");

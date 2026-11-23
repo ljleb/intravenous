@@ -5,7 +5,7 @@ import { hostState, loadLocalState, postToHost, saveLocalState } from "./host";
 import { instanceLabel, visibleNodes } from "./liveGraphView";
 import { isNodeViewChoice, nodeViewChoices, type NodeViewChoice } from "./presentation/displayMode";
 import PresentationHost from "./presentation/PresentationHost.vue";
-import { semanticNodeFromVirtualNode } from "./presentation/semanticNode";
+import { semanticNodeFromSymbolicNode } from "./presentation/semanticNode";
 import { TrustedHover } from "../src/trustedHover";
 import { useElementStatusHint } from "./statusHints";
 
@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
         <PresentationHost
             v-for="(node, position) in nodes"
             :key="node.id ?? `position:${position}`"
-            :node="semanticNodeFromVirtualNode(node)"
+            :node="semanticNodeFromSymbolicNode(node)"
             :view-choice="viewChoice"
         />
     </div>

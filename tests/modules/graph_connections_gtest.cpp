@@ -61,7 +61,7 @@ iv::ConfiguredGraph make_event_sink()
     return std::move(graph).finish();
 }
 
-iv::ConfiguredGraph make_virtual_source()
+iv::ConfiguredGraph make_symbolic_source()
 {
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
@@ -69,15 +69,15 @@ iv::ConfiguredGraph make_virtual_source()
     auto input = iv::programmatic::declare_input(graph, "in");
     auto first = details::configure_concrete_node<Pass>(graph);
     first(input);
-    first._annotate_source_info("virtual-source", "/tmp/virtual.cpp", 1, 2);
+    first._annotate_source_info("symbolic-source", "/tmp/symbolic.cpp", 1, 2);
     auto second = details::configure_concrete_node<Pass>(graph);
     second(input);
-    second._annotate_source_info("virtual-source", "/tmp/virtual.cpp", 3, 4);
+    second._annotate_source_info("symbolic-source", "/tmp/symbolic.cpp", 3, 4);
     graph.outputs("main"_P = first);
     return std::move(graph).finish();
 }
 
-iv::ConfiguredGraph make_set_valued_virtual_source()
+iv::ConfiguredGraph make_set_valued_symbolic_source()
 {
     using namespace iv;
     using First = SumN<mono, SampleStreamLayout::planar, 1>;
@@ -87,16 +87,16 @@ iv::ConfiguredGraph make_set_valued_virtual_source()
     auto first = details::configure_concrete_node<First>(graph);
     first(input);
     first._annotate_source_info(
-        "virtual-source", "/tmp/virtual.cpp", 1, 2);
+        "symbolic-source", "/tmp/symbolic.cpp", 1, 2);
     auto second = details::configure_concrete_node<Second>(graph);
     second(input);
     second._annotate_source_info(
-        "virtual-source", "/tmp/virtual.cpp", 3, 4);
+        "symbolic-source", "/tmp/symbolic.cpp", 3, 4);
     graph.outputs("main"_P = first);
     return std::move(graph).finish();
 }
 
-iv::ConfiguredGraph make_scoped_virtual_source()
+iv::ConfiguredGraph make_scoped_symbolic_source()
 {
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
@@ -274,9 +274,9 @@ TEST(GraphConnections, DanglingDesiredConnectionSurvivesAndResolvesWhenInstanceA
     EXPECT_TRUE(second.diagnostics.empty());
 }
 
-TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
+TEST(GraphConnections, SymbolicNodeThenOrderedMemberPathResolvesConcretePort)
 {
-    auto source_graph = make_virtual_source();
+    auto source_graph = make_symbolic_source();
     auto sink_graph = make_sample_sink();
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
@@ -288,14 +288,14 @@ TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
     source_matcher.port.name.reset();
     source_matcher.port.index = 0;
     source_matcher.path = {
-        iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
-        iv::ProjectVirtualMemberSelector{.index = 1},
+        iv::ProjectSymbolicNodeSelector{.source_identity = "symbolic-source"},
+        iv::ProjectSymbolicMemberSelector{.index = 1},
     };
 
     iv::GraphConnections connections;
     auto result = apply(connections, root, placements, iv::GraphConnectionUpsertMutation{
         .connection = iv::ProjectSampleConnection{
-            .connection_id = "sample:virtual-member",
+            .connection_id = "sample:symbolic-member",
             .outputs = {std::move(source_matcher)},
             .inputs = {named_matcher("sink", "main")},
         },
@@ -308,9 +308,9 @@ TEST(GraphConnections, VirtualNodeThenOrderedMemberPathResolvesConcretePort)
 }
 
 
-TEST(GraphConnections, SetValuedVirtualMatcherKeepsAllMembersInOneConnection)
+TEST(GraphConnections, SetValuedSymbolicMatcherKeepsAllMembersInOneConnection)
 {
-    auto source_graph = make_set_valued_virtual_source();
+    auto source_graph = make_set_valued_symbolic_source();
     auto sink_graph = make_sample_sink();
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
@@ -322,20 +322,20 @@ TEST(GraphConnections, SetValuedVirtualMatcherKeepsAllMembersInOneConnection)
     source_matcher.port.name.reset();
     source_matcher.port.index = 0;
     source_matcher.path = {
-        iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
+        iv::ProjectSymbolicNodeSelector{.source_identity = "symbolic-source"},
     };
 
     iv::GraphConnections connections;
     auto result = apply(connections, root, placements, iv::GraphConnectionUpsertMutation{
         .connection = iv::ProjectSampleConnection{
-            .connection_id = "sample:virtual-set",
+            .connection_id = "sample:symbolic-set",
             .outputs = {std::move(source_matcher)},
             .inputs = {named_matcher("sink", "main")},
         },
     });
 
     EXPECT_EQ(result.applied_connection_ids,
-              std::vector<std::string>{"sample:virtual-set"});
+              std::vector<std::string>{"sample:symbolic-set"});
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -349,7 +349,7 @@ TEST(GraphConnections, SetValuedVirtualMatcherKeepsAllMembersInOneConnection)
 
 TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)
 {
-    auto source_graph = make_set_valued_virtual_source();
+    auto source_graph = make_set_valued_symbolic_source();
     iv::GraphBuilder root;
     auto placement = embed_as_instance(root, source_graph, "source");
     auto configured = root.finish();
@@ -357,7 +357,7 @@ TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 1>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "symbolic-source"},
         });
     ASSERT_EQ(matches.size(), 2u);
     EXPECT_THROW(
@@ -366,9 +366,9 @@ TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)
         std::invalid_argument);
 }
 
-TEST(GraphConnections, VirtualLookupDoesNotFindDescendantOnlyNodes)
+TEST(GraphConnections, SymbolicLookupDoesNotFindDescendantOnlyNodes)
 {
-    auto source_graph = make_scoped_virtual_source();
+    auto source_graph = make_scoped_symbolic_source();
     iv::GraphBuilder root;
     auto placement = embed_as_instance(root, source_graph, "source");
     auto configured = root.finish();
@@ -376,14 +376,14 @@ TEST(GraphConnections, VirtualLookupDoesNotFindDescendantOnlyNodes)
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 1>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "filter"},
         });
     EXPECT_TRUE(matches.empty());
 }
 
-TEST(GraphConnections, SelectedVirtualSubgraphSuppliesTheNextLookupScope)
+TEST(GraphConnections, SelectedSymbolicSubgraphSuppliesTheNextLookupScope)
 {
-    auto source_graph = make_scoped_virtual_source();
+    auto source_graph = make_scoped_symbolic_source();
     iv::GraphBuilder root;
     auto placement = embed_as_instance(root, source_graph, "source");
     auto configured = root.finish();
@@ -391,28 +391,28 @@ TEST(GraphConnections, SelectedVirtualSubgraphSuppliesTheNextLookupScope)
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 2>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
-            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "processorA"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "filter"},
         });
     ASSERT_EQ(matches.size(), 1u);
-    EXPECT_EQ(matches.front().kind, iv::ProjectNodePathMatch::Kind::virtual_node);
-    ASSERT_EQ(matches.front().virtual_member_indices.size(), 1u);
+    EXPECT_EQ(matches.front().kind, iv::ProjectNodePathMatch::Kind::symbolic_node);
+    ASSERT_EQ(matches.front().symbolic_member_indices.size(), 1u);
 
     auto processor_a_member = iv::resolve_project_node_path(
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 3>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
-            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
-            iv::ProjectVirtualMemberSelector{.index = 0},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "processorA"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "filter"},
+            iv::ProjectSymbolicMemberSelector{.index = 0},
         });
     auto processor_b_member = iv::resolve_project_node_path(
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 3>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "processorB"},
-            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
-            iv::ProjectVirtualMemberSelector{.index = 0},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "processorB"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "filter"},
+            iv::ProjectSymbolicMemberSelector{.index = 0},
         });
     ASSERT_EQ(processor_a_member.size(), 1u);
     ASSERT_EQ(processor_b_member.size(), 1u);
@@ -421,9 +421,9 @@ TEST(GraphConnections, SelectedVirtualSubgraphSuppliesTheNextLookupScope)
         configured,
         placement.root,
         std::array<iv::ProjectNodePathSelector, 3>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "processorA"},
-            iv::ProjectVirtualNodeSelector{.source_identity = "filter"},
-            iv::ProjectVirtualMemberSelector{.index = 1},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "processorA"},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "filter"},
+            iv::ProjectSymbolicMemberSelector{.index = 1},
         }).empty());
 }
 
@@ -646,7 +646,7 @@ TEST(GraphConnections, ConfigurationReferenceAndConnectionUseTheSamePathResolver
 
 TEST(GraphConnections, ProjectNodePathRejectsUnknownSubjectsAndSelectors)
 {
-    auto source_graph = make_virtual_source();
+    auto source_graph = make_symbolic_source();
     auto tiled_fixture = make_tiled_source();
     iv::GraphBuilder root;
     std::unordered_map<std::string, iv::NodeInstancePlacement> placements;
@@ -668,8 +668,8 @@ TEST(GraphConnections, ProjectNodePathRejectsUnknownSubjectsAndSelectors)
         placements,
         "source",
         std::array<iv::ProjectNodePathSelector, 2>{
-            iv::ProjectVirtualNodeSelector{.source_identity = "virtual-source"},
-            iv::ProjectVirtualMemberSelector{.index = 99},
+            iv::ProjectSymbolicNodeSelector{.source_identity = "symbolic-source"},
+            iv::ProjectSymbolicMemberSelector{.index = 99},
         }).empty());
     EXPECT_TRUE(iv::resolve_project_node_path(
         configured,

@@ -4,9 +4,11 @@ import { wasmPresentationUpdate, type WasmPresentationReply } from "./wasmPresen
 import type { WasmPresentationRequest } from "./wasmPresentationEndpoint";
 type WorkerTransport = { postMessage(request: WasmPresentationRequest): void; terminate(): void };
 type StartWorker = (receive: (reply: WasmPresentationReply) => void, fail: (error: Error) => void) => WorkerTransport;
+let nextSession = 0;
 
 export class WasmPresentationWorker {
     private worker?: WorkerTransport;
+    private session = 0;
     private state: PresentationSavedState = null;
     private restoring = true;
     private pending?: { resolve: (value: PresentationFrame | undefined) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
@@ -23,6 +25,7 @@ export class WasmPresentationWorker {
         if (this.pending) return Promise.reject(new Error("A presentation frame is already running"));
         const initialize = !this.worker;
         if (!this.worker) {
+            this.session = ++nextSession;
             const worker = this.start((reply) => {
                 if (this.closing.has(worker)) {
                     if (reply.closed || reply.error) this.closing.get(worker)?.();
@@ -51,7 +54,7 @@ export class WasmPresentationWorker {
             const timeout = setTimeout(() => this.stop(new Error("Presentation worker timed out")), 1500);
             this.pending = { resolve, reject, timeout };
             try {
-                const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs) };
+                const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs, this.session) };
                 if (initialize) message.bytes = this.bytes;
                 if (initialize || this.restoring) message.restore = this.state === null ? "" : JSON.stringify(this.state);
                 this.restoring = false;

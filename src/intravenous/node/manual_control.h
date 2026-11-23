@@ -33,10 +33,10 @@ struct ManualControlId {
     bool operator==(ManualControlId const&) const = default;
 };
 
-inline bool is_virtual_output_gain(ManualControlId const& id)
+inline bool is_symbolic_output_gain(ManualControlId const& id)
 {
     return id.kind == ManualControlKind::output_gain && !id.node.path.empty()
-        && std::holds_alternative<ProjectVirtualNodeSelector>(id.node.path.back());
+        && std::holds_alternative<ProjectSymbolicNodeSelector>(id.node.path.back());
 }
 
 // One frontend gesture. client_id prevents two attached clients from sharing
@@ -92,7 +92,7 @@ struct ConfiguredManualControl {
     std::optional<NodeBundleHandle> coverage_source{};
     bool enabled = true;
     // An implicit member input supplies its declared default when no authored
-    // virtual control takes its place.
+    // symbolic control takes its place.
     bool authored = true;
 
     bool operator==(ConfiguredManualControl const&) const = default;

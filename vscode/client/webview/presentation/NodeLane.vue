@@ -29,10 +29,10 @@ const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: 
 const displayName = computed(() => nodeDisplayName(node.value));
 const labels = computed(() => props.moduleBoundary ? laneLabels("Module Ports")
     : laneLabels(displayName.value, node.value.sourceLabel));
-const virtualMembers = computed(() => !props.moduleBoundary && node.value.virtualNode ? node.value.memberCount : undefined);
+const symbolicMembers = computed(() => !props.moduleBoundary && node.value.symbolicNode ? node.value.memberCount : undefined);
 const memberDescription = computed(() => {
-    const count = virtualMembers.value;
-    return count === undefined ? "" : `Virtual lane · ${count} ${count === 1 ? 'member' : 'members'}`;
+    const count = symbolicMembers.value;
+    return count === undefined ? "" : `Symbolic lane · ${count} ${count === 1 ? 'member' : 'members'}`;
 });
 const laneStatus = computed(() => props.moduleBoundary ? `Inner boundary of ${displayName.value}`
     : node.value.loadState === "waitingForDefinition" ? "Waiting for the node definition"
@@ -70,7 +70,7 @@ function finishRename(commit: boolean) {
                 <div class="lane-heading" :data-status-hint="formatLaneLabel(labels)">
                     <svg class="lane-identity" :class="{ failed: node.loadState === 'failed' }" viewBox="0 0 16 16" aria-hidden="true">
                         <path v-if="moduleBoundary" d="M6 2v12m4-12v12M2 5h4m4 6h4" />
-                        <path v-else-if="virtualMembers !== undefined" d="m2 6 6-3 6 3-6 3zm0 3 6 3 6-3M2 12l6 3 6-3" />
+                        <path v-else-if="symbolicMembers !== undefined" d="m2 6 6-3 6 3-6 3zm0 3 6 3 6-3M2 12l6 3 6-3" />
                         <path v-else :d="lane?.icon?.value ?? 'M4 3h8l2 2v6l-2 2H4l-2-2V5z'" />
                     </svg>
                     <input v-if="nameEdit" ref="nameInput" v-model="nameEdit.draft" class="lane-name lane-name-edit iv-graph-header-detail"
@@ -87,8 +87,8 @@ function finishRename(commit: boolean) {
                         <span class="lane-name" :class="{ failed: node.loadState === 'failed', 'iv-text-link': lane?.openSource }">{{ labels.primary }}</span>
                         <span v-if="labels.secondary" class="lane-secondary-label" :class="{ 'iv-text-link': lane?.openSource }">{{ labels.secondary }}</span>
                     </component>
-                    <span v-if="virtualMembers !== undefined" class="member-count iv-graph-header-detail" :aria-label="memberDescription"
-                        :data-status-hint="memberDescription">{{ virtualMembers }}</span>
+                    <span v-if="symbolicMembers !== undefined" class="member-count iv-graph-header-detail" :aria-label="memberDescription"
+                        :data-status-hint="memberDescription">{{ symbolicMembers }}</span>
                     <button v-if="lane && !moduleBoundary" type="button" tabindex="-1" class="copy-debug iv-graph-header-detail"
                         data-status-hint="Copy node debug details"
                         aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>

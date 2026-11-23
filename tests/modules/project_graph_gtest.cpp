@@ -2404,7 +2404,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const& child = children.at(0);
     EXPECT_EQ(child.at("childDisplayName"), "NamedSamplePass");
     EXPECT_EQ(child.at("childSourceLabel"), "named");
-    EXPECT_EQ(child.at("virtualMemberCount"), 1);
+    EXPECT_EQ(child.at("symbolicMemberCount"), 1);
     auto parse_address = [](auto const& node) {
         return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
     };
@@ -2428,7 +2428,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_EQ(member.at("childDisplayName"), "NamedSamplePass");
     EXPECT_EQ(alias_member.at("childDisplayName"), member.at("childDisplayName"));
     EXPECT_EQ(member.at("childSourceLabel"), "named 1");
-    EXPECT_FALSE(member.contains("virtualMemberCount"));
+    EXPECT_FALSE(member.contains("symbolicMemberCount"));
     EXPECT_EQ(alias_member.at("childSourceLabel"), "alias 1");
     EXPECT_EQ(alias_member.at("address"), member.at("address"));
     EXPECT_NE(alias_member.at("membershipAddress"), member.at("address"));
@@ -2662,11 +2662,11 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
         return parse_node_address_json(node.at("address"), ProjectConnectionJsonNames::socket_rpc);
     };
     auto const module = read_graph_scope(project_graph, {{.instance_id = "module"}});
-    auto const& virtual_gain = module.at("childScopes").at(0).at("nodes").at(0);
-    ASSERT_EQ(virtual_gain.at("childSourceLabel"), "gain");
-    expect_knobs(virtual_gain, false);
+    auto const& symbolic_gain = module.at("childScopes").at(0).at("nodes").at(0);
+    ASSERT_EQ(symbolic_gain.at("childSourceLabel"), "gain");
+    expect_knobs(symbolic_gain, false);
 
-    auto const expanded_gain = read_graph_scope(project_graph, {address(virtual_gain)});
+    auto const expanded_gain = read_graph_scope(project_graph, {address(symbolic_gain)});
     auto const& tiled_gain = expanded_gain.at("childScopes").at(0).at("nodes").at(0);
     expect_knobs(tiled_gain, true);
 
@@ -2676,7 +2676,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
     for (auto const& channel : channels) expect_knobs(channel, true);
 }
 
-TEST_F(ProjectGraphFixture, VirtualDeclarationsKeepSeparateLanesAndInputsForEachType)
+TEST_F(ProjectGraphFixture, SymbolicDeclarationsKeepSeparateLanesAndInputsForEachType)
 {
     using namespace iv;
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
@@ -3938,7 +3938,7 @@ TEST_F(ProjectGraphFixture, HistoryRestoresDeletedNodesAndTheirIncidentConnectio
     iv::ProjectEventConnection child_wire{
         .connection_id = "child-wire",
         .source_type = iv::EventTypeId::midi,
-        .outputs = {{.instance_id = "a", .path = {iv::ProjectVirtualMemberSelector{.index = 0}}, .port = {.name = "events"}}},
+        .outputs = {{.instance_id = "a", .path = {iv::ProjectSymbolicMemberSelector{.index = 0}}, .port = {.name = "events"}}},
         .target_type = iv::EventTypeId::midi,
         .inputs = {{.instance_id = "b", .port = {.name = "events"}}},
     };

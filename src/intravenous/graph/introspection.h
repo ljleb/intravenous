@@ -173,7 +173,7 @@ project_introspection_continuous_ports(
                     introspection_continuous_config(node_bundles, channel))
                 != semantic_config) {
                 details::error(
-                    "virtual node members expose incompatible continuous port "
+                    "symbolic node members expose incompatible continuous port "
                     "configurations");
             }
         }
@@ -190,9 +190,9 @@ project_introspection_continuous_ports(
         result.push_back(IntrospectionContinuousPortInfo{
             .name = mapping.name,
             .connectivity = any_connected && any_disconnected
-                ? VirtualPortConnectivity::mixed
-                : any_connected ? VirtualPortConnectivity::connected
-                                : VirtualPortConnectivity::disconnected,
+                ? SymbolicPortConnectivity::mixed
+                : any_connected ? SymbolicPortConnectivity::connected
+                                : SymbolicPortConnectivity::disconnected,
             .index = mapping.index,
             .value_types = introspection_value_types(config),
             .channel_type =
@@ -230,7 +230,7 @@ project_bundle_introspection_continuous_ports(
 }
 
 constexpr std::vector<IntrospectionEventPortInfo> project_introspection_event_ports(
-    std::vector<VirtualEventPortMapping> const& mappings,
+    std::vector<SymbolicEventPortMapping> const& mappings,
     ConfiguredGraphConnectivity const& connectivity,
     bool inputs)
 {
@@ -252,9 +252,9 @@ constexpr std::vector<IntrospectionEventPortInfo> project_introspection_event_po
         result.push_back(IntrospectionEventPortInfo{
             .name = mapping.name,
             .connectivity = any_connected && any_disconnected
-                ? VirtualPortConnectivity::mixed
-                : any_connected ? VirtualPortConnectivity::connected
-                                : VirtualPortConnectivity::disconnected,
+                ? SymbolicPortConnectivity::mixed
+                : any_connected ? SymbolicPortConnectivity::connected
+                                : SymbolicPortConnectivity::disconnected,
             .index = mapping.index,
             .type = mapping.type,
             .source_spans =
@@ -266,7 +266,7 @@ constexpr std::vector<IntrospectionEventPortInfo> project_introspection_event_po
 
 constexpr std::vector<IntrospectionEventPortInfo>
 project_bundle_introspection_event_ports(
-    std::vector<VirtualEventPortMapping> const& mappings,
+    std::vector<SymbolicEventPortMapping> const& mappings,
     ConfiguredGraphConnectivity const& connectivity,
     NodeBundleHandle bundle_handle,
     bool inputs)
@@ -283,16 +283,16 @@ project_bundle_introspection_event_ports(
     return project_introspection_event_ports(projected, connectivity, inputs);
 }
 
-constexpr void append_configured_virtual_node_metadata(
+constexpr void append_configured_symbolic_node_metadata(
     GraphIntrospectionMetadata& metadata,
     GraphBuilderNodeBundles const& node_bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes,
+    GraphBuilderSymbolicNodes const& symbolic_nodes,
     ConfiguredGraphConnectivity const& connectivity)
 {
-    metadata.virtual_nodes.reserve(virtual_nodes.records().size());
-    for (auto const& record : virtual_nodes.records()) {
-        auto const node_index = metadata.virtual_nodes.size();
-        metadata.virtual_nodes.push_back(IntrospectionVirtualNode{
+    metadata.symbolic_nodes.reserve(symbolic_nodes.records().size());
+    for (auto const& record : symbolic_nodes.records()) {
+        auto const node_index = metadata.symbolic_nodes.size();
+        metadata.symbolic_nodes.push_back(IntrospectionSymbolicNode{
             .id = record.id,
             .source_identity = record.source_identity,
             .type_identity = record.type_identity,
@@ -306,7 +306,7 @@ constexpr void append_configured_virtual_node_metadata(
             .event_outputs = project_introspection_event_ports(
                 record.event_outputs, connectivity, false),
         });
-        auto& node = metadata.virtual_nodes[node_index];
+        auto& node = metadata.symbolic_nodes[node_index];
 
         if (record.type_identity == "sample-port"
             || record.type_identity == "event-port") {
@@ -330,7 +330,7 @@ constexpr void append_configured_virtual_node_metadata(
                 : "Event port";
             auto const backing_id = record.type_identity + ":" + record.id;
             node.backing_node_ids.push_back(backing_id);
-            node.members.push_back(IntrospectionVirtualNode::Member{
+            node.members.push_back(IntrospectionSymbolicNode::Member{
                 .index = 0,
                 .backing_node_id = backing_id,
                 .kind = node.kind,
@@ -366,7 +366,7 @@ constexpr void append_configured_virtual_node_metadata(
             auto const backing_id = "node-bundle:" + record.id + ":"
                 + introspection_decimal_string(bundle_index);
             node.backing_node_ids.push_back(backing_id);
-            node.members.push_back(IntrospectionVirtualNode::Member{
+            node.members.push_back(IntrospectionSymbolicNode::Member{
                 .index = bundle_index,
                 .backing_node_id = backing_id,
                 .kind = kind,
@@ -405,8 +405,8 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
     auto const connectivity =
         details::configured_graph_connectivity(configured.connections);
     GraphIntrospectionMetadata metadata;
-    details::append_configured_virtual_node_metadata(
-        metadata, configured.node_bundles, configured.virtual_nodes,
+    details::append_configured_symbolic_node_metadata(
+        metadata, configured.node_bundles, configured.symbolic_nodes,
         connectivity);
 
     auto sample_inputs =
@@ -458,12 +458,12 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
     // stay on the public ports. They become nodes here, where the side panel
     // and source highlighting look for annotated source.
     auto const connectivity_of = [](bool connected) {
-        return connected ? VirtualPortConnectivity::connected
-                         : VirtualPortConnectivity::disconnected;
+        return connected ? SymbolicPortConnectivity::connected
+                         : SymbolicPortConnectivity::disconnected;
     };
     for (auto const& family : metadata.public_continuous_inputs) {
         if (family.source_infos.empty()) continue;
-        IntrospectionVirtualNode node{
+        IntrospectionSymbolicNode node{
             .id = "public-input:" + family.family_name,
             .kind = "input",
             .type_identity = "public-input",
@@ -476,11 +476,11 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .value_types = details::introspection_value_types(family.output_config),
             .channel_type = family.channel_type,
         });
-        metadata.virtual_nodes.push_back(std::move(node));
+        metadata.symbolic_nodes.push_back(std::move(node));
     }
     for (auto const& input : metadata.public_event_inputs) {
         if (input.source_infos.empty()) continue;
-        IntrospectionVirtualNode node{
+        IntrospectionSymbolicNode node{
             .id = "public-input:" + input.config.name,
             .kind = "input",
             .type_identity = "public-input",
@@ -492,11 +492,11 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .index = input.port_index,
             .type = input.config.type,
         });
-        metadata.virtual_nodes.push_back(std::move(node));
+        metadata.symbolic_nodes.push_back(std::move(node));
     }
     for (auto const& family : metadata.public_continuous_outputs) {
         if (family.source_infos.empty()) continue;
-        IntrospectionVirtualNode node{
+        IntrospectionSymbolicNode node{
             .id = "public-output:" + family.family_name,
             .kind = "output",
             .type_identity = "public-output",
@@ -508,11 +508,11 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .value_types = details::introspection_value_types(family.input_config),
             .channel_type = family.channel_type,
         });
-        metadata.virtual_nodes.push_back(std::move(node));
+        metadata.symbolic_nodes.push_back(std::move(node));
     }
     for (auto const& output : metadata.public_event_outputs) {
         if (output.source_infos.empty()) continue;
-        IntrospectionVirtualNode node{
+        IntrospectionSymbolicNode node{
             .id = "public-output:" + output.config.name,
             .kind = "output",
             .type_identity = "public-output",
@@ -523,7 +523,7 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .index = output.port_index,
             .type = output.config.type,
         });
-        metadata.virtual_nodes.push_back(std::move(node));
+        metadata.symbolic_nodes.push_back(std::move(node));
     }
     return metadata;
 }

@@ -85,7 +85,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
-    | { type: "openVirtualNodeSource"; nodeKey: string }
+    | { type: "openSymbolicNodeSource"; nodeKey: string }
     | { type: "flushProjectAutosave" }
     | { type: "knobClipboard"; requestId: number; text?: string }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }

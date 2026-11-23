@@ -127,17 +127,17 @@ Json selector_json(ProjectNodePathSelector const& selector, Fields const& names)
 {
     return std::visit([&](auto const& value) -> Json {
         using Selector = std::remove_cvref_t<decltype(value)>;
-        if constexpr (std::same_as<Selector, ProjectVirtualNodeSelector>) {
+        if constexpr (std::same_as<Selector, ProjectSymbolicNodeSelector>) {
             Json result{
-                {"kind", "virtualNode"},
+                {"kind", "symbolicNode"},
                 {std::string(names.source_identity), value.source_identity},
             };
             if (value.type_identity) {
                 result[std::string(names.type_identity)] = *value.type_identity;
             }
             return result;
-        } else if constexpr (std::same_as<Selector, ProjectVirtualMemberSelector>) {
-            return Json{{"kind", "virtualMember"}, {"index", value.index}};
+        } else if constexpr (std::same_as<Selector, ProjectSymbolicMemberSelector>) {
+            return Json{{"kind", "symbolicMember"}, {"index", value.index}};
         } else {
             return Json{{"kind", "tiledChild"}, {"name", value.name}};
         }
@@ -150,19 +150,19 @@ ProjectNodePathSelector parse_selector(Json const& json, Fields const& names)
         throw std::runtime_error("project connection path selector must be an object");
     }
     auto const kind = require_string(json, "kind");
-    if (kind == "virtualNode") {
-        return ProjectVirtualNodeSelector{
+    if (kind == "symbolicNode") {
+        return ProjectSymbolicNodeSelector{
             .source_identity = require_string(json, names.source_identity),
             .type_identity = optional_string(json, names.type_identity),
         };
     }
-    if (kind == "virtualMember") {
+    if (kind == "symbolicMember") {
         auto const index = optional_index(json, "index");
         if (!index) {
             throw std::runtime_error(
-                "project virtual-member selector requires unsigned field 'index'");
+                "project symbolic-member selector requires unsigned field 'index'");
         }
-        return ProjectVirtualMemberSelector{.index = *index};
+        return ProjectSymbolicMemberSelector{.index = *index};
     }
     if (kind == "tiledChild") {
         return ProjectTiledChildSelector{.name = require_string(json, "name")};

@@ -2,10 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { sortNodesByRelevance, collectPrimarySourceSpans } from "../src/graphQueryModel";
-import { VirtualNode } from "../src/graphModel";
+import { SymbolicNode } from "../src/graphModel";
 
 test("sortNodesByRelevance prefers the closest span in the earliest query range", () => {
-    const nodes: VirtualNode[] = [
+    const nodes: SymbolicNode[] = [
         {
             id: "far",
             sourceSpans: [{

@@ -440,8 +440,8 @@ inside the normal dependency constraints. Candidate members of one batch must fo
 antichain with respect to dependencies that have to be satisfied within that execution
 phase: no batch may hide a required ordering between two lanes.
 
-Configured virtual-node structure may provide a cheap and high-quality pre-grouping
-hint. For example, several concrete members of one virtual node often share the same
+Configured symbolic-node structure may provide a cheap and high-quality pre-grouping
+hint. For example, several concrete members of one symbolic node often share the same
 type and realization. That hint is not the semantic discovery boundary. GraphJit must
 also find compatible concrete nodes elsewhere in the flattened project graph.
 
@@ -560,7 +560,7 @@ design requirement to phase it out.
 4. Retain both scalar and batch compiler anchors in package bitcode/reflection and
    import both into GraphJit.
 5. Add compatible-batch classification and deterministic ready-node grouping without
-   changing scheduling semantics. Virtual-node member groups may seed candidates but
+   changing scheduling semantics. Symbolic-node member groups may seed candidates but
    cannot be the only discovery path.
 6. Lower scalar versus batch choices from a simple conservative cost model, including
    first-class batched skip execution.
@@ -586,7 +586,7 @@ design requirement to phase it out.
    GraphJit may freely split or scalarize a candidate batch.
 7. Batch membership requires the same concrete implementation and callback-facing
    resolved realization, not identical configuration/state/coverage values.
-8. Virtual-node grouping is a scheduling hint, not the discovery boundary.
+8. Symbolic-node grouping is a scheduling hint, not the discovery boundary.
 9. Traits-generated batching over `tick()` is sample-major/lane-minor; generated
    batching over scalar block/coverage callbacks is a straightforward lane loop.
 10. Authored callback-shape detection never escapes the node trait/helper layer.

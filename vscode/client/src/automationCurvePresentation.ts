@@ -8,7 +8,7 @@ import {
 import { gridGuideStrengths } from "./gridGuideStrength";
 import { PresentationEditClock, PresentationEditRequests } from "./presentationEditRequests";
 import type {
-    Present, PresentationCommand, PresentationControl, PresentationFrame, PresentationGestureInput, PresentationInk,
+    Present, PresentationCommand, PresentationControl, PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInk,
     PresentationManifest, PresentationMark, PresentationPoint, PresentationSavedState, PresentationSnapshot, PresentationTarget,
 } from "./presentationPlugin";
 import { presentationPluginVersion } from "./presentationPlugin";
@@ -130,7 +130,7 @@ export function createAutomationCurvePresentation(): Present {
             const state = readAutomationCurveView(next);
             if (JSON.stringify(state) !== JSON.stringify(view)) { view = state; stateChanged = true; }
         };
-        let cursor: PresentationPoint | undefined;
+        let cursor: PresentationCursor | undefined;
         if (!curve) return { status: "Waiting for accepted Automation Curve arguments", cancelDrag: cancelDrag || undefined,
             commands: requests.takeCommands(), wakeAfterMs: continuation ? 0 : clock.nextDelay() };
 
@@ -204,7 +204,12 @@ export function createAutomationCurvePresentation(): Present {
                     case "finish":
                     case "cancel": {
                         const point = edits.activePoint();
-                        if (input.phase === "finish" && pointer.kind === "point" && point) cursor = geometry().marker(point);
+                        if (input.phase === "finish" && pointer.kind === "point" && point) {
+                            const marker = geometry().marker(point);
+                            cursor = point.sampleIndex !== undefined && window.view
+                                ? { sample: String(point.sampleIndex), yFraction: Math.max(0, Math.min(1, marker.y / height)) }
+                                : marker;
+                        }
                         pointer = undefined;
                         void edits.finish(input.phase === "finish" && input.modifiers.shift);
                         break;

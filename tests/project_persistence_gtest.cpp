@@ -266,11 +266,11 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
         .outputs = {{
             .instance_id = "instance:a",
             .path = {
-                iv::ProjectVirtualNodeSelector{
+                iv::ProjectSymbolicNodeSelector{
                     .source_identity = "processor",
                     .type_identity = "filter",
                 },
-                iv::ProjectVirtualMemberSelector{.index = 1},
+                iv::ProjectSymbolicMemberSelector{.index = 1},
                 iv::ProjectTiledChildSelector{.name = "right"},
             },
             .port = {.name = "main", .index = 2, .channel = 1},
@@ -285,7 +285,7 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
         .id = {
             .node = {
                 .instance_id = "instance:b",
-                .path = {iv::ProjectVirtualNodeSelector{
+                .path = {iv::ProjectSymbolicNodeSelector{
                     .source_identity = "processor",
                 }},
             },
@@ -324,10 +324,10 @@ TEST(ProjectPersistenceBuilder, SerializesOnlyDurableConfiguredStateInStableOrde
     auto const& output = commands[3].args["outputs"][0];
     EXPECT_EQ(output["instance_id"], "instance:a");
     ASSERT_EQ(output["path"].size(), 3u);
-    EXPECT_EQ(output["path"][0]["kind"], "virtualNode");
+    EXPECT_EQ(output["path"][0]["kind"], "symbolicNode");
     EXPECT_EQ(output["path"][0]["source_identity"], "processor");
     EXPECT_EQ(output["path"][0]["type_identity"], "filter");
-    EXPECT_EQ(output["path"][1]["kind"], "virtualMember");
+    EXPECT_EQ(output["path"][1]["kind"], "symbolicMember");
     EXPECT_EQ(output["path"][1]["index"], 1u);
     EXPECT_EQ(output["path"][2]["kind"], "tiledChild");
     EXPECT_EQ(output["path"][2]["name"], "right");
@@ -360,11 +360,11 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
         .outputs = {{
             .instance_id = "instance:source",
             .path = {
-                iv::ProjectVirtualNodeSelector{
+                iv::ProjectSymbolicNodeSelector{
                     .source_identity = "processor",
                     .type_identity = "filter",
                 },
-                iv::ProjectVirtualMemberSelector{.index = 5},
+                iv::ProjectSymbolicMemberSelector{.index = 5},
                 iv::ProjectTiledChildSelector{.name = "right"},
             },
             .port = {.name = "audio", .index = 2, .channel = 1},
@@ -372,7 +372,7 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
         .target_type = iv::ChannelTypeId::mono,
         .inputs = {{
             .instance_id = "instance:target",
-            .path = {iv::ProjectVirtualNodeSelector{
+            .path = {iv::ProjectSymbolicNodeSelector{
                 .source_identity = "sink",
             }},
             .port = {.index = 0, .channel = 0},
@@ -412,7 +412,7 @@ TEST(ProjectPersistenceBuilder, StoresReplacementArgumentsAsStructuredJson)
     builder.add_node_replacements({iv::ProjectNodeReplacement{
         .address = {
             .instance_id = "instance:source",
-            .path = {iv::ProjectVirtualNodeSelector{
+            .path = {iv::ProjectSymbolicNodeSelector{
                 .source_identity = "processor",
             }},
         },
@@ -460,14 +460,14 @@ TEST(ProjectPersistence, LoadContinuesAfterBadCommandAndReplaysLaterInstance)
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:removed","definition_id":"iv.test.removed","package_root":null,"display_name":null,"configuration_source":""}})" "\n"
         R"({"command":"nodeInstances.delete","args":{"instance_id":"instance:removed"}})" "\n"
         R"({"command":"nodeInstances.upsert","args":{"instance_id":"instance:1","definition_id":"iv.test.replayed","package_root":"packages/replayed","display_name":"Replayed","configuration_source":"12 + 4"}})" "\n"
-        R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"input_name":"gain","value":0.75,"participation":"participate_with_connections","enabled":true}})" "\n"
+        R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:0","path":[{"kind":"symbolicNode","source_identity":"processor"}]},"input_name":"gain","value":0.75,"participation":"participate_with_connections","enabled":true}})" "\n"
         R"({"command":"manualControls.upsert","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed","value":0.5,"participation":"disconnected_only","enabled":true}})" "\n"
         R"({"command":"manualControls.delete","args":{"node":{"instance_id":"instance:1","path":[]},"input_name":"removed"}})" "\n"
-        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"packages/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
+        R"({"command":"nodeReplacements.upsert","args":{"address":{"instance_id":"instance:0","path":[{"kind":"symbolicNode","source_identity":"processor"}]},"definition_id":"iv.test.successor","package_root":"packages/successor","configuration_arguments":[17,{"mode":"highpass"}]}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:removed","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
         R"({"command":"graphConnections.delete","args":{"connection_id":"event:removed"}})" "\n"
         R"({"command":"graphConnections.upsert","args":{"kind":"event","connection_id":"event:dangling","source_type":"trigger","outputs":[{"instance_id":"instance:0","path":[],"port":{"name":"out"}}],"target_type":"empty","inputs":[{"instance_id":"instance:1","path":[],"port":{"index":0}}]}})" "\n"
-        R"({"command":"graphConnections.upsert","args":{"kind":"sample","connection_id":"sample:structured","source_type":"stereo","outputs":[{"instance_id":"instance:0","path":[{"kind":"virtualNode","source_identity":"processor","type_identity":"filter"},{"kind":"virtualMember","index":2},{"kind":"tiledChild","name":"left"}],"port":{"name":"audio","index":1,"channel":0}}],"target_type":"mono","inputs":[{"instance_id":"instance:1","path":[],"port":{"name":"audio"}}]}})" "\n");
+        R"({"command":"graphConnections.upsert","args":{"kind":"sample","connection_id":"sample:structured","source_type":"stereo","outputs":[{"instance_id":"instance:0","path":[{"kind":"symbolicNode","source_identity":"processor","type_identity":"filter"},{"kind":"symbolicMember","index":2},{"kind":"tiledChild","name":"left"}],"port":{"name":"audio","index":1,"channel":0}}],"target_type":"mono","inputs":[{"instance_id":"instance:1","path":[],"port":{"name":"audio"}}]}})" "\n");
 
     iv::ProjectPersistence persistence(workspace, startup);
     iv::NodeInstances instances;
@@ -663,7 +663,7 @@ TEST(ProjectPersistence, SaveCollectsDanglingStructuredGraphConnections)
                 .source_type = iv::EventTypeId::midi,
                 .outputs = {{
                     .instance_id = "source",
-                    .path = {iv::ProjectVirtualMemberSelector{.index = 3}},
+                    .path = {iv::ProjectSymbolicMemberSelector{.index = 3}},
                     .port = {.name = "events"},
                 }},
                 .target_type = iv::EventTypeId::trigger,

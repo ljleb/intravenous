@@ -166,13 +166,13 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcVirtualNodeResultBuilder {
+    class SocketRpcSymbolicNodeResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<VirtualNodeInfo> result;
+        std::optional<SymbolicNodeInfo> result;
 
     public:
-        void succeed(VirtualNodeInfo value);
+        void succeed(SymbolicNodeInfo value);
         void fail(std::string message);
         void fail(int code, std::string message);
 
@@ -201,13 +201,13 @@ namespace iv {
         [[nodiscard]] std::string build(int request_id) const;
     };
 
-    class SocketRpcVirtualNodesResultBuilder {
+    class SocketRpcSymbolicNodesResultBuilder {
         int error_code = -32000;
         std::string error_message;
-        std::optional<std::vector<VirtualNodeInfo>> result;
+        std::optional<std::vector<SymbolicNodeInfo>> result;
 
     public:
-        void succeed(std::vector<VirtualNodeInfo> value);
+        void succeed(std::vector<SymbolicNodeInfo> value);
         void fail(std::string message);
         void fail(int code, std::string message);
 

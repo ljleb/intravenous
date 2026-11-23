@@ -122,9 +122,9 @@ test("child lanes put the declaration name before the display name", () => {
     const scope = graph();
     const owner = scope.nodes[0];
     owner.instance.displayName = "My Oscillator";
-    const declaration = { kind: "virtual", sourceIdentity: "detune_pair", typeIdentity: "Quotient" };
+    const declaration = { kind: "symbolicNode", sourceIdentity: "detune_pair", typeIdentity: "Quotient" };
     const child: GraphScopeNode = {
-        ...owner, address: { ...owner.address, path: [declaration, { kind: "member", index: 0 }] },
+        ...owner, address: { ...owner.address, path: [declaration, { kind: "symbolicMember", index: 0 }] },
         childDisplayName: "Quotient", childSourceLabel: "detune_pair 1",
     };
     const semantic = semanticNodeFromScopeChild(child, scope);
@@ -133,13 +133,13 @@ test("child lanes put the declaration name before the display name", () => {
     assert.equal(graphScopeNodeLabel(child), "detune_pair 1 · Quotient");
     assert.equal(graphScopeNodeLabel({ ...child, childSourceLabel: "left" }), "left · Quotient");
     assert.equal(graphScopeNodeLabel(owner), "My Oscillator");
-    const virtualChild: GraphScopeNode = { ...child, virtualNode: true, childSourceLabel: "detune_pair",
-        virtualMemberCount: 4, address: { ...owner.address, path: [declaration] } };
-    const virtual = semanticNodeFromScopeChild(virtualChild, scope);
-    assert.equal(graphScopeNodeLabel(virtualChild), "detune_pair · Quotient");
-    assert.equal(graphScopeNodeLabel({ ...virtualChild, childSourceLabel: undefined }), "Quotient");
-    assert.equal(virtual.virtualNode, true);
-    assert.equal(virtual.memberCount, 4);
+    const symbolicChild: GraphScopeNode = { ...child, symbolicNode: true, childSourceLabel: "detune_pair",
+        symbolicMemberCount: 4, address: { ...owner.address, path: [declaration] } };
+    const symbolic = semanticNodeFromScopeChild(symbolicChild, scope);
+    assert.equal(graphScopeNodeLabel(symbolicChild), "detune_pair · Quotient");
+    assert.equal(graphScopeNodeLabel({ ...symbolicChild, childSourceLabel: undefined }), "Quotient");
+    assert.equal(symbolic.symbolicNode, true);
+    assert.equal(symbolic.memberCount, 4);
     assert.equal(semantic.memberCount, 1);
 });
 

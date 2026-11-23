@@ -325,7 +325,7 @@ This front owns:
 - compiler/reflection anchors for every normalized scalar and batch operation;
 - batch-compatibility keys;
 - dependency-aware grouping of ready nodes from the same batch class;
-- virtual-node pre-grouping as an acceleration hint rather than a semantic boundary;
+- symbolic-node pre-grouping as an acceleration hint rather than a semantic boundary;
 - scalar fallback when batching makes the surrounding schedule worse;
 - batched background propagation and Tock ready-frontier execution.
 
@@ -517,7 +517,7 @@ This is now the implemented recording representation. The 2026-11-16
 normative destination reuses/generalizes its page-backed, immutable-version
 mechanism as one background-managed buffered-storage facility for **both**
 Tick/Sequential/buffered recording and Tock/buffered output. That facility
-chooses sparse virtual mapping only within configurable per-view and aggregate
+chooses sparse symbolic mapping only within configurable per-view and aggregate
 reservation budgets; large logical Regions can use bounded windows where the
 consumer permits them. These source-state paragraphs describe the recording
 implementation that can seed the shared design, not a mandate for two storage
@@ -551,7 +551,7 @@ without copying the complete recording.
 Published `PersistedDataStore::Snapshot` views remain stable. A candidate that
 overwrites a page already visible through an older snapshot allocates a new page,
 copies only that page, and updates its path-copied page directory. Untouched pages stay
-shared. Each snapshot owns its virtual mappings until existing reader pins release it.
+shared. Each snapshot owns its symbolic mappings until existing reader pins release it.
 The copied sample bytes are therefore bounded by the new payload and affected boundary
 pages rather than by the complete recording. A second path-copied
 `RecordingPageRunNode` index records logically and physically consecutive pages.
@@ -1158,10 +1158,10 @@ build and execution result is intentionally supplied by the human collaborator.
 
 The first full-suite verification compiled successfully and passed 529 of 530 tests.
 The sole failure did not reach the transition root: its test constructed concrete
-package nodes directly, outside a virtual module embedding, so under the current stable-
+package nodes directly, outside a symbolic module embedding, so under the current stable-
 identity rules those nodes had no cross-generation identity and specialization had no
 semantic states to match. The fixture now uses a registered module graph and rewrites
-only a copied connection record, preserving virtual-node identity; verification of that
+only a copied connection record, preserving symbolic-node identity; verification of that
 correction subsequently passed. The full suite therefore passed all 530 tests for the
 representative direct-ring transition-root landing.
 
@@ -1229,7 +1229,7 @@ avoid either issue above.
 The first human verification of the Sequential-cursor/output-window expansion compiled
 and passed 532 of 533 tests. The sole failure did not enter output-window lowering: the
 fixture discarded its authored producer expression, so package source annotation gave
-that otherwise executable disconnected node no stable virtual identity and transition
+that otherwise executable disconnected node no stable symbolic identity and transition
 matching found no surviving port state. The fixture now names the producer declaration
 and asserts that both output-window requirements have stable identities before testing
 the transition root; verification of that correction is pending.
@@ -1488,10 +1488,10 @@ bounded correction.
 
 The first verification run passed 597 of 598 tests. The only failure was in the new
 bundle-handle-shift fixture: `GraphBuilderNodeBundles::import_child()` correctly clears
-the imported bundles' inverse `virtual_node_handles()` lists because normal embedding
-rebuilds them through `GraphBuilderVirtualNodes::import_child()`. The fixture preserved
-the original virtual-node IDs instead but initially rebuilt only the forward
-`VirtualNodeRecord::node_bundle_handles` side. It now restores the inverse lists after
+the imported bundles' inverse `symbolic_node_handles()` lists because normal embedding
+rebuilds them through `GraphBuilderSymbolicNodes::import_child()`. The fixture preserved
+the original symbolic-node IDs instead but initially rebuilt only the forward
+`SymbolicNodeRecord::node_bundle_handles` side. It now restores the inverse lists after
 shifting the records, so the changed-bundle graph retains the intended stable concrete
 node identities. No production migration behavior changed in this follow-up; another
 collaborator verification run remains pending.
@@ -2170,13 +2170,13 @@ configuration types. The parser must not parse arbitrary C++ headers.
 A stable project-node reference starts with a durable node-ID literal such as
 `&550e8400-e29b-41d4-a716-446655440000`. Three postfix selectors have distinct roles:
 
-- `.name` maps to `ProjectVirtualNodeSelector` and searches only the direct virtual
+- `.name` maps to `ProjectSymbolicNodeSelector` and searches only the direct symbolic
   nodes in the current subject scope.
-- `[n]` maps to `ProjectVirtualMemberSelector` and selects concrete virtual member
+- `[n]` maps to `ProjectSymbolicMemberSelector` and selects concrete symbolic member
   `n`.
 - `#name` maps to `ProjectTiledChildSelector` and selects a named tiled child.
 
-`ProjectVirtualNodeSelector` must not search descendant subgraphs. A selected virtual
+`ProjectSymbolicNodeSelector` must not search descendant subgraphs. A selected symbolic
 node supplies the semantic route into its backing subgraph. `ProjectSubgraphSelector`
 is not part of the intended semantic path. Configuration references and
 `ProjectNodePortMatcher` must use one shared resolver with these rules.
@@ -2222,7 +2222,7 @@ source now survives create/update RPCs, project replay, project save, instance l
 and instance-change notifications.
 
 `resolve_project_node_path()` now owns `.name`, `[n]`, and `#name` resolution for both
-configuration references and `GraphConnections`. Direct-scope virtual lookup is
+configuration references and `GraphConnections`. Direct-scope symbolic lookup is
 set-valued. `TiledNodeBundle::channel_type` supplies named tiled children and is
 preserved by configured-graph archive version 11. `ProjectSubgraphSelector` is removed
 from the project path representation.
@@ -2403,12 +2403,12 @@ Delivered representation (implementation status):
   Refs carry their session (`NodeRef::_session`, `SamplePortRef::session`,
   `EventPortRef::session`), so views of one session are compatible and other
   sessions are rejected. `GraphBuilderState` owns the LIFO `ScopeFrame` stack. Root
-  and definition scopes own a virtual-record namespace.
+  and definition scopes own a symbolic-record namespace.
 - *Registered invocations.* A cache miss constructs in place in the caller's
   session (`BuilderInvocation`). A cacheable, closed invocation is copied for
   reuse: `GraphBuilderMark` records its table sizes and
   `GraphBuilderState::snapshot_contents()` copies it. A hit imports through
-  `GraphBuilderState::import_contents()` without a wrapper subgraph (F12-6). Virtual
+  `GraphBuilderState::import_contents()` without a wrapper subgraph (F12-6). Symbolic
   records are qualified by the call's semantic path (F12-3). Constructibility,
   retainability, and cache-keyability are separate properties of an argument.
 - *Subgraphs.* `SubgraphClosure` holds a frozen `ConfiguredGraph` (borrowed or
@@ -2502,7 +2502,7 @@ registered with `IV_MODULE_CLASS`. Its constructor receives configuration argume
 `build_graph(GraphBuilder&) const` creates its graph, and compiler-discovered public
 const `on_message(ModuleMessageContext<Module>&, Event const&)` overloads receive
 events. `ctx.ref<"local">()` maps an authored local name from `build_graph()` to its
-compiler-generated `ProjectVirtualNodeSelector`; `.member(n)` and
+compiler-generated `ProjectSymbolicNodeSelector`; `.member(n)` and
 `.tiled_child<"name">()` append the existing selector types. The configured handler
 retains the class instance and semantic selector map. It never retains a
 builder-local `NodeRef` or `NodeBundleHandle`. `IV_MODULE` remains the handler-free
@@ -5814,7 +5814,7 @@ built, all 790 tests pass, measured below; repository owner).*
         realtime-code replacement is not layout-compatible"). The other three
         fail as in the tenth run.
       - *Decisions (human co-author, 2026-11-09).*
-        - Compiler-owned storage of a node under no virtual node is not
+        - Compiler-owned storage of a node under no symbolic node is not
           preserved either. Such a node behaves like a node the edit adds. For
           example, consumers then read zero bytes, not the old node's values, in
           its output latency window.
@@ -5863,7 +5863,7 @@ built, all 790 tests pass, measured below; repository owner).*
         example 8.18 instead of 0.25).
       - *Identity rule (2026-11-09; collaborator build and test run pending).*
         - `raw_region_node_identity()` (connection_plan.cpp) now returns nothing
-          for a node under no virtual node.
+          for a node under no symbolic node.
           `raw_region_node_identity_text()` puts a marker in its place, and
           `owned_raw_region_identity()` declares an identity that contains the
           marker empty, so such a region never migrates. Every compiler-owned
@@ -5897,7 +5897,7 @@ built, all 790 tests pass, measured below; repository owner).*
           anonymous.
         - Tests moved onto nodes with identities:
           - `with_node_identities()` (graph_jit_gtest.cpp) puts each concrete
-            node of a built graph in a virtual node of its own.
+            node of a built graph in a symbolic node of its own.
           - The six migration tests use it. In
             `UnequalLatencySampleFeedbackMigratesAlignmentPrehistory` and
             `...PopulatedAlignmentRing`, `expect_converted_feedback_suffix_equal()`
@@ -6055,7 +6055,7 @@ built, all 790 tests pass, measured below; repository owner).*
       - No reproduction test yet for an anonymous node's raw regions. Six tests already
         assert that an anonymous node's compiler-owned regions migrate, and that
         contradicts the human co-author's statement that the state of a node
-        under no virtual node is never preserved:
+        under no symbolic node is never preserved:
         `UnequalLatencySampleFeedbackMigratesAlignmentPrehistory`,
         `UnequalLatencySampleFeedbackMigratesPopulatedAlignmentRing`,
         `MultipleSampleDetachBranchesMigrateSharedHomeAndFallbackCopy`,
@@ -6063,7 +6063,7 @@ built, all 790 tests pass, measured below; repository owner).*
         `ExactTypeEventDetachFeedback` and `ExactSampleDetachFeedback`. Their
         fixtures call `configure_package_definition_provider()` directly, which
         skips `consume_builder_node_source_identity()`, so their nodes join no
-        virtual node. *(Confirmed 2026-11-09: it covers compiler-owned storage,
+        symbolic node. *(Confirmed 2026-11-09: it covers compiler-owned storage,
         except a detach's structures; see "Decisions" above. The six tests will
         need nodes with identities.)*
     - *Known gaps, not implemented:*
@@ -6795,7 +6795,7 @@ built, all 790 tests pass, measured below; repository owner).*
       `NodeLayoutBuilder::set_node_migration_identity()` assigns it.
     - `plan_declarations()` (lowering_plan.cpp) assigns each declared primitive with a
       `StableConcreteNodeId` the identity `"graphjit.node:"` followed by
-      `migration_identity_fields()` of that id. Its virtual-node field already
+      `migration_identity_fields()` of that id. Its symbolic-node field already
       contains a hash of the `IV_NODE` type identity. Anonymous nodes and nodes
       declared inside another node's `declare()` receive none and start fresh.
     - `NodeStorage::initialize()`, `NodeStorage::prepare_migration_from()`, and the
@@ -6851,7 +6851,7 @@ built, all 790 tests pass, measured below; repository owner).*
       expects `ActivityProbe::State::tick_calls` to carry over. node_layout_storage.cpp
       checks an implicit move of `AutoMovable`, including its `local_array`, and an
       explicit `move()` on a node without `State`.
-  - *Observed: `State` derived from construction arguments.* Virtual-node identity
+  - *Observed: `State` derived from construction arguments.* Symbolic-node identity
     does not change when a construction argument changes, so an implicit move kept
     `State` computed from the predecessor's arguments. `RealFFT` and `InverseRealFFT`
     kept an FFTW plan of the old `transform_size`, which the backend rejected on the
@@ -6898,7 +6898,7 @@ built, all 790 tests pass, measured below; repository owner).*
     expected its event consumer probe to start fresh; its `State` now moves
     implicitly, so the test now expects the successor's block to be the probe's
     second call. `FeedForwardEventFanInCompactCarryMigrates` builds its graph through
-    `configure_package_definition_provider()`, so its nodes have no virtual node and
+    `configure_package_definition_provider()`, so its nodes have no symbolic node and
     still start fresh, as expected.
 
 Candidate work includes:
@@ -7101,7 +7101,7 @@ _Status notes from the 2026-11-20 source review. The existing design documents
 continue to govern observable behavior._
 
 - **Graph identity across views.** `graph.getScope` describes top-level
-  `GraphScopeNode` records. The source panel reads `VirtualNode` records through
+  `GraphScopeNode` records. The source panel reads `SymbolicNode` records through
   `graph.queryBySpans`. The project editor also reduces selected `NodeAddress`
   values to instance IDs for some commands. Give both views the same addressed
   node and port descriptions, with edit permissions based on ownership. Start
@@ -7126,8 +7126,8 @@ continue to govern observable behavior._
   or below the lane viewport. Changing the lane order or expanding and
   collapsing a module rebuilds the row index.
   [Module interaction](./module_interoperability_and_graph_macros_direction.md#nested-module-presentation-and-project-owned-scopes)
-- **Virtual node membership in the project editor.** `graph.getScope`
-  exposes virtual nodes and the concrete members of each expanded record.
+- **Symbolic node membership in the project editor.** `graph.getScope`
+  exposes symbolic nodes and the concrete members of each expanded record.
   Each membership has its own row key. Rows for one member use the same
   `NodeAddress` for wiring, presentation state, knobs, and observations.
   Source annotations supply C++ declaration names. The runtime still
@@ -7368,11 +7368,79 @@ Custom ruler grids continue to observe their actual input events.
   destination on release. Preserve their ordered delivery independently of
   whether the rendering host displays the resulting frame.
 
-The Automation Curve port still needs typed control-point and sample
-views, structured edits with per-request replies, and cursor return.
-Exact event payloads from arbitrary streams are a separate observation
-interface. The [ownership explanation](api/explanation/presentation_execution.md)
+The Automation Curve port still needs typed control-point reads and the
+remaining editor interaction capabilities. Exact event payloads from arbitrary streams are a separate
+observation interface. The
+[ownership explanation](api/explanation/presentation_execution.md)
 describes the contracts exercised by Click Detector and Beats.
+
+### Automation Curve boundary audit (2026-11-22)
+
+The presentation host accepts a cursor destination as an exact signed
+sample and a lane-relative vertical fraction. `PluginLane` can resolve
+it against the current viewport when a release reply arrives after its
+drawing was superseded. The host confines the destination to the visible
+lane.
+
+ABI 6 generates fixed wasm32 records from reflected node-event schemas.
+The host binds the layouts once per artifact and submits typed events with
+the existing node-event identities. Per-request acknowledgements reach the
+originating worker session. The Placement example exercises a compound
+`PlacePoint`, including an exact sample index, interpolation enums,
+segment changes, and coincident point ordering.
+[Placement tutorial](api/tutorials/presentation_event.md) ·
+[Earlier ABI 5 design](historical/presentation_abi5_edits_2026-11-22.md)
+
+`NodeConstructionArguments` still publishes accepted values as JSON.
+Publish the matching `expression_schema` and borrow typed accepted
+control points and coherent sample windows before porting the editor.
+
+**Waveform input milestone (2026-11-22).** ABI 7 lets package
+presentations request `waveform` observations from sample inputs and
+outputs. The package catalog carries observation groups and
+`completeOnly` to the same subscription path used by the TypeScript
+presentation. Both renderers share Region projection, including the
+signed seam and native sample pace. The WASM view retains exact native
+sample indices and uses viewport-relative offsets for drawing.
+[Waveform binding](api/how-to/presentation_packages.md#bind-a-waveform-input-or-output)
+
+**Constructor read friction.** The graph scope reads
+`ConfiguredNodeInstance::read_construction_arguments` for root instances.
+It publishes `NodeConstructionArguments::json` as one array, and one
+unreadable value prevents publication of the entire array. Expanded
+children currently receive their definition ID but no construction
+values. A symbolic lane can describe several members with distinct
+values. A typed read needs a schema and an availability state per
+argument, and a resolved invocation that owns those arguments. A live
+`NodeRef` is a graph-builder value. The host needs an explicit policy for
+a serializable reference when one exists, and for a symbolic lane whose
+members disagree. Raw 64-bit integers also need an exact transport
+representation before they are parsed by the JavaScript host.
+
+### Release package portability
+
+**Policy for future distribution (2026-11-22).** A package release may
+contain prebuilt server artifacts and presentation WASM. Source is optional.
+A package built from source remains useful for live editing and for targets
+without a compatible prebuilt artifact. Source introspection runs when the
+package is built. A compatible artifact carries the resulting metadata for
+runtime use.
+
+Identify each server artifact by target ABI, CPU baseline and required
+features, Intravenous package ABI, and supported LLVM version. Build releases
+against an explicit CPU baseline. Local builds can specialize for the build
+host. The server bundle must include the finalized LLVM, the native node-code
+object, and the generated metadata required by the loader. Select or reject
+the bundle before loading it based on that declared compatibility. Keep the
+presentation WASM independently versioned by its presentation ABI so the same
+WASM can serve clients across those server targets.
+
+**Current implementation.** The node-code finalizer uses the build host's
+CPU and features. The build cache's host key already prevents reuse across
+incompatible local builds. Choosing a release baseline and distributing
+compatible artifact sets are future work. See
+[finalization](../package_tools/iv_package_finalize.cpp) and
+[artifact loading](../src/intravenous/module/loader.cpp).
 
 **Continuous edit scheduling review.** `ProjectGraph` already kept one
 replaceable `pending_graph_compile_` request. An in-flight compile could finish

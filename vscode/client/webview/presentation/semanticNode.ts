@@ -2,12 +2,12 @@ import type { ManualControlDescriptor } from "../../src/manualControls";
 import type {
     ContinuousValueAlternative,
     SourceSpan,
-    VirtualContinuousPort,
-    VirtualEventPort,
-    VirtualNode,
-    VirtualNodeMember,
-    VirtualPortBinding,
-    VirtualPortConnectivity,
+    SymbolicContinuousPort,
+    SymbolicEventPort,
+    SymbolicNode,
+    SymbolicNodeMember,
+    SymbolicPortBinding,
+    SymbolicPortConnectivity,
 } from "../../src/graphModel";
 import type { GraphScope, GraphScopeNode, GraphScopePort, NodeAddress } from "../../src/graphScope";
 import { addressKey, isProjectInstance, resolveScopePorts } from "../../src/graphScope";
@@ -18,8 +18,8 @@ type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realiz
     direction: SemanticPortDirection;
     index: number;
     name: string;
-    connectivity: VirtualPortConnectivity;
-    binding: VirtualPortBinding;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
 };
 
 export type SemanticContinuousPort = SemanticPortFields & {
@@ -44,7 +44,7 @@ export type SemanticNodeMember = {
 };
 
 // The node object a presentation reads through useNode(). Source inspection
-// supplies VirtualNode metadata; the graph editor supplies a stable address
+// supplies SymbolicNode metadata; the graph editor supplies a stable address
 // and the desired instance's ports from GraphScope.
 export type SemanticNode = {
     loadState?: GraphScopeNode["loadState"];
@@ -53,14 +53,14 @@ export type SemanticNode = {
     sourceLabel?: string;
     realized?: boolean;
     hasChildren?: boolean;
-    virtualNode?: boolean;
+    symbolicNode?: boolean;
     errorMessage?: string;
     address?: NodeAddress;
     construction?: GraphScopeNode["construction"];
     constructionError?: string;
     // Present only when this presentation hosts an opened graph scope.
     scope?: GraphScope;
-    // Source-introspection virtual-node ID or project instance ID.
+    // Source-introspection symbolic-node ID or project instance ID.
     id: string;
     instanceId: string;
     definitionId: string;
@@ -104,12 +104,12 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         defaultDisplayName: child.childDisplayName ?? child.instance.defaultDisplayName,
         sourceLabel: child.childSourceLabel,
         hasChildren: child.hasChildren,
-        virtualNode: child.virtualNode,
+        symbolicNode: child.symbolicNode,
         realized: child.instance.realized,
         loadState: child.loadState,
         errorMessage: child.errorMessage,
-        instanceId: child.instance.instanceId, definitionId: child.virtualNode ? "" : definitionId,
-        kind: definitionId, sourceIdentity: "", memberCount: child.virtualMemberCount ?? 1,
+        instanceId: child.instance.instanceId, definitionId: child.symbolicNode ? "" : definitionId,
+        kind: definitionId, sourceIdentity: "", memberCount: child.symbolicMemberCount ?? 1,
         members: [], sourceSpans: [],
         ports: [
             ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),
@@ -121,14 +121,14 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
 }
 
 type PortRecord = {
-    continuousInputs?: VirtualContinuousPort[];
-    continuousOutputs?: VirtualContinuousPort[];
-    eventInputs?: VirtualEventPort[];
-    eventOutputs?: VirtualEventPort[];
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
 };
 
 function continuousPorts(
-    ports: VirtualContinuousPort[] | undefined,
+    ports: SymbolicContinuousPort[] | undefined,
     direction: SemanticPortDirection,
 ): SemanticContinuousPort[] {
     return (ports ?? []).map((port) => ({
@@ -144,7 +144,7 @@ function continuousPorts(
 }
 
 function eventPorts(
-    ports: VirtualEventPort[] | undefined,
+    ports: SymbolicEventPort[] | undefined,
     direction: SemanticPortDirection,
 ): SemanticEventPort[] {
     return (ports ?? []).map((port) => ({
@@ -167,7 +167,7 @@ function semanticPorts(record: PortRecord): SemanticPort[] {
     ];
 }
 
-function semanticMember(member: VirtualNodeMember, node: VirtualNode): SemanticNodeMember {
+function semanticMember(member: SymbolicNodeMember, node: SymbolicNode): SemanticNodeMember {
     return {
         index: member.index ?? 0,
         kind: member.kind || node.kind || "",
@@ -176,7 +176,7 @@ function semanticMember(member: VirtualNodeMember, node: VirtualNode): SemanticN
     };
 }
 
-export function semanticNodeFromVirtualNode(node: VirtualNode): SemanticNode {
+export function semanticNodeFromSymbolicNode(node: SymbolicNode): SemanticNode {
     return {
         id: node.id ?? "",
         instanceId: node.instanceId ?? "",

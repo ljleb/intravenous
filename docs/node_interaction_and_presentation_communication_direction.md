@@ -341,8 +341,8 @@ IV_MODULE_CLASS("iv.example.filter_voice", FilterVoice);
 `ModuleMessageContext<Module>` is a separate public type from
 `NodeMessageContext<Node>`. `ctx.ref<"name">()` accepts a compile-time string and
 selects a graph-significant local declared with that name in `build_graph()`. The
-compiler records the local's `ProjectVirtualNodeSelector`. The returned
-`ModuleMessageTarget` can append `ProjectVirtualMemberSelector` with `.member(n)` or
+compiler records the local's `ProjectSymbolicNodeSelector`. The returned
+`ModuleMessageTarget` can append `ProjectSymbolicMemberSelector` with `.member(n)` or
 `ProjectTiledChildSelector` with `.tiled_child<"name">()`. It does not expose a
 `NodeBundleHandle` or retain a `NodeRef` after graph construction.
 
@@ -522,14 +522,14 @@ to module nodes.
 ## `NodeRef`, `NodeAddress`, selectors, and concrete nodes have different roles
 
 A `NodeRef` is the authored C++ reference. In addition to its builder-time role,
-the planned event model requires it to carry/read the stable virtual/semantic node
+the planned event model requires it to carry/read the stable symbolic/semantic node
 identity needed by a captured module handler.
 
 A `NodeAddress` is the serializable form of semantic identity that may cross the
 presentation/backend boundary or appear inside ordinary event values.
 
 A selector is a semantic query rooted at one of those identities. Selectors always
-represent sets, possibly empty. A virtual node may resolve to several concrete
+represent sets, possibly empty. A symbolic node may resolve to several concrete
 nodes.
 
 A concrete node/index is realization-specific runtime detail and is never a

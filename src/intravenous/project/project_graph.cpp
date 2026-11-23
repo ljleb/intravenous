@@ -167,14 +167,14 @@ bool module_handler_address_is_selected(
     }
     if (target.path == handler.address.path) return true;
     if (target.path.empty()
-        || !std::holds_alternative<ProjectVirtualNodeSelector>(
+        || !std::holds_alternative<ProjectSymbolicNodeSelector>(
             target.path.back())
         || handler.address.path.size() < target.path.size() + 1
         || handler.address.path.size() > target.path.size() + 2
         || !std::equal(
             target.path.begin(), target.path.end(),
             handler.address.path.begin())
-        || !std::holds_alternative<ProjectVirtualMemberSelector>(
+        || !std::holds_alternative<ProjectSymbolicMemberSelector>(
             handler.address.path[target.path.size()])) {
         return false;
     }
@@ -1457,8 +1457,8 @@ void configure_manual_controls(
                     address.path = std::move(*path);
                 }
             }
-            auto const interface = match.kind == ProjectNodePathMatch::Kind::virtual_node
-                ? read_virtual_node_interface(finished_graph.node_bundles, finished_graph.virtual_nodes.record(match.virtual_node), representative)
+            auto const interface = match.kind == ProjectNodePathMatch::Kind::symbolic_node
+                ? read_symbolic_node_interface(finished_graph.node_bundles, finished_graph.symbolic_nodes.record(match.symbolic_node), representative)
                 : read_node_instance_interface(finished_graph.node_bundles, representative);
             for (auto const& port : interface.sample_inputs) {
                 if (port.name.empty() || !port.manual_defaults) continue;
@@ -1471,7 +1471,7 @@ void configure_manual_controls(
                     add_control({.node = address, .port_name = port.name, .kind = ManualControlKind::output_gain},
                         Sample{1}, true);
             }
-            if (is_root || interface.has_children || match.kind == ProjectNodePathMatch::Kind::virtual_node
+            if (is_root || interface.has_children || match.kind == ProjectNodePathMatch::Kind::symbolic_node
                 || finished_graph.node_bundles.bundle(representative).is_tiled()) {
                 for (auto const& child : project_child_nodes(finished_graph, match)) {
                     auto child_address = address;
@@ -1505,8 +1505,8 @@ void configure_manual_controls(
             for (auto const& match : matches) {
                 if (match.kind == ProjectNodePathMatch::Kind::bundle) append(match.bundle);
                 else {
-                    auto const& members = finished_graph.virtual_nodes.record(match.virtual_node).node_bundle_handles;
-                    for (auto member : match.virtual_member_indices)
+                    auto const& members = finished_graph.symbolic_nodes.record(match.symbolic_node).node_bundle_handles;
+                    for (auto member : match.symbolic_member_indices)
                         if (member < members.size()) append(members[member]);
                 }
             }
@@ -1555,10 +1555,10 @@ void configure_manual_controls(
             if (port == selected.sample_input_count() && control.enabled)
                 diagnostics.push_back({control.id, "manual control input name does not select a continuous input"});
         }
-        bool const virtual_selection = std::ranges::any_of(matches, [](auto const& match) {
-            return match.kind == ProjectNodePathMatch::Kind::virtual_node;
+        bool const symbolic_selection = std::ranges::any_of(matches, [](auto const& match) {
+            return match.kind == ProjectNodePathMatch::Kind::symbolic_node;
         });
-        if (virtual_selection && resolved_ports.size() != bundles.size()) continue;
+        if (symbolic_selection && resolved_ports.size() != bundles.size()) continue;
         for (auto const& resolved : resolved_ports) {
             if (output_gain) {
                 finished_graph.manual_controls.push_back({.id = control.id,
@@ -1581,7 +1581,7 @@ void configure_manual_controls(
     std::vector<ManualControlId> prepared_groups;
     for (auto const& control : finished_graph.manual_controls)
         if (control.requires_preparation && !control.id.node.path.empty()
-            && std::holds_alternative<ProjectVirtualNodeSelector>(control.id.node.path.back())
+            && std::holds_alternative<ProjectSymbolicNodeSelector>(control.id.node.path.back())
             && !std::ranges::contains(prepared_groups, control.id))
             prepared_groups.push_back(control.id);
     for (auto& control : finished_graph.manual_controls)
@@ -1661,7 +1661,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_project_graph_source_introspection_requested_event,
                 introspection);
-            publication.virtual_nodes = std::move(introspection.result);
+            publication.symbolic_nodes = std::move(introspection.result);
         }
     }
 
@@ -2433,7 +2433,7 @@ void ProjectGraph::handle_node_definitions_snapshot_changed(
         IvModuleSourceIntrospectionProjectGraphRequest introspection{};
         introspection.package_definitions = change.package_definitions;
         IV_INVOKE_LINKER_EVENT(iv_runtime_project_graph_source_introspection_requested_event, introspection);
-        change.publication.virtual_nodes = std::move(introspection.result);
+        change.publication.symbolic_nodes = std::move(introspection.result);
     } else {
         auto rebuilt = rebuild_locked(
             std::monostate{}, std::monostate{}, true, &change);
@@ -3854,8 +3854,8 @@ std::string child_lane_display_name(
     std::unordered_map<std::string_view, std::string_view> const& leaf_names_by_type)
 {
     auto const& graph = *generation.graph;
-    if (child.virtual_node) {
-        auto const& record = graph.virtual_nodes.record(*child.virtual_node);
+    if (child.symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(*child.symbolic_node);
         if (record.type_identity == "sample-port") return "Sample Port";
         if (record.type_identity == "event-port") return "Event Port";
     }
@@ -4076,9 +4076,9 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 auto child_address = address;
                 child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
                 std::optional<NodeAddress> membership_address;
-                std::optional<std::size_t> virtual_member_count;
+                std::optional<std::size_t> symbolic_member_count;
                 std::optional<ProjectGraphScopeSource> declaration_source;
-                if (!child.virtual_node) {
+                if (!child.symbolic_node) {
                     auto const placement = generation->placements.find(address.instance_id);
                     if (placement != generation->placements.end()) {
                         auto path = project_member_path(graph, placement->second.root, child.bundle);
@@ -4091,7 +4091,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     if (!std::ranges::contains(addresses, child_address))
                         addresses.insert(addresses.begin(), child_address);
                 } else {
-                    auto const& record = graph.virtual_nodes.record(*child.virtual_node);
+                    auto const& record = graph.symbolic_nodes.record(*child.symbolic_node);
                     auto const declaration = std::ranges::find_if(record.source_infos,
                         [](SourceInfo const& info) {
                             return info.declaration_line != 0 && !info.span.file_path.empty();
@@ -4105,8 +4105,8 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                     }
                     auto const selected = resolve_node_address(graph, generation->placements, child_address);
                     if (selected.size() == 1) {
-                        auto const& members = selected.front().virtual_member_indices;
-                        virtual_member_count = members.size();
+                        auto const& members = selected.front().symbolic_member_indices;
+                        symbolic_member_count = members.size();
                         if (record.type_identity == "sample-port" || record.type_identity == "event-port") {
                             auto includes_bundle = [&](NodeBundleHandle bundle) {
                                 return std::ranges::any_of(members, [&](auto index) { return record.node_bundle_handles[index] == bundle; });
@@ -4134,15 +4134,15 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 auto const* registered = graph.node_bundles.registered_node_type_identity(child.bundle);
                 auto const definition_id = bundle.is_subgraph() ? bundle.subgraph_kind()
                     : registered ? std::string_view(registered->node_type_id) : std::string_view{};
-                auto interface = child.virtual_node
-                    ? read_virtual_node_interface(graph.node_bundles, graph.virtual_nodes.record(*child.virtual_node), child.bundle)
+                auto interface = child.symbolic_node
+                    ? read_symbolic_node_interface(graph.node_bundles, graph.symbolic_nodes.record(*child.symbolic_node), child.bundle)
                     : read_node_instance_interface(graph.node_bundles, child.bundle);
-                interface.has_children = child.virtual_node || interface.has_children || bundle.is_tiled();
+                interface.has_children = child.symbolic_node || interface.has_children || bundle.is_tiled();
                 auto& node = child_scope.nodes.emplace_back(ProjectGraphScopeNode{
                     .address = std::move(child_address),
                     .membership_address = std::move(membership_address),
-                    .virtual_node = child.virtual_node.has_value(),
-                    .virtual_member_count = virtual_member_count,
+                    .symbolic_node = child.symbolic_node.has_value(),
+                    .symbolic_member_count = symbolic_member_count,
                     .instance = *owner,
                     .child_display_name = child_lane_display_name(*generation, child, definition_id, leaf_names_by_type),
                     .child_source_label = child.source_label,
@@ -4314,8 +4314,8 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                 auto matches = resolve_node_address(graph, placements, address);
                 std::map<std::string, ChannelTypeId> outputs, inputs;
                 for (auto const& match : matches) {
-                    if (match.kind == ProjectNodePathMatch::Kind::virtual_node) {
-                        auto const& node = graph.virtual_nodes.record(match.virtual_node);
+                    if (match.kind == ProjectNodePathMatch::Kind::symbolic_node) {
+                        auto const& node = graph.symbolic_nodes.record(match.symbolic_node);
                         for (auto const& mapping : node.sample_outputs)
                             outputs.emplace(mapping.name, mapping.channel_layout.channel_type);
                         for (auto const& mapping : node.sample_inputs)
@@ -4336,7 +4336,7 @@ void ProjectGraph::handle_observation_request(ObservationGraphRequest& request)
                                              std::string const& name, ChannelTypeId channel_type) {
                     auto const input = kind == ObservationSourceKind::input;
                     auto const* kind_name = input ? "input" : "output";
-                    auto const summed = observes_virtual_output({.node = address, .kind = kind});
+                    auto const summed = observes_symbolic_output({.node = address, .kind = kind});
                     auto const& public_layout = channel_type_info(channel_type);
                     auto const channel_count = summed ? public_layout.channel_count : sources.size();
                     if (sources.empty()) return;

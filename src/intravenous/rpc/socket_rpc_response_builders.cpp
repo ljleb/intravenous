@@ -383,7 +383,7 @@ std::string SocketRpcGraphQueryResultBuilder::build(int request_id) const {
     if (!result.has_value()) {
         throw_unbuilt_response("SocketRpcGraphQueryResultBuilder");
     }
-    return jsonrpc_result(request_id, Json{{"nodes", virtual_nodes_json(result->nodes)}});
+    return jsonrpc_result(request_id, Json{{"nodes", symbolic_nodes_json(result->nodes)}});
 }
 
 void SocketRpcRegionQueryResultBuilder::succeed(ProjectRegionQueryResult value) {
@@ -412,28 +412,28 @@ std::string SocketRpcRegionQueryResultBuilder::build(int request_id) const {
         Json{{"sourceSpans", live_source_spans_json(result->source_spans)}});
 }
 
-void SocketRpcVirtualNodeResultBuilder::succeed(VirtualNodeInfo value) {
+void SocketRpcSymbolicNodeResultBuilder::succeed(SymbolicNodeInfo value) {
     result = std::move(value);
 }
 
-void SocketRpcVirtualNodeResultBuilder::fail(std::string message) {
+void SocketRpcSymbolicNodeResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcVirtualNodeResultBuilder::fail(int code, std::string message) {
+void SocketRpcSymbolicNodeResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcVirtualNodeResultBuilder::build(int request_id) const {
+std::string SocketRpcSymbolicNodeResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
     if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcVirtualNodeResultBuilder");
+        throw_unbuilt_response("SocketRpcSymbolicNodeResultBuilder");
     }
-    return jsonrpc_result(request_id, virtual_node_json(*result));
+    return jsonrpc_result(request_id, symbolic_node_json(*result));
 }
 
 void SocketRpcGraphScopeResultBuilder::succeed(ProjectGraphScope value) {
@@ -524,8 +524,8 @@ Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
         };
         if (node.membership_address)
             entry["membershipAddress"] = node_address_json(*node.membership_address, ProjectConnectionJsonNames::socket_rpc);
-        if (node.virtual_node) entry["virtualNode"] = true;
-        if (node.virtual_member_count) entry["virtualMemberCount"] = *node.virtual_member_count;
+        if (node.symbolic_node) entry["symbolicNode"] = true;
+        if (node.symbolic_member_count) entry["symbolicMemberCount"] = *node.symbolic_member_count;
         if (node.child_display_name) entry["childDisplayName"] = *node.child_display_name;
         if (node.child_source_label) entry["childSourceLabel"] = *node.child_source_label;
         if (node.declaration_source) {
@@ -597,28 +597,28 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     });
 }
 
-void SocketRpcVirtualNodesResultBuilder::succeed(std::vector<VirtualNodeInfo> value) {
+void SocketRpcSymbolicNodesResultBuilder::succeed(std::vector<SymbolicNodeInfo> value) {
     result = std::move(value);
 }
 
-void SocketRpcVirtualNodesResultBuilder::fail(std::string message) {
+void SocketRpcSymbolicNodesResultBuilder::fail(std::string message) {
     error_code = -32000;
     error_message = std::move(message);
 }
 
-void SocketRpcVirtualNodesResultBuilder::fail(int code, std::string message) {
+void SocketRpcSymbolicNodesResultBuilder::fail(int code, std::string message) {
     error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcVirtualNodesResultBuilder::build(int request_id) const {
+std::string SocketRpcSymbolicNodesResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
     if (!result.has_value()) {
-        throw_unbuilt_response("SocketRpcVirtualNodesResultBuilder");
+        throw_unbuilt_response("SocketRpcSymbolicNodesResultBuilder");
     }
-    return jsonrpc_result(request_id, Json{{"nodes", virtual_nodes_json(*result)}});
+    return jsonrpc_result(request_id, Json{{"nodes", symbolic_nodes_json(*result)}});
 }
 
 void SocketRpcCreateNodeInstanceResultBuilder::succeed(std::string created_instance_id) {

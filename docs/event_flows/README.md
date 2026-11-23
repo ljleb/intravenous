@@ -65,7 +65,7 @@ cause's root, which publishes them once (implemented 2026-11-12):
 - `NodeInstances` returns its instance-list and declaration changes in
   `NodeInstancesProjectGraphRequest`; `ProjectGraph` updates
   `IvModuleSourceIntrospection` once per root build and returns the instance
-  list and virtual-node replacements as a `ProjectGraphPublication`.
+  list and symbolic-node replacements as a `ProjectGraphPublication`.
 - In an RPC cause, the publication returns on the request's result builder and
   `SocketRpcServer` publishes it after the response, at the response's revision.
 - In a package refresh, it returns through `NodeDefinitionsSnapshotChanged`,

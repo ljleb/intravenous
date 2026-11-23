@@ -15,7 +15,7 @@ Its job is to:
 - expose logical nodes and active regions to the UI
 - expose declared continuous value-type alternatives and type-owned authored
   presentation metadata
-- expose configured connectivity and virtual-port binding
+- expose configured connectivity and symbolic-port binding
 
 It should not:
 - own iv-module instances
@@ -52,7 +52,7 @@ and interact with the same configured module instance and stable semantic
 paths used by the project graph. It is not an independent set of editable
 nodes. Unregistered concrete leaves can have compiler records when used in a
 package; that fact alone does not provide a public `IV_NODE` definition or
-replace the source annotations needed to associate virtual/logical nodes
+replace the source annotations needed to associate symbolic nodes
 with C++ source. Source ownership limits structural deletion, not graph
 connection or observation of an addressable internal port. See
 [Module Interoperability And Graph Macros](./module_interoperability_and_graph_macros_direction.md).

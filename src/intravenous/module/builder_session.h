@@ -95,7 +95,7 @@ builder_semantic_scope_path(BuilderSession const*) noexcept;
 [[nodiscard]] std::vector<ProjectNodePathSelector>
 claim_builder_invocation_path(
     BuilderSession*, std::string_view source_identity);
-// The virtual-record qualifier of a placement at `relative_path`.
+// The symbolic-record qualifier of a placement at `relative_path`.
 [[nodiscard]] std::string builder_invocation_qualifier(
     std::span<ProjectNodePathSelector const> relative_path);
 void record_builder_module_message_local_ref(
@@ -178,7 +178,7 @@ void end_builder_module_body(BuilderSession*) noexcept;
 // invocation root (an empty scope path). Finishing it returns the message
 // handlers registered inside it with paths relative to the invocation root
 // and removes them from the session, optionally copies its contents into a
-// closed graph for reuse, and then qualifies its virtual records.
+// closed graph for reuse, and then qualifies its symbolic records.
 struct BuilderInvocation {
     GraphBuilderMark mark{};
     std::size_t message_handler_begin = 0;

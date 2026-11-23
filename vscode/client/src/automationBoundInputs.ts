@@ -1,8 +1,8 @@
 import { clampAutomationValue, type AutomationValueBounds, type CurvePath } from "./automationCurveGeometry";
 import type { ObservationSpan } from "./observationWindows";
 import type { ObservationWindowResult } from "./observations";
-import { observationSampleOffsets } from "./sampleWaveform";
-import { timelineObservationOffset, type TimelineSamples } from "./timelineSamples";
+import { waveformTracks, waveformTracksForSpans, type WaveformTrack } from "./observationWaveform";
+import type { TimelineSamples } from "./timelineSamples";
 
 export type AutomationBoundInput = "min" | "max";
 
@@ -10,58 +10,20 @@ export type BoundSample = { seconds: number; value: number };
 type BoundTrack = { begin: number; end: number; samples: BoundSample[] };
 export const automationBoundVisiblePositions = 1024;
 
-export function automationBoundTracksForSpans(spans: readonly ObservationSpan[], view: TimelineSamples, sampleRate: number): BoundTrack[] {
-    const tracks: BoundTrack[] = [];
-    const visibleOffset = timelineObservationOffset(view);
-    const projected = new Map<ObservationWindowResult, { offset: bigint; tracks: BoundTrack[] }>();
-    for (const span of spans) {
-        const { result } = span;
-        const begin = Math.max(0, (Number(span.begin) + visibleOffset) / sampleRate);
-        const end = Math.min(view.span, Number(span.end) + visibleOffset) / sampleRate;
-        let source = projected.get(result);
-        if (!source || source.offset !== span.windowOffset) {
-            source = { offset: span.windowOffset,
-                tracks: automationBoundTracks(result, span.windowOffset, sampleRate, visibleOffset) };
-            projected.set(result, source);
-        }
-        for (const track of source.tracks) {
-            const clippedBegin = Math.max(begin, track.begin), clippedEnd = Math.min(end, track.end);
-            if (clippedBegin < clippedEnd) tracks.push({ begin: clippedBegin, end: clippedEnd, samples: track.samples });
-        }
-    }
-    return tracks;
+function boundTracks(tracks: WaveformTrack<BoundSample>[], sampleRate: number): BoundTrack[] {
+    return tracks.map(({ begin, end, samples }) => ({ begin: begin / sampleRate, end: end / sampleRate, samples }));
 }
 
-// Use the project timeline for X. The observation can count samples at a
-// different pace, and its Region and sample indices can cross the circle seam.
+const boundSample = (sampleRate: number) => (_index: string, offset: number, value: number): BoundSample =>
+    ({ seconds: offset / sampleRate, value });
+
+export function automationBoundTracksForSpans(spans: readonly ObservationSpan[], view: TimelineSamples, sampleRate: number): BoundTrack[] {
+    return boundTracks(waveformTracksForSpans(spans, view, boundSample(sampleRate)), sampleRate);
+}
+
 export function automationBoundTracks(result: ObservationWindowResult | undefined,
     windowOffset: bigint, sampleRate: number, visibleOffset = 0): BoundTrack[] {
-    if (!result || result.status !== "ready") return [];
-    const lattice = observationSampleOffsets(result, windowOffset);
-    const secondsPerSample = lattice.scale / sampleRate;
-    const time = (index: string) => (visibleOffset + lattice.at(index)) / sampleRate;
-    const tracks: BoundTrack[] = [];
-    for (const region of result.regions) {
-        let begin = time(region.begin);
-        const end = begin + Number(region.length) * secondsPerSample;
-        let samples: BoundSample[] = [];
-        let hasGap = false;
-        for (const point of region.points) {
-            const value = point.value?.value;
-            if (!point.available || typeof value !== "number" || !Number.isFinite(value)) {
-                const last = samples.at(-1);
-                if (last) tracks.push({ begin, end: Math.min(end, last.seconds + secondsPerSample), samples });
-                samples = [];
-                hasGap = true;
-                continue;
-            }
-            const seconds = time(point.index);
-            if (hasGap && !samples.length) begin = seconds;
-            samples.push({ seconds, value });
-        }
-        if (samples.length) tracks.push({ begin, end, samples });
-    }
-    return tracks;
+    return boundTracks(waveformTracks(result, windowOffset, visibleOffset, boundSample(sampleRate)), sampleRate);
 }
 
 function representativeBoundAt(tracks: Iterable<BoundTrack>, seconds: number, side: AutomationBoundInput): number | undefined {

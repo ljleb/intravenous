@@ -1,11 +1,11 @@
-#include <intravenous/presentation/presentation.hpp>
+#include "beats_events.hpp"
 
 namespace {
 constexpr uint32_t bpm_scale = 1'000'000;
 constexpr uint32_t max_divisions = 1024;
 constexpr uint32_t max_levels = 10;
 constexpr uint32_t max_tempo = UINT32_MAX;
-constexpr uint32_t edit_capacity = IV_MAX_NUMERIC_EDITS + 1;
+constexpr uint32_t edit_capacity = IV_MAX_EDITS + 1;
 
 constexpr IvString string(char const* text)
 {
@@ -232,42 +232,40 @@ void record_grid(iv::presentation::Context& frame, BeatGrid const& grid, uint32_
 
 struct GridEdit {
     BeatGrid grid;
-    IvString gesture;
+    iv::presentation::EditGesture gesture;
     uint32_t flags;
 };
 
 void record_edits(iv::presentation::Context& frame, GridEdit const* edits, uint32_t size)
 {
-    struct Payload {
-        double bpm, beats, subdivisions[max_levels];
-        IvNumericField fields[3];
-    };
-    Payload payloads[edit_capacity];
-    IvNumericNodeEdit commands[edit_capacity];
+    using presentation_beats_events::SetBeatGrid;
     for (uint32_t i = 0; i < size; ++i) {
         auto const& edit = edits[i];
         if (edit.flags == IV_EDIT_FINISH) {
-            commands[i] = {.gesture = edit.gesture, .flags = IV_EDIT_FINISH};
+            frame.finish_edit(edit.gesture);
             continue;
         }
-        auto& payload = payloads[i];
-        payload.bpm = double(edit.grid.tempo) / bpm_scale;
-        payload.beats = edit.grid.beats;
-        for (uint32_t j = 0; j < edit.grid.size; ++j) payload.subdivisions[j] = edit.grid.subdivisions[j];
-        payload.fields[0] = {string("bpm"), {{&payload.bpm, 1}, IV_NUMERIC_SCALAR}};
-        payload.fields[1] = {string("beats_per_bar"), {{&payload.beats, 1}, IV_NUMERIC_SCALAR}};
-        payload.fields[2] = {string("subdivisions"), {{payload.subdivisions, edit.grid.size}, IV_NUMERIC_SEQUENCE}};
-        // SetBeatGrid's nominal identity and schema fingerprint are generated
-        // from the native receiver. Client tests check this exact binding.
-        commands[i] = {string("c:$@N@iv@S@SetBeatGrid"), string("b2a36c5cb2dc68f3"), edit.gesture,
-            {payload.fields, 3}, edit.flags};
+        auto const& grid = edit.grid;
+        SetBeatGrid const event{double(grid.tempo) / bpm_scale, grid.beats, {grid.subdivisions, grid.size}};
+        if (edit.flags == IV_EDIT_REPLACE_PENDING) frame.replace_pending(event, edit.gesture);
+        else frame.send(event);
     }
-    frame.submit_numeric_edits({commands, size});
+}
+
+uint32_t knob_index(IvString id)
+{
+    if (equal(id, string("bpm"))) return 0;
+    if (equal(id, string("beatsPerBar"))) return 1;
+    for (uint32_t i = 0; i < max_levels; ++i)
+        if (equal(id, indexed_id("subdivision:", i).view())) return 2 + i;
+    return max_levels + 2;
 }
 
 class BeatsPresentation {
     BeatGrid draft_;
     bool has_draft_ = false;
+    iv::presentation::EditGesture gestures_[max_levels + 2]{};
+    Text edit_error_;
 
 public:
     void present(iv::presentation::Context& frame)
@@ -278,28 +276,45 @@ public:
             return;
         }
         if (frame.edit_failed() || !frame.edits_pending()) has_draft_ = false;
-        for (auto const& gesture : frame.gestures())
-            if (!gesture.id && gesture.phase == IV_GESTURE_CANCEL) has_draft_ = false;
+        for (auto const& reply : frame.edit_replies()) {
+            if (reply.status != IV_EDIT_REJECTED) continue;
+            has_draft_ = false;
+            edit_error_ = {};
+            edit_error_.append(reply.error);
+        }
+        for (auto const& gesture : frame.gestures()) {
+            if (gesture.id || gesture.phase != IV_GESTURE_CANCEL) continue;
+            has_draft_ = false;
+            edit_error_ = {};
+            for (auto& edit : gestures_) edit = {};
+        }
         auto grid = has_draft_ ? draft_ : accepted;
         auto const sample_rate = frame.timeline_view().sample_rate;
         GridEdit edits[edit_capacity];
         uint32_t count = 0;
         for (auto const& input : frame.control_inputs()) {
             if (count == edit_capacity) break; // The SDK rejects an over-limit frame in full.
+            auto const knob = knob_index(input.id);
+            auto* gesture = knob < max_levels + 2 ? &gestures_[knob] : nullptr;
             if (input.phase == IV_CONTROL_FINISH) {
-                edits[count++] = {.gesture = input.id, .flags = IV_EDIT_FINISH};
+                if (gesture && gesture->id) {
+                    edits[count++] = {.gesture = *gesture, .flags = IV_EDIT_FINISH};
+                    *gesture = {};
+                }
                 continue;
             }
             if (!frame.can_edit()) continue;
             auto next = grid;
             if (!apply_control(next, input, sample_rate) || next.same(grid)) continue;
-            bool const preview = input.phase == IV_CONTROL_PREVIEW;
+            bool const preview = input.phase == IV_CONTROL_PREVIEW && gesture;
+            if (preview && !gesture->id) *gesture = frame.begin_edit();
             auto const flags = preview ? uint32_t{IV_EDIT_REPLACE_PENDING} : 0;
             auto const replace = preview && count && edits[count - 1].flags == flags
-                && equal(edits[count - 1].gesture, input.id);
+                && edits[count - 1].gesture.id == gesture->id;
             auto& edit = replace ? edits[count - 1] : edits[count++];
-            edit = {next, preview ? input.id : IvString{}, flags};
+            edit = {next, preview ? *gesture : iv::presentation::EditGesture{}, flags};
             grid = draft_ = next;
+            edit_error_ = {};
             has_draft_ = true;
         }
         if (count) record_edits(frame, edits, count);
@@ -319,7 +334,7 @@ public:
             if (i) status.append(" × ");
             status.append(grid.subdivisions[i]);
         }
-        frame.set_status(status.view());
+        frame.set_status(edit_error_.size ? edit_error_.view() : status.view());
         record_grid(frame, grid, sample_rate);
     }
 };

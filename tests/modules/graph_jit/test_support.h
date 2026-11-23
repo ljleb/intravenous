@@ -356,7 +356,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph(
 
 // Builds a module definition's graph the way the package loader builds its
 // default graph (module/loader.cpp), but with construction arguments. Two graphs
-// built from one module this way give the nodes they share the same virtual
+// built from one module this way give the nodes they share the same symbolic
 // nodes, whatever the arguments.
 std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph_with_arguments(
     iv::PackageRevision const& revision,
@@ -371,7 +371,7 @@ void expect_single_node_canonical_regions(
 
 std::shared_ptr<iv::PackageRevision const> load_graph_jit_runtime_revision();
 
-// `anonymous` with each of its concrete nodes in a virtual node of its own, as
+// `anonymous` with each of its concrete nodes in a symbolic node of its own, as
 // authored module code would place it, so that the nodes and what they own
 // keep their identity across compilations of the result.
 std::shared_ptr<iv::ConfiguredGraph const> with_node_identities(

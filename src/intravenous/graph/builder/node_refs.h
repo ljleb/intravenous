@@ -93,7 +93,7 @@ namespace iv {
         size_t _index{};
         // The declaration identity itself is recorded in the host annotation
         // table. The façade only needs this bit to preserve the one-time
-        // initialization rule for annotated virtual refs.
+        // initialization rule for annotated symbolic refs.
         mutable bool _has_source_identity = false;
         bool _has_message_path = false;
         std::vector<ProjectNodePathSelector> _message_path{};

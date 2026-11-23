@@ -2032,7 +2032,7 @@ public:
             return result;
         }
         auto resolved_graph = *request.graph;
-        // A virtual control and a member control can resolve to the same
+        // A symbolic control and a member control can resolve to the same
         // bundle port. Keep one participating control per direction there.
         using ControlIndices = std::map<NodeBundlePortId, std::size_t, NodeBundlePortIdLess>;
         ControlIndices inputs, outputs;
@@ -2041,14 +2041,14 @@ public:
         auto priority = [](ConfiguredManualControl const& control) {
             auto const& path = control.id.node.path;
             auto const specificity = path.empty() ? 0
-                : std::holds_alternative<ProjectVirtualNodeSelector>(path.back()) ? 1 : 2;
+                : std::holds_alternative<ProjectSymbolicNodeSelector>(path.back()) ? 1 : 2;
             if (specificity == 2 && !control.output && !control.dynamic && !control.authored) return -1;
             return specificity + (control.dynamic ? 3 : 0);
         };
         for (std::size_t index = 0; index < controls.size(); ++index) {
             auto const& control = controls[index];
-            // A member output at unity leaves the virtual gain in charge.
-            bool const neutral_member_gain = control.output && !is_virtual_output_gain(control.id)
+            // A member output at unity leaves the symbolic gain in charge.
+            bool const neutral_member_gain = control.output && !is_symbolic_output_gain(control.id)
                 && control.settled_value == Sample{1};
             if (!control.id.node.path.empty() && !control.dynamic && (!control.enabled || neutral_member_gain)) {
                 keep[index] = false;

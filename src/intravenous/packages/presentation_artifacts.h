@@ -13,10 +13,16 @@ namespace iv {
 struct IvPackageDeclaration;
 struct IvPackageInfo;
 
-struct PresentationTriggerObservation {
+struct PresentationObservationBinding {
     std::string id;
     std::string port;
-    bool operator==(PresentationTriggerObservation const&) const = default;
+    std::string direction;
+    std::string operation;
+    std::optional<unsigned> points;
+    std::optional<std::string> group;
+    bool when_connected = false;
+    bool complete_only = false;
+    bool operator==(PresentationObservationBinding const&) const = default;
 };
 
 struct PresentationCatalogEntry {
@@ -25,7 +31,7 @@ struct PresentationCatalogEntry {
     std::string title;
     std::vector<std::string> definition_ids;
     std::optional<std::string> initial_configuration;
-    std::vector<PresentationTriggerObservation> trigger_observations{};
+    std::vector<PresentationObservationBinding> observations{};
     std::string digest;
     std::string error;
 

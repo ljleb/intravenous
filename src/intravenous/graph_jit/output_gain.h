@@ -124,7 +124,7 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
     auto const connections = graph.connections.configured_sample_connections();
     std::vector<ConfiguredSampleConnection> samples(connections.begin(), connections.end());
     std::set<NodeBundlePortId, NodeBundlePortIdLess> used_outputs;
-    if (std::ranges::any_of(graph.manual_controls, [](auto const& control) { return is_virtual_output_gain(control.id); })) {
+    if (std::ranges::any_of(graph.manual_controls, [](auto const& control) { return is_symbolic_output_gain(control.id); })) {
         auto mark_output_used = [&](auto channel) {
             for (;;) {
                 used_outputs.insert({channel.bundle, PortKind::sample, channel.port});
@@ -141,7 +141,7 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         if (!std::isfinite(control.settled_value.value))
             throw std::invalid_argument("output gain must be finite");
         auto const source = *control.output;
-        if (is_virtual_output_gain(control.id) && !control.dynamic && !used_outputs.contains(source)) continue;
+        if (is_symbolic_output_gain(control.id) && !control.dynamic && !used_outputs.contains(source)) continue;
         auto output = graph.node_bundles.resolve_sample_output(source).config;
         auto const sequential_source = is_sequential_output(output);
         auto const tick = sequential_source || !control.requires_preparation;

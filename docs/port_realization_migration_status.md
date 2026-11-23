@@ -130,7 +130,7 @@ one. Explicitly anchored components retain their authored absolute scale.
   presentation fields. Finite Sample values use JSON numbers. Non-finite Sample values
   use the stable strings `nan`, `positiveInfinity`, and `negativeInfinity` because JSON
   has no non-finite number. The boundary also reports only real configured
-  connectivity and virtual-port binding facts; it does not invent current values or
+  connectivity and symbolic-port binding facts; it does not invent current values or
   overrides.
 - Graph and subgraph boundary inputs now use the same registered continuous-value
   domain as leaf Sequential inputs. A boundary can declare one or several concrete

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <intravenous/graph/builder/node_bundles.hpp>
-#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/builder/symbolic_nodes.hpp>
 #include <intravenous/continuous_value.h>
 #include <intravenous/node/manual_control.h>
 #include <intravenous/ports.h>
@@ -111,8 +111,8 @@ inline NodeInstanceInterface read_node_instance_interface(
     return result;
 }
 
-inline NodeInstanceInterface read_virtual_node_interface(GraphBuilderNodeBundles const& bundles,
-    VirtualNodeRecord const& record, NodeBundleHandle representative)
+inline NodeInstanceInterface read_symbolic_node_interface(GraphBuilderNodeBundles const& bundles,
+    SymbolicNodeRecord const& record, NodeBundleHandle representative)
 {
     auto result = read_node_instance_interface(bundles, representative);
     if (record.type_identity == "sample-port" || record.type_identity == "event-port") {

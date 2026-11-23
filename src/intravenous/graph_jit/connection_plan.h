@@ -33,11 +33,11 @@ using ::iv::graph_jit::PlannedSourceProduction;
 struct PlannedGraphNode {
     NodeBundleHandle bundle = 0;
     // Stable across compiled generations when this concrete node is a direct
-    // member of an authored virtual node. Anonymous concrete nodes retain no
+    // member of an authored symbolic node. Anonymous concrete nodes retain no
     // synthetic identity derived from their generation-local bundle handle.
     std::optional<StableConcreteNodeId> stable_identity{};
     // A compiler-owned resolution stage belongs to this public module input,
-    // rather than to an invented concrete member of the authored virtual node.
+    // rather than to an invented concrete member of the authored symbolic node.
     std::optional<StableInputPortId> resolved_module_input{};
     std::size_t internal_latency_samples = 0;
     std::size_t maximum_block_size = 0;
@@ -515,7 +515,7 @@ std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_pla
 // Compiler-owned raw regions (producer storage, detach structures) migrate
 // across graph revisions by identity, and that identity names what owns the
 // region's values. The node part is the node's stable identity, so renumbering
-// the graph's bundles keeps it. A node under no virtual node has none: like
+// the graph's bundles keeps it. A node under no symbolic node has none: like
 // everything else it owns, its storage starts fresh at every edit.
 std::optional<std::string> raw_region_node_identity(
     ConnectionAnalysisPlan const& connections,

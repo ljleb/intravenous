@@ -12,118 +12,118 @@
 #include <vector>
 
 namespace iv {
-using VirtualNodeHandle = size_t;
+using SymbolicNodeHandle = size_t;
 
 template<class ChannelId>
-struct VirtualSamplePortMapping {
+struct SymbolicSamplePortMapping {
   std::string name{};
   size_t index = 0;
   ChannelLayout channel_layout{};
   std::vector<SourceInfo> source_infos{};
   std::vector<ChannelId> channels{};
   std::vector<std::vector<ChannelId>> member_channels{};
-  bool operator==(VirtualSamplePortMapping const&) const = default;
+  bool operator==(SymbolicSamplePortMapping const&) const = default;
 };
-using VirtualSampleInputPortMapping = VirtualSamplePortMapping<SampleInputChannelId>;
-using VirtualSampleOutputPortMapping = VirtualSamplePortMapping<SampleOutputChannelId>;
+using SymbolicSampleInputPortMapping = SymbolicSamplePortMapping<SampleInputChannelId>;
+using SymbolicSampleOutputPortMapping = SymbolicSamplePortMapping<SampleOutputChannelId>;
 
-struct VirtualEventPortMapping {
+struct SymbolicEventPortMapping {
   std::string name{};
   size_t index = 0;
   EventTypeId type = EventTypeId::empty;
   std::vector<SourceInfo> source_infos{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
-  bool operator==(VirtualEventPortMapping const&) const = default;
+  bool operator==(SymbolicEventPortMapping const&) const = default;
 };
 
-struct VirtualNodeRecord {
+struct SymbolicNodeRecord {
   std::string id{};
   std::string source_identity {};
   std::string type_identity {};
   std::vector<SourceInfo> source_infos{};
   std::vector<NodeBundleHandle> node_bundle_handles{};
-  std::vector<VirtualSampleInputPortMapping> sample_inputs{};
-  std::vector<VirtualSampleOutputPortMapping> sample_outputs{};
-  std::vector<VirtualEventPortMapping> event_inputs{};
-  std::vector<VirtualEventPortMapping> event_outputs{};
+  std::vector<SymbolicSampleInputPortMapping> sample_inputs{};
+  std::vector<SymbolicSampleOutputPortMapping> sample_outputs{};
+  std::vector<SymbolicEventPortMapping> event_inputs{};
+  std::vector<SymbolicEventPortMapping> event_outputs{};
 };
 
-struct GraphBuilderVirtualSampleInputPort {
-  VirtualPortId id{};
+struct GraphBuilderSymbolicSampleInputPort {
+  SymbolicPortId id{};
   ContinuousInputConfig config{};
   std::vector<SampleInputChannelId> channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
-struct GraphBuilderVirtualSampleOutputPort {
-  VirtualPortId id{};
+struct GraphBuilderSymbolicSampleOutputPort {
+  SymbolicPortId id{};
   ContinuousOutputConfig config{};
   std::vector<SampleOutputChannelId> channels{};
   std::vector<std::vector<SampleOutputChannelId>> member_channels{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
-struct GraphBuilderVirtualEventInputPort {
-  VirtualPortId id{};
+struct GraphBuilderSymbolicEventInputPort {
+  SymbolicPortId id{};
   EventInputConfig config{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
-struct GraphBuilderVirtualEventOutputPort {
-  VirtualPortId id{};
+struct GraphBuilderSymbolicEventOutputPort {
+  SymbolicPortId id{};
   EventOutputConfig config{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
 };
-struct GraphBuilderVirtualPorts {
-  std::vector<GraphBuilderVirtualSampleInputPort> sample_inputs{};
-  std::vector<GraphBuilderVirtualSampleOutputPort> sample_outputs{};
-  std::vector<GraphBuilderVirtualEventInputPort> event_inputs{};
-  std::vector<GraphBuilderVirtualEventOutputPort> event_outputs{};
+struct GraphBuilderSymbolicPorts {
+  std::vector<GraphBuilderSymbolicSampleInputPort> sample_inputs{};
+  std::vector<GraphBuilderSymbolicSampleOutputPort> sample_outputs{};
+  std::vector<GraphBuilderSymbolicEventInputPort> event_inputs{};
+  std::vector<GraphBuilderSymbolicEventOutputPort> event_outputs{};
 };
 
-// Virtual-node records are append-only except for member/source-info
+// Symbolic-node records are append-only except for member/source-info
 // accumulation. Which record a live declaration joins is decided by the
 // builder's scope namespaces, so these operations address records by handle.
-class GraphBuilderVirtualNodes {
+class GraphBuilderSymbolicNodes {
 public:
-  constexpr VirtualNodeHandle create(
+  constexpr SymbolicNodeHandle create(
       std::string_view source_identity, std::string_view type_identity);
   constexpr void attach_bundle_member(
-      GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle,
+      GraphBuilderNodeBundles&, SymbolicNodeHandle, NodeBundleHandle,
       SourceInfo const* source_info = nullptr);
   constexpr void attach_sample_output(
-      VirtualNodeHandle, ChannelTypeId, std::span<SampleOutputChannelId const>,
+      SymbolicNodeHandle, ChannelTypeId, std::span<SampleOutputChannelId const>,
       SourceInfo const&);
   constexpr void attach_event_output(
-      VirtualNodeHandle, EventTypeId, std::span<EventOutputPortId const>,
+      SymbolicNodeHandle, EventTypeId, std::span<EventOutputPortId const>,
       SourceInfo const&);
   constexpr void annotate_input_source_info(
-      GraphBuilderNodeBundles&, VirtualNodeHandle, NodeBundleHandle,
+      GraphBuilderNodeBundles&, SymbolicNodeHandle, NodeBundleHandle,
       PortKind, std::string_view port_name, SourceInfo const&);
   // Imports every child record as a distinct record. `qualifier` is
   // appended to each imported introspection ID; it names the placement
   // relative to the enclosing semantic scope, never a session handle.
-  constexpr std::vector<VirtualNodeHandle> import_child(
-      GraphBuilderNodeBundles&, GraphBuilderVirtualNodes const&,
+  constexpr std::vector<SymbolicNodeHandle> import_child(
+      GraphBuilderNodeBundles&, GraphBuilderSymbolicNodes const&,
       size_t node_bundle_offset, std::string_view qualifier);
   // Appends `qualifier` to the IDs of records [begin, size()).
   constexpr void qualify(size_t begin, std::string_view qualifier);
 
   constexpr size_t size() const { return _records.size(); }
-  constexpr std::vector<VirtualNodeRecord> const& records() const;
-  static constexpr GraphBuilderVirtualNodes from_configured_records(
-      std::span<VirtualNodeRecord const>);
-  constexpr GraphBuilderVirtualPorts ports(
+  constexpr std::vector<SymbolicNodeRecord> const& records() const;
+  static constexpr GraphBuilderSymbolicNodes from_configured_records(
+      std::span<SymbolicNodeRecord const>);
+  constexpr GraphBuilderSymbolicPorts ports(
       GraphBuilderNodeBundles const&) const;
-  constexpr VirtualNodeRecord const& record(VirtualNodeHandle) const;
+  constexpr SymbolicNodeRecord const& record(SymbolicNodeHandle) const;
   constexpr std::vector<std::string> ids_for_bundle(NodeBundle const&) const;
 
 private:
-    std::vector<VirtualNodeRecord> _records {};
+    std::vector<SymbolicNodeRecord> _records {};
 };
 } // namespace iv
 namespace iv {
 namespace {
 template <class Config>
-constexpr void append_virtual_event_port_mapping(
-    std::vector<VirtualEventPortMapping>& mappings, Config const& config,
+constexpr void append_symbolic_event_port_mapping(
+    std::vector<SymbolicEventPortMapping>& mappings, Config const& config,
     size_t index, NodeBundlePortId bundle_port) {
   if (mappings.size() <= index) mappings.resize(index + 1);
   auto& mapping = mappings[index];
@@ -133,13 +133,13 @@ constexpr void append_virtual_event_port_mapping(
     return;
   }
   if (mapping.name != config.name || mapping.type != config.type)
-    details::error("virtual node members must expose matching event port configurations");
+    details::error("symbolic node members must expose matching event port configurations");
   if (!std::ranges::contains(mapping.node_bundle_ports, bundle_port))
     mapping.node_bundle_ports.push_back(bundle_port);
 }
 
 template<class Mapping, class Config, class Channels>
-constexpr void append_virtual_sample_port_mapping(
+constexpr void append_symbolic_sample_port_mapping(
     std::vector<Mapping>& mappings, Config const& config, size_t index,
     ChannelLayout layout, Channels const& channels) {
   if (mappings.size() <= index) mappings.resize(index + 1);
@@ -152,7 +152,7 @@ constexpr void append_virtual_sample_port_mapping(
     return;
   }
   if (mapping.name != config.name || mapping.channel_layout != layout)
-    details::error("virtual node members must expose matching sample port configurations");
+    details::error("symbolic node members must expose matching sample port configurations");
   for (auto const channel : channels)
     if (!std::ranges::contains(mapping.channels, channel))
       mapping.channels.push_back(channel);
@@ -160,66 +160,66 @@ constexpr void append_virtual_sample_port_mapping(
 }
 
 constexpr void append_bundle_mappings(
-    VirtualNodeRecord& virtual_node,
+    SymbolicNodeRecord& symbolic_node,
     GraphBuilderNodeBundles const& bundles,
     NodeBundleHandle handle) {
   auto const& bundle = bundles.bundle(handle);
   for (size_t index = 0; index < bundle.sample_input_count(); ++index) {
     NodeBundlePortId const port{handle, PortKind::sample, index};
     auto const config = bundles.resolve_sample_input(port).config;
-    append_virtual_sample_port_mapping(virtual_node.sample_inputs, config, index,
+    append_symbolic_sample_port_mapping(symbolic_node.sample_inputs, config, index,
                                        config.channel_layout,
                                        bundles.sample_input_channels(port));
   }
   for (size_t index = 0; index < bundle.sample_output_count(); ++index) {
     NodeBundlePortId const port{handle, PortKind::sample, index};
     auto const config = bundles.resolve_sample_output(port).config;
-    append_virtual_sample_port_mapping(virtual_node.sample_outputs, config, index,
+    append_symbolic_sample_port_mapping(symbolic_node.sample_outputs, config, index,
                                        config.channel_layout,
                                        bundles.sample_output_channels(port));
   }
   for (size_t index = 0; index < bundle.event_input_count(); ++index) {
     NodeBundlePortId const port{handle, PortKind::event, index};
-    append_virtual_event_port_mapping(virtual_node.event_inputs,
+    append_symbolic_event_port_mapping(symbolic_node.event_inputs,
         bundles.resolve_event_input(port).config, index, port);
   }
   for (size_t index = 0; index < bundle.event_output_count(); ++index) {
     NodeBundlePortId const port{handle, PortKind::event, index};
-    append_virtual_event_port_mapping(virtual_node.event_outputs,
+    append_symbolic_event_port_mapping(symbolic_node.event_outputs,
         bundles.resolve_event_output(port).config, index, port);
   }
 }
 } // namespace
 
-constexpr VirtualNodeHandle GraphBuilderVirtualNodes::create(
+constexpr SymbolicNodeHandle GraphBuilderSymbolicNodes::create(
     std::string_view source_identity, std::string_view type_identity
 )
 {
     auto const handle = _records.size();
     _records.push_back({
-        .id = details::typed_virtual_node_id(source_identity, type_identity),
+        .id = details::typed_symbolic_node_id(source_identity, type_identity),
         .source_identity = std::string(source_identity),
         .type_identity = std::string(type_identity),
     });
     return handle;
 }
 
-constexpr void GraphBuilderVirtualNodes::attach_bundle_member(
-    GraphBuilderNodeBundles& bundles, VirtualNodeHandle virtual_handle,
+constexpr void GraphBuilderSymbolicNodes::attach_bundle_member(
+    GraphBuilderNodeBundles& bundles, SymbolicNodeHandle symbolic_handle,
     NodeBundleHandle bundle_handle, SourceInfo const* source_info) {
-  auto& record = _records[virtual_handle];
+  auto& record = _records[symbolic_handle];
   if (!std::ranges::contains(record.node_bundle_handles, bundle_handle)) {
     record.node_bundle_handles.push_back(bundle_handle);
     append_bundle_mappings(record, bundles, bundle_handle);
   }
-  auto& inverse = bundles.bundle(bundle_handle).virtual_node_handles();
-  if (!std::ranges::contains(inverse, virtual_handle)) inverse.push_back(virtual_handle);
+  auto& inverse = bundles.bundle(bundle_handle).symbolic_node_handles();
+  if (!std::ranges::contains(inverse, symbolic_handle)) inverse.push_back(symbolic_handle);
   if (source_info && !std::ranges::contains(record.source_infos, *source_info))
     record.source_infos.push_back(*source_info);
 }
 
-constexpr void GraphBuilderVirtualNodes::attach_sample_output(
-    VirtualNodeHandle handle, ChannelTypeId channel_type,
+constexpr void GraphBuilderSymbolicNodes::attach_sample_output(
+    SymbolicNodeHandle handle, ChannelTypeId channel_type,
     std::span<SampleOutputChannelId const> channels,
     SourceInfo const& source_info) {
   if (channels.empty()) return;
@@ -246,8 +246,8 @@ constexpr void GraphBuilderVirtualNodes::attach_sample_output(
   }
 }
 
-constexpr void GraphBuilderVirtualNodes::attach_event_output(
-    VirtualNodeHandle handle, EventTypeId type,
+constexpr void GraphBuilderSymbolicNodes::attach_event_output(
+    SymbolicNodeHandle handle, EventTypeId type,
     std::span<EventOutputPortId const> sources,
     SourceInfo const& source_info) {
   if (sources.empty()) return;
@@ -271,9 +271,9 @@ constexpr void GraphBuilderVirtualNodes::attach_event_output(
   }
 }
 
-constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
+constexpr void GraphBuilderSymbolicNodes::annotate_input_source_info(
     GraphBuilderNodeBundles& bundles,
-    VirtualNodeHandle handle,
+    SymbolicNodeHandle handle,
     NodeBundleHandle bundle_handle,
     PortKind port_kind,
     std::string_view port_name,
@@ -288,7 +288,7 @@ constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
     if (mapping == record.sample_inputs.end())
       details::error(
           "cannot annotate unknown sample input '" + std::string(port_name)
-          + "' on virtual node");
+          + "' on symbolic node");
     if (!std::ranges::contains(mapping->source_infos, source_info))
       mapping->source_infos.push_back(source_info);
     return;
@@ -300,15 +300,15 @@ constexpr void GraphBuilderVirtualNodes::annotate_input_source_info(
   if (mapping == record.event_inputs.end())
     details::error(
         "cannot annotate unknown event input '" + std::string(port_name)
-        + "' on virtual node");
+        + "' on symbolic node");
   if (!std::ranges::contains(mapping->source_infos, source_info))
     mapping->source_infos.push_back(source_info);
 }
 
-constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
-    GraphBuilderNodeBundles& bundles, GraphBuilderVirtualNodes const& child,
+constexpr std::vector<SymbolicNodeHandle> GraphBuilderSymbolicNodes::import_child(
+    GraphBuilderNodeBundles& bundles, GraphBuilderSymbolicNodes const& child,
     size_t bundle_offset, std::string_view qualifier) {
-  std::vector<VirtualNodeHandle> translation;
+  std::vector<SymbolicNodeHandle> translation;
   translation.reserve(child._records.size());
 
   auto remap_node_bundle_port = [bundle_offset](NodeBundlePortId& port) {
@@ -318,16 +318,16 @@ constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
     channel.bundle += bundle_offset;
   };
 
-  // Imported virtual nodes deliberately remain distinct records. They belong
+  // Imported symbolic nodes deliberately remain distinct records. They belong
   // to the embedded child scope and must not be coalesced into the parent's
-  // root virtual namespace merely because source/type identities match.
+  // root symbolic namespace merely because source/type identities match.
   for (auto child_record : child._records) {
     auto const handle = _records.size();
     translation.push_back(handle);
 
     // Introspection IDs are graph-local. Qualify an imported record by its
     // placement so equal local identities in two embeddings remain separate
-    // scoped virtual nodes. The source/type identities remain unchanged for
+    // scoped symbolic nodes. The source/type identities remain unchanged for
     // structured path matching.
     child_record.id += qualifier;
 
@@ -355,14 +355,14 @@ constexpr std::vector<VirtualNodeHandle> GraphBuilderVirtualNodes::import_child(
 
     _records.push_back(std::move(child_record));
     for (auto const bundle : _records.back().node_bundle_handles) {
-      auto& inverse = bundles.bundle(bundle).virtual_node_handles();
+      auto& inverse = bundles.bundle(bundle).symbolic_node_handles();
       if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
     }
   }
   return translation;
 }
 
-constexpr void GraphBuilderVirtualNodes::qualify(
+constexpr void GraphBuilderSymbolicNodes::qualify(
     size_t begin, std::string_view qualifier) {
   if (qualifier.empty()) return;
   for (auto index = begin; index < _records.size(); ++index) {
@@ -370,25 +370,25 @@ constexpr void GraphBuilderVirtualNodes::qualify(
   }
 }
 
-constexpr std::vector<VirtualNodeRecord> const&
-GraphBuilderVirtualNodes::records() const {
+constexpr std::vector<SymbolicNodeRecord> const&
+GraphBuilderSymbolicNodes::records() const {
   return _records;
 }
-constexpr GraphBuilderVirtualNodes
-GraphBuilderVirtualNodes::from_configured_records(
-    std::span<VirtualNodeRecord const> records) {
-  GraphBuilderVirtualNodes result;
+constexpr GraphBuilderSymbolicNodes
+GraphBuilderSymbolicNodes::from_configured_records(
+    std::span<SymbolicNodeRecord const> records) {
+  GraphBuilderSymbolicNodes result;
   result._records.assign(records.begin(), records.end());
   return result;
 }
-constexpr VirtualNodeRecord const& GraphBuilderVirtualNodes::record(
-    VirtualNodeHandle handle) const {
+constexpr SymbolicNodeRecord const& GraphBuilderSymbolicNodes::record(
+    SymbolicNodeHandle handle) const {
   return _records.at(handle);
 }
 
-constexpr GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
+constexpr GraphBuilderSymbolicPorts GraphBuilderSymbolicNodes::ports(
     GraphBuilderNodeBundles const& bundles) const {
-  GraphBuilderVirtualPorts result;
+  GraphBuilderSymbolicPorts result;
   auto sample_bundle_ports = [](auto const& channels) {
     std::vector<NodeBundlePortId> ports;
     for (auto const channel : channels) {
@@ -439,10 +439,10 @@ constexpr GraphBuilderVirtualPorts GraphBuilderVirtualNodes::ports(
   return result;
 }
 
-constexpr std::vector<std::string> GraphBuilderVirtualNodes::ids_for_bundle(
+constexpr std::vector<std::string> GraphBuilderSymbolicNodes::ids_for_bundle(
     NodeBundle const& bundle) const {
   std::vector<std::string> ids;
-  for (auto const handle : bundle.virtual_node_handles()) ids.push_back(record(handle).id);
+  for (auto const handle : bundle.symbolic_node_handles()) ids.push_back(record(handle).id);
   return ids;
 }
 } // namespace iv

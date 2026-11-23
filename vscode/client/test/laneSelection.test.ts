@@ -55,7 +55,7 @@ test("expanded module children follow their parents and cannot be duplicated on 
     const module = node({ instanceId: "module" }, true);
     module.isModule = true;
     const child = node({ instanceId: "module", path: [
-        { kind: "virtualNode", sourceIdentity: "voice" }, { kind: "virtualMember", index: 0 },
+        { kind: "symbolicNode", sourceIdentity: "voice" }, { kind: "symbolicMember", index: 0 },
     ] }, true);
     const tile = node({ instanceId: "module", path: [...child.address.path!, { kind: "tiledChild", name: "right" }] });
     const sink = node({ instanceId: "sink" });
@@ -71,9 +71,9 @@ test("expanded module children follow their parents and cannot be duplicated on 
     assert.deepEqual(selectedProjectLaneIds(expanded, new Set([childKey, tileKey])), []);
     assert.deepEqual(selectedProjectLaneIds(expanded, new Set([order[1], childKey, tileKey])), ["module"]);
     assert.deepEqual(expandedGraphLanes(scope, order, new Set([childKey])), expanded.slice(0, 2));
-    const alias = node({ instanceId: "module", path: [{ kind: "virtualNode", sourceIdentity: "alias" }] }, true);
+    const alias = node({ instanceId: "module", path: [{ kind: "symbolicNode", sourceIdentity: "alias" }] }, true);
     const otherRow = { ...tile, membershipAddress: { instanceId: "module", path: [
-        ...alias.address.path!, { kind: "virtualMember", index: 0 },
+        ...alias.address.path!, { kind: "symbolicMember", index: 0 },
     ] } };
     scope.childScopes![0].nodes.push(alias);
     scope.childScopes!.push({ subject: alias.address, nodes: [otherRow] });
@@ -108,9 +108,9 @@ test("Shift+Up and Shift+Down move a project lane across source-owned siblings",
     });
     const module = { ...node({ instanceId: "module" }), isModule: true };
     const curve = node({ instanceId: "curve" });
-    const first = node({ instanceId: "module", path: [{ kind: "virtualNode", sourceIdentity: "first" }] });
-    const second = node({ instanceId: "module", path: [{ kind: "virtualNode", sourceIdentity: "second" }] });
-    const member = node({ instanceId: "module", path: [...first.address.path!, { kind: "virtualMember", index: 0 }] });
+    const first = node({ instanceId: "module", path: [{ kind: "symbolicNode", sourceIdentity: "first" }] });
+    const second = node({ instanceId: "module", path: [{ kind: "symbolicNode", sourceIdentity: "second" }] });
+    const member = node({ instanceId: "module", path: [...first.address.path!, { kind: "symbolicMember", index: 0 }] });
     const scope: GraphScope = { generation: 1, editable: true, nodes: [module, curve], connections: [],
         childScopes: [{ subject: module.address, nodes: [first, second] }, { subject: first.address, nodes: [member] }] };
     const [m, p, a, b, c] = [module, curve, first, second, member].map(({ address }) => addressKey(address));

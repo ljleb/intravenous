@@ -22,8 +22,8 @@ export type GraphScopeNode = {
     loadState: "waitingForDefinition" | "waitingForGraph" | "ready" | "failed";
     address: NodeAddress;
     membershipAddress?: NodeAddress;
-    virtualNode?: boolean;
-    virtualMemberCount?: number;
+    symbolicNode?: boolean;
+    symbolicMemberCount?: number;
     childDisplayName?: string;
     childSourceLabel?: string;
     declarationSource?: { filePath: string; line: number; byteOffset: number };

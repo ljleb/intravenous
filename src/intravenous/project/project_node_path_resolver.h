@@ -14,13 +14,13 @@
 
 namespace iv {
 struct ProjectNodePathMatch {
-    enum class Kind { bundle, virtual_node } kind = Kind::bundle;
+    enum class Kind { bundle, symbolic_node } kind = Kind::bundle;
     NodeBundleHandle bundle = 0;
-    VirtualNodeHandle virtual_node = 0;
-    // Indices into VirtualNodeRecord::node_bundle_handles that belong directly
+    SymbolicNodeHandle symbolic_node = 0;
+    // Indices into SymbolicNodeRecord::node_bundle_handles that belong directly
     // to the selected subject scope. This prevents one scoped lookup from
     // exposing members of the same record that live in a sibling scope.
-    std::vector<std::size_t> virtual_member_indices{};
+    std::vector<std::size_t> symbolic_member_indices{};
 
     bool operator==(ProjectNodePathMatch const&) const = default;
 };
@@ -30,7 +30,7 @@ struct ProjectNodePathMatch {
 // and project connections share one resolver.
 struct ProjectNodePathGraph {
     GraphBuilderNodeBundles const& node_bundles;
-    GraphBuilderVirtualNodes const& virtual_nodes;
+    GraphBuilderSymbolicNodes const& symbolic_nodes;
 };
 
 [[nodiscard]] std::vector<ProjectNodePathMatch> resolve_project_node_path(
@@ -50,7 +50,7 @@ struct ProjectNodePathGraph {
 
 // Expand a resolved semantic match into the concrete NodeBundle handles to
 // which one handler delivery would be addressed. Order follows the authored
-// virtual-member order and duplicates are removed without reordering.
+// symbolic-member order and duplicates are removed without reordering.
 [[nodiscard]] std::vector<NodeBundleHandle> concrete_node_address_matches(
     ConfiguredGraph const& graph,
     std::span<ProjectNodePathMatch const> matches);
@@ -71,7 +71,7 @@ struct ProjectChildNode {
     NodeBundleHandle bundle;
     std::vector<ProjectNodePathSelector> path;
     std::string source_label;
-    std::optional<VirtualNodeHandle> virtual_node{};
+    std::optional<SymbolicNodeHandle> symbolic_node{};
 };
 
 // Direct children whose selector paths resolve uniquely from the subject.

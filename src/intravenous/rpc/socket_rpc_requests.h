@@ -30,8 +30,8 @@ struct GraphQueryBySpansRequest {
 };
 
 struct GraphQueryActiveRegionsRequest { std::filesystem::path file_path{}; };
-struct GetVirtualNodeRequest { std::string node_id{}; };
-struct GetVirtualNodesRequest { std::vector<std::string> node_ids{}; };
+struct GetSymbolicNodeRequest { std::string node_id{}; };
+struct GetSymbolicNodesRequest { std::vector<std::string> node_ids{}; };
 // Return the root and the direct children of each requested expanded node.
 struct GetGraphScopeRequest { std::vector<NodeAddress> expanded{}; };
 struct SearchNodeDefinitionsRequest { std::string source; std::optional<std::size_t> cursor; };
@@ -149,8 +149,8 @@ using SocketRpcRequestPayload = std::variant<
     ReconcileObservationsRequest,
     GraphQueryBySpansRequest,
     GraphQueryActiveRegionsRequest,
-    GetVirtualNodeRequest,
-    GetVirtualNodesRequest,
+    GetSymbolicNodeRequest,
+    GetSymbolicNodesRequest,
     GetGraphScopeRequest,
     SearchNodeDefinitionsRequest,
     ApplyProjectEditRequest,

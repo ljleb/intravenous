@@ -2986,7 +2986,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
     ASSERT_NE(planned_source, built->nodes.end());
     ASSERT_TRUE(planned_source->stable_identity);
     EXPECT_EQ(planned_source->stable_identity->graph, "root");
-    EXPECT_TRUE(planned_source->stable_identity->virtual_node
+    EXPECT_TRUE(planned_source->stable_identity->symbolic_node
         .starts_with("source#type:"));
     EXPECT_EQ(planned_source->stable_identity->direct_member, 0u);
     auto const& plan = built->background;
@@ -3078,7 +3078,7 @@ TEST(GraphJitConnectionPlan, RetainsCompleteBackgroundTopologyAndRetention)
         *background_persisted_events->realization, OutputRealization::buffered);
     ASSERT_TRUE(background_ephemeral->stable_identity);
     EXPECT_EQ(background_ephemeral->stable_identity->node.graph, "root");
-    EXPECT_TRUE(background_ephemeral->stable_identity->node.virtual_node
+    EXPECT_TRUE(background_ephemeral->stable_identity->node.symbolic_node
         .starts_with("source#type:"));
     EXPECT_EQ(
         background_ephemeral->stable_identity->port_name, "background_ephemeral");

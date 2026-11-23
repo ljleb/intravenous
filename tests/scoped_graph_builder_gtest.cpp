@@ -71,9 +71,9 @@ struct GraphShape {
     std::size_t bundles = 0;
     std::size_t sample_connections = 0;
     std::size_t event_connections = 0;
-    std::vector<std::string> virtual_ids{};
-    std::vector<std::size_t> virtual_member_counts{};
-    std::vector<std::size_t> virtual_source_info_counts{};
+    std::vector<std::string> symbolic_ids{};
+    std::vector<std::size_t> symbolic_member_counts{};
+    std::vector<std::size_t> symbolic_source_info_counts{};
     std::vector<std::size_t> bundle_source_info_counts{};
 
     bool operator==(GraphShape const&) const = default;
@@ -86,10 +86,10 @@ GraphShape shape_of(iv::ConfiguredGraph const& graph)
         .sample_connections = graph.connections.configured_sample_connections().size(),
         .event_connections = graph.connections.configured_event_connections().size(),
     };
-    for (auto const& record : graph.virtual_nodes.records()) {
-        result.virtual_ids.push_back(record.id);
-        result.virtual_member_counts.push_back(record.node_bundle_handles.size());
-        result.virtual_source_info_counts.push_back(record.source_infos.size());
+    for (auto const& record : graph.symbolic_nodes.records()) {
+        result.symbolic_ids.push_back(record.id);
+        result.symbolic_member_counts.push_back(record.node_bundle_handles.size());
+        result.symbolic_source_info_counts.push_back(record.source_infos.size());
     }
     for (iv::NodeBundleHandle handle = 0; handle < graph.node_bundles.size(); ++handle) {
         result.bundle_source_info_counts.push_back(

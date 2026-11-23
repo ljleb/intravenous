@@ -8,11 +8,11 @@ consteval bool production_plugin_annotates_real_graph()
     iv::GraphBuilder builder;
     real_configured_entry(builder);
     auto const metadata = builder.build_metadata();
-    if (metadata.virtual_nodes.size() != 1
+    if (metadata.symbolic_nodes.size() != 1
         || metadata.public_sample_outputs.size() != 1)
         return false;
 
-    auto const& node = metadata.virtual_nodes.front();
+    auto const& node = metadata.symbolic_nodes.front();
     if (!std::string_view(node.source_identity).ends_with("@constant")
         || node.source_spans.size() < 2)
         return false;

@@ -42,7 +42,7 @@ iv::graph_jit::StableOutputPortId stable_output(
     return {
         .node = {
             .graph = "project",
-            .virtual_node = "source",
+            .symbolic_node = "source",
             .direct_member = 0,
         },
         .kind = kind,

@@ -841,10 +841,10 @@ DefinitionSpec annotated_spec()
     };
 }
 
-// The bundle kinds and qualifier-relative virtual IDs of one placed scope.
+// The bundle kinds and qualifier-relative symbolic IDs of one placed scope.
 struct PlacedScope {
     std::vector<std::string> bundle_kinds{};
-    std::vector<std::string> virtual_ids{};
+    std::vector<std::string> symbolic_ids{};
     bool operator==(PlacedScope const&) const = default;
 };
 
@@ -864,7 +864,7 @@ PlacedScope placed_scope(
             : bundle.is_boundary() ? "boundary"
             : "subgraph");
     }
-    for (auto const& record : graph.virtual_nodes.records()) {
+    for (auto const& record : graph.symbolic_nodes.records()) {
         if (record.node_bundle_handles.empty()) continue;
         auto const member = record.node_bundle_handles.front();
         if (member < begin || member >= end) continue;
@@ -872,7 +872,7 @@ PlacedScope placed_scope(
         auto const at = id.rfind(qualifier);
         EXPECT_NE(at, std::string::npos) << id;
         if (at != std::string::npos) id.erase(at, qualifier.size());
-        result.virtual_ids.push_back(std::move(id));
+        result.symbolic_ids.push_back(std::move(id));
     }
     return result;
 }
@@ -912,7 +912,7 @@ TEST(NodeInstancesConfiguration, CacheHitPlacementMatchesTheMissConstruction)
     auto const graph = std::move(root).finish();
     auto const constructed = placed_scope(graph, first.root, "@&first");
     auto const imported = placed_scope(graph, second.root, "@&second");
-    EXPECT_FALSE(constructed.virtual_ids.empty());
+    EXPECT_FALSE(constructed.symbolic_ids.empty());
     EXPECT_EQ(constructed, imported);
 }
 
@@ -939,10 +939,10 @@ TEST(NodeInstancesConfiguration, ProjectPathsResolveIntoConstructedAndImportedMo
     auto const graph = std::move(root).finish();
 
     std::array<iv::ProjectNodePathSelector, 4> const path{
-        iv::ProjectVirtualNodeSelector{.source_identity = "child"},
-        iv::ProjectVirtualMemberSelector{.index = 0},
-        iv::ProjectVirtualNodeSelector{.source_identity = "osc"},
-        iv::ProjectVirtualMemberSelector{.index = 1},
+        iv::ProjectSymbolicNodeSelector{.source_identity = "child"},
+        iv::ProjectSymbolicMemberSelector{.index = 0},
+        iv::ProjectSymbolicNodeSelector{.source_identity = "osc"},
+        iv::ProjectSymbolicMemberSelector{.index = 1},
     };
     for (auto const* instance_id : {"constructed", "imported"}) {
         auto const matches = iv::resolve_project_node_path(
@@ -1535,8 +1535,8 @@ TEST(NodeInstancesConfiguration, ProjectNodeReferenceMustSelectExactlyOneNode)
     root.outputs();
     auto const graph = std::move(root).finish();
     std::array<iv::ProjectNodePathSelector, 2> const second_osc{
-        iv::ProjectVirtualNodeSelector{.source_identity = "osc"},
-        iv::ProjectVirtualMemberSelector{.index = 1},
+        iv::ProjectSymbolicNodeSelector{.source_identity = "osc"},
+        iv::ProjectSymbolicMemberSelector{.index = 1},
     };
     auto const matches = iv::resolve_project_node_path(
         graph, result.placements, uuid_a, second_osc);

@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 5
+#define IV_PRESENTATION_ABI_VERSION 7
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
 #define IV_PRESENTATION_NO_FLAGS 0
@@ -83,6 +83,22 @@ typedef struct {
 } IvObservedTriggerColumns;
 IV_TYPEDEF_SPAN(IvObservedTriggerColumns, IvObservedTriggerColumnSpan);
 
+typedef struct { uint64_t index; double offset, value; } IvWaveformPoint;
+IV_TYPEDEF_SPAN(IvWaveformPoint, IvWaveformPointSpan);
+typedef struct {
+    double begin, end;
+    int32_t pace_exponent;
+    IvWaveformPointSpan points;
+} IvWaveformRegion;
+IV_TYPEDEF_SPAN(IvWaveformRegion, IvWaveformRegionSpan);
+typedef struct {
+    IvString id;
+    IvWaveformRegionSpan regions;
+    IvString error;
+    uint32_t status, partial;
+} IvObservedWaveform;
+IV_TYPEDEF_SPAN(IvObservedWaveform, IvObservedWaveformSpan);
+
 enum { IV_LANE_EDITABLE, IV_LANE_COMPACT, IV_LANE_MINI, IV_LANE_NANO };
 
 enum { IV_DRAG_RELATIVE, IV_DRAG_ABSOLUTE };
@@ -124,16 +140,23 @@ typedef struct {
 IV_TYPEDEF_SPAN(IvSetting, IvSettingSpan);
 typedef struct { IvString label; IvSettingSpan settings; } IvSettingsPanel;
 
-typedef struct { IvString name; IvNumericValue value; } IvNumericField;
-IV_TYPEDEF_SPAN(IvNumericField, IvNumericFieldSpan);
+enum { IV_SCALAR_BOOLEAN, IV_SCALAR_NUMBER, IV_SCALAR_STRING };
+typedef struct { uint32_t kind; double number; IvString string; } IvConvertedScalar;
+
 enum { IV_EDIT_REPLACE_PENDING = 1, IV_EDIT_FINISH = 2 };
-enum { IV_MAX_NUMERIC_EDITS = 32 };
+enum { IV_MAX_EDITS = 32 };
 typedef struct {
-    IvString nominal_id, fingerprint, gesture;
-    IvNumericFieldSpan fields;
-    uint32_t flags;
-} IvNumericNodeEdit;
-IV_TYPEDEF_SPAN(IvNumericNodeEdit, IvNumericNodeEditSpan);
+    uint32_t binding, gesture, request, flags;
+    const void *payload;
+} IvNodeEdit;
+
+enum { IV_EDIT_ACCEPTED, IV_EDIT_REJECTED };
+typedef struct {
+    uint32_t request, status;
+    uint64_t revision;
+    IvString error;
+} IvEditReply;
+IV_TYPEDEF_SPAN(IvEditReply, IvEditReplySpan);
 
 IV_TYPEDEF_SPAN(uint64_t, IvStrideSpan);
 enum { IV_GRID_SEEK = 1, IV_GRID_LABEL_MAJOR = 2 };
@@ -151,11 +174,14 @@ IvGestureInputSpan iv_gesture_inputs(const IvPresentationContext *context);
 uint32_t iv_lane_mode(const IvPresentationContext *context);
 IvStringSpan iv_connected_inputs(const IvPresentationContext *context);
 IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationContext *context);
+IvObservedWaveformSpan iv_observed_waveforms(const IvPresentationContext *context);
 IvTimelineView iv_timeline_view(const IvPresentationContext *context);
 IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context);
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context);
 bool iv_edits_pending(const IvPresentationContext *context);
 bool iv_edit_failed(const IvPresentationContext *context);
+uint64_t iv_project_revision(const IvPresentationContext *context);
+IvEditReplySpan iv_edit_replies(const IvPresentationContext *context);
 
 /* Calls record in memory. The host consumes the recorded batches after the
    presentation returns. Each span can contain all items of that kind. */
@@ -163,7 +189,10 @@ bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines)
 bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts);
 bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan targets);
 bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel);
-bool iv_submit_numeric_edits(IvPresentationContext *context, IvNumericNodeEditSpan edits);
+/* Copy every span referenced by a generated payload into the output arena.
+   The record and its spans are inspected after iv_present returns. */
+void *iv_copy_edit_payload(IvPresentationContext *context, const void *data, uint32_t size);
+bool iv_submit_edit(IvPresentationContext *context, IvNodeEdit edit);
 bool iv_set_timeline_grid(IvPresentationContext *context, const IvTimelineGrid *grid);
 void iv_reuse_drawing(IvPresentationContext *context);
 void iv_set_status(IvPresentationContext *context, IvString status);

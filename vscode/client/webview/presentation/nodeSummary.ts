@@ -1,4 +1,4 @@
-import type { VirtualPortBinding, VirtualPortConnectivity } from "../../src/graphModel";
+import type { SymbolicPortBinding, SymbolicPortConnectivity } from "../../src/graphModel";
 import type { SemanticNode, SemanticPort } from "./semanticNode";
 
 // Display text derived from a SemanticNode, shared by presentations.
@@ -29,18 +29,18 @@ export function portGroups(ports: readonly SemanticPort[]): PortGroup[] {
 }
 
 export function bindingSummary(
-    binding: VirtualPortBinding,
-    connectivity: VirtualPortConnectivity,
+    binding: SymbolicPortBinding,
+    connectivity: SymbolicPortConnectivity,
 ): string {
     switch (binding) {
     case "interface":
         return "graph interface";
-    case "virtualInput":
-        return "follow virtual input";
-    case "virtualOutput":
-        return "virtual output";
+    case "symbolicInput":
+        return "follow symbolic input";
+    case "symbolicOutput":
+        return "symbolic output";
     case "mixed":
-        return "mixed built-in and virtual input";
+        return "mixed built-in and symbolic input";
     case "none":
         return connectivity === "connected" ? "built-in connection"
             : connectivity === "mixed" ? "mixed connections"
@@ -91,7 +91,7 @@ export function nodeIdentitySummary(node: SemanticNode): string {
 export function nodeDescription(node: SemanticNode): string {
     if (node.address) return node.memberCount > 1 ? `${node.memberCount} concrete nodes` : "";
     const identity = nodeIdentitySummary(node);
-    const parts = [node.address ? "instance" : "virtual"];
+    const parts = [node.address ? "instance" : "symbolic"];
     if (identity) {
         parts.push(identity);
     }

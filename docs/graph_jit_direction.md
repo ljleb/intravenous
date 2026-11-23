@@ -130,7 +130,7 @@ path without introducing special runtime storage or lifecycle machinery.
 The first deliberately narrow non-empty slice has also landed. A flat project
 may contain several registered zero-port primitives, with no connections,
 nested declarations, or auxiliary declaration-owned regions. Configured
-`virtual_nodes` records are treated as source/introspection metadata over the
+`symbolic_nodes` records are treated as source/introspection metadata over the
 already-lowered concrete bundles and ports; GraphJit does not instantiate
 them as executable runtime nodes.
 Configuration pointer fields are reconstructed from symbolic retained-global
@@ -974,9 +974,9 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
    Sequential-storage policy selection remains in
    `choose_*_connection_implementation()`; random-access and mixed-delivery
    directions are classified separately. Configured
-   virtual-node records are metadata only: execution planning follows concrete
+   symbolic-node records are metadata only: execution planning follows concrete
    bundles and configured connections directly and never lowers legacy/internal
-   virtual/runtime helper nodes.
+   symbolic nodes and runtime helpers.
 6. **Simple feed-forward sample connections.** **Landed.** Internal whole-port
    Tick-to-Sequential sample edges realize `direct` and `transient_materialization` with
    bounded sample backing only. Reflected binding records hold concrete resolved
@@ -1301,7 +1301,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     covered lifetime; coverage removal is the only semantic deletion condition.
     Superseded storage versions are reclaimed after their readers release them.
 20. **In progress: implement concrete-node port-state continuity and transition realizations.**
-    Connection analysis now retains the optional stable graph/virtual-node/direct-
+    Connection analysis now retains the optional stable graph/symbolic-node/direct-
     member identity of every authored concrete node, not only nodes selected for
     background evaluation. Background planning reuses that authoritative identity;
     anonymous concrete nodes receive no bundle-index-derived substitute. Derive the
@@ -1310,7 +1310,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
 
     Treat each surviving input history and output history/latency window as though it
     were private state owned by that concrete node/port, regardless of how the steady
-    storage planner aliases or shares it. Carry stable node/virtual-member/port/channel
+    storage planner aliases or shares it. Carry stable node/symbolic-member/port/channel
     identities plus realization metadata across generations, preserve the overlapping
     valid temporal range, and materialize temporary transition state when the new
     steady representation cannot itself expose inherited values. `RealtimeExecutor`
@@ -1324,7 +1324,7 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     trait-normalized scalar/batch helper pairs for Tick, skip, Tock and forward/reverse
     propagation; retain both compiler anchors; classify compatible resolved
     realizations; and let Tick/background schedulers group ready same-class nodes while
-    retaining scalar fallback. Use virtual-node member grouping as a hint but discover
+    retaining scalar fallback. Use symbolic-node member grouping as a hint but discover
     batching opportunities over the flattened concrete graph. See
     [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 23. **Optimize** with measurement-driven batch sizing, cross-node SIMD, loop fusion,
@@ -1813,7 +1813,7 @@ connection incidence are not semantic identities.
 
 Compiler-managed port-state identity must therefore be rooted in the stable concrete
 node path already present in configured/project graph metadata: user-instantiated
-leaf/module identity, virtual-node/direct-member path, port direction and index,
+leaf/module identity, symbolic-node/direct-member path, port direction and index,
 channel index (or event stream), plus a small state-role discriminator such as
 `input_history`, `output_history`, or `output_latency`. Ordinary connection identity,
 allocation number, incidence-atom index, buffer kind, capacity, and byte offset are

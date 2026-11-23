@@ -337,7 +337,7 @@ coupling and hazards.
 Frozen `ConfiguredGraph` embedding is now first-class. Live-child and
 frozen-child embedding delegate to the same importer/remapper, and each frozen
 embedding returns an explicit local-to-parent translation without mutating the
-cached local handles. Imported virtual-node records remain scope-distinct rather
+cached local handles. Imported symbolic-node records remain scope-distinct rather
 than being merged into the parent root namespace.
 
 ## Batched request/result contract

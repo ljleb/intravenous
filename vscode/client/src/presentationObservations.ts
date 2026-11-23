@@ -291,7 +291,7 @@ export class PresentationObservations {
     private readonly profileUsable = (id: string) => this.profile?.recorder.recordUsable(id);
     private profileLaneEligibility(node: NodeAddress): void {
         const key = addressKey(node);
-        // A concrete node may be shown under several virtual lanes. Their
+        // A concrete node may be shown under several symbolic lanes. Their
         // shared probe is eligible as long as any of those rows is visible.
         const visible = this.visible && Array.from(this.nodes.values()).some((entry) => entry.tier === "visible" && addressKey(entry.node) === key);
         this.profile?.recorder.recordEligibility(laneEligibilityKey(node), visible);

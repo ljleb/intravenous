@@ -473,7 +473,7 @@ consumer history from unrelated source persistence merely because source data ha
 to exist.
 
 The stable migration identity belongs to the concrete node port, not the
-connection or storage plan: user-instantiated node/module identity, virtual-node and
+connection or storage plan: user-instantiated node/module identity, symbolic-node and
 concrete-member path, port direction/index, channel index or event stream, and a
 state-role discriminator. Port incidence classes, connection IDs, allocation
 indices, compact/ring kind, capacity and offsets are generation-local storage facts.
@@ -482,7 +482,7 @@ cold metadata capable of reading that semantic window again during a later graph
 transition.
 
 Newly settled (2026-11-09, human co-author): observable state survives an edit exactly
-when its owner is identified in both graphs. A concrete node under no virtual node has
+when its owner is identified in both graphs. A concrete node under no symbolic node has
 no identity, so none of its state survives, including compiler-owned storage that
 holds its outputs; it behaves like a node the edit adds. A `detach()` is a first-class
 structure, not a node. Its structures (delayed timelines, alignment rings) are
@@ -519,7 +519,7 @@ settled 2026-11-09 for event streams; the superseded event lines are preserved i
 
 Each record always retains its generation-local configured port coordinate and exact,
 unrounded extent. When its concrete node has authored stable identity, the record also
-retains the graph/virtual-node/direct-member path, direction, port kind/name/index,
+retains the graph/symbolic-node/direct-member path, direction, port kind/name/index,
 sample channel or event-stream marker, and state role. Anonymous nodes retain only the
 generation-local record; bundle handles are never promoted into false cross-revision
 identity. `CompiledGraph` owns this inventory as cold transition-planning metadata.

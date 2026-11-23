@@ -274,7 +274,7 @@ std::shared_ptr<iv::ConfiguredGraph const> exchange_connection_sources(
 }
 
 // Rebuild the same ConfiguredGraph with one unused scope-boundary bundle in
-// front of every original bundle. Stable virtual-node records and graph
+// front of every original bundle. Stable symbolic-node records and graph
 // identity are preserved; only generation-local bundle coordinates move.
 std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
     std::shared_ptr<iv::ConfiguredGraph const> const& graph)
@@ -294,14 +294,14 @@ std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
     connections.import_child(graph->connections, offset);
     shifted->connections = std::move(connections);
 
-    auto virtual_nodes = graph->virtual_nodes.records();
+    auto symbolic_nodes = graph->symbolic_nodes.records();
     auto shift_port = [offset](iv::NodeBundlePortId& port) {
         port.node_bundle_handle += offset;
     };
     auto shift_channel = [offset](auto& channel) {
         channel.bundle += offset;
     };
-    for (auto& node : virtual_nodes) {
+    for (auto& node : symbolic_nodes) {
         for (auto& bundle : node.node_bundle_handles) bundle += offset;
         for (auto& mapping : node.sample_inputs) {
             for (auto& channel : mapping.channels) shift_channel(channel);
@@ -322,26 +322,26 @@ std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
             for (auto& port : mapping.node_bundle_ports) shift_port(port);
         }
     }
-    // GraphBuilderNodeBundles::import_child() clears inverse virtual-node
+    // GraphBuilderNodeBundles::import_child() clears inverse symbolic-node
     // handles because ordinary child import rebuilds them through
-    // GraphBuilderVirtualNodes::import_child(). This fixture preserves the
-    // original virtual-node IDs instead, so restore the inverse relation
+    // GraphBuilderSymbolicNodes::import_child(). This fixture preserves the
+    // original symbolic-node IDs instead, so restore the inverse relation
     // explicitly after shifting every record's bundle coordinates.
-    for (std::size_t virtual_handle = 0;
-         virtual_handle < virtual_nodes.size();
-         ++virtual_handle) {
+    for (std::size_t symbolic_handle = 0;
+         symbolic_handle < symbolic_nodes.size();
+         ++symbolic_handle) {
         for (auto const bundle :
-             virtual_nodes[virtual_handle].node_bundle_handles) {
+             symbolic_nodes[symbolic_handle].node_bundle_handles) {
             auto& inverse = shifted->node_bundles
                 .bundle(bundle)
-                .virtual_node_handles();
-            if (!std::ranges::contains(inverse, virtual_handle)) {
-                inverse.push_back(virtual_handle);
+                .symbolic_node_handles();
+            if (!std::ranges::contains(inverse, symbolic_handle)) {
+                inverse.push_back(symbolic_handle);
             }
         }
     }
-    shifted->virtual_nodes =
-        iv::GraphBuilderVirtualNodes::from_configured_records(virtual_nodes);
+    shifted->symbolic_nodes =
+        iv::GraphBuilderSymbolicNodes::from_configured_records(symbolic_nodes);
 
     auto public_ports = graph->public_ports.configured_record();
     public_ports.boundary += offset;

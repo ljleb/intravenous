@@ -1241,7 +1241,7 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
         }
         auto const& state = details::builder_session_state(session);
         auto const matches = resolve_project_node_path(
-            ProjectNodePathGraph{state.node_bundles(), state.virtual_nodes()},
+            ProjectNodePathGraph{state.node_bundles(), state.symbolic_nodes()},
             placement->second.root,
             reference.path);
         auto const match = require_single_project_node_path_match(
@@ -1249,15 +1249,15 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
         if (match.kind == ProjectNodePathMatch::Kind::bundle) {
             return NodeRef(session, match.bundle);
         }
-        if (match.virtual_member_indices.size() != 1) {
+        if (match.symbolic_member_indices.size() != 1) {
             throw std::invalid_argument(
-                "configuration node reference selects a virtual node with "
-                + std::to_string(match.virtual_member_indices.size())
+                "configuration node reference selects a symbolic node with "
+                + std::to_string(match.symbolic_member_indices.size())
                 + " direct members; select one member");
         }
-        auto const& members = state.virtual_nodes()
-            .record(match.virtual_node).node_bundle_handles;
-        return NodeRef(session, members.at(match.virtual_member_indices.front()));
+        auto const& members = state.symbolic_nodes()
+            .record(match.symbolic_node).node_bundle_handles;
+        return NodeRef(session, members.at(match.symbolic_member_indices.front()));
     };
 
     // Phase 2: construction in reference order. The first failure stops the

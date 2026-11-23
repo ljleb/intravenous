@@ -127,19 +127,19 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
         registered_identity->provider_package_root,
         "/tmp/iv-test-provider");
 
-    auto const virtual_record = std::ranges::find_if(
-        decoded.virtual_nodes.records(),
+    auto const symbolic_record = std::ranges::find_if(
+        decoded.symbolic_nodes.records(),
         [](auto const& record) { return record.source_identity == "archive-pass"; });
-    ASSERT_NE(virtual_record, decoded.virtual_nodes.records().end());
-    ASSERT_EQ(virtual_record->sample_inputs.size(), 1u);
-    ASSERT_EQ(virtual_record->sample_inputs.front().source_infos.size(), 1u);
+    ASSERT_NE(symbolic_record, decoded.symbolic_nodes.records().end());
+    ASSERT_EQ(symbolic_record->sample_inputs.size(), 1u);
+    ASSERT_EQ(symbolic_record->sample_inputs.front().source_infos.size(), 1u);
     EXPECT_EQ(
-        virtual_record->sample_inputs.front().source_infos.front().span.file_path,
+        symbolic_record->sample_inputs.front().source_infos.front().span.file_path,
         "/tmp/archive-module.cpp");
     EXPECT_EQ(
-        virtual_record->sample_inputs.front().source_infos.front().span.begin, 10u);
+        symbolic_record->sample_inputs.front().source_infos.front().span.begin, 10u);
     EXPECT_EQ(
-        virtual_record->sample_inputs.front().source_infos.front().span.end, 18u);
+        symbolic_record->sample_inputs.front().source_infos.front().span.end, 18u);
 
     auto const& declared_inputs = decoded.public_ports.inputs(decoded.node_bundles);
     ASSERT_EQ(declared_inputs.size(), 2u);

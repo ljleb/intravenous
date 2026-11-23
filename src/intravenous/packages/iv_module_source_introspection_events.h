@@ -22,12 +22,12 @@ public:
 // The source-introspection input of one ProjectGraph root build, applied once:
 // the module definitions the build's definitions publication changed (empty
 // otherwise) and, when the project's instance declarations changed, all of
-// them. The virtual-node replacements this produces return in `result` for
+// them. The symbolic-node replacements this produces return in `result` for
 // ProjectGraph to publish with the rest of the build's changes.
 struct IvModuleSourceIntrospectionProjectGraphRequest {
     IvPackageDefinitionsChanged package_definitions{};
     std::optional<std::vector<IvModuleInstanceInfo>> instance_declarations{};
-    std::optional<ProjectVirtualNodesNotification> result{};
+    std::optional<ProjectSymbolicNodesNotification> result{};
     bool handled = false;
 };
 

@@ -71,13 +71,13 @@ SourcePosition SourceTextLineMap::position_for(size_t offset) const
 }
 
 namespace {
-constexpr std::string_view runtime_node_id_separator = "\x1fvirtual:";
+constexpr std::string_view runtime_node_id_separator = "\x1fsymbolic:";
 
-VirtualContinuousPortInfo to_live_port(
+SymbolicContinuousPortInfo to_live_port(
     IntrospectionContinuousPortInfo const& port,
-    VirtualPortBinding binding)
+    SymbolicPortBinding binding)
 {
-    return VirtualContinuousPortInfo{
+    return SymbolicContinuousPortInfo{
         .name = port.name,
         .connectivity = port.connectivity,
         .index = port.index,
@@ -87,11 +87,11 @@ VirtualContinuousPortInfo to_live_port(
     };
 }
 
-VirtualEventPortInfo to_live_port(
+SymbolicEventPortInfo to_live_port(
     IntrospectionEventPortInfo const& port,
-    VirtualPortBinding binding)
+    SymbolicPortBinding binding)
 {
-    return VirtualEventPortInfo{
+    return SymbolicEventPortInfo{
         .name = port.name,
         .connectivity = port.connectivity,
         .index = port.index,
@@ -100,18 +100,18 @@ VirtualEventPortInfo to_live_port(
     };
 }
 
-VirtualPortBinding member_input_binding(
-    VirtualPortConnectivity connectivity)
+SymbolicPortBinding member_input_binding(
+    SymbolicPortConnectivity connectivity)
 {
     switch (connectivity) {
-    case VirtualPortConnectivity::connected:
-        return VirtualPortBinding::none;
-    case VirtualPortConnectivity::disconnected:
-        return VirtualPortBinding::virtual_input;
-    case VirtualPortConnectivity::mixed:
-        return VirtualPortBinding::mixed;
+    case SymbolicPortConnectivity::connected:
+        return SymbolicPortBinding::none;
+    case SymbolicPortConnectivity::disconnected:
+        return SymbolicPortBinding::symbolic_input;
+    case SymbolicPortConnectivity::mixed:
+        return SymbolicPortBinding::mixed;
     }
-    return VirtualPortBinding::mixed;
+    return SymbolicPortBinding::mixed;
 }
 
 template<class LivePort, class IntrospectionPort, class Binding>
@@ -130,7 +130,7 @@ std::vector<LivePort> to_live_ports_with_bindings(
 template<class LivePort, class IntrospectionPort>
 std::vector<LivePort> to_live_ports(
     std::span<IntrospectionPort const> ports,
-    VirtualPortBinding binding)
+    SymbolicPortBinding binding)
 {
     return to_live_ports_with_bindings<LivePort>(ports, [binding](auto const&) {
         return binding;
@@ -157,7 +157,7 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
     graph_index.definition_id = definition_id;
     graph_index.module_root = normalize_path(module_root);
     graph_index.module_id = module_id;
-    graph_index.virtual_nodes = introspection.virtual_nodes;
+    graph_index.symbolic_nodes = introspection.symbolic_nodes;
     graph_index.dependency_file_paths.insert(
         normalized_path_string(graph_index.module_root / "module.cpp"));
     for (auto const &dependency : dependencies) {
@@ -166,15 +166,15 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
                 normalized_path_string(dependency.entry_file));
         }
     }
-    for (auto &virtual_node : graph_index.virtual_nodes) {
-        std::erase_if(virtual_node.source_spans, [](SourceSpan const &span) {
+    for (auto &symbolic_node : graph_index.symbolic_nodes) {
+        std::erase_if(symbolic_node.source_spans, [](SourceSpan const &span) {
             return span.file_path.empty() || span.begin > span.end;
         });
-        for (auto &span : virtual_node.source_spans) {
+        for (auto &span : symbolic_node.source_spans) {
             span.file_path = normalized_path_string(span.file_path);
             graph_index.dependency_file_paths.insert(span.file_path);
         }
-        sort_and_deduplicate_spans(virtual_node.source_spans);
+        sort_and_deduplicate_spans(symbolic_node.source_spans);
         auto normalize_port_spans = [&](auto &ports) {
             for (auto &port : ports) {
                 std::erase_if(port.source_spans, [](SourceSpan const &span) {
@@ -187,13 +187,13 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
                 sort_and_deduplicate_spans(port.source_spans);
             }
         };
-        normalize_port_spans(virtual_node.continuous_inputs);
-        normalize_port_spans(virtual_node.continuous_outputs);
-        normalize_port_spans(virtual_node.event_inputs);
-        normalize_port_spans(virtual_node.event_outputs);
+        normalize_port_spans(symbolic_node.continuous_inputs);
+        normalize_port_spans(symbolic_node.continuous_outputs);
+        normalize_port_spans(symbolic_node.event_inputs);
+        normalize_port_spans(symbolic_node.event_outputs);
     }
-    for (size_t i = 0; i < graph_index.virtual_nodes.size(); ++i) {
-        graph_index.virtual_node_index_by_id.emplace(graph_index.virtual_nodes[i].id, i);
+    for (size_t i = 0; i < graph_index.symbolic_nodes.size(); ++i) {
+        graph_index.symbolic_node_index_by_id.emplace(graph_index.symbolic_nodes[i].id, i);
     }
 
     return graph_index;
@@ -201,17 +201,17 @@ LoadedGraphIntrospectionIndex build_graph_introspection_index(
 
 std::string runtime_node_id(
     std::string_view instance_id,
-    std::string_view virtual_node_id)
+    std::string_view symbolic_node_id)
 {
     std::string value(instance_id);
     value += runtime_node_id_separator;
-    value += virtual_node_id;
+    value += symbolic_node_id;
     return value;
 }
 
 struct ResolvedRuntimeNodeId {
     std::string instance_id;
-    std::string virtual_node_id;
+    std::string symbolic_node_id;
 };
 
 std::optional<ResolvedRuntimeNodeId> parse_runtime_node_id(std::string_view runtime_id)
@@ -222,7 +222,7 @@ std::optional<ResolvedRuntimeNodeId> parse_runtime_node_id(std::string_view runt
     }
     return ResolvedRuntimeNodeId{
         .instance_id = std::string(runtime_id.substr(0, separator)),
-        .virtual_node_id = std::string(runtime_id.substr(separator + runtime_node_id_separator.size())),
+        .symbolic_node_id = std::string(runtime_id.substr(separator + runtime_node_id_separator.size())),
     };
 }
 
@@ -278,50 +278,50 @@ LiveSourceSpan IvModuleSourceIntrospection::to_live_span(SourceSpan const &span)
     };
 }
 
-VirtualNodeInfo IvModuleSourceIntrospection::to_virtual_node(
-    IntrospectionVirtualNode const &node,
+SymbolicNodeInfo IvModuleSourceIntrospection::to_symbolic_node(
+    IntrospectionSymbolicNode const &node,
     std::string const &instance_id) const
 {
-    VirtualNodeInfo live;
+    SymbolicNodeInfo live;
     live.id = runtime_node_id(instance_id, node.id);
     live.instance_id = instance_id;
     live.kind = node.kind;
     live.source_identity = node.source_identity;
     live.type_identity = node.type_identity;
     live.definition_id = node.definition_id;
-    live.continuous_inputs = to_live_ports<VirtualContinuousPortInfo>(
-        std::span{node.continuous_inputs}, VirtualPortBinding::interface);
-    live.continuous_outputs = to_live_ports<VirtualContinuousPortInfo>(
-        std::span{node.continuous_outputs}, VirtualPortBinding::interface);
-    live.event_inputs = to_live_ports<VirtualEventPortInfo>(
-        std::span{node.event_inputs}, VirtualPortBinding::interface);
-    live.event_outputs = to_live_ports<VirtualEventPortInfo>(
-        std::span{node.event_outputs}, VirtualPortBinding::interface);
+    live.continuous_inputs = to_live_ports<SymbolicContinuousPortInfo>(
+        std::span{node.continuous_inputs}, SymbolicPortBinding::interface);
+    live.continuous_outputs = to_live_ports<SymbolicContinuousPortInfo>(
+        std::span{node.continuous_outputs}, SymbolicPortBinding::interface);
+    live.event_inputs = to_live_ports<SymbolicEventPortInfo>(
+        std::span{node.event_inputs}, SymbolicPortBinding::interface);
+    live.event_outputs = to_live_ports<SymbolicEventPortInfo>(
+        std::span{node.event_outputs}, SymbolicPortBinding::interface);
     live.member_count = node.backing_node_ids.size();
     live.members.reserve(node.members.size());
     for (auto const &member : node.members) {
-        VirtualNodeMemberInfo live_member;
+        SymbolicNodeMemberInfo live_member;
         live_member.index = member.index;
         live_member.backing_node_id = member.backing_node_id;
         live_member.kind = member.kind;
         live_member.type_identity = member.type_identity;
         live_member.definition_id = member.definition_id;
         live_member.continuous_inputs =
-            to_live_ports_with_bindings<VirtualContinuousPortInfo>(
+            to_live_ports_with_bindings<SymbolicContinuousPortInfo>(
                 std::span{member.continuous_inputs}, [](auto const& port) {
                     return member_input_binding(port.connectivity);
                 });
         live_member.continuous_outputs =
-            to_live_ports<VirtualContinuousPortInfo>(
+            to_live_ports<SymbolicContinuousPortInfo>(
                 std::span{member.continuous_outputs},
-                VirtualPortBinding::virtual_output);
+                SymbolicPortBinding::symbolic_output);
         live_member.event_inputs =
-            to_live_ports_with_bindings<VirtualEventPortInfo>(
+            to_live_ports_with_bindings<SymbolicEventPortInfo>(
                 std::span{member.event_inputs}, [](auto const& port) {
                     return member_input_binding(port.connectivity);
                 });
-        live_member.event_outputs = to_live_ports<VirtualEventPortInfo>(
-            std::span{member.event_outputs}, VirtualPortBinding::virtual_output);
+        live_member.event_outputs = to_live_ports<SymbolicEventPortInfo>(
+            std::span{member.event_outputs}, SymbolicPortBinding::symbolic_output);
         live.members.push_back(std::move(live_member));
     }
     live.source_spans.reserve(node.source_spans.size());
@@ -412,8 +412,8 @@ void IvModuleSourceIntrospection::handle_project_graph_source_introspection(
         std::unique(replace_instance_ids.begin(), replace_instance_ids.end()),
         replace_instance_ids.end());
     if (replace_instance_ids.empty()) return;
-    request.result = ProjectVirtualNodesNotification{
-        .nodes = get_virtual_nodes_for_instances(updated_instances),
+    request.result = ProjectSymbolicNodesNotification{
+        .nodes = get_symbolic_nodes_for_instances(updated_instances),
         .replace_instance_ids = std::move(replace_instance_ids),
     };
 }
@@ -472,9 +472,9 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             return span.begin - end;
         };
 
-    struct RankedRuntimeVirtualNode {
+    struct RankedRuntimeSymbolicNode {
         std::string definition_id;
-        size_t virtual_index = 0;
+        size_t symbolic_index = 0;
         bool full_node = false;
         std::vector<size_t> continuous_input_indices {};
         std::vector<size_t> event_input_indices {};
@@ -485,7 +485,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         uint32_t best_end = std::numeric_limits<uint32_t>::max();
     };
 
-    auto record_rank = [&](RankedRuntimeVirtualNode &ranked,
+    auto record_rank = [&](RankedRuntimeSymbolicNode &ranked,
                            SourceSpan const &span,
                            std::pair<uint32_t, uint32_t> const &requested_range) {
         auto const span_size = span.end >= span.begin ? span.end - span.begin : 0u;
@@ -496,14 +496,14 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         ranked.best_end = std::min(ranked.best_end, span.end);
     };
 
-    std::vector<RankedRuntimeVirtualNode> ranked_nodes;
+    std::vector<RankedRuntimeSymbolicNode> ranked_nodes;
     for (auto const &[definition_id, graph_index] : graph_indexes_by_definition_id) {
-        for (size_t virtual_index = 0; virtual_index < graph_index.virtual_nodes.size();
-             ++virtual_index) {
-            auto const &node = graph_index.virtual_nodes[virtual_index];
-            RankedRuntimeVirtualNode ranked{
+        for (size_t symbolic_index = 0; symbolic_index < graph_index.symbolic_nodes.size();
+             ++symbolic_index) {
+            auto const &node = graph_index.symbolic_nodes[symbolic_index];
+            RankedRuntimeSymbolicNode ranked{
                 .definition_id = definition_id,
-                .virtual_index = virtual_index,
+                .symbolic_index = symbolic_index,
             };
 
             if (requested_ranges.empty()) {
@@ -581,8 +581,8 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
         }
         auto const &a_index = graph_indexes_by_definition_id.at(a.definition_id);
         auto const &b_index = graph_indexes_by_definition_id.at(b.definition_id);
-        auto const &a_node = a_index.virtual_nodes[a.virtual_index];
-        auto const &b_node = b_index.virtual_nodes[b.virtual_index];
+        auto const &a_node = a_index.symbolic_nodes[a.symbolic_index];
+        auto const &b_node = b_index.symbolic_nodes[b.symbolic_index];
         if (a_node.kind != b_node.kind) {
             return a_node.kind < b_node.kind;
         }
@@ -599,7 +599,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             continue;
         }
         auto const &graph_index = index_it->second;
-        auto const &node = graph_index.virtual_nodes[ranked.virtual_index];
+        auto const &node = graph_index.symbolic_nodes[ranked.symbolic_index];
         std::vector<std::string> matching_instance_ids;
         for (auto const &[candidate_instance_id, instance] : instances_by_id) {
             if (instance.definition_id != ranked.definition_id) {
@@ -616,7 +616,7 @@ ProjectQueryResult IvModuleSourceIntrospection::query_by_spans(
             if (!emitted.insert(emitted_id).second) {
                 continue;
             }
-            auto live = to_virtual_node(node, matching_instance_id);
+            auto live = to_symbolic_node(node, matching_instance_id);
             if (!ranked.full_node) {
                 auto keep_index = [](auto const &indices, auto const &port) {
                     return std::ranges::contains(indices, port.index);
@@ -667,7 +667,7 @@ ProjectRegionQueryResult IvModuleSourceIntrospection::query_active_regions(
 
     std::unordered_set<std::string> emitted_spans;
     for (auto const &[_, graph_index] : graph_indexes_by_definition_id) {
-        for (auto const &node : graph_index.virtual_nodes) {
+        for (auto const &node : graph_index.symbolic_nodes) {
             auto append_spans = [&](std::span<SourceSpan const> spans) {
               for (auto const &span : spans) {
                 if (span.file_path != normalized_file_path) {
@@ -709,7 +709,7 @@ bool IvModuleSourceIntrospection::definition_uses_source_file(
         normalized_path_string(file_path));
 }
 
-VirtualNodeInfo IvModuleSourceIntrospection::get_virtual_node(std::string const &node_id) const
+SymbolicNodeInfo IvModuleSourceIntrospection::get_symbolic_node(std::string const &node_id) const
 {
     std::scoped_lock lock(mutex);
     auto const resolved = parse_runtime_node_id(node_id);
@@ -724,20 +724,20 @@ VirtualNodeInfo IvModuleSourceIntrospection::get_virtual_node(std::string const 
     if (index_it == graph_indexes_by_definition_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
-    if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
+    auto const symbolic_it = index_it->second.symbolic_node_index_by_id.find(resolved->symbolic_node_id);
+    if (symbolic_it == index_it->second.symbolic_node_index_by_id.end()) {
         throw std::runtime_error("unknown node id: " + node_id);
     }
-    return to_virtual_node(
-        index_it->second.virtual_nodes[virtual_it->second],
+    return to_symbolic_node(
+        index_it->second.symbolic_nodes[symbolic_it->second],
         resolved->instance_id);
 }
 
-std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes(
+std::vector<SymbolicNodeInfo> IvModuleSourceIntrospection::get_symbolic_nodes(
     std::vector<std::string> const &node_ids) const
 {
     std::scoped_lock lock(mutex);
-    std::vector<VirtualNodeInfo> nodes;
+    std::vector<SymbolicNodeInfo> nodes;
     nodes.reserve(node_ids.size());
     for (auto const &node_id : node_ids) {
         auto const resolved = parse_runtime_node_id(node_id);
@@ -752,22 +752,22 @@ std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes(
         if (index_it == graph_indexes_by_definition_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
-        auto const virtual_it = index_it->second.virtual_node_index_by_id.find(resolved->virtual_node_id);
-        if (virtual_it == index_it->second.virtual_node_index_by_id.end()) {
+        auto const symbolic_it = index_it->second.symbolic_node_index_by_id.find(resolved->symbolic_node_id);
+        if (symbolic_it == index_it->second.symbolic_node_index_by_id.end()) {
             throw std::runtime_error("unknown node id: " + node_id);
         }
-        nodes.push_back(to_virtual_node(
-            index_it->second.virtual_nodes[virtual_it->second],
+        nodes.push_back(to_symbolic_node(
+            index_it->second.symbolic_nodes[symbolic_it->second],
             resolved->instance_id));
     }
     return nodes;
 }
 
-std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes_for_instances(
+std::vector<SymbolicNodeInfo> IvModuleSourceIntrospection::get_symbolic_nodes_for_instances(
     std::vector<IvModuleInstanceInfo> const &instances) const
 {
     std::scoped_lock lock(mutex);
-    std::vector<VirtualNodeInfo> nodes;
+    std::vector<SymbolicNodeInfo> nodes;
     for (auto const &instance : instances) {
         if (instance.instance_id.empty() || instance.definition_id.empty()) {
             continue;
@@ -776,8 +776,8 @@ std::vector<VirtualNodeInfo> IvModuleSourceIntrospection::get_virtual_nodes_for_
         if (index_it == graph_indexes_by_definition_id.end()) {
             continue;
         }
-        for (auto const &virtual_node : index_it->second.virtual_nodes) {
-            nodes.push_back(to_virtual_node(virtual_node, instance.instance_id));
+        for (auto const &symbolic_node : index_it->second.symbolic_nodes) {
+            nodes.push_back(to_symbolic_node(symbolic_node, instance.instance_id));
         }
     }
     return nodes;
@@ -815,18 +815,18 @@ void IvModuleSourceIntrospection::handle_socket_rpc_graph_query_active_regions(
     builder.succeed(query_active_regions(request.file_path));
 }
 
-void IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_node(
-    GetVirtualNodeRequest const &request,
-    SocketRpcVirtualNodeResultBuilder &builder) const
+void IvModuleSourceIntrospection::handle_socket_rpc_get_symbolic_node(
+    GetSymbolicNodeRequest const &request,
+    SocketRpcSymbolicNodeResultBuilder &builder) const
 {
-    builder.succeed(get_virtual_node(request.node_id));
+    builder.succeed(get_symbolic_node(request.node_id));
 }
 
-void IvModuleSourceIntrospection::handle_socket_rpc_get_virtual_nodes(
-    GetVirtualNodesRequest const &request,
-    SocketRpcVirtualNodesResultBuilder &builder) const
+void IvModuleSourceIntrospection::handle_socket_rpc_get_symbolic_nodes(
+    GetSymbolicNodesRequest const &request,
+    SocketRpcSymbolicNodesResultBuilder &builder) const
 {
-    builder.succeed(get_virtual_nodes(request.node_ids));
+    builder.succeed(get_symbolic_nodes(request.node_ids));
 }
 
 

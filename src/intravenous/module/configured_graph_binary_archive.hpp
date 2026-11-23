@@ -785,7 +785,7 @@ inline NodeStateStructure read_state(Reader& r)
     return result;
 }
 
-template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSamplePortMapping<Channel> const& value, Fn&& write_channel)
+template<class Channel, class Fn> void write_symbolic_sample(Writer& w, SymbolicSamplePortMapping<Channel> const& value, Fn&& write_channel)
 {
     w.string(value.name); w.size(value.index); write_layout(w, value.channel_layout);
     write_source_infos(w, value.source_infos);
@@ -793,46 +793,46 @@ template<class Channel, class Fn> void write_virtual_sample(Writer& w, VirtualSa
     w.list(value.member_channels, [&](auto const& members) { write_values<Channel>(w, members, write_channel); });
 }
 
-template<class Channel, class Fn> VirtualSamplePortMapping<Channel> read_virtual_sample(Reader& r, Fn&& read_channel)
+template<class Channel, class Fn> SymbolicSamplePortMapping<Channel> read_symbolic_sample(Reader& r, Fn&& read_channel)
 {
-    VirtualSamplePortMapping<Channel> result{.name = r.string(), .index = r.size(), .channel_layout = read_layout(r),
+    SymbolicSamplePortMapping<Channel> result{.name = r.string(), .index = r.size(), .channel_layout = read_layout(r),
         .source_infos = read_source_infos(r),
         .channels = read_values<Channel>(r, read_channel)};
     result.member_channels = read_list<std::vector<Channel>>(r, [&] { return read_values<Channel>(r, read_channel); });
     return result;
 }
 
-inline void write_virtual_event(Writer& w, VirtualEventPortMapping const& value)
+inline void write_symbolic_event(Writer& w, SymbolicEventPortMapping const& value)
 {
     w.string(value.name); w.size(value.index); write_enum(w, value.type);
     write_source_infos(w, value.source_infos);
     write_values<NodeBundlePortId>(w, value.node_bundle_ports, write_bundle_port);
 }
-inline VirtualEventPortMapping read_virtual_event(Reader& r)
+inline SymbolicEventPortMapping read_symbolic_event(Reader& r)
 {
     return {.name = r.string(), .index = r.size(), .type = read_enum<EventTypeId>(r),
         .source_infos = read_source_infos(r),
         .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
 }
 
-inline void write_virtual_node(Writer& w, VirtualNodeRecord const& value)
+inline void write_symbolic_node(Writer& w, SymbolicNodeRecord const& value)
 {
     w.string(value.id); w.string(value.source_identity); w.string(value.type_identity); write_source_infos(w, value.source_infos);
     w.list(value.node_bundle_handles, [&](std::size_t value) { w.size(value); });
-    w.list(value.sample_inputs, [&](auto const& value) { write_virtual_sample(w, value, write_input_channel); });
-    w.list(value.sample_outputs, [&](auto const& value) { write_virtual_sample(w, value, write_output_channel); });
-    w.list(value.event_inputs, [&](auto const& value) { write_virtual_event(w, value); });
-    w.list(value.event_outputs, [&](auto const& value) { write_virtual_event(w, value); });
+    w.list(value.sample_inputs, [&](auto const& value) { write_symbolic_sample(w, value, write_input_channel); });
+    w.list(value.sample_outputs, [&](auto const& value) { write_symbolic_sample(w, value, write_output_channel); });
+    w.list(value.event_inputs, [&](auto const& value) { write_symbolic_event(w, value); });
+    w.list(value.event_outputs, [&](auto const& value) { write_symbolic_event(w, value); });
 }
 
-inline VirtualNodeRecord read_virtual_node(Reader& r)
+inline SymbolicNodeRecord read_symbolic_node(Reader& r)
 {
-    VirtualNodeRecord result{.id = r.string(), .source_identity = r.string(), .type_identity = r.string(),
+    SymbolicNodeRecord result{.id = r.string(), .source_identity = r.string(), .type_identity = r.string(),
         .source_infos = read_source_infos(r), .node_bundle_handles = read_list<NodeBundleHandle>(r, [&] { return r.size(); })};
-    result.sample_inputs = read_list<VirtualSampleInputPortMapping>(r, [&] { return read_virtual_sample<SampleInputChannelId>(r, read_input_channel); });
-    result.sample_outputs = read_list<VirtualSampleOutputPortMapping>(r, [&] { return read_virtual_sample<SampleOutputChannelId>(r, read_output_channel); });
-    result.event_inputs = read_list<VirtualEventPortMapping>(r, [&] { return read_virtual_event(r); });
-    result.event_outputs = read_list<VirtualEventPortMapping>(r, [&] { return read_virtual_event(r); });
+    result.sample_inputs = read_list<SymbolicSampleInputPortMapping>(r, [&] { return read_symbolic_sample<SampleInputChannelId>(r, read_input_channel); });
+    result.sample_outputs = read_list<SymbolicSampleOutputPortMapping>(r, [&] { return read_symbolic_sample<SampleOutputChannelId>(r, read_output_channel); });
+    result.event_inputs = read_list<SymbolicEventPortMapping>(r, [&] { return read_symbolic_event(r); });
+    result.event_outputs = read_list<SymbolicEventPortMapping>(r, [&] { return read_symbolic_event(r); });
     return result;
 }
 
@@ -858,7 +858,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     configured.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView view) {
         ++bundle_count;
         write_enum(bundles, view.kind);
-        bundles.list(view.virtual_node_handles, [&](std::size_t value) { bundles.size(value); });
+        bundles.list(view.symbolic_node_handles, [&](std::size_t value) { bundles.size(value); });
         write_source_infos(bundles, view.source_infos);
         if (view.kind == ConfiguredNodeBundleKind::concrete) {
             if (!view.node_storage || !*view.node_storage || !view.code_key || !view.ports)
@@ -1004,8 +1004,8 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         writer.flag(value.whole_stream);
     });
 
-    auto const virtual_nodes = configured.virtual_nodes.records();
-    writer.list(virtual_nodes, [&](VirtualNodeRecord const& value) { write_virtual_node(writer, value); });
+    auto const symbolic_nodes = configured.symbolic_nodes.records();
+    writer.list(symbolic_nodes, [&](SymbolicNodeRecord const& value) { write_symbolic_node(writer, value); });
     result.bytes = std::move(writer).take();
     return result;
 }
@@ -1065,7 +1065,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
     for (std::size_t i = 0; i < bundle_count; ++i) {
         ConfiguredNodeBundleRecord record;
         record.kind = read_enum<ConfiguredNodeBundleKind>(reader);
-        record.virtual_node_handles = read_list<std::size_t>(reader, [&] { return reader.size(); });
+        record.symbolic_node_handles = read_list<std::size_t>(reader, [&] { return reader.size(); });
         record.source_infos = read_source_infos(reader);
         if (record.kind == ConfiguredNodeBundleKind::concrete) {
             record.ports = read_ports(reader);
@@ -1204,14 +1204,14 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         return PublicSamplePortMember{.family_name = reader.string(), .channel_type = read_enum<ChannelTypeId>(reader),
             .channel_index = reader.size(), .whole_stream = reader.flag()};
     });
-    auto virtual_nodes = read_list<VirtualNodeRecord>(reader, [&] { return read_virtual_node(reader); });
+    auto symbolic_nodes = read_list<SymbolicNodeRecord>(reader, [&] { return read_symbolic_node(reader); });
     reader.finish();
     return {.identity = GraphBuilderIdentity{std::move(identity)},
         .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
         .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),
         .public_ports = GraphBuilderPublicPorts::from_configured_record(public_ports),
         .annotations = {},
-        .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(virtual_nodes)};
+        .symbolic_nodes = GraphBuilderSymbolicNodes::from_configured_records(symbolic_nodes)};
 }
 
 } // namespace iv

@@ -88,9 +88,9 @@ void expect_connection_is_translation(
 TEST(ConfiguredGraphEmbedding, RepeatedEmbeddingKeepsFrozenHandlesLocalAndReturnsIndependentTranslations)
 {
     auto child = make_nested_annotated_graph();
-    ASSERT_EQ(child.virtual_nodes.records().size(), 1u);
-    auto const child_virtual_bundle =
-        child.virtual_nodes.records().front().node_bundle_handles.front();
+    ASSERT_EQ(child.symbolic_nodes.records().size(), 1u);
+    auto const child_symbolic_bundle =
+        child.symbolic_nodes.records().front().node_bundle_handles.front();
     auto const child_connections = child.connections.configured_sample_connections();
     ASSERT_FALSE(child_connections.empty());
     auto const child_first_source_bundle =
@@ -104,29 +104,29 @@ TEST(ConfiguredGraphEmbedding, RepeatedEmbeddingKeepsFrozenHandlesLocalAndReturn
 
     EXPECT_EQ(first.node_bundles.size(), child.node_bundles.size());
     EXPECT_EQ(second.node_bundles.size(), child.node_bundles.size());
-    ASSERT_EQ(first.virtual_nodes.size(), 1u);
-    ASSERT_EQ(second.virtual_nodes.size(), 1u);
+    ASSERT_EQ(first.symbolic_nodes.size(), 1u);
+    ASSERT_EQ(second.symbolic_nodes.size(), 1u);
     EXPECT_NE(first.root_scope, second.root_scope);
     EXPECT_NE(first.node_bundle(0), second.node_bundle(0));
-    EXPECT_NE(first.virtual_node(0), second.virtual_node(0));
+    EXPECT_NE(first.symbolic_node(0), second.symbolic_node(0));
 
     // Embedding is a pure import of the child: local identities in the frozen
     // cacheable graph remain untouched even after multiple placements.
     EXPECT_EQ(
-        child.virtual_nodes.records().front().node_bundle_handles.front(),
-        child_virtual_bundle);
+        child.symbolic_nodes.records().front().node_bundle_handles.front(),
+        child_symbolic_bundle);
     EXPECT_EQ(
         child.connections.configured_sample_connections()
             .front().source_channels.front().channel.bundle,
         child_first_source_bundle);
 
-    auto const& parent_virtuals = configured.virtual_nodes.records();
-    ASSERT_EQ(parent_virtuals.size(), 2u);
-    EXPECT_EQ(parent_virtuals[first.virtual_node(0)].source_identity, "shared-child-node");
-    EXPECT_EQ(parent_virtuals[second.virtual_node(0)].source_identity, "shared-child-node");
+    auto const& parent_symbolics = configured.symbolic_nodes.records();
+    ASSERT_EQ(parent_symbolics.size(), 2u);
+    EXPECT_EQ(parent_symbolics[first.symbolic_node(0)].source_identity, "shared-child-node");
+    EXPECT_EQ(parent_symbolics[second.symbolic_node(0)].source_identity, "shared-child-node");
     EXPECT_NE(
-        parent_virtuals[first.virtual_node(0)].node_bundle_handles.front(),
-        parent_virtuals[second.virtual_node(0)].node_bundle_handles.front());
+        parent_symbolics[first.symbolic_node(0)].node_bundle_handles.front(),
+        parent_symbolics[second.symbolic_node(0)].node_bundle_handles.front());
 }
 
 TEST(ConfiguredGraphEmbedding, RemapsConnectionsAndNestedScopesThroughExplicitTranslation)
@@ -156,7 +156,7 @@ TEST(ConfiguredGraphEmbedding, RemapsConnectionsAndNestedScopesThroughExplicitTr
     }
 }
 
-TEST(ConfiguredGraphEmbedding, PreservesScopedVirtualIdentityInsteadOfFlatteningEqualChildren)
+TEST(ConfiguredGraphEmbedding, PreservesScopedSymbolicIdentityInsteadOfFlatteningEqualChildren)
 {
     auto child = make_nested_annotated_graph();
 
@@ -166,10 +166,10 @@ TEST(ConfiguredGraphEmbedding, PreservesScopedVirtualIdentityInsteadOfFlattening
     parent.outputs();
     auto configured = std::move(parent).finish();
 
-    auto const& records = configured.virtual_nodes.records();
+    auto const& records = configured.symbolic_nodes.records();
     ASSERT_EQ(records.size(), 2u);
-    auto const& left = records[first.virtual_node(0)];
-    auto const& right = records[second.virtual_node(0)];
+    auto const& left = records[first.symbolic_node(0)];
+    auto const& right = records[second.symbolic_node(0)];
 
     // Source/type identity stays stable, while the introspection ID is
     // scope-qualified so lowering cannot flatten the two child placements.
@@ -183,13 +183,13 @@ TEST(ConfiguredGraphEmbedding, PreservesScopedVirtualIdentityInsteadOfFlattening
     EXPECT_NE(left.node_bundle_handles.front(), right.node_bundle_handles.front());
 
     auto const& left_inverse = configured.node_bundles
-        .bundle(left.node_bundle_handles.front()).virtual_node_handles();
+        .bundle(left.node_bundle_handles.front()).symbolic_node_handles();
     auto const& right_inverse = configured.node_bundles
-        .bundle(right.node_bundle_handles.front()).virtual_node_handles();
-    EXPECT_TRUE(std::ranges::contains(left_inverse, first.virtual_node(0)));
-    EXPECT_TRUE(std::ranges::contains(right_inverse, second.virtual_node(0)));
-    EXPECT_FALSE(std::ranges::contains(left_inverse, second.virtual_node(0)));
-    EXPECT_FALSE(std::ranges::contains(right_inverse, first.virtual_node(0)));
+        .bundle(right.node_bundle_handles.front()).symbolic_node_handles();
+    EXPECT_TRUE(std::ranges::contains(left_inverse, first.symbolic_node(0)));
+    EXPECT_TRUE(std::ranges::contains(right_inverse, second.symbolic_node(0)));
+    EXPECT_FALSE(std::ranges::contains(left_inverse, second.symbolic_node(0)));
+    EXPECT_FALSE(std::ranges::contains(right_inverse, first.symbolic_node(0)));
 }
 
 TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)
@@ -211,6 +211,6 @@ TEST(ConfiguredGraphEmbedding, TranslationRejectsForeignLocalHandles)
     auto const embedding = parent.embed(child);
 
     EXPECT_THROW((void)embedding.node_bundle(child.node_bundles.size()), std::out_of_range);
-    EXPECT_THROW((void)embedding.virtual_node(child.virtual_nodes.records().size()), std::out_of_range);
+    EXPECT_THROW((void)embedding.symbolic_node(child.symbolic_nodes.records().size()), std::out_of_range);
 }
 } // namespace

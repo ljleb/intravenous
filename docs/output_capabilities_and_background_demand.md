@@ -375,7 +375,7 @@ rejected at validation.
   appropriate immutable published data root contains it.
 - Reclamation respects pins and the authoritative versioned data. Cached
   realizations may be discarded; unreconstructible recorded information may not.
-- Virtual mapping and physical page aggregation are optional implementation
+- Symbolic mapping and physical page aggregation are optional implementation
   techniques, not the authored semantics. They do not justify whole-Region
   computation or defeat explicit resource limits. Tick recordings and Tock
   buffered data share the background-managed storage contract and may choose
@@ -570,7 +570,7 @@ realtime preparation must also establish the required residency/availability
 under the system's locking and memory budgets. A preparation failure follows
 the existing underrun/error contract, not an audio-thread page-fault-driven
 request. Realtime recording writes use preprovisioned capacity, then hand off
-their blocks for background incorporation; they do not create virtual mappings
+their blocks for background incorporation; they do not create symbolic mappings
 or allocate backing pages during `tick()`.
 
 Validate this shared realization with sparse nonadjacent requests, later fills

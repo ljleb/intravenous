@@ -4,16 +4,16 @@
 
 The DSL has two different node contexts.
 
-- A **virtual node** is static/configured graph metadata. It is created when a
+- A **symbolic node** is static/configured graph metadata. It is created when a
   source-configured declaration is annotated. It owns source identity, source
-  spans, virtual ports, and explicit membership of node bundles. It is not an
+  spans, symbolic ports, and explicit membership of node bundles. It is not an
   executable node and it is not a value returned by `GraphBuilder::node`.
 - A **node reference** is a move-only builder-time value. It refers to exactly
   one node bundle in one `GraphBuilder` and creates or inspects graph wiring.
 
 A node bundle is exactly one concrete node, one tiled set of concrete nodes,
 or one subgraph node. Concrete nodes and individual tiles are execution
-implementation details. Virtual-node-to-bundle membership is explicit and
+implementation details. Symbolic-node-to-bundle membership is explicit and
 many-to-many; it must never be inferred from names, source spans, types, tile
 order, or adjacency.
 
@@ -145,19 +145,19 @@ Output-selection rules superseded on 2026-11-14 are preserved in
   `g.outputs("value"_P = curve, "points"_F = points)` declares a sample output
   followed by an event output. The public boundary retains this declaration
   order through subgraph use and graph serialization. Multiple outputs require
-  names. Their virtual/bundle identity never becomes a tile identity.
+  names. Their symbolic/bundle identity never becomes a tile identity.
 
 ## Non-negotiable constraints
 
 - Node refs are move-only.
-- A dynamic node ref always denotes one bundle, never a virtual node or an
+- A dynamic node ref always denotes one bundle, never a symbolic node or an
   arbitrary collection of bundles.
 - A tiled bundle is one bundle, not a collection of unrelated refs.
 - Common DSL code has no concrete-node assumption.
 - Event ports are not channelized.
-- Internal conversion, pack, and unpack nodes are not configured virtual nodes.
+- Internal conversion, pack, and unpack nodes are not configured symbolic nodes.
 - Runtime execution consumes lowered concrete graphs; it does not consume C++
-  node-ref types or virtual-node metadata.
+  node-ref types or symbolic-node metadata.
 
 ## Planned post-runtime ownership migration
 
@@ -179,7 +179,7 @@ compatible, while refs from different sessions remain invalid. `ConfiguredGraph`
 continues to contain no live refs.
 
 The planned backend-node event model adds one further requirement: a `NodeRef`
-captured while authoring a module must carry/read the stable virtual/semantic
+captured while authoring a module must carry/read the stable symbolic/semantic
 identity of that authored node so a later module event handler can use the
 captured ref as a semantic dispatch target without dereferencing a stale
 builder/session pointer. Runtime event dispatch consumes that semantic identity,

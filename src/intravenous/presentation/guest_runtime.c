@@ -109,6 +109,9 @@ IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context) { 
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context) { return context->controls; }
 bool iv_edits_pending(const IvPresentationContext *context) { return (context->edit_state & 1u) != 0; }
 bool iv_edit_failed(const IvPresentationContext *context) { return (context->edit_state & 2u) != 0; }
+uint64_t iv_project_revision(const IvPresentationContext *context) { return context->revision; }
+IvEditReplySpan iv_edit_replies(const IvPresentationContext *context) { return context->edit_replies; }
+IvObservedWaveformSpan iv_observed_waveforms(const IvPresentationContext *context) { return context->waveforms; }
 
 static void *reserve_output(IvPresentationContext *context, uint32_t size)
 {
@@ -166,37 +169,35 @@ bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel
     return true;
 }
 
-bool iv_submit_numeric_edits(IvPresentationContext *context, IvNumericNodeEditSpan edits)
+void *iv_copy_edit_payload(IvPresentationContext *context, const void *data, uint32_t size)
 {
-    if (!edits.size) return true;
-    if (edits.size > IV_MAX_NUMERIC_EDITS) {
+    if (!size || !data) {
+        context->error = 1;
+        return NULL;
+    }
+    char *copy = reserve_output(context, size);
+    if (!copy) return NULL;
+    const char *bytes = data;
+    for (uint32_t i = 0; i < size; ++i) copy[i] = bytes[i];
+    return copy;
+}
+
+bool iv_submit_edit(IvPresentationContext *context, IvNodeEdit edit)
+{
+    if (context->edit_count == IV_MAX_EDITS || edit.flags > IV_EDIT_FINISH
+        || (edit.flags == IV_EDIT_FINISH && (!edit.gesture || edit.payload || edit.binding))
+        || (edit.flags != IV_EDIT_FINISH && !edit.payload)
+        || (edit.flags == IV_EDIT_REPLACE_PENDING && (!edit.gesture || edit.request))) {
         context->error = 1;
         return false;
     }
-    IvRecordedNumericEdits *batch = reserve_output(context, sizeof(*batch));
-    IvNumericNodeEdit *values = reserve_output(context, edits.size * sizeof(*values));
-    if (context->error) return false;
-    for (uint32_t i = 0; i < edits.size; ++i) {
-        IvNumericNodeEdit edit = edits.data[i];
-        if (edit.fields.size > 64) {
-            context->error = 1;
-            return false;
-        }
-        IvNumericField *fields = reserve_output(context, edit.fields.size * sizeof(*fields));
-        if (context->error || !copy_string(context, &edit.nominal_id, 1024)
-            || !copy_string(context, &edit.fingerprint, 1024) || !copy_string(context, &edit.gesture, 160)) return false;
-        for (uint32_t field = 0; field < edit.fields.size; ++field) {
-            fields[field] = edit.fields.data[field];
-            if (!copy_string(context, &fields[field].name, 160)
-                || !copy_numbers(context, &fields[field].value.values, 1024)) return false;
-        }
-        edit.fields.data = fields;
-        values[i] = edit;
-    }
-    *batch = (IvRecordedNumericEdits){.values = {values, edits.size}};
-    if (context->last_edits) context->last_edits->next = batch;
-    else context->edits = batch;
-    context->last_edits = batch;
+    IvRecordedEdits *record = reserve_output(context, sizeof(*record));
+    if (!record) return false;
+    *record = (IvRecordedEdits){.value = edit};
+    if (context->last_edits) context->last_edits->next = record;
+    else context->edits = record;
+    context->last_edits = record;
+    ++context->edit_count;
     return true;
 }
 

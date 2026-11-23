@@ -13,36 +13,36 @@ inline GraphBuilderState::VacantInputs vacant_inputs(GraphBuilder const& builder
         const_cast<GraphBuilder&>(builder)).vacant_inputs();
 }
 
-inline GraphBuilderState::VirtualInputs virtual_inputs(GraphBuilder const& builder)
+inline GraphBuilderState::SymbolicInputs symbolic_inputs(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).virtual_inputs();
+        const_cast<GraphBuilder&>(builder)).symbolic_inputs();
 }
 
-inline GraphBuilderState::VirtualSampleInputFamilies
-virtual_sample_input_families(GraphBuilder const& builder)
+inline GraphBuilderState::SymbolicSampleInputFamilies
+symbolic_sample_input_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).virtual_sample_input_families();
+        const_cast<GraphBuilder&>(builder)).symbolic_sample_input_families();
 }
 
-inline GraphBuilderState::VirtualOutputs virtual_outputs(GraphBuilder const& builder)
+inline GraphBuilderState::SymbolicOutputs symbolic_outputs(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).virtual_outputs();
+        const_cast<GraphBuilder&>(builder)).symbolic_outputs();
 }
 
-inline GraphBuilderState::VirtualSampleOutputFamilies
-virtual_sample_output_families(GraphBuilder const& builder)
+inline GraphBuilderState::SymbolicSampleOutputFamilies
+symbolic_sample_output_families(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).virtual_sample_output_families();
+        const_cast<GraphBuilder&>(builder)).symbolic_sample_output_families();
 }
 
-inline GraphBuilderState::VirtualPorts virtual_ports(GraphBuilder const& builder)
+inline GraphBuilderState::SymbolicPorts symbolic_ports(GraphBuilder const& builder)
 {
     return details::builder_graph_state(
-        const_cast<GraphBuilder&>(builder)).virtual_ports();
+        const_cast<GraphBuilder&>(builder)).symbolic_ports();
 }
 
 inline GraphBuilderPublicContinuousPortFamilies

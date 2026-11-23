@@ -10,15 +10,15 @@
 namespace iv {
 // Stable semantic path components. They identify authored nodes and never
 // contain a GraphBuilder-local NodeBundleHandle or a compiled node index.
-struct ProjectVirtualNodeSelector {
+struct ProjectSymbolicNodeSelector {
     std::string source_identity{};
     std::optional<std::string> type_identity{};
-    auto operator<=>(ProjectVirtualNodeSelector const&) const = default;
+    auto operator<=>(ProjectSymbolicNodeSelector const&) const = default;
 };
 
-struct ProjectVirtualMemberSelector {
+struct ProjectSymbolicMemberSelector {
     std::size_t index = 0;
-    auto operator<=>(ProjectVirtualMemberSelector const&) const = default;
+    auto operator<=>(ProjectSymbolicMemberSelector const&) const = default;
 };
 
 struct ProjectTiledChildSelector {
@@ -27,8 +27,8 @@ struct ProjectTiledChildSelector {
 };
 
 using ProjectNodePathSelector = std::variant<
-    ProjectVirtualNodeSelector,
-    ProjectVirtualMemberSelector,
+    ProjectSymbolicNodeSelector,
+    ProjectSymbolicMemberSelector,
     ProjectTiledChildSelector>;
 
 // Serializable semantic identity rooted at one durable project instance.

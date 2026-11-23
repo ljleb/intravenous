@@ -31,9 +31,9 @@ using ConfigurationJson = nlohmann::ordered_json;
     for (auto const& selector : value.path) {
         path.push_back(std::visit([](auto const& concrete) -> ConfigurationJson {
             using Selector = std::remove_cvref_t<decltype(concrete)>;
-            if constexpr (std::same_as<Selector, ProjectVirtualNodeSelector>) {
+            if constexpr (std::same_as<Selector, ProjectSymbolicNodeSelector>) {
                 ConfigurationJson result{
-                    {"kind", "virtualNode"},
+                    {"kind", "symbolicNode"},
                     {"sourceIdentity", concrete.source_identity},
                 };
                 if (concrete.type_identity) {
@@ -42,9 +42,9 @@ using ConfigurationJson = nlohmann::ordered_json;
                 return result;
             } else if constexpr (std::same_as<
                                      Selector,
-                                     ProjectVirtualMemberSelector>) {
+                                     ProjectSymbolicMemberSelector>) {
                 return ConfigurationJson{
-                    {"kind", "virtualMember"},
+                    {"kind", "symbolicMember"},
                     {"index", concrete.index},
                 };
             } else {
@@ -396,14 +396,14 @@ void append_qualifier_selector(std::string& text, ProjectNodePathSelector const&
 {
     std::visit([&](auto const& concrete) {
         using Selector = std::remove_cvref_t<decltype(concrete)>;
-        if constexpr (std::same_as<Selector, ProjectVirtualNodeSelector>) {
+        if constexpr (std::same_as<Selector, ProjectSymbolicNodeSelector>) {
             text += '.';
             text += concrete.source_identity;
             if (concrete.type_identity) {
                 text += ':';
                 text += *concrete.type_identity;
             }
-        } else if constexpr (std::same_as<Selector, ProjectVirtualMemberSelector>) {
+        } else if constexpr (std::same_as<Selector, ProjectSymbolicMemberSelector>) {
             text += '[';
             text += std::to_string(concrete.index);
             text += ']';
@@ -485,10 +485,10 @@ std::vector<ProjectNodePathSelector> claim_builder_invocation_path(
     auto path = frame.scope_path;
     auto const member = next_declaration_member(
         frame.invocation_counts, frame.scope_path, source_identity);
-    path.push_back(ProjectVirtualNodeSelector{
+    path.push_back(ProjectSymbolicNodeSelector{
         .source_identity = std::string(source_identity),
     });
-    path.push_back(ProjectVirtualMemberSelector{.index = member});
+    path.push_back(ProjectSymbolicMemberSelector{.index = member});
     return path;
 }
 
@@ -511,7 +511,7 @@ void record_builder_module_message_local_ref(
     ModuleMessageLocalRef local{
         .name = identity.authored_name,
         .relative_path = {
-            ProjectVirtualNodeSelector{
+            ProjectSymbolicNodeSelector{
                 .source_identity = identity.source_identity,
             },
         },
@@ -580,10 +580,10 @@ claim_builder_concrete_node_paths(
     if (!source_identity.empty()) {
         auto const member = next_declaration_member(
             frame.concrete_node_counts, frame.scope_path, source_identity);
-        relative_path.push_back(ProjectVirtualNodeSelector{
+        relative_path.push_back(ProjectSymbolicNodeSelector{
             .source_identity = source_identity,
         });
-        relative_path.push_back(ProjectVirtualMemberSelector{
+        relative_path.push_back(ProjectSymbolicMemberSelector{
             .index = member,
         });
     }
@@ -913,7 +913,7 @@ BuilderInvocationResult finish_builder_invocation(
     handlers.erase(
         handlers.begin() + static_cast<std::ptrdiff_t>(invocation.message_handler_begin),
         handlers.end());
-    state.qualify_virtual_records(invocation.mark.virtual_records, qualifier);
+    state.qualify_symbolic_records(invocation.mark.symbolic_records, qualifier);
     session->semantic_frames.pop_back();
     return output;
 }

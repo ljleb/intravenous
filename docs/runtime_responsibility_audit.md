@@ -13,7 +13,7 @@ project-owned functions and source files in the current checkout.
   scope. `reconcile_locked()` allocates probe IDs locally. A rejected scope
   leaves the subscription and ID sequence intact. The service still retains
   accepted requirements when compilation reports an error.
-- `configure_manual_controls()` resolves the ports in a virtual selection
+- `configure_manual_controls()` resolves the ports in a symbolic selection
   before adding bindings to `ConfiguredGraph`. `ProjectGraph::rebuild_locked()`
   takes proposed manual controls separately from the stored controls.
   Accepted edits keep their authored controls when configuration fails.

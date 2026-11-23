@@ -2784,7 +2784,7 @@ TEST_F(GraphJitRuntimeFixture, UnequalLatencyFeedbackUnaffectedByAddedLeadingNod
 }
 
 // The unequal-latency routed feedback loop, built without source identities:
-// neither of its nodes belongs to a virtual node, so nothing they own survives
+// neither of its nodes belongs to a symbolic node, so nothing they own survives
 // an edit, and neither does their detach, whose producer and consumer ports
 // have no identity. Activating a recompile of the loop at index 64 therefore
 // behaves exactly like starting the same graph fresh at index 64.

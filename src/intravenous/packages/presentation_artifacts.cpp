@@ -84,21 +84,40 @@ void validate_binding(Json const& binding, IvPackageDeclaration const& package,
     }
 }
 
-std::vector<PresentationTriggerObservation> read_trigger_observations(Json const& binding)
+std::vector<PresentationObservationBinding> read_observations(Json const& binding)
 {
     auto const list = binding.find("observations");
     if (list == binding.end()) return {};
     if (!list->is_array() || list->size() > 8)
         throw std::runtime_error("Expected at most eight presentation observations");
-    std::vector<PresentationTriggerObservation> observations;
+    std::vector<PresentationObservationBinding> observations;
     for (auto const& entry : *list) {
-        auto id = entry.at("id").get<std::string>();
-        auto port = entry.at("port").get<std::string>();
-        if (id.empty() || id.size() > 128 || port.empty() || port.size() > 128
-            || entry.at("direction") != "output" || entry.at("operation") != "trigger-bins"
-            || std::ranges::contains(observations, id, &PresentationTriggerObservation::id))
-            throw std::runtime_error("Invalid trigger-bins presentation observation");
-        observations.push_back({std::move(id), std::move(port)});
+        PresentationObservationBinding observation{
+            .id = entry.at("id").get<std::string>(),
+            .port = entry.at("port").get<std::string>(),
+            .direction = entry.at("direction").get<std::string>(),
+            .operation = entry.value("operation", std::string("waveform")),
+            .points = {}, .group = {},
+        };
+        if (!valid_presentation_id(observation.id) || observation.port.empty() || observation.port.size() > 128
+            || std::ranges::contains(observations, observation.id, &PresentationObservationBinding::id))
+            throw std::runtime_error("Invalid presentation observation ID or port");
+        if (observation.operation == "waveform") {
+            auto const& points = entry.at("points");
+            if ((observation.direction != "input" && observation.direction != "output")
+                || !points.is_number_integer() || points < 2 || points > 1024)
+                throw std::runtime_error("A waveform observation needs an input or output and 2 to 1024 points");
+            observation.points = points.get<unsigned>();
+        } else if (observation.operation != "trigger-bins" || observation.direction != "output" || entry.contains("points")) {
+            throw std::runtime_error("Invalid presentation observation operation");
+        }
+        if (auto const group = entry.find("group"); group != entry.end()) {
+            observation.group = group->get<std::string>();
+            if (!valid_presentation_id(*observation.group)) throw std::runtime_error("Invalid presentation observation group");
+        }
+        observation.when_connected = entry.value("whenConnected", false);
+        observation.complete_only = entry.value("completeOnly", false);
+        observations.push_back(std::move(observation));
     }
     return observations;
 }
@@ -196,13 +215,13 @@ bool PresentationArtifacts::refresh(std::span<IvPackageDeclaration const> declar
             auto candidate = std::make_shared<Entry>();
             try {
                 validate_binding(file.binding, package, owners);
-                auto observations = read_trigger_observations(file.binding);
+                auto observations = read_observations(file.binding);
                 auto& metadata = candidate->metadata;
                 metadata.id = package.package_namespace + "/" + id;
                 metadata.provider = package.package_namespace;
                 metadata.title = file.binding.at("title").get<std::string>();
                 metadata.definition_ids = file.binding.at("definitionIds").get<std::vector<std::string>>();
-                metadata.trigger_observations = std::move(observations);
+                metadata.observations = std::move(observations);
                 if (auto const initial = file.binding.find("initialConfiguration"); initial != file.binding.end())
                     metadata.initial_configuration = initial->get<std::string>();
                 if (!file.error.empty()) throw std::runtime_error(file.error);
@@ -214,7 +233,7 @@ bool PresentationArtifacts::refresh(std::span<IvPackageDeclaration const> declar
                 if (!metadata.id.empty() && previous != published_.end() && previous->second->encoded) {
                     auto const& old = previous->second->metadata;
                     if (metadata.id == old.id && metadata.definition_ids == old.definition_ids
-                        && metadata.trigger_observations == old.trigger_observations
+                        && metadata.observations == old.observations
                         && metadata.initial_configuration == old.initial_configuration) {
                         metadata.digest = old.digest;
                         candidate->encoded = previous->second->encoded;

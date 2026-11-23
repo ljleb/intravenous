@@ -676,9 +676,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                 if (!scope || !node) return;
                 try { await vscode.env.clipboard.writeText(nodeDebugDetails(scope, node)); }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot copy node details: ${error.message}`); }
-            } else if (message?.type === "openVirtualNodeSource") {
+            } else if (message?.type === "openSymbolicNodeSource") {
                 const scope = this.state.scope && graphScopeWithChildren(this.state.scope);
-                const node = scope?.nodes.find((entry) => entry.virtualNode && addressKey(entry.address) === message.nodeKey);
+                const node = scope?.nodes.find((entry) => entry.symbolicNode && addressKey(entry.address) === message.nodeKey);
                 const source = node?.declarationSource;
                 if (!source) return;
                 try { await this.session.revealSourceFile(source.filePath, source); }

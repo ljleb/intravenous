@@ -240,7 +240,7 @@ test("unavailable anchors and unresolved interior matchers do not acquire guesse
     const graph = scope([connection("known", "a", 0, "b", 0), {
         id: "interior", applied: false, connection: { kind: "sample",
             outputs: [{ instanceId: "a", port: { index: 0 } }],
-            inputs: [{ instanceId: "b", path: [{ kind: "virtualNode", sourceIdentity: "inside" }], port: {} }],
+            inputs: [{ instanceId: "b", path: [{ kind: "symbolicNode", sourceIdentity: "inside" }], port: {} }],
         },
     }]);
     assert.deepEqual(selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, () => null), []);

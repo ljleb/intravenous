@@ -22,12 +22,12 @@ struct ConfiguredBundleInventory {
     bool operator==(ConfiguredBundleInventory const&) const = default;
 };
 
-// An authored identity names a project leaf instance or a virtual node and
+// An authored identity names a project leaf instance or a symbolic node and
 // direct member. Anonymous concrete nodes have a bundle coordinate only within
 // one configured snapshot.
 struct StableConcreteNodeId {
     std::string graph{};
-    std::string virtual_node{};
+    std::string symbolic_node{};
     std::size_t direct_member = 0;
     std::string project_instance{};
     std::string project_leaf_type{};
@@ -53,8 +53,8 @@ inline std::string migration_identity_fields(StableConcreteNodeId const& node)
             + ':' + node.project_leaf_type;
     }
     return graph
-        + ":node=" + std::to_string(node.virtual_node.size()) + ':'
-        + node.virtual_node
+        + ":node=" + std::to_string(node.symbolic_node.size()) + ':'
+        + node.symbolic_node
         + ":member=" + std::to_string(node.direct_member);
 }
 

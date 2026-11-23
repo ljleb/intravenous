@@ -308,22 +308,22 @@ private:
         while (true) {
             whitespace();
             if (consume('.')) {
-                reference.path.push_back(ProjectVirtualNodeSelector{
+                reference.path.push_back(ProjectSymbolicNodeSelector{
                     .source_identity = identifier(),
                 });
             } else if (consume('[')) {
                 whitespace();
                 auto const index_begin = position_;
                 while (peek() >= '0' && peek() <= '9') ++position_;
-                if (index_begin == position_) fail("expected a virtual member index");
+                if (index_begin == position_) fail("expected a symbolic member index");
                 std::size_t index = 0;
                 auto const text = std::string_view(result_.source).substr(
                     index_begin, position_ - index_begin);
                 auto const parsed = std::from_chars(
                     text.data(), text.data() + text.size(), index);
-                if (parsed.ec != std::errc{}) fail("virtual member index is too large");
-                require(']', "expected ']' after virtual member index");
-                reference.path.push_back(ProjectVirtualMemberSelector{.index = index});
+                if (parsed.ec != std::errc{}) fail("symbolic member index is too large");
+                require(']', "expected ']' after symbolic member index");
+                reference.path.push_back(ProjectSymbolicMemberSelector{.index = index});
             } else if (consume('#')) {
                 reference.path.push_back(ProjectTiledChildSelector{
                     .name = identifier(),

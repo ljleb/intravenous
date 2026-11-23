@@ -130,7 +130,7 @@ The governing performance invariant is:
 
    Initial full-suite verification compiled and passed 529 of 530 tests. The remaining
    generated-root test used directly configured concrete nodes, which do not carry the
-   virtual-node identity currently required for cross-generation matching. Its
+   symbolic-node identity currently required for cross-generation matching. Its
    corrected fixture uses a registered module graph, preserves that identity across a
    copied connection rewrite, and the subsequent full-suite run passed all 530 tests.
 
@@ -168,7 +168,7 @@ The governing performance invariant is:
 
    Human verification of the cursor/output-window expansion compiled and passed 532 of
    533 tests. The failure occurred before transition lowering because its disconnected
-   producer expression had no named source declaration and therefore no stable virtual
+   producer expression had no named source declaration and therefore no stable symbolic
    identity. The fixture now names that declaration and checks the two output-window
    identities before expecting a transition root; verification is pending.
 
@@ -524,9 +524,9 @@ The governing performance invariant is:
    handle changes. This is cold metadata only; it adds no realtime work or storage.
    The first full run passed 597 of 598 tests. Its sole failure was a defect in the new
    shifted-bundle fixture: `GraphBuilderNodeBundles::import_child()` clears inverse
-   virtual-node handles, and the fixture had restored only the forward virtual-node
+   symbolic-node handles, and the fixture had restored only the forward symbolic-node
    records. The fixture now restores both directions while retaining the original
-   virtual-node IDs. Production source was unchanged by that follow-up; verification
+   symbolic-node IDs. Production source was unchanged by that follow-up; verification
    is pending.
 
    The collaborator's next full run passed all 598 tests. This result verifies the
@@ -557,7 +557,7 @@ The governing performance invariant is:
    persisted replay records use positional overwrite instead of authored logical
    Region-batch replacement. Recording propagation derives logical boundaries from
    canonical `IndexCoverage`. Tick/persisted continuous outputs now use interleaved
-   sparse copy-on-write pages, and each canonical range is exposed through one virtually
+   sparse copy-on-write pages, and each canonical range is exposed through one symbolicly
    contiguous `ContinuousRegionStorageView`. Planar consumers use the ordinary channel-
    layout conversion path. The earlier segmented-Region and replay-transaction
    scheduling proposals were false starts and are retained under `docs/historical/`.
@@ -570,7 +570,7 @@ The governing performance invariant is:
    direct materialization indexing and cached materialization coverage offsets/frame
    counts also remain.
    Persisted Tick continuous publication now maintains path-copied logical-page and
-   physical-run indices. Virtual mapping visits physical runs, so extending one
+   physical-run indices. Symbolic mapping visits physical runs, so extending one
    canonical recording Region does not search every retained page.
 4. Make `BackgroundGeneration` own a sealed reusable runtime skeleton: reader slots,
    storage realization objects, binding adapters, node/operation frames, reusable replay

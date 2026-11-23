@@ -29,11 +29,16 @@ Json presentation_catalog_json(PresentationCatalog const& catalog)
             Json manifest{{"version", schema_version}, {"id", presentation.id.substr(presentation.provider.size() + 1)},
                 {"title", presentation.title}, {"definitionIds", presentation.definition_ids}};
             if (presentation.initial_configuration) manifest["initialConfiguration"] = *presentation.initial_configuration;
-            if (!presentation.trigger_observations.empty()) {
+            if (!presentation.observations.empty()) {
                 auto observations = Json::array();
-                for (auto const& observation : presentation.trigger_observations) {
-                    observations.push_back({{"id", observation.id}, {"port", observation.port},
-                        {"direction", "output"}, {"operation", "trigger-bins"}});
+                for (auto const& observation : presentation.observations) {
+                    Json binding{{"id", observation.id}, {"port", observation.port},
+                        {"direction", observation.direction}, {"operation", observation.operation}};
+                    if (observation.points) binding["points"] = *observation.points;
+                    if (observation.group) binding["group"] = *observation.group;
+                    if (observation.when_connected) binding["whenConnected"] = true;
+                    if (observation.complete_only) binding["completeOnly"] = true;
+                    observations.push_back(std::move(binding));
                 }
                 manifest["observations"] = std::move(observations);
             }
@@ -250,23 +255,23 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
-    impl_->add<GetVirtualNodeRequest>(
-        "graph.getVirtualNode", "project.read", false, false,
+    impl_->add<GetSymbolicNodeRequest>(
+        "graph.getSymbolicNode", "project.read", false, false,
         [](auto const& request, int id, Context const&) {
-            SocketRpcVirtualNodeResultBuilder builder;
+            SocketRpcSymbolicNodeResultBuilder builder;
             IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_virtual_node_event, request, builder);
+                iv_socket_rpc_get_symbolic_node_event, request, builder);
             if (!builder.has_response()) {
                 builder.fail("iv module source introspection service is unavailable");
             }
             return builder.build(id);
         });
-    impl_->add<GetVirtualNodesRequest>(
-        "graph.getVirtualNodes", "project.read", false, false,
+    impl_->add<GetSymbolicNodesRequest>(
+        "graph.getSymbolicNodes", "project.read", false, false,
         [](auto const& request, int id, Context const&) {
-            SocketRpcVirtualNodesResultBuilder builder;
+            SocketRpcSymbolicNodesResultBuilder builder;
             IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_virtual_nodes_event, request, builder);
+                iv_socket_rpc_get_symbolic_nodes_event, request, builder);
             if (!builder.has_response()) {
                 builder.fail("iv module source introspection service is unavailable");
             }

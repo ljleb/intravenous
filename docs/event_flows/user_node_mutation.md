@@ -19,7 +19,7 @@ flowchart TD
     SRC --> RPC
     RPC -->|"node mutation request ⇄ acceptance / diagnostics / ProjectGraphPublication"| PG
     PG -->|"1. complete requested instance batch + one definitions snapshot; root builder ⇄ embedding map + instance changes"| NI
-    PG -->|"2. instance declarations, when changed ⇄ virtual-node replacements"| IMSI
+    PG -->|"2. instance declarations, when changed ⇄ symbolic-node replacements"| IMSI
     PG -->|"3. complete requested connection batch; root builder + embedding map ⇄ diagnostics"| GC
     PG -->|"4. completed ConfiguredGraph ⇄ synchronous CompiledGraph"| GJ
     PG -->|"5. stage one compiled execution generation"| GE
@@ -95,6 +95,6 @@ incoming RPC/reload propagation must be published only after the current cause
 unwinds, as a new cause.
 
 Implemented (2026-11-12): `ProjectGraph` updates `IvModuleSourceIntrospection`
-once per root build (edge 2), and the instance list and virtual-node
+once per root build (edge 2), and the instance list and symbolic-node
 replacements return to `SocketRpcServer` on the RPC result builder, which
 publishes them after the response (see [README](./README.md)).

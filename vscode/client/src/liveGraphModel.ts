@@ -1,4 +1,4 @@
-import { VirtualNode } from "./graphModel";
+import { SymbolicNode } from "./graphModel";
 import { LiveGraphInstance } from "./liveGraphProtocol";
 
 // The node-instance fields the live graph view reads from nodeInstances.get
@@ -30,13 +30,13 @@ export function liveGraphInstances(records: LiveGraphInstanceRecord[]): LiveGrap
 
 // Applies a graph.nodesUpdated delta: every node of a replaced instance is
 // dropped, then each updated node replaces the node with the same ID.
-export function upsertVirtualNodes(
-    current: VirtualNode[],
-    updates: VirtualNode[],
+export function upsertSymbolicNodes(
+    current: SymbolicNode[],
+    updates: SymbolicNode[],
     replaceInstanceIds: string[],
-): VirtualNode[] {
+): SymbolicNode[] {
     const replaced = new Set(replaceInstanceIds);
-    const byId = new Map<string, VirtualNode>();
+    const byId = new Map<string, SymbolicNode>();
     for (const node of current) {
         if (node.instanceId && replaced.has(node.instanceId)) {
             continue;

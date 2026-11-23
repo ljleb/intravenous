@@ -63,7 +63,7 @@
   id-expression references for source-annotatable node/sample/event/public
   input refs. A direct `g.input(...)` or node expression is not itself a
   source-active region. Named `_P`/`_F` bindings contribute only their quoted
-  name string, and that span belongs to the corresponding virtual input port
-  rather than the enclosing virtual node.
+  name string, and that span belongs to the corresponding symbolic input port
+  rather than the enclosing symbolic node.
 - Source identity groups repeated annotated `g.input()` calls, including calls
   made in loops, into one logical public input with concrete members.

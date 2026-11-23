@@ -75,7 +75,7 @@ std::optional<std::string> unavailable_sample_cutover(
             if (!id->node.project_instance.empty()) {
                 message << " on " << id->node.project_leaf_type << " instance " << id->node.project_instance;
             } else {
-                message << " on " << id->node.virtual_node << " member " << id->node.direct_member
+                message << " on " << id->node.symbolic_node << " member " << id->node.direct_member
                     << " in " << id->node.graph;
             }
         }

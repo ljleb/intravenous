@@ -554,7 +554,7 @@ TEST(SocketRpcServer, SendsReadyNotificationAndStopsWhenItsOwnerDisconnects)
 TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
 {
     socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::SymbolicNodeInfo {
         .id = "node-1",
         .kind = "TestNode",
         .source_identity = "src-1",

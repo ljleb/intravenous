@@ -1,4 +1,5 @@
 import type { PresentationObservation, PresentationSnapshot } from "./presentationPlugin";
+import { recordedTriggerBinsOperation } from "./observations";
 import { timelineSamples } from "./timelineSamples";
 
 export const triggerColumnLimit = 1024;
@@ -16,7 +17,7 @@ export function presentationTriggerColumns({ observations, viewport: { time, wid
     const visibleOffset = view.origin.fraction > 0 ? 1 - view.origin.fraction : 0;
     const pixelsPerSample = width / view.span;
     return Object.entries(observations).flatMap(([id, observation]) => {
-        if (!observation) return [];
+        if (observation?.operation !== recordedTriggerBinsOperation) return [];
         const columns = new Set<number>();
         let count = 0n;
         let partial = false;

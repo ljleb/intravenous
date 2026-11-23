@@ -116,7 +116,7 @@ TEST(ModuleContextBoundary, ModuleContextBuildsSemanticAddressesFromNamedLocals)
         .values = {{
             .name = "voice",
             .relative_path = {
-                iv::ProjectVirtualNodeSelector{
+                iv::ProjectSymbolicNodeSelector{
                     .source_identity = "module.cpp:voice",
                 },
             },
@@ -132,11 +132,11 @@ TEST(ModuleContextBoundary, ModuleContextBuildsSemanticAddressesFromNamedLocals)
     EXPECT_EQ(capture.value, 17);
     ASSERT_EQ(capture.address.path.size(), 3u);
     EXPECT_EQ(
-        std::get<iv::ProjectVirtualNodeSelector>(capture.address.path[0])
+        std::get<iv::ProjectSymbolicNodeSelector>(capture.address.path[0])
             .source_identity,
         "module.cpp:voice");
     EXPECT_EQ(
-        std::get<iv::ProjectVirtualMemberSelector>(capture.address.path[1]).index,
+        std::get<iv::ProjectSymbolicMemberSelector>(capture.address.path[1]).index,
         2u);
     EXPECT_EQ(
         std::get<iv::ProjectTiledChildSelector>(capture.address.path[2]).name,
@@ -162,13 +162,13 @@ TEST(ModuleContextBoundary, ModuleContextRejectsAnAmbiguousNamedLocal)
         .values = {
             {
                 .name = "voice",
-                .relative_path = {iv::ProjectVirtualNodeSelector{
+                .relative_path = {iv::ProjectSymbolicNodeSelector{
                     .source_identity = "module.cpp:first-voice",
                 }},
             },
             {
                 .name = "voice",
-                .relative_path = {iv::ProjectVirtualNodeSelector{
+                .relative_path = {iv::ProjectSymbolicNodeSelector{
                     .source_identity = "module.cpp:second-voice",
                 }},
             },

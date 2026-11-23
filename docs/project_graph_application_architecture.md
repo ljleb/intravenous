@@ -120,8 +120,8 @@ portability polling fallback. Linux inotify is therefore a runtime requirement.
 
 Direct frozen `ConfiguredGraph` embedding has also landed. Live child builders
 and frozen graphs now share one importer/remapper; each placement returns an
-explicit local-to-parent translation for node bundles/scopes and virtual nodes,
-and imported virtual identities remain distinct across child scopes. This
+explicit local-to-parent translation for node bundles/scopes and symbolic nodes,
+and imported symbolic identities remain distinct across child scopes. This
 removes the live-`BuilderSession` obstacle to cacheable `NodeInstance` values.
 
 The `NodeInstances` configuration core has now landed as well. The application
@@ -381,9 +381,9 @@ expected types for literals, aggregates, registered containers, and bare enum va
 The language also supports stable project-node ID literals and semantic node paths.
 
 For example, `&550e8400-e29b-41d4-a716-446655440000.voices[2]#left` starts at one
-authored project node. It then applies `ProjectVirtualNodeSelector`,
-`ProjectVirtualMemberSelector`, and `ProjectTiledChildSelector`. A virtual-node selector
-searches only the direct virtual nodes in the current subject scope. It does not search
+authored project node. It then applies `ProjectSymbolicNodeSelector`,
+`ProjectSymbolicMemberSelector`, and `ProjectTiledChildSelector`. A symbolic-node selector
+searches only the direct symbolic nodes in the current subject scope. It does not search
 descendant subgraphs. The complete grammar is in
 [Configuration Expression Language Direction](./configuration_expression_language_direction.md).
 
@@ -523,14 +523,14 @@ A matcher is set-valued. It selects a set of matching node ports through:
 
 The semantic path must preserve and navigate distinctions between:
 
-- direct virtual-node identity in the current subject scope;
-- ordered direct members under a virtual node;
+- direct symbolic-node identity in the current subject scope;
+- ordered direct members under a symbolic node;
 - named tiled children.
 
-Selecting a virtual node also makes its backing subgraph the subject for the next
-virtual-node selector. The path does not use `ProjectSubgraphSelector` to select a
+Selecting a symbolic node also makes its backing subgraph the subject for the next
+symbolic-node selector. The path does not use `ProjectSubgraphSelector` to select a
 subgraph by structural kind and index. Each addressable subgraph must have a backing
-virtual node.
+symbolic node.
 
 Selecting a tiled child and selecting a channel of a port are different
 operations and must remain different in the representation.
@@ -553,18 +553,18 @@ or retargeted. It may resolve again if the same stable identity/path returns.
 Explicit nested child navigation is required, not optional.
 
 Builder/configured-graph state must preserve a hierarchical scope tree. A
-`ProjectVirtualNodeSelector` inspects only the direct virtual nodes in its current
-scope. Paths cross scopes only through selected virtual nodes that back addressable
+`ProjectSymbolicNodeSelector` inspects only the direct symbolic nodes in its current
+scope. Paths cross scopes only through selected symbolic nodes that back addressable
 subgraphs. For example:
 
 ```text
-&<instance-id>.virtual-a.virtual-b[4]#left.virtual-c
+&<instance-id>.symbolic-a.symbolic-b[4]#left.symbolic-c
 ```
 
 This path remains meaningful after embedding without exposing a structural subgraph
 kind or index.
 
-Ordered direct-member position under a virtual node is stable external identity
+Ordered direct-member position under a symbolic node is stable external identity
 once it is persisted in project matchers. Reload/reconfiguration must therefore
 preserve semantic member ordering for surviving members.
 
@@ -843,7 +843,7 @@ that requirement explicitly rather than introducing hidden global synchronizatio
 Dynamically sized persisted output data is deliberately not part of fixed
 `NodeStorage`. Stable persisted outputs are not owned by one JIT generation merely
 because port indices are generation-local: compatible generations rebind stable
-virtual-node/member/output identities to the same background-owned canonical data
+symbolic-node/member/output identities to the same background-owned canonical data
 store without copying data. Ephemeral outputs own no persisted data.
 
 Tick/persisted production reaches that same canonical store through the provisioned
@@ -996,7 +996,7 @@ The graph's application-owned read model, not `Observations`, supplies the
 semantic data used by Vue's `node.ports` and connection editor: `NodeAddress`,
 resolved port identity/name/direction, continuous or event type, channels,
 access/retention characteristics, effective versus authored connections, and
-resolution diagnostics. The present `VirtualNodeInfo`/port records in
+resolution diagnostics. The present `SymbolicNodeInfo`/port records in
 `runtime_project_api_types.h` and `ProjectGraph` queries are starting points,
 **not** a claim that the current response contains every required graph-editor
 field. Extend the relevant owner projection from actual Vue use cases, without
@@ -1114,7 +1114,7 @@ The implementation checkpoints now stand as follows:
    one immutable accepted-definition snapshot into it.
 2. **Landed:** direct frozen `ConfiguredGraph` embedding through the same
    importer as live children, with explicit local-to-parent handle translation
-   and scope-preserving virtual-node import.
+   and scope-preserving symbolic-node import.
 3. **Landed (configuration core):** generalized/renamed `NodeInstances`,
    provider-generated typed owned argument operations, one-snapshot recursive
    configuration, batched diagnostics, and reusable frozen-graph value caching.

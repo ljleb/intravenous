@@ -1,7 +1,7 @@
 import { recordedEventTimestampsOperation, type ObservationInterest, type ObservationCapability } from "./observations";
 import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
-import { VirtualNode, SourceSpan } from "./graphModel";
+import { SymbolicNode, SourceSpan } from "./graphModel";
 import type { GraphScope } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type NodeEventProtocol, type SerializedNodeEvent } from "./nodeEvents";
@@ -276,7 +276,7 @@ export class WorkspaceRpc {
         ranges: SourceQueryRange[],
         match: "union" | "intersection",
         instanceId: string | null,
-    ): Promise<{ nodes?: VirtualNode[] }> {
+    ): Promise<{ nodes?: SymbolicNode[] }> {
         const params: Record<string, unknown> = { filePath, ranges, match };
         if (instanceId != null) {
             params.instanceId = instanceId;

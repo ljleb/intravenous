@@ -1,7 +1,7 @@
 import * as crypto from "crypto";
 import * as vscode from "vscode";
 
-import { VirtualNode } from "./graphModel";
+import { SymbolicNode } from "./graphModel";
 import { isNodeEventRequest, isNodeEventGestureRequest, replyToNodeEvent, replyToNodeEventGesture } from "./nodeEventMessaging";
 import type { NodeAddress } from "./graphScope";
 import type { SerializedNodeEvent } from "./nodeEvents";
@@ -9,7 +9,7 @@ import type { StatusHint } from "./statusBarText";
 import {
     LiveGraphInstanceRecord,
     liveGraphInstances,
-    upsertVirtualNodes,
+    upsertSymbolicNodes,
 } from "./liveGraphModel";
 import {
     isLiveGraphWebviewMessage,
@@ -70,13 +70,13 @@ export class LiveGraphViewProvider implements vscode.WebviewViewProvider {
         this.schedulePost();
     }
 
-    setNodes(nodes: VirtualNode[]): void {
+    setNodes(nodes: SymbolicNode[]): void {
         this.state.nodes = Array.isArray(nodes) ? nodes : [];
         this.schedulePost();
     }
 
-    upsertNodes(nodes: VirtualNode[], replaceInstanceIds: string[] = []): void {
-        this.state.nodes = upsertVirtualNodes(this.state.nodes, nodes, replaceInstanceIds);
+    upsertNodes(nodes: SymbolicNode[], replaceInstanceIds: string[] = []): void {
+        this.state.nodes = upsertSymbolicNodes(this.state.nodes, nodes, replaceInstanceIds);
         this.schedulePost();
     }
 

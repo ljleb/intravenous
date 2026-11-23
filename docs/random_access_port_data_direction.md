@@ -884,7 +884,7 @@ The materialized executable configuration contains only the trivially copyable v
 and ordinary function/operation references needed by generated runtime/JIT code. It
 does not store `std::function` or another owning, runtime-erased callable. A configured
 combiner target is compiled into the node/package LLVM module and relocated normally.
-Whole-graph LLVM can specialize, devirtualize, or inline a statically known operation.
+Whole-graph LLVM can specialize, desymbolicize, or inline a statically known operation.
 
 Frontend/reflection metadata does not need to serialize or expose executable function
 pointers. It records the presentation and value metadata that is semantically useful
@@ -903,7 +903,7 @@ connection capability, **not** eviction policy or a fixed storage geometry.
 
 The background executor selects a shared buffered-data storage backend for
 both realtime-recorded and Tock-produced `buffered` outputs. Eligible finite
-Regions may use sparse Linux virtual mappings: later page-aligned requests
+Regions may use sparse Linux symbolic mappings: later page-aligned requests
 populate final buffer offsets without copying previously completed unchanged
 pages. The choice is constrained by configurable per-view and aggregate
 virtual-address reservation limits, a separate process-wide VMA/fragmentation

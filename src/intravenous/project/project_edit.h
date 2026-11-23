@@ -156,10 +156,10 @@ struct ProjectRecordKeyHash {
             mix(selector.index());
             std::visit([&](auto const& part) {
                 using Part = std::remove_cvref_t<decltype(part)>;
-                if constexpr (std::same_as<Part, ProjectVirtualNodeSelector>) {
+                if constexpr (std::same_as<Part, ProjectSymbolicNodeSelector>) {
                     mix((*this)(part.source_identity));
                     mix(part.type_identity ? (*this)(*part.type_identity) : 0);
-                } else if constexpr (std::same_as<Part, ProjectVirtualMemberSelector>) mix(part.index);
+                } else if constexpr (std::same_as<Part, ProjectSymbolicMemberSelector>) mix(part.index);
                 else mix((*this)(part.name));
             }, selector);
         }

@@ -29,7 +29,7 @@ struct StableRealtimePortStateIdHash {
         std::size_t result = 0;
         auto const hash_string = std::hash<std::string>{};
         hash_combine(result, hash_string(id.node.graph));
-        hash_combine(result, hash_string(id.node.virtual_node));
+        hash_combine(result, hash_string(id.node.symbolic_node));
         hash_combine(result, std::hash<std::size_t>{}(id.node.direct_member));
         hash_combine(result, hash_string(id.node.project_instance));
         hash_combine(result, hash_string(id.node.project_leaf_type));

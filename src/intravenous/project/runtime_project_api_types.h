@@ -11,35 +11,35 @@
 #include <vector>
 
 namespace iv {
-    enum class VirtualPortBinding : std::uint8_t {
+    enum class SymbolicPortBinding : std::uint8_t {
         interface,
         none,
-        virtual_input,
-        virtual_output,
+        symbolic_input,
+        symbolic_output,
         mixed,
     };
 
-    struct VirtualContinuousPortInfo {
+    struct SymbolicContinuousPortInfo {
         std::string name {};
-        VirtualPortConnectivity connectivity =
-            VirtualPortConnectivity::disconnected;
+        SymbolicPortConnectivity connectivity =
+            SymbolicPortConnectivity::disconnected;
         size_t index = 0;
         std::vector<ContinuousValueIntrospectionMetadata> value_types {};
         std::optional<ChannelTypeId> channel_type {};
-        VirtualPortBinding binding = VirtualPortBinding::none;
+        SymbolicPortBinding binding = SymbolicPortBinding::none;
 
-        bool operator==(VirtualContinuousPortInfo const&) const = default;
+        bool operator==(SymbolicContinuousPortInfo const&) const = default;
     };
 
-    struct VirtualEventPortInfo {
+    struct SymbolicEventPortInfo {
         std::string name {};
-        VirtualPortConnectivity connectivity =
-            VirtualPortConnectivity::disconnected;
+        SymbolicPortConnectivity connectivity =
+            SymbolicPortConnectivity::disconnected;
         size_t index = 0;
         EventTypeId type = EventTypeId::empty;
-        VirtualPortBinding binding = VirtualPortBinding::none;
+        SymbolicPortBinding binding = SymbolicPortBinding::none;
 
-        bool operator==(VirtualEventPortInfo const&) const = default;
+        bool operator==(SymbolicEventPortInfo const&) const = default;
     };
 
     struct SourcePosition {
@@ -68,19 +68,19 @@ namespace iv {
         bool operator==(LiveSourceSpan const &) const = default;
     };
 
-    struct VirtualNodeMemberInfo {
+    struct SymbolicNodeMemberInfo {
         size_t index = 0;
         std::string backing_node_id{};
         std::string kind{};
         std::string type_identity{};
         std::string definition_id{};
-        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
-        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
-        std::vector<VirtualEventPortInfo> event_inputs{};
-        std::vector<VirtualEventPortInfo> event_outputs{};
+        std::vector<SymbolicContinuousPortInfo> continuous_inputs{};
+        std::vector<SymbolicContinuousPortInfo> continuous_outputs{};
+        std::vector<SymbolicEventPortInfo> event_inputs{};
+        std::vector<SymbolicEventPortInfo> event_outputs{};
     };
 
-    struct VirtualNodeInfo {
+    struct SymbolicNodeInfo {
         std::string id{};
         std::string instance_id{};
         std::string kind{};
@@ -88,16 +88,16 @@ namespace iv {
         std::string type_identity{};
         std::string definition_id{};
         std::vector<LiveSourceSpan> source_spans{};
-        std::vector<VirtualContinuousPortInfo> continuous_inputs{};
-        std::vector<VirtualContinuousPortInfo> continuous_outputs{};
-        std::vector<VirtualEventPortInfo> event_inputs{};
-        std::vector<VirtualEventPortInfo> event_outputs{};
+        std::vector<SymbolicContinuousPortInfo> continuous_inputs{};
+        std::vector<SymbolicContinuousPortInfo> continuous_outputs{};
+        std::vector<SymbolicEventPortInfo> event_inputs{};
+        std::vector<SymbolicEventPortInfo> event_outputs{};
         size_t member_count = 0;
-        std::vector<VirtualNodeMemberInfo> members{};
+        std::vector<SymbolicNodeMemberInfo> members{};
     };
 
     struct ProjectQueryResult {
-        std::vector<VirtualNodeInfo> nodes{};
+        std::vector<SymbolicNodeInfo> nodes{};
     };
 
     struct ProjectRegionQueryResult {
@@ -136,13 +136,13 @@ namespace iv {
         std::string message{};
     };
 
-    struct ProjectVirtualNodesNotification {
-        std::vector<VirtualNodeInfo> nodes{};
+    struct ProjectSymbolicNodesNotification {
+        std::vector<SymbolicNodeInfo> nodes{};
         std::vector<std::string> replace_instance_ids{};
     };
 
     using ProjectNotification = std::variant<
         ProjectMessageNotification,
         ProjectStatusNotification,
-        ProjectVirtualNodesNotification>;
+        ProjectSymbolicNodesNotification>;
 } // namespace iv

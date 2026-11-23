@@ -60,7 +60,7 @@ void append_unique(std::vector<T>& output, T value)
 
 template<class Mapping>
 auto selected_sample_member_channels(
-    VirtualNodeRecord const& record,
+    SymbolicNodeRecord const& record,
     Mapping const& mapping,
     PathCursor const& cursor)
 {
@@ -76,14 +76,14 @@ auto selected_sample_member_channels(
             auto const member_index = static_cast<std::size_t>(
                 member - record.node_bundle_handles.begin());
             if (std::ranges::contains(
-                    cursor.virtual_member_indices, member_index)) {
+                    cursor.symbolic_member_indices, member_index)) {
                 selected.push_back(channel);
             }
         }
         if (!selected.empty()) result.push_back(std::move(selected));
         return result;
     }
-    for (auto const member_index : cursor.virtual_member_indices) {
+    for (auto const member_index : cursor.symbolic_member_indices) {
         if (member_index < mapping.member_channels.size())
             result.push_back(mapping.member_channels[member_index]);
     }
@@ -96,8 +96,8 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
     ProjectPortMatcher const& matcher)
 {
     std::vector<ResolvedSampleOutput> result;
-    if (cursor.kind == PathCursor::Kind::virtual_node) {
-        auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
+    if (cursor.kind == PathCursor::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
         for (auto const& mapping : record.sample_outputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const& member_channels
@@ -152,8 +152,8 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
     ProjectPortMatcher const& matcher)
 {
     std::vector<ResolvedSampleInput> result;
-    if (cursor.kind == PathCursor::Kind::virtual_node) {
-        auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
+    if (cursor.kind == PathCursor::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
         for (auto const& mapping : record.sample_inputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const& member_channels
@@ -177,7 +177,7 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
                         });
                     if (!one_port) {
                         throw std::logic_error(
-                            "virtual sample input member spans multiple bundle ports");
+                            "symbolic sample input member spans multiple bundle ports");
                     }
                     append_unique(result, ResolvedSampleInput{
                         .type = mapping.channel_layout.channel_type,
@@ -220,13 +220,13 @@ std::vector<ResolvedEventOutput> event_outputs_for_cursor(
 {
     if (matcher.channel.has_value()) return {};
     std::vector<ResolvedEventOutput> result;
-    if (cursor.kind == PathCursor::Kind::virtual_node) {
-        auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
+    if (cursor.kind == PathCursor::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
         for (auto const& mapping : record.event_outputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
                 auto const selected = std::ranges::any_of(
-                    cursor.virtual_member_indices,
+                    cursor.symbolic_member_indices,
                     [&](std::size_t member_index) {
                         return member_index < record.node_bundle_handles.size()
                             && record.node_bundle_handles[member_index]
@@ -263,13 +263,13 @@ std::vector<ResolvedEventInput> event_inputs_for_cursor(
 {
     if (matcher.channel.has_value()) return {};
     std::vector<ResolvedEventInput> result;
-    if (cursor.kind == PathCursor::Kind::virtual_node) {
-        auto const& record = graph.virtual_nodes.record(cursor.virtual_node);
+    if (cursor.kind == PathCursor::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
         for (auto const& mapping : record.event_inputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
             for (auto const port : mapping.node_bundle_ports) {
                 auto const selected = std::ranges::any_of(
-                    cursor.virtual_member_indices,
+                    cursor.symbolic_member_indices,
                     [&](std::size_t member_index) {
                         return member_index < record.node_bundle_handles.size()
                             && record.node_bundle_handles[member_index]
@@ -328,10 +328,10 @@ void validate_matcher(ProjectNodePortMatcher const& matcher)
     if (matcher.port.name.has_value() && matcher.port.name->empty())
         throw std::invalid_argument("project connection matcher has an empty port name");
     for (auto const& selector : matcher.path) {
-        if (auto const* virtual_node = std::get_if<ProjectVirtualNodeSelector>(&selector);
-            virtual_node && virtual_node->source_identity.empty()) {
+        if (auto const* symbolic_node = std::get_if<ProjectSymbolicNodeSelector>(&selector);
+            symbolic_node && symbolic_node->source_identity.empty()) {
             throw std::invalid_argument(
-                "project virtual-node selector has an empty source identity");
+                "project symbolic-node selector has an empty source identity");
         }
         if (auto const* tiled = std::get_if<ProjectTiledChildSelector>(&selector);
             tiled && tiled->name.empty()) {

@@ -62,19 +62,19 @@ inline auto resolve_observation_channel(ConfiguredGraph const& graph,
     ObservationSource const& source, auto resolve)
 {
     bool const group = !source.node.path.empty()
-        && std::holds_alternative<ProjectVirtualNodeSelector>(source.node.path.back());
+        && std::holds_alternative<ProjectSymbolicNodeSelector>(source.node.path.back());
     return observation_channel(resolve(graph, placements, source.node, source.member,
         group ? std::nullopt : source.channel), group ? source.channel : std::nullopt);
 }
 
-inline bool observes_virtual_output(ObservationSource const& source)
+inline bool observes_symbolic_output(ObservationSource const& source)
 {
     if (source.kind != ObservationSourceKind::output || source.node.path.empty()) return false;
-    auto const* selector = std::get_if<ProjectVirtualNodeSelector>(&source.node.path.back());
+    auto const* selector = std::get_if<ProjectSymbolicNodeSelector>(&source.node.path.back());
     return selector && selector->type_identity.has_value();
 }
 
-inline std::vector<SampleOutputChannelId> resolve_virtual_output_observation(
+inline std::vector<SampleOutputChannelId> resolve_symbolic_output_observation(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
     ObservationSource const& source)
@@ -177,9 +177,9 @@ inline bool resolve_observation_window_source(
         return true;
     }
     if (source.kind != ObservationSourceKind::output) return false;
-    auto const virtual_output = observes_virtual_output(source);
+    auto const symbolic_output = observes_symbolic_output(source);
     std::vector<SampleOutputChannelId> sources;
-    if (virtual_output) sources = resolve_virtual_output_observation(graph, placements, source);
+    if (symbolic_output) sources = resolve_symbolic_output_observation(graph, placements, source);
     else if (auto const channel = resolve_observation_channel(graph, placements, source, resolve_project_sample_output))
         sources.push_back(*channel);
     std::optional<graph_jit::ResolvedPortRealization> inferred;
@@ -212,7 +212,7 @@ inline bool resolve_observation_window_source(
     query.port = {sources.front().bundle, PortKind::sample, sources.front().port};
     query.kind = source.kind;
     query.channel = sources.front().channel;
-    if (virtual_output && sources.size() > 1) query.output_sources = std::move(sources);
+    if (symbolic_output && sources.size() > 1) query.output_sources = std::move(sources);
     query.operation = &*operation;
     return true;
 }
@@ -247,8 +247,8 @@ inline CompiledObservationPlan resolve_observation_requirements(
     CompiledObservationPlan result{.revision = requirements.revision};
     for (auto const& requirement : requirements.probes) {
         ResolvedObservationProbe probe{.id = requirement.id, .kind = requirement.source.kind};
-        if (observes_virtual_output(requirement.source)) {
-            auto channels = resolve_virtual_output_observation(graph, placements, requirement.source);
+        if (observes_symbolic_output(requirement.source)) {
+            auto channels = resolve_symbolic_output_observation(graph, placements, requirement.source);
             if (channels.size() > 1) ensure_realization();
             auto const& operations = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations;
             auto const operation = std::ranges::find(operations, requirement.operation, &ObservationOperation::id);

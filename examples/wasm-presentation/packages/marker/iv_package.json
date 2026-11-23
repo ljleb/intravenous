@@ -8,6 +8,13 @@
       "definitionIds": [
         "builtin.beats"
       ]
+    },
+    "placement": {
+      "title": "Placement Event Example",
+      "definitionIds": ["builtin.automation.curve"],
+      "observations": [
+        {"id": "value", "port": "value", "direction": "output", "operation": "waveform", "points": 512}
+      ]
     }
   }
 }

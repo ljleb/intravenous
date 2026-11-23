@@ -173,22 +173,22 @@ std::optional<StableConcreteNodeId> stable_concrete_node_identity(
         };
     }
     std::optional<StableConcreteNodeId> selected;
-    for (auto const handle : configured_bundle.virtual_node_handles()) {
-        auto const& record = graph.virtual_nodes.record(handle);
+    for (auto const handle : configured_bundle.symbolic_node_handles()) {
+        auto const& record = graph.symbolic_nodes.record(handle);
         if (record.type_identity != configured_bundle.type_identity()) continue;
         auto const member = std::ranges::find(
             record.node_bundle_handles, bundle);
         if (member == record.node_bundle_handles.end()) continue;
         StableConcreteNodeId candidate{
             .graph = graph.identity.value,
-            .virtual_node = record.id,
+            .symbolic_node = record.id,
             .direct_member = static_cast<std::size_t>(
                 member - record.node_bundle_handles.begin()),
         };
         if (!selected
-            || std::tie(candidate.virtual_node, candidate.direct_member)
+            || std::tie(candidate.symbolic_node, candidate.direct_member)
                 < std::tie(
-                    selected->virtual_node, selected->direct_member)) {
+                    selected->symbolic_node, selected->direct_member)) {
             selected = std::move(candidate);
         }
     }
@@ -426,7 +426,7 @@ std::expected<void, std::string> inventory_nodes(
                     stable_identity = StableConcreteNodeId{
                         .graph = std::string(graph.node_bundles.bundle(current).type_identity()) + ':'
                             + migration_identity_fields(*owner),
-                        .virtual_node = name, .direct_member = source.port_index};
+                        .symbolic_node = name, .direct_member = source.port_index};
                 }
             }
             std::optional<StableInputPortId> module_input;
@@ -442,7 +442,7 @@ std::expected<void, std::string> inventory_nodes(
                 if (module_input && configured_bundles.snapshot) {
                     stable_identity = StableConcreteNodeId{
                         .graph = "compiler.module_input:" + migration_identity_fields(module_input->node),
-                        .virtual_node = module_input->kind == PortKind::sample ? "sample" : "event",
+                        .symbolic_node = module_input->kind == PortKind::sample ? "sample" : "event",
                         .direct_member = module_input->port_index,
                     };
                 }

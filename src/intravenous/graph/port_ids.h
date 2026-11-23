@@ -12,14 +12,14 @@ namespace iv {
 // name ports without importing GraphBuilderNodeBundles and its storage.
 using NodeBundleHandle = size_t;
 
-// Stable configured identity. Keep virtual-port identity independent of the
+// Stable configured identity. Keep symbolic-port identity independent of the
 // node-bundle implementation so it survives configuration rebuilds.
-struct VirtualPortId {
-  std::string virtual_node_id{};
+struct SymbolicPortId {
+  std::string symbolic_node_id{};
   PortKind port_kind = PortKind::sample;
   size_t port_index = 0;
 
-  bool operator==(VirtualPortId const&) const = default;
+  bool operator==(SymbolicPortId const&) const = default;
 };
 
 struct NodeBundlePortId {

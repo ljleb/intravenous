@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readPresentationManifest, type PresentationArtifact } from "./presentationPlugin";
 import { readWasmPresentationDescriptor } from "./wasmPresentation";
-import { recordedTriggerBinsOperation } from "./observations";
 
 export interface PresentationArtifactRpc {
     listPresentations(): Promise<{ ready: boolean; entries: unknown[] }>;
@@ -35,8 +34,8 @@ export class PresentationArtifactReader {
                 || id !== `${provider}/${parsed.id}` || format !== "wasm" || schemaVersion !== parsed.version
                 || typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) continue;
             const identity = id as string;
-            if (parsed.observations?.some(({ operation }) => operation !== recordedTriggerBinsOperation) || parsed.timelineSnapping) {
-                report(`${identity} · This presentation ABI supports only recorded trigger observations`);
+            if (parsed.timelineSnapping) {
+                report(`${identity} · This presentation ABI does not support timeline snapping`);
                 continue;
             }
             if (seen.has(identity)) continue;

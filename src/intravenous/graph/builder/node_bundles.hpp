@@ -175,8 +175,8 @@ public:
   template<class Map>
   constexpr void remap_bundle_handles(Map&& map);
 
-  constexpr std::vector<size_t> &virtual_node_handles();
-  constexpr std::vector<size_t> const &virtual_node_handles() const;
+  constexpr std::vector<size_t> &symbolic_node_handles();
+  constexpr std::vector<size_t> const &symbolic_node_handles() const;
   constexpr NodeSourceAnnotations &source_annotations();
   constexpr NodeSourceAnnotations const &source_annotations() const;
 
@@ -193,7 +193,7 @@ private:
   std::optional<Payload> _payload{};
   std::optional<NodeBundlePortId> _resolved_module_input{};
   std::optional<NodeBundlePortId> _output_gain_source{};
-  std::vector<size_t> _virtual_node_handles{};
+  std::vector<size_t> _symbolic_node_handles{};
   NodeSourceAnnotations _source_annotations{};
 
   friend class GraphBuilderNodeBundles;
@@ -252,7 +252,7 @@ struct ConfiguredNodeBundleRecord {
   size_t subgraph_event_input_count = 0;
   size_t subgraph_event_output_count = 0;
 
-  std::vector<size_t> virtual_node_handles{};
+  std::vector<size_t> symbolic_node_handles{};
   std::vector<SourceInfo> source_infos{};
 };
 
@@ -295,7 +295,7 @@ struct ConfiguredNodeBundleView {
   size_t subgraph_event_input_count = 0;
   size_t subgraph_event_output_count = 0;
 
-  std::span<size_t const> virtual_node_handles{};
+  std::span<size_t const> symbolic_node_handles{};
   std::span<SourceInfo const> source_infos{};
 };
 
@@ -371,7 +371,7 @@ public:
   // empty boundary. Local handle k becomes k + returned offset.
   constexpr size_t import_contents(GraphBuilderNodeBundles const &);
   // Copies [begin, end). `first_local` is the local handle of `begin`; the
-  // copy has `first_local` leading empty boundaries. Virtual-record inverse
+  // copy has `first_local` leading empty boundaries. Symbolic-record inverse
   // handles are rebased by `record_begin`.
   constexpr GraphBuilderNodeBundles copy_range(
       size_t begin, size_t end, size_t first_local, size_t record_begin) const;
@@ -1119,7 +1119,7 @@ constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
       payload.child_begin += node_bundle_offset;
     }
   }, *_payload);
-  _virtual_node_handles.clear();
+  _symbolic_node_handles.clear();
 }
 
 template<class Map>
@@ -1137,11 +1137,11 @@ constexpr void NodeBundle::remap_bundle_handles(Map&& map) {
   }, *_payload);
 }
 
-constexpr std::vector<size_t> &NodeBundle::virtual_node_handles() {
-  return _virtual_node_handles;
+constexpr std::vector<size_t> &NodeBundle::symbolic_node_handles() {
+  return _symbolic_node_handles;
 }
-constexpr std::vector<size_t> const &NodeBundle::virtual_node_handles() const {
-  return _virtual_node_handles;
+constexpr std::vector<size_t> const &NodeBundle::symbolic_node_handles() const {
+  return _symbolic_node_handles;
 }
 constexpr NodeSourceAnnotations &NodeBundle::source_annotations() {
   return _source_annotations;
@@ -1506,9 +1506,9 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::copy_range(
   for (auto handle = begin; handle < end; ++handle) {
     auto copy = _bundles[handle];
     copy.remap_bundle_handles(local);
-    for (auto &record : copy._virtual_node_handles) {
+    for (auto &record : copy._symbolic_node_handles) {
       if (record < record_begin) {
-        details::error("copied node bundle belongs to an outside virtual node");
+        details::error("copied node bundle belongs to an outside symbolic node");
       }
       record -= record_begin;
     }
@@ -1524,7 +1524,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
     ConfiguredNodeBundleView view{
         .resolved_module_input = bundle._resolved_module_input,
         .output_gain_source = bundle._output_gain_source,
-        .virtual_node_handles = bundle._virtual_node_handles,
+        .symbolic_node_handles = bundle._symbolic_node_handles,
         .source_infos = bundle._source_annotations.infos,
     };
     std::visit([&](auto const& payload) {
@@ -1649,7 +1649,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
       });
       break;
     }
-    bundle._virtual_node_handles = record.virtual_node_handles;
+    bundle._symbolic_node_handles = record.symbolic_node_handles;
     bundle._source_annotations.infos = record.source_infos;
     result._bundles.push_back(std::move(bundle));
   }

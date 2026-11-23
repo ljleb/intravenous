@@ -14,16 +14,16 @@ export type SourceSpan = {
     end: SourcePosition;
 };
 
-export type VirtualPortConnectivity =
+export type SymbolicPortConnectivity =
     | "disconnected"
     | "connected"
     | "mixed";
 
-export type VirtualPortBinding =
+export type SymbolicPortBinding =
     | "interface"
     | "none"
-    | "virtualInput"
-    | "virtualOutput"
+    | "symbolicInput"
+    | "symbolicOutput"
     | "mixed";
 
 export type FractionalGlobalIndexValue = {
@@ -47,36 +47,36 @@ export type ContinuousValueAlternative = {
     scrubSpeed?: ScalarPresentationNumber;
 };
 
-export type VirtualContinuousPort = {
+export type SymbolicContinuousPort = {
     index: number;
     name: string;
-    connectivity: VirtualPortConnectivity;
-    binding: VirtualPortBinding;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
     valueTypes: ContinuousValueAlternative[];
     channelType?: string;
 };
 
-export type VirtualEventPort = {
+export type SymbolicEventPort = {
     index: number;
     name: string;
-    connectivity: VirtualPortConnectivity;
-    binding: VirtualPortBinding;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
     eventType: string;
 };
 
-export type VirtualNodeMember = {
+export type SymbolicNodeMember = {
     index?: number;
     backingNodeId?: string;
     kind?: string;
     typeIdentity?: string;
     definitionId?: string;
-    continuousInputs?: VirtualContinuousPort[];
-    continuousOutputs?: VirtualContinuousPort[];
-    eventInputs?: VirtualEventPort[];
-    eventOutputs?: VirtualEventPort[];
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
 };
 
-export type VirtualNode = {
+export type SymbolicNode = {
     id?: string;
     instanceId?: string;
     kind?: string;
@@ -84,10 +84,10 @@ export type VirtualNode = {
     typeIdentity?: string;
     definitionId?: string;
     sourceSpans?: SourceSpan[];
-    continuousInputs?: VirtualContinuousPort[];
-    continuousOutputs?: VirtualContinuousPort[];
-    eventInputs?: VirtualEventPort[];
-    eventOutputs?: VirtualEventPort[];
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
     memberCount?: number;
-    members?: VirtualNodeMember[];
+    members?: SymbolicNodeMember[];
 };

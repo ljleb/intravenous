@@ -17,7 +17,7 @@ struct BuilderSession;
 
 // A BuilderSession owns one LIFO stack of construction scopes. The root scope
 // is the whole graph; a definition scope is one module body (or one nested
-// live GraphBuilder) with its own virtual-node namespace; a subgraph scope is
+// live GraphBuilder) with its own symbolic-node namespace; a subgraph scope is
 // one boundary created by GraphBuilder::subgraph inside its enclosing
 // definition's namespace.
 enum class BuilderScopeKind : std::uint8_t {

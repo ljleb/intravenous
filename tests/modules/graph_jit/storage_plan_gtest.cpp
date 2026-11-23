@@ -54,7 +54,7 @@ void add_identified_tick_test_nodes(
             .bundle = bundle,
             .stable_identity = iv::graph_jit::StableConcreteNodeId{
                 .graph = "test",
-                .virtual_node = "node-" + std::to_string(bundle),
+                .symbolic_node = "node-" + std::to_string(bundle),
             },
             .full_live_tick_coverage = true,
         });

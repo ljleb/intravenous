@@ -47,7 +47,19 @@ def compile_examples(build):
         scratch = Path(work)
         c = extract_examples(DOCS / "tutorials/presentation_c.md", scratch)["diagonal.c"]
         builtins = ROOT / "src/intravenous/builtin_packages/builtin/presentations"
-        sources = [c, ROOT / "examples/wasm-presentation/packages/marker/presentations/marker.cpp",
+        examples = ROOT / "examples/wasm-presentation/packages/marker/presentations"
+        schemas = ROOT / "vscode/client/bindings"
+        for binding, header, namespace in (
+            ("beats", builtins / "beats_events.hpp", "presentation_beats_events"),
+            ("automation", examples / "automation_events.hpp", "automation_events"),
+        ):
+            generated = scratch / header.name
+            run(sys.executable, ROOT / "scripts/generate_presentation_events.py",
+                schemas / f"{binding}.node-events.json", schemas / f"{binding}.names.json",
+                generated, "--namespace", namespace)
+            if generated.read_bytes() != header.read_bytes():
+                raise ValueError(f"Stale presentation event binding {header.relative_to(ROOT)}")
+        sources = [c, examples / "marker.cpp", examples / "placement.cpp",
                    builtins / "click_detector.cpp", builtins / "beats.cpp"]
         for source in sources:
             run(sys.executable, ROOT / "scripts/build_presentation.py", source, scratch / (source.stem + ".wasm"))

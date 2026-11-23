@@ -67,8 +67,8 @@ std::vector<NodeBundleHandle> subject_scopes(
         append_subject_scopes(graph, match.bundle, result);
         return result;
     }
-    auto const& record = graph.virtual_nodes.record(match.virtual_node);
-    for (auto const index : match.virtual_member_indices) {
+    auto const& record = graph.symbolic_nodes.record(match.symbolic_node);
+    for (auto const index : match.symbolic_member_indices) {
         if (index >= record.node_bundle_handles.size()) continue;
         auto const member = record.node_bundle_handles[index];
         auto const& bundle = graph.node_bundles.bundle(member);
@@ -95,9 +95,9 @@ bool direct_member_of_scope(
     return immediate_parent_subgraph(graph, member) == scope;
 }
 
-bool virtual_selector_matches(
-    VirtualNodeRecord const& record,
-    ProjectVirtualNodeSelector const& selector)
+bool symbolic_selector_matches(
+    SymbolicNodeRecord const& record,
+    ProjectSymbolicNodeSelector const& selector)
 {
     return record.source_identity == selector.source_identity
         && (!selector.type_identity
@@ -119,17 +119,17 @@ std::vector<ProjectNodePathMatch> apply_selector(
     std::vector<ProjectNodePathMatch> result;
     std::visit([&](auto const& step) {
         using Step = std::remove_cvref_t<decltype(step)>;
-        if constexpr (std::same_as<Step, ProjectVirtualNodeSelector>) {
+        if constexpr (std::same_as<Step, ProjectSymbolicNodeSelector>) {
             for (auto const& subject : current) {
                 auto const scopes = subject_scopes(graph, subject);
-                for (VirtualNodeHandle handle = 0;
-                     handle < graph.virtual_nodes.records().size(); ++handle) {
-                    if (subject.kind == ProjectNodePathMatch::Kind::virtual_node
-                        && subject.virtual_node == handle) {
+                for (SymbolicNodeHandle handle = 0;
+                     handle < graph.symbolic_nodes.records().size(); ++handle) {
+                    if (subject.kind == ProjectNodePathMatch::Kind::symbolic_node
+                        && subject.symbolic_node == handle) {
                         continue;
                     }
-                    auto const& record = graph.virtual_nodes.record(handle);
-                    if (!virtual_selector_matches(record, step)) continue;
+                    auto const& record = graph.symbolic_nodes.record(handle);
+                    if (!symbolic_selector_matches(record, step)) continue;
                     std::vector<std::size_t> direct_members;
                     for (std::size_t index = 0;
                          index < record.node_bundle_handles.size(); ++index) {
@@ -144,20 +144,20 @@ std::vector<ProjectNodePathMatch> apply_selector(
                         }
                     }
                     if (!direct_members.empty()) append_unique(result, ProjectNodePathMatch{
-                        .kind = ProjectNodePathMatch::Kind::virtual_node,
-                        .virtual_node = handle,
-                        .virtual_member_indices = std::move(direct_members),
+                        .kind = ProjectNodePathMatch::Kind::symbolic_node,
+                        .symbolic_node = handle,
+                        .symbolic_member_indices = std::move(direct_members),
                     });
                 }
             }
-        } else if constexpr (std::same_as<Step, ProjectVirtualMemberSelector>) {
+        } else if constexpr (std::same_as<Step, ProjectSymbolicMemberSelector>) {
             for (auto const& subject : current) {
-                if (subject.kind != ProjectNodePathMatch::Kind::virtual_node) continue;
-                auto const& members = graph.virtual_nodes
-                    .record(subject.virtual_node).node_bundle_handles;
-                if (step.index >= subject.virtual_member_indices.size()) continue;
+                if (subject.kind != ProjectNodePathMatch::Kind::symbolic_node) continue;
+                auto const& members = graph.symbolic_nodes
+                    .record(subject.symbolic_node).node_bundle_handles;
+                if (step.index >= subject.symbolic_member_indices.size()) continue;
                 auto const member_index =
-                    subject.virtual_member_indices[step.index];
+                    subject.symbolic_member_indices[step.index];
                 if (member_index >= members.size()) continue;
                 append_unique(result, ProjectNodePathMatch{
                     .kind = ProjectNodePathMatch::Kind::bundle,
@@ -193,7 +193,7 @@ std::vector<ProjectNodePathMatch> resolve_project_node_path(
     std::span<ProjectNodePathSelector const> path)
 {
     return resolve_project_node_path(
-        ProjectNodePathGraph{graph.node_bundles, graph.virtual_nodes}, subject, path);
+        ProjectNodePathGraph{graph.node_bundles, graph.symbolic_nodes}, subject, path);
 }
 
 std::vector<ProjectNodePathMatch> resolve_project_node_path(
@@ -251,9 +251,9 @@ std::vector<NodeBundleHandle> concrete_node_address_matches(
             }
             continue;
         }
-        auto const& members = graph.virtual_nodes
-            .record(match.virtual_node).node_bundle_handles;
-        for (auto const member_index : match.virtual_member_indices) {
+        auto const& members = graph.symbolic_nodes
+            .record(match.symbolic_node).node_bundle_handles;
+        for (auto const member_index : match.symbolic_member_indices) {
             if (member_index >= members.size()) continue;
             auto const member = members[member_index];
             auto const& bundle = graph.node_bundles.bundle(member);
@@ -294,10 +294,10 @@ bool path_selects_bundle(ProjectNodePathGraph graph, NodeBundleHandle subject,
         && matches.front().bundle == target;
 }
 
-std::optional<NodePath> virtual_member_path(ProjectNodePathGraph graph,
+std::optional<NodePath> symbolic_member_path(ProjectNodePathGraph graph,
     NodeBundleHandle parent, NodeBundleHandle target)
 {
-    for (auto const& record : graph.virtual_nodes.records()) {
+    for (auto const& record : graph.symbolic_nodes.records()) {
         auto const found = std::ranges::find(record.node_bundle_handles, target);
         if (found == record.node_bundle_handles.end()) continue;
         auto const index = std::ranges::count_if(
@@ -305,8 +305,8 @@ std::optional<NodePath> virtual_member_path(ProjectNodePathGraph graph,
                 return direct_member_of_scope(graph, member, parent);
             });
         NodePath candidate{
-            ProjectVirtualNodeSelector{record.source_identity, record.type_identity},
-            ProjectVirtualMemberSelector{static_cast<std::size_t>(index)},
+            ProjectSymbolicNodeSelector{record.source_identity, record.type_identity},
+            ProjectSymbolicMemberSelector{static_cast<std::size_t>(index)},
         };
         if (path_selects_bundle(graph, parent, candidate, target)) return candidate;
     }
@@ -331,7 +331,7 @@ std::optional<NodePath> tiled_child_path(ProjectNodePathGraph graph,
 } // namespace
 
 namespace {
-std::string virtual_declaration_name(VirtualNodeRecord const& record)
+std::string symbolic_declaration_name(SymbolicNodeRecord const& record)
 {
     auto const named = std::ranges::find_if(record.source_infos,
         [](auto const& info) { return !info.declaration_name.empty(); });
@@ -354,14 +354,14 @@ std::string virtual_declaration_name(VirtualNodeRecord const& record)
 std::vector<ProjectChildNode> project_child_nodes(
     ConfiguredGraph const& configured, ProjectNodePathMatch const& subject)
 {
-    ProjectNodePathGraph const graph{configured.node_bundles, configured.virtual_nodes};
+    ProjectNodePathGraph const graph{configured.node_bundles, configured.symbolic_nodes};
     std::vector<ProjectChildNode> children;
-    if (subject.kind == ProjectNodePathMatch::Kind::virtual_node) {
-        auto const& record = graph.virtual_nodes.record(subject.virtual_node);
-        auto const name = virtual_declaration_name(record);
-        for (std::size_t index = 0; index < subject.virtual_member_indices.size(); ++index) {
-            auto const bundle = record.node_bundle_handles[subject.virtual_member_indices[index]];
-            children.push_back({bundle, {ProjectVirtualMemberSelector{index}}, name + " " + std::to_string(index + 1)});
+    if (subject.kind == ProjectNodePathMatch::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(subject.symbolic_node);
+        auto const name = symbolic_declaration_name(record);
+        for (std::size_t index = 0; index < subject.symbolic_member_indices.size(); ++index) {
+            auto const bundle = record.node_bundle_handles[subject.symbolic_member_indices[index]];
+            children.push_back({bundle, {ProjectSymbolicMemberSelector{index}}, name + " " + std::to_string(index + 1)});
         }
         return children;
     }
@@ -374,22 +374,22 @@ std::vector<ProjectChildNode> project_child_nodes(
             }
         }
     } else if (scope.is_subgraph()) {
-        auto const records = graph.virtual_nodes.records();
-        for (VirtualNodeHandle handle = 0; handle < records.size(); ++handle) {
+        auto const records = graph.symbolic_nodes.records();
+        for (SymbolicNodeHandle handle = 0; handle < records.size(); ++handle) {
             auto const& record = records[handle];
             if (std::ranges::none_of(record.node_bundle_handles, [&](auto member) {
                     return member != subject.bundle && subgraph_contains(graph, subject.bundle, member);
                 })) continue;
-            NodePath path{ProjectVirtualNodeSelector{record.source_identity, record.type_identity}};
+            NodePath path{ProjectSymbolicNodeSelector{record.source_identity, record.type_identity}};
             auto const matches = resolve_project_node_path(graph, subject.bundle, path);
-            if (matches.size() != 1 || matches.front().kind != ProjectNodePathMatch::Kind::virtual_node
-                || matches.front().virtual_node != handle) continue;
-            auto const& members = matches.front().virtual_member_indices;
+            if (matches.size() != 1 || matches.front().kind != ProjectNodePathMatch::Kind::symbolic_node
+                || matches.front().symbolic_node != handle) continue;
+            auto const& members = matches.front().symbolic_member_indices;
             if (members.empty() || std::ranges::any_of(members, [&](auto index) {
                     return record.node_bundle_handles[index] == subject.bundle;
                 })) continue;
             children.push_back({record.node_bundle_handles[members.front()], std::move(path),
-                virtual_declaration_name(record), handle});
+                symbolic_declaration_name(record), handle});
         }
     }
     return children;
@@ -398,7 +398,7 @@ std::vector<ProjectChildNode> project_child_nodes(
 std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
     ConfiguredGraph const& configured, NodeBundleHandle root, NodeBundleHandle target)
 {
-    ProjectNodePathGraph const graph{configured.node_bundles, configured.virtual_nodes};
+    ProjectNodePathGraph const graph{configured.node_bundles, configured.symbolic_nodes};
     if (root == target) return NodePath{};
     auto const& root_bundle = graph.node_bundles.bundle(root);
     if (!root_bundle.is_subgraph() && !root_bundle.is_tiled()) return std::nullopt;
@@ -413,7 +413,7 @@ std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
         return std::nullopt;
     };
     if (auto const parent = immediate_parent_subgraph(graph, target)) {
-        if (auto suffix = virtual_member_path(graph, *parent, target)) {
+        if (auto suffix = symbolic_member_path(graph, *parent, target)) {
             if (auto path = append_to_parent(*parent, *suffix)) return path;
         }
     }

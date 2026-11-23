@@ -425,7 +425,7 @@ project graph. The prior prohibition is preserved in
 A module lane can show a collapsible region of the C++-constructed child
 structure, not only a separate inspector. The module still owns its authored
 children and internal edges; project-owned wiring may target their semantically
-addressable ports, including nested virtual-node ports, without making those
+addressable ports, including nested symbolic-node ports, without making those
 children independently deletable. All such ports are connectable by default:
 no "activate port" action or new enablement state is needed. Port grouping and
 hiding are presentation only, and existing neutral/composition semantics apply
@@ -638,18 +638,18 @@ Together, these fields form the stable `NodeAddress` supplied by Front 13. Prese
 code does not retain one generation-local `NodeBundleHandle` or concrete member index.
 
 `NodeAddress::path` contains `ProjectNodePathSelector` values. Each value is a
-`ProjectVirtualNodeSelector`, `ProjectVirtualMemberSelector`, or
+`ProjectSymbolicNodeSelector`, `ProjectSymbolicMemberSelector`, or
 `ProjectTiledChildSelector`. The sidebar can open the authored module instance and
 focus its generic subgraph presentation on that semantic target.
 
-If the virtual node currently has several concrete members, the presentation may
+If the symbolic node currently has several concrete members, the presentation may
 show those members as rows/children. If a later realization changes the
-member count, the source-level focus may survive because it addresses the virtual
-identity rather than one concrete index. If the virtual node disappears, the
+member count, the source-level focus may survive because it addresses the symbolic
+identity rather than one concrete index. If the symbolic node disappears, the
 enclosing module presentation remains valid and only the focused child target is
 lost.
 
-Click either label on a virtual lane to open its C++ declaration. The graph
+Click either label on a symbolic lane to open its C++ declaration. The graph
 scope supplies the declaration file, line, and identifier byte offset for that
 lane's `NodeAddress`. VS Code reuses an open tab for the file or opens a tab
 for it and places the cursor at the start of the identifier.
@@ -673,7 +673,7 @@ old state as the new type".
 
 Leaf state migration remains subject to compatible generated/native state
 identity and migration rules. Module state reconciliation recursively uses its
-stable virtual/concrete child identities. Node-owned input-history and
+stable symbolic/concrete child identities. Node-owned input-history and
 output-history/latency semantics remain governed by GraphJit/executor state
 reconciliation, not by presentation ownership.
 
@@ -695,23 +695,23 @@ toggle and value belong to the same durable project record. An existing
 explicit participate-with-connections policy still permits additive Sequential
 composition.
 
-The same knob components serve the ports of C++-constructed nodes. Virtual
+The same knob components serve the ports of C++-constructed nodes. Symbolic
 input knobs start disabled. Concrete member input knobs start at the value
 and enable state declared by the port. See the former
 [member input defaults](historical/member_input_knob_defaults_2026-11-20.md).
-Output gains are editable at all times and start at unity. GraphJit omits an unused virtual
+Output gains are editable at all times and start at unity. GraphJit omits an unused symbolic
 output gain when the output has no consumer, no live observation, and no
 active gesture. See the former
-[virtual switch](historical/virtual_output_gain_switch_2026-11-20.md) and
+[symbolic output switch](historical/virtual_output_gain_switch_2026-11-20.md) and
 [member switch](historical/member_output_gain_switch_2026-11-20.md) rules.
 
 Deferred design topic, recorded 2026-11-21. The node definition can eventually
 specify whether an output port has a knob and how that knob behaves. The
 definition API and supported behaviors are open for later design.
 
-A virtual knob stores one value and applies it to the ports in its mapping.
+A symbolic knob stores one value and applies it to the ports in its mapping.
 An explicitly enabled or edited concrete member input takes precedence at
-its port. An enabled virtual input takes precedence over an implicit
+its port. An enabled symbolic input takes precedence over an implicit
 member default. A concrete member output gain takes precedence when its
 value differs from unity.
 A temporary drag takes precedence over settled controls. If two controls of

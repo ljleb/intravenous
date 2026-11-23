@@ -1646,7 +1646,7 @@ none changes the demand semantics.
 A Tick/Sequential/buffered source differs from a Tock/buffered source only
 in the population mechanism and producer queue timing. Both use one shared,
 background-managed versioned buffer resource and backend-selection policy:
-where appropriate, sparse Linux virtual mappings can place newly computed
+where appropriate, sparse Linux symbolic mappings can place newly computed
 pages at their final offsets without copying existing unchanged pages. The
 executor limits both the per-view mapping span and aggregate reserved virtual
 address space. It also budgets process-wide VMA fragmentation, physical
@@ -2365,7 +2365,7 @@ recording merely because that planning metadata exists.
 
 6. **In progress: implement concrete-node port-state continuity and graph-revision transitions.**
    Graph-wide connection analysis now retains each authored concrete node's optional
-   stable graph/virtual-node/direct-member identity, and background planning consumes
+   stable graph/symbolic-node/direct-member identity, and background planning consumes
    that same identity instead of reconstructing a background-only copy. For a
    top-level concrete leaf, ProjectGraph supplies the authored instance ID.
    GraphJit uses that ID and the concrete node type to identify the leaf across
@@ -2382,7 +2382,7 @@ recording merely because that planning metadata exists.
    which lie before its next tick; only an event output has a separate
    `tick_output_latency` role. See Front 16 in implementation_fronts_direction.md.)_ Every entry retains its exact extent
    and generation-local port coordinate, while entries for authored stable nodes also
-   retain graph/virtual-node/direct-member, direction, port kind/name/index, channel or
+   retain graph/symbolic-node/direct-member, direction, port kind/name/index, channel or
    event-stream marker, and role. `CompiledGraph` retains this inventory as cold
    metadata; generated realtime execution pays no lookup or disposition cost for it.
 
@@ -2421,7 +2421,7 @@ recording merely because that planning metadata exists.
    direct migration or a finite transition realization.
 
    Before optimization, define port history/latency exactly as if each surviving
-   concrete node privately owned that state. Carry stable user-instance/virtual-member/
+   concrete node privately owned that state. Carry stable user-instance/symbolic-member/
    port/channel-or-event identities plus cold realization metadata; preserve the
    overlapping valid temporal range across rewiring, fan-in/fanout changes, size
    changes, and compact/ring/alias representation changes. When the steady new graph
@@ -2439,7 +2439,7 @@ recording merely because that planning metadata exists.
    batch context ranges and complete `do_*` scalar/batch helper pairs for Tick, skip,
    Tock and forward/reverse propagation; retain both callback anchors in package LLVM;
    classify compatible concrete realizations; and let Tick/background schedulers group
-   ready same-class nodes while retaining scalar fallback. Treat virtual-node member
+   ready same-class nodes while retaining scalar fallback. Treat symbolic-node member
    grouping as a discovery hint, not the only batching boundary. The detailed API and
    invariants are in
    [Batched Node Callback Direction](./batched_node_callbacks_direction.md).

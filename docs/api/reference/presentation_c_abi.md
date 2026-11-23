@@ -1,6 +1,6 @@
 # Presentation C ABI
 
-This reference describes the core wasm32 ABI version 5.
+This reference describes the core wasm32 ABI version 7.
 [`abi.h`](../../../src/intravenous/presentation/abi.h) declares the exports
 and wire layout. [`presentation.h`](../../../src/intravenous/presentation/presentation.h)
 declares the C guest API.
@@ -15,7 +15,7 @@ the WebAssembly interface and publishes its drawing records.
 | --- | --- |
 | Container | Core wasm32 module with exported linear memory named `memory` and zero imports |
 | Descriptor | Exactly one custom section named `iv.presentation` |
-| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `5`, flags |
+| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `7`, flags |
 | Descriptor flags | Bit 0 enables the shared timeline overlays. All other bits are reserved. |
 | Icon suffix | Optional UTF-8 SVG path data in a 16 × 16 coordinate space. The byte limit is 1,024. |
 | Artifact size | At most 256 KiB for package distribution |
@@ -55,7 +55,7 @@ exports directly. The SDK calls no host functions from WASM.
 ## Host context and borrowed views
 
 All span records are 8 bytes, with their pointer at offset 0 and element
-count at offset 4. The context is 168 bytes on wasm32.
+count at offset 4. The context is 200 bytes on wasm32.
 
 | Context byte offset | Field |
 | --- | --- |
@@ -76,12 +76,16 @@ count at offset 4. The context is 168 bytes on wasm32.
 | 136 | Span of `IvNumericValue` constructor arguments |
 | 144 | Span of `IvControlInput` |
 | 152 | Settings panel pointer |
-| 156 and 160 | Head and tail of numeric edit batches |
+| 156 and 160 | Head and tail of recorded edits |
 | 164 | Timeline grid pointer |
+| 168 | Project revision as an unsigned 64-bit integer |
+| 176 | Span of `IvEditReply` |
+| 184 | Number of recorded edits |
+| 188 | Span of `IvObservedWaveform` |
 
 The host allocates separate frame, gesture, scene-input, and output
-storage. The arena holds up to 1 MiB of output. The scene input budget is
-128 KiB. The supported state payload size is 128 KiB. The build tool sets
+storage. The arena holds up to 1 MiB of output. The scene starts with
+128 KiB of input storage and can grow when it receives waveform regions. The supported state payload size is 128 KiB. The build tool sets
 the module's memory maximum to 8 MiB.
 
 | Read helper | Returned data |
@@ -92,9 +96,12 @@ the module's memory maximum to 8 MiB.
 | `iv_gesture_inputs` | Ordered pointer gesture records for this frame |
 | `iv_connected_inputs` | Names of the node's connected inputs. Names are case-sensitive. |
 | `iv_observed_trigger_columns` | Up to eight available observation views keyed by the manifest's observation IDs |
+| `iv_observed_waveforms` | Viewport waveform regions from manifest-bound inputs or outputs |
 | `iv_timeline_view` | The viewport start, fraction, span, and project sample rate. Zero rate means unavailable. |
 | `iv_numeric_arguments` | Up to 64 positional constructor arguments, with a distinct kind for unsupported values |
 | `iv_control_inputs` | Ordered numeric and action inputs from the host settings panel |
+| `iv_project_revision` | Revision associated with this frame's project inputs |
+| `iv_edit_replies` | Completed requests from this session, in delivery order |
 | `iv_edits_pending`, `iv_edit_failed` | Status of host-mediated editing. Keep a preview while pending and restore accepted arguments after a failure. |
 
 `IvTimelineView` occupies 32 bytes. It holds a signed 64-bit sample index
@@ -111,8 +118,9 @@ over-budget arguments preserve their position with kind unavailable.
 `IvControlInput` is 24 bytes. An ID string at offset 0 identifies the
 setting. A numeric value at 8 has meaning only when the flag at 20 is set.
 The phase at 16 is preview, commit, or finish, numbered 0 through 2.
-Action clicks use commit with no value. The total pointer and control input
-budget is 512 records per frame. Each span preserves its own order.
+Action clicks use commit with no value. The combined budget for pointer
+inputs, control inputs, and edit replies is 512 records per frame. Each
+span preserves its own order.
 
 A gesture record occupies 56 bytes. The first four 32-bit fields are the
 target ID, phase, modifiers, and a reserved field. The point at offset 16
@@ -132,6 +140,25 @@ adding columns. Each view contains at most 1,024 columns. A pending result
 can include columns from a retained window. For the binding format, see
 [Build, reload, and test a presentation package](../how-to/presentation_packages.md).
 
+An `IvObservedWaveform` is 32 bytes. Its ID is at 0, its Region span at 8,
+and its error at 16. The unsigned 32-bit status and partial flag are at 24
+and 28. Status uses the `IV_OBSERVATION_*` values. Pending observations
+can still contain retained Regions. A partial view includes a truncated
+source result or has reached the host's limit of 256 Regions or 2,048
+points per observation. A waveform is a representative sample of the port.
+
+An `IvWaveformRegion` is 32 bytes. Its double bounds at 0 and 8 give
+a half-open interval in project samples from the viewport origin. The
+signed pace exponent at 16 describes the sample lattice of the port. The
+point span at 20 can include the adjacent samples needed for interpolation
+at the bounds. Gaps and unavailable samples split the Region. An
+`IvWaveformPoint` occupies 24 bytes. Its unsigned 64-bit index at 0 is
+the exact native sample index on the port's lattice. The double fields
+at 8 and 16 give the viewport-relative offset in project samples and the
+sample value. Use `span_samples` in `IvTimelineView` to scale offsets for
+drawing. For a port at the project sample pace, the index uses the same
+bits as the signed project timeline index.
+
 ## Drawing and frame output
 
 | Write helper | Effect |
@@ -142,7 +169,8 @@ can include columns from a retained window. For the binding format, see
 | `iv_register_drag_targets(context, span)` | Copy hit regions for this frame. A target specifies a numeric ID, a rectangle, and relative or absolute drag. |
 | `iv_reuse_drawing(context)` | Use the last drawing, including its timeline grid. Leave the drawing batches and grid empty for this call. Submit current hit targets independently. |
 | `iv_set_settings_panel(context, panel)` | Copy one settings panel with its strings and controls. |
-| `iv_submit_numeric_edits(context, span)` | Submit typed numeric node-event edits and gesture finishes in order. |
+| `iv_copy_edit_payload(context, data, size)` | Copy bytes into the arena at an 8-byte aligned address. Returns null on failure. |
+| `iv_submit_edit(context, edit)` | Record one command with its payload already retained in the output arena. |
 | `iv_set_timeline_grid(context, grid)` | Copy one regular grid declaration for host projection and optional seeking. |
 | `iv_set_status(context, status)` | Copy a status string for the host. The byte limit is 512. |
 | `iv_request_save(context)` | Ask the host to serialize after this frame. Use at commit points such as drag finish. |
@@ -174,16 +202,51 @@ Begin with row 0 and send contiguous rows in display order. The frame
 limit is 256 settings, 64 rows, and 12 controls per row. Use unique IDs
 within the panel. The host renders the controls and owns their interaction.
 
-An `IvNumericNodeEdit` is 36 bytes. Nominal event ID, schema fingerprint,
-and gesture ID are strings at 0, 8, and 16. A span of named fields at 24 is
-followed by flags at 32. Each field is 20 bytes and comprises a name followed
-by an `IvNumericValue` at byte 8. Use the node-event protocol's exact event
-identity and field names. The host validates the receiver and payload against
-that protocol before editing. A commit has no gesture ID. A preview may
-use `IV_EDIT_REPLACE_PENDING` and a gesture ID if a newer value supersedes
-the entire pending preview for that gesture. Submit `IV_EDIT_FINISH` with
-only the gesture ID to finish it. The host accepts at most 32 commands in
-a frame and 64 fields per command.
+`IvNodeEdit` is 20 bytes. It holds four unsigned 32-bit fields at offsets
+0 through 12, followed by a payload pointer at 16. The fields are the
+binding index, gesture ID, request ID, and flags. A zero gesture ID makes
+the edit standalone. A nonzero ID groups edits for undo until a finish.
+A nonzero request ID asks the host to return a reply. Use distinct
+request IDs during the life of the session.
+
+With zero flags, the host delivers the edit in order. Use
+`IV_EDIT_REPLACE_PENDING` for a full-state preview whose newer payload may
+replace a queued preview with the same binding and gesture. This command
+requires a nonzero gesture and a zero request ID. It may be presented
+again while an earlier preview is in flight. Use `IV_EDIT_FINISH` with a
+gesture ID and zero binding and payload. Supply a request ID if the guest
+needs to await the finish acknowledgement. The frame supports 32 commands
+and the host allows up to eight open edit gestures per lane.
+
+`IvEditReply` is 24 bytes. Its request ID and status are unsigned 32-bit
+fields at 0 and 4. Status is `IV_EDIT_ACCEPTED` or `IV_EDIT_REJECTED`.
+The unsigned 64-bit revision is at 8 and a diagnostic `IvString` is at 16.
+A zero revision means the command returned no revision. A successful
+response can precede delivery of the accepted project snapshot. Use
+`iv_project_revision` to tell when the snapshot has caught up. Replies
+belong to the worker session that submitted the request.
+
+Include an `iv.presentation.events` custom section when the guest sends
+events. The optional section is UTF-8 JSON and describes up to 64 bindings
+in array order within 64 KiB. Each entry supplies the node-event
+`nominalId`, `definitionFingerprint`, and reflected `payload` schema.
+The host reads the section when it initializes the module. The live
+payload uses the natural wasm32 layout of the generated record. Booleans
+occupy one byte. The declared scalar and enum widths determine their size
+and alignment. A sequence uses a pointer and element count. Records are
+aligned to their largest field. `IvConvertedScalar` is 24 bytes, with
+kind at 0, its numeric value at 8, and `IvString` at 16. Boolean values use
+kind 0 and number 0 or 1. Number and string use kinds 1 and 2.
+
+Copy the payload record and all strings and sequences it references into
+the frame's arena before submitting it. The host validates the record and
+its referenced spans within the arena. The host supports up to 4,096
+decoded values and 64 KiB of edit string data per frame. Node-event RPC accepts
+exactly representable JavaScript integers. A converted scalar can carry
+an exact sample index as a decimal string. The host uses the existing
+node-event protocol to validate the binding and the target before delivery.
+The [C++ generator](presentation_cpp.md#node-events) emits the records and
+binding section together.
 
 An `IvTimelineGrid` is 56 bytes. Its base period is a rational number of
 samples, with unsigned 64-bit numerator and denominator at 0 and 8.
@@ -206,15 +269,18 @@ These compile-time assertions verify the layout described above for wasm32.
 ```c
 #include <intravenous/presentation/abi.h>
 
-_Static_assert(IV_PRESENTATION_ABI_VERSION == 5, "ABI version");
-_Static_assert(sizeof(IvPresentationContext) == 168, "context size");
+_Static_assert(IV_PRESENTATION_ABI_VERSION == 7, "ABI version");
+_Static_assert(sizeof(IvPresentationContext) == 200, "context size");
 _Static_assert(offsetof(IvPresentationContext, trigger_columns) == 80, "observation span");
 _Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation record");
 _Static_assert(offsetof(IvObservedTriggerColumns, count) == 16, "trigger count");
+_Static_assert(offsetof(IvPresentationContext, waveforms) == 188, "waveform span");
+_Static_assert(sizeof(IvWaveformPoint) == 24 && sizeof(IvWaveformRegion) == 32, "waveform layouts");
 _Static_assert(sizeof(IvText) == 32, "text record");
 _Static_assert(offsetof(IvPresentationContext, timeline) == 104, "timeline view");
 _Static_assert(sizeof(IvControlInput) == 24 && sizeof(IvSetting) == 64, "controls");
-_Static_assert(sizeof(IvNumericNodeEdit) == 36 && sizeof(IvTimelineGrid) == 56, "edit and grid");
+_Static_assert(sizeof(IvNodeEdit) == 20 && sizeof(IvEditReply) == 24, "node edits");
+_Static_assert(sizeof(IvTimelineGrid) == 56, "grid");
 _Static_assert(IV_LANE_NANO == 3 && IV_OBSERVATION_FAILED == 3, "encoded enums");
 ```
 

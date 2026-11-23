@@ -104,7 +104,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph(
 
 // Builds a module definition's graph the way the package loader builds its
 // default graph (module/loader.cpp), but with construction arguments. Two graphs
-// built from one module this way give the nodes they share the same virtual
+// built from one module this way give the nodes they share the same symbolic
 // nodes, whatever the arguments.
 std::shared_ptr<iv::ConfiguredGraph const> configured_module_graph_with_arguments(
     iv::PackageRevision const& revision,
@@ -203,7 +203,7 @@ void expect_single_node_canonical_regions(
         }), 1u);
 }
 
-// `anonymous` with each of its concrete nodes in a virtual node of its own, as
+// `anonymous` with each of its concrete nodes in a symbolic node of its own, as
 // authored module code would place it, so that the nodes and what they own
 // keep their identity across compilations of the result.
 std::shared_ptr<iv::ConfiguredGraph const> with_node_identities(
@@ -213,12 +213,12 @@ std::shared_ptr<iv::ConfiguredGraph const> with_node_identities(
     for (std::size_t bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
         auto const& configured = graph->node_bundles.bundle(bundle);
         if (!configured.is_concrete()
-            || !configured.virtual_node_handles().empty()) {
+            || !configured.symbolic_node_handles().empty()) {
             continue;
         }
-        auto const record = graph->virtual_nodes.create(
+        auto const record = graph->symbolic_nodes.create(
             "test-node-" + std::to_string(bundle), configured.type_identity());
-        graph->virtual_nodes.attach_bundle_member(
+        graph->symbolic_nodes.attach_bundle_member(
             graph->node_bundles, record, bundle);
     }
     return graph;

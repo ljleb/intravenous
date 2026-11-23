@@ -166,9 +166,9 @@ Json server_status_json(SocketRpcServerStatus const& notification)
     return result;
 }
 
-Json virtual_nodes_updated_json(ProjectVirtualNodesNotification const& notification)
+Json symbolic_nodes_updated_json(ProjectSymbolicNodesNotification const& notification)
 {
-    Json result{{"nodes", virtual_nodes_json(notification.nodes)}};
+    Json result{{"nodes", symbolic_nodes_json(notification.nodes)}};
     if (!notification.replace_instance_ids.empty()) {
         result["replaceInstanceIds"] =
             string_array_json(notification.replace_instance_ids);
@@ -852,10 +852,10 @@ struct SocketRpcServer::Impl {
                 "nodeInstances.updated",
                 Json{{"instances", iv_module_instances_json(*publication.instances)}});
         }
-        if (publication.virtual_nodes) {
+        if (publication.symbolic_nodes) {
             publish(
                 "graph.nodesUpdated",
-                virtual_nodes_updated_json(*publication.virtual_nodes));
+                symbolic_nodes_updated_json(*publication.symbolic_nodes));
         }
         if (publication.graph_changed) {
             publish("graph.changed", Json::object());
@@ -1285,11 +1285,11 @@ void SocketRpcServer::send_iv_package_definitions_updated()
     impl_->publish("ivPackages.updated", Json::object());
 }
 
-void SocketRpcServer::send_virtual_nodes_updated(
-    ProjectVirtualNodesNotification const& notification)
+void SocketRpcServer::send_symbolic_nodes_updated(
+    ProjectSymbolicNodesNotification const& notification)
 {
     impl_->publish(
-        "graph.nodesUpdated", virtual_nodes_updated_json(notification));
+        "graph.nodesUpdated", symbolic_nodes_updated_json(notification));
 }
 
 void SocketRpcServer::handle_project_notification(
@@ -1302,8 +1302,8 @@ void SocketRpcServer::handle_project_notification(
         } else if constexpr (std::same_as<Payload, ProjectStatusNotification>) {
             send_server_status(payload);
         } else if constexpr (
-            std::same_as<Payload, ProjectVirtualNodesNotification>) {
-            send_virtual_nodes_updated(payload);
+            std::same_as<Payload, ProjectSymbolicNodesNotification>) {
+            send_symbolic_nodes_updated(payload);
         }
     }, notification);
 }

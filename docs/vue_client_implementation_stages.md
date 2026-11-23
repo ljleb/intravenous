@@ -55,7 +55,7 @@ in Vue, including after a session reconnect.
 
 This stage deserves substantial attention.
 
-- `VirtualNodeInfo` is a starting point. The Vue graph editor needs a coherent
+- `SymbolicNodeInfo` is a starting point. The Vue graph editor needs a coherent
   authoritative projection of node identities, ports, and connection information.
   Build it from the actual UI requirements, not from new generic query routes
   designed in advance.
@@ -470,7 +470,7 @@ lane changes described below still require compilation, tests, and UI checks.
 
 The owner selected failure-only construction on 2026-11-13. Separate sessions
 for every successful module build were also considered. The current import
-path copies node bundles, remaps connections, and imports virtual-node records.
+path copies node bundles, remaps connections, and imports symbolic-node records.
 It would add work on cache misses, and constructor `NodeRef` arguments can
 cross package boundaries. Successful builds therefore retain direct construction
 in the root session. No rollback log or per-instance interface preparation is
@@ -882,7 +882,7 @@ and editing work. The previous discussion text is preserved in
 The owner wants the source-selection side panel to become a filtered host of
 the same lane UI, with shared interaction/selection state across webviews.
 Filtering is required and must not be deprecated. Before this replacement,
-adapt the current `VirtualNodeInfo` source query to the same stable node/port
+adapt the current `SymbolicNodeInfo` source query to the same stable node/port
 identity contract that the editor lanes use; do not carry over one display lane
 per port or lose source-selection focus. The replacement is not implemented in
 this pass.
@@ -1026,10 +1026,10 @@ Decisions and assumptions made to proceed:
 - Toolchain: Vue single-file components built by Vite with `@vitejs/plugin-vue`,
   typechecked by `vue-tsc`; the extension host stays an esbuild bundle. A later
   standalone host can reuse the same Vite application.
-- The node data is the existing source-introspection `VirtualNodeInfo`
+- The node data is the existing source-introspection `SymbolicNodeInfo`
   (`graph.queryBySpans` and `graph.nodesUpdated`). It carries no `NodeAddress`, so
   the stage 1 `SemanticNode` has no `address`; stage 2's graph-editor projection
-  must supply it. The node `id` is the source-introspection virtual-node ID.
+  must supply it. The node `id` is the source-introspection symbolic-node ID.
 - User view choice (`nano`, `mini`, `editable`) is webview-local state; the host
   imposes `compact` below a provisional width threshold with hysteresis.
 - No preference storage yet: with no specialized presentation registered, a stored
@@ -1040,7 +1040,7 @@ Decisions and assumptions made to proceed:
   and deletion, which stage 2's Vue graph editor takes over; it is replaced there
   rather than ported twice.
 
-Corrected along the way: the client read `packageIdentity` from virtual nodes, but
+Corrected along the way: the client read `packageIdentity` from symbolic nodes, but
 the backend sends `sourceIdentity`, so the old panel's identity summary always fell
 back to the raw node ID.
 
@@ -1987,9 +1987,9 @@ Audible output owner-confirmed (2026-11-14):
   regression now uses the fixture's existing registered constants explicitly.
   Test validation remains owner-run before continuing the specialized presentation.
 
-Virtual sample output connections (2026-11-21)
+Symbolic sample output connections (2026-11-21)
 
-- A project cable from the Saw's `gain` virtual lane to Click Detector resolved
+- A project cable from the Saw's `gain` symbolic lane to Click Detector resolved
   to several stereo producers. `GraphConnections` emitted one configured
   connection per producer, so GraphJit rejected overlapping writes to the input.
 - `GraphConnections` now keeps all complete source layouts for one cable in a

@@ -33,10 +33,10 @@ namespace iv {
         void (*)(GraphQueryBySpansRequest const &, SocketRpcGraphQueryResultBuilder &);
     using SocketRpcGraphQueryActiveRegionsEvent =
         void (*)(GraphQueryActiveRegionsRequest const &, SocketRpcRegionQueryResultBuilder &);
-    using SocketRpcGetVirtualNodeEvent =
-        void (*)(GetVirtualNodeRequest const &, SocketRpcVirtualNodeResultBuilder &);
-    using SocketRpcGetVirtualNodesEvent =
-        void (*)(GetVirtualNodesRequest const &, SocketRpcVirtualNodesResultBuilder &);
+    using SocketRpcGetSymbolicNodeEvent =
+        void (*)(GetSymbolicNodeRequest const &, SocketRpcSymbolicNodeResultBuilder &);
+    using SocketRpcGetSymbolicNodesEvent =
+        void (*)(GetSymbolicNodesRequest const &, SocketRpcSymbolicNodesResultBuilder &);
     using SocketRpcGetGraphScopeEvent =
         void (*)(GetGraphScopeRequest const &, SocketRpcGraphScopeResultBuilder &);
     using SocketRpcGetNodeDefinitionsEvent = void (*)(std::shared_ptr<NodeDefinitionsSnapshot const>&);
@@ -104,8 +104,8 @@ namespace iv {
 
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodeEvent, iv_socket_rpc_get_virtual_node_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetVirtualNodesEvent, iv_socket_rpc_get_virtual_nodes_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodeEvent, iv_socket_rpc_get_symbolic_node_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodesEvent, iv_socket_rpc_get_symbolic_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetGraphScopeEvent, iv_socket_rpc_get_graph_scope_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
@@ -173,10 +173,10 @@ namespace iv {
         void send_node_instances_updated(
             std::vector<IvModuleInstanceInfo> const &instances);
         void send_iv_package_definitions_updated();
-        void send_virtual_nodes_updated(
-            ProjectVirtualNodesNotification const &notification);
+        void send_symbolic_nodes_updated(
+            ProjectSymbolicNodesNotification const &notification);
         // The read-model changes a project-graph change committed: the
-        // instance list and the virtual-node replacements.
+        // instance list and the symbolic-node replacements.
         void send_project_graph_publication(
             ProjectGraphPublication const &publication);
         void handle_project_notification(ProjectNotification const &notification);

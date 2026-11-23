@@ -725,7 +725,7 @@ same observable state that private node-local storage would have preserved.
 
 Connection topology is not the identity of this state. Rewiring changes future
 routing while still-visible destination history remains unchanged until it ages out.
-A stable identity is rooted in user-instance/concrete-node/virtual-member and
+A stable identity is rooted in user-instance/concrete-node/symbolic-member and
 port/channel-or-event-stream identity plus the state role. Storage representation,
 capacity, offset, incidence partition and ordinary connection identity are not part of
 that semantic identity.

@@ -147,8 +147,8 @@ Each selector maps to one existing project matcher concept:
 | Syntax | Record | Operation |
 | --- | --- | --- |
 | `&uuid` | Stable project node ID | Establish the authored project-node subject. |
-| `.name` | `ProjectVirtualNodeSelector` | Select direct virtual nodes named `name` in the subject scope. |
-| `[n]` | `ProjectVirtualMemberSelector` | Select concrete member `n` of a virtual node. |
+| `.name` | `ProjectSymbolicNodeSelector` | Select direct symbolic nodes named `name` in the subject scope. |
+| `[n]` | `ProjectSymbolicMemberSelector` | Select concrete member `n` of a symbolic node. |
 | `#name` | `ProjectTiledChildSelector` | Select the tiled child with semantic name `name`. |
 
 For example:
@@ -159,11 +159,11 @@ For example:
 &550e8400-e29b-41d4-a716-446655440000.processor.voices[2]#left
 ```
 
-The three postfix selectors are distinct. A virtual node can contain multiple concrete
+The three postfix selectors are distinct. A symbolic node can contain multiple concrete
 members. A concrete member can also be tiled. Therefore `[2]` and `#left` cannot share
 one representation.
 
-`#name` always requires a subject. It is not a global virtual-node query. Tile names are
+`#name` always requires a subject. It is not a global symbolic-node query. Tile names are
 semantic names such as `left`, `right`, `middle`, and `side`. They are not numeric tile
 positions.
 
@@ -171,9 +171,9 @@ Port selection is not part of this path grammar. If configuration expressions la
 refer to ports, the design must keep port selection and port-channel selection distinct
 from these three selectors.
 
-## Scope-local virtual-node lookup
+## Scope-local symbolic-node lookup
 
-`ProjectVirtualNodeSelector` selects only virtual nodes that belong directly to the
+`ProjectSymbolicNodeSelector` selects only symbolic nodes that belong directly to the
 current subject subgraph. It must not search descendant subgraphs.
 
 Consider this hierarchy:
@@ -193,17 +193,17 @@ A `.filter` selector on `Root` selects neither `filter`. These paths select them
 &550e8400-e29b-41d4-a716-446655440000.processorB.filter
 ```
 
-This rule makes each subgraph a semantic namespace. It also prevents virtual nodes in
+This rule makes each subgraph a semantic namespace. It also prevents symbolic nodes in
 unrelated descendants from changing a parent lookup result.
 
-If several direct virtual nodes match one `ProjectVirtualNodeSelector`, the result stays
+If several direct symbolic nodes match one `ProjectSymbolicNodeSelector`, the result stays
 set-valued. A consumer that requires one result must make sure that the cardinality is
 one.
 
 ## Subgraph navigation
 
-Each semantically addressable subgraph must have a backing virtual node. Selecting that
-virtual node makes its backing subgraph available to the next selector. A semantic path
+Each semantically addressable subgraph must have a backing symbolic node. Selecting that
+symbolic node makes its backing subgraph available to the next selector. A semantic path
 does not need a separate structural step to enter the subgraph.
 
 `ProjectSubgraphSelector` is not part of the intended semantic node-path model. The
@@ -211,7 +211,7 @@ graph still contains subgraph bundles, scopes, and construction records. This de
 only removes structural kind-and-index navigation from user-facing semantic identity.
 
 An unnamed internal subgraph is not addressable through its incidental structural
-position. If a project must address it, its author must give it a backing virtual node.
+position. If a project must address it, its author must give it a backing symbolic node.
 
 ## Shared resolution with `GraphConnections`
 
@@ -222,9 +222,9 @@ with its separate port matcher and optional port-channel selector.
 The shared resolver performs these operations:
 
 1. Establish the stable authored project-node subject.
-2. Apply each `ProjectVirtualNodeSelector`, `ProjectVirtualMemberSelector`, or
+2. Apply each `ProjectSymbolicNodeSelector`, `ProjectSymbolicMemberSelector`, or
    `ProjectTiledChildSelector` in order.
-3. Keep virtual-node lookup local to the current subject scope.
+3. Keep symbolic-node lookup local to the current subject scope.
 4. Preserve set-valued results.
 5. Return stable semantic matches, not persisted concrete graph positions.
 
@@ -292,9 +292,9 @@ Front 9 does not implement the future project-owned editable-subgraph system. It
 remain compatible with these rules:
 
 - An authored subgraph has a stable identity.
-- An addressable subgraph has a backing virtual node.
-- Virtual-node lookup is local to one subgraph.
-- A path enters a subgraph through its selected virtual node.
+- An addressable subgraph has a backing symbolic node.
+- Symbolic-node lookup is local to one subgraph.
+- A path enters a subgraph through its selected symbolic node.
 - Referring to an existing subgraph differs from constructing a new reusable instance.
 
 `ProjectGraph` and its existing child modules will own the future project-editable
@@ -309,9 +309,9 @@ Front 9 tests must cover these cases:
 - The same enumerator name in two unrelated enum types.
 - A stable project-node ID literal with hyphens.
 - `.name`, `[n]`, and `#name` in one path.
-- Same-named virtual nodes in sibling subgraphs.
-- A parent lookup that must not find a descendant-only virtual node.
-- Set-valued direct virtual-node matches and cardinality diagnostics.
+- Same-named symbolic nodes in sibling subgraphs.
+- A parent lookup that must not find a descendant-only symbolic node.
+- Set-valued direct symbolic-node matches and cardinality diagnostics.
 - Unknown project IDs, member indices, and tile names.
 - Rejection of a standalone `#name`.
 - Shared path results between configuration references and `GraphConnections`.
@@ -336,8 +336,8 @@ The implementation uses these concrete records and functions:
   as `left` and `right`. The configured-graph archive preserves that field.
 - `resolve_project_node_path()` resolves both configuration paths and
   `ProjectNodePortMatcher::path`. Every selector applies to every current match, and
-  duplicate matches are removed. A virtual-node match retains only the
-  `VirtualNodeRecord::node_bundle_handles` indices that belong directly to the selected
+  duplicate matches are removed. A symbolic-node match retains only the
+  `SymbolicNodeRecord::node_bundle_handles` indices that belong directly to the selected
   scope, so `[n]` cannot enter a sibling subgraph through a shared record. A caller
   that requires one node uses `require_single_project_node_path_match()`.
 - `NodeInstances` caches parsed source by definition ID, definition version, and exact
@@ -366,5 +366,5 @@ resolution cache to invalidate.
 > deferred until the project configuration language is settled.
 
 The durable representation of future project-owned editable subgraphs remains
-`ProjectGraph` work. It cannot reintroduce recursive virtual-node lookup, implicit
+`ProjectGraph` work. It cannot reintroduce recursive symbolic-node lookup, implicit
 global lookup, ambiguous indexing, or redundant type syntax.

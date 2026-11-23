@@ -48,7 +48,7 @@ export class PresentationLaneEdits {
             if (command.type === "edit" && command.gesture) {
                 const gesture = this.gestures.get(command.gesture);
                 this.gestures.delete(command.gesture);
-                void gesture?.finish().catch(() => {});
+                await gesture?.finish().catch(() => {});
             }
         }
     }

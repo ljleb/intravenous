@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace iv {
-    enum class VirtualPortConnectivity : std::uint8_t {
+    enum class SymbolicPortConnectivity : std::uint8_t {
         disconnected,
         connected,
         mixed,
@@ -18,7 +18,7 @@ namespace iv {
 
     struct IntrospectionContinuousPortInfo {
         std::string name {};
-        VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
+        SymbolicPortConnectivity connectivity = SymbolicPortConnectivity::disconnected;
         size_t index = 0;
         std::vector<ContinuousValueIntrospectionMetadata> value_types {};
         std::optional<ChannelTypeId> channel_type {};
@@ -30,7 +30,7 @@ namespace iv {
 
     struct IntrospectionEventPortInfo {
         std::string name {};
-        VirtualPortConnectivity connectivity = VirtualPortConnectivity::disconnected;
+        SymbolicPortConnectivity connectivity = SymbolicPortConnectivity::disconnected;
         size_t index = 0;
         EventTypeId type = EventTypeId::empty;
         std::vector<SourceSpan> source_spans {};
@@ -38,7 +38,7 @@ namespace iv {
         bool operator==(IntrospectionEventPortInfo const&) const = default;
     };
 
-    struct IntrospectionVirtualNode {
+    struct IntrospectionSymbolicNode {
         struct Member {
             size_t index = 0;
             std::string backing_node_id {};
@@ -99,7 +99,7 @@ namespace iv {
     };
 
     struct GraphIntrospectionMetadata {
-        std::vector<IntrospectionVirtualNode> virtual_nodes;
+        std::vector<IntrospectionSymbolicNode> symbolic_nodes;
         std::vector<GraphBuilderPublicContinuousPortFamily> public_continuous_inputs;
         std::vector<GraphBuilderPublicEventInput> public_event_inputs;
         std::vector<GraphBuilderPublicContinuousPortFamily> public_continuous_outputs;

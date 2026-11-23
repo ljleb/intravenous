@@ -351,10 +351,10 @@ std::string manual_control_migration_identity(
         << ":source=" << control.id.node.instance_id.size() << ':' << control.id.node.instance_id;
     for (auto const& selector : control.id.node.path) std::visit([&](auto const& entry) {
         using T = std::remove_cvref_t<decltype(entry)>;
-        if constexpr (std::same_as<T, ProjectVirtualNodeSelector>) {
-            out << ":virtual=" << entry.source_identity.size() << ':' << entry.source_identity;
+        if constexpr (std::same_as<T, ProjectSymbolicNodeSelector>) {
+            out << ":symbolic=" << entry.source_identity.size() << ':' << entry.source_identity;
             if (entry.type_identity) out << ":type=" << entry.type_identity->size() << ':' << *entry.type_identity;
-        } else if constexpr (std::same_as<T, ProjectVirtualMemberSelector>) out << ":member=" << entry.index;
+        } else if constexpr (std::same_as<T, ProjectSymbolicMemberSelector>) out << ":member=" << entry.index;
         else out << ":child=" << entry.name.size() << ':' << entry.name;
     }, selector);
     out << ":selection=" << control.concrete_selection_index;

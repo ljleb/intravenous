@@ -20,8 +20,10 @@ export type PresentationManifest = {
 };
 
 export type PresentationPoint = { x: number; y: number };
+export type PresentationCursor = PresentationPoint | { sample: string; yFraction: number };
 export type PresentationModifiers = { shift: boolean; alt: boolean; control: boolean; meta: boolean };
 export type PresentationObservation = {
+    operation: "waveform" | typeof recordedTriggerBinsOperation;
     status: ObservationWindowResult["status"];
     error?: string;
     result?: ObservationWindowResult;
@@ -100,7 +102,7 @@ export type PresentationFrame = {
     contextMenu?: { label: string; rows: PresentationControl[][] };
     itemEditing?: true;
     valueNavigation?: true;
-    drag?: { hint?: string; shortcuts?: string; cursor?: PresentationPoint };
+    drag?: { hint?: string; shortcuts?: string; cursor?: PresentationCursor };
     cancelDrag?: true;
     wakeAfterMs?: number;
     timelineGrid?: PresentationTimelineGrid;
@@ -117,6 +119,13 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const list = <T>(value: unknown, max: number, item: (value: any) => value is T): value is T[] =>
     Array.isArray(value) && value.length <= max && value.every(item);
 const point = (value: unknown): value is PresentationPoint => record(value) && finite(value.x) && finite(value.y);
+function cursor(value: unknown): value is PresentationCursor {
+    if (!record(value)) return false;
+    if (!("sample" in value)) return point(value);
+    return typeof value.sample === "string" && /^-?\d{1,19}$/.test(value.sample)
+        && BigInt.asIntN(64, BigInt(value.sample)) === BigInt(value.sample)
+        && finite(value.yFraction) && value.yFraction >= 0 && value.yFraction <= 1;
+}
 const flag = (value: unknown) => value === undefined || value === true;
 const ink = (value: unknown): value is PresentationInk | undefined => value === undefined
     || ["foreground", "muted", "input", "output", "selection", "highlight", "warning", "background"].includes(value as string);
@@ -236,7 +245,7 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
                 && (entry.cursor === undefined || entry.cursor === "default" || entry.cursor === "ew-resize")))
         || !panel(value.panel) || !panel(value.contextMenu) || !flag(value.itemEditing) || !flag(value.valueNavigation) || !flag(value.cancelDrag)
         || (value.wakeAfterMs !== undefined && (!finite(value.wakeAfterMs) || value.wakeAfterMs < 0 || value.wakeAfterMs > 10000))
-        || (value.drag !== undefined && (!record(value.drag) || (value.drag.cursor !== undefined && !point(value.drag.cursor))
+        || (value.drag !== undefined && (!record(value.drag) || (value.drag.cursor !== undefined && !cursor(value.drag.cursor))
             || (value.drag.hint !== undefined && !text(value.drag.hint, 512))
             || (value.drag.shortcuts !== undefined && !text(value.drag.shortcuts, 256))))
         || (value.commands !== undefined && !list(value.commands, 32,

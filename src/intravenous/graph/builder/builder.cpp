@@ -635,7 +635,7 @@ try {
     auto const handle = finish_builder_scope(value, scope, kind, std::nullopt);
     NodeRef result(value, handle);
     // The boundary's declaration identity annotates the finished subgraph in
-    // the enclosing scope, as an authored subgraph's backing virtual node.
+    // the enclosing scope, as an authored subgraph's backing symbolic node.
     for (auto const& info : session(value).subgraph_boundary_source_infos(handle)) {
         result._annotate_source_info(
             info.declaration_identity,

@@ -45,7 +45,7 @@ iv::PersistedOutputId stable_output(iv::PortKind kind, char const* name)
     return iv::graph_jit::StableOutputPortId{
         .node = {
             .graph = "project",
-            .virtual_node = "source",
+            .symbolic_node = "source",
             .direct_member = 0,
         },
         .kind = kind,

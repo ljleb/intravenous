@@ -54,7 +54,7 @@ The complete follow-up migration must:
    prepared caches. Share a single background-managed page/window storage
    realization between Tick/Sequential/buffered recordings and Tock/buffered
    outputs rather than duplicating their backing and publication machinery.
-   Make sparse virtual mappings an optional backend with configurable limits
+   Make sparse symbolic mappings an optional backend with configurable limits
    on one mapping's byte span and aggregate reserved virtual address space;
    separately budget process-wide VMAs/physical-run fragmentation, physical
    backing and realtime-resident pages. Preserve run-based mapping assembly,

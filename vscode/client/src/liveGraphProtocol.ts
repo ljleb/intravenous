@@ -1,4 +1,4 @@
-import type { VirtualNode } from "./graphModel";
+import type { SymbolicNode } from "./graphModel";
 import { isStatusHint, type StatusHint } from "./statusBarText";
 
 // Messages between the extension host and the Vue webview. This module is
@@ -30,8 +30,8 @@ export type LiveGraphViewState = {
     // Package root of the active module.cpp editor, which enables
     // "Duplicate".
     packageRoot: string | null;
-    // Virtual nodes from the backend's source-introspection read model.
-    nodes: VirtualNode[];
+    // Symbolic nodes from the backend's source-introspection read model.
+    nodes: SymbolicNode[];
 };
 
 export type LiveGraphStateMessage = {

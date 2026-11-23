@@ -19,3 +19,4 @@ node_modules
 vscode/client/dist
 vscode/client/dist-test
 vscode/client/dist-tools
+/examples/wasm-presentation/packages/marker/presentations/*.wasm

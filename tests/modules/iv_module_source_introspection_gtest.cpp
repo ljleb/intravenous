@@ -150,14 +150,14 @@ struct InitializedIvModuleSourceIntrospectionApp {
         return introspection.query_active_regions(file_path);
     }
 
-    auto get_virtual_node(std::string const &node_id) const
+    auto get_symbolic_node(std::string const &node_id) const
     {
-        return introspection.get_virtual_node(node_id);
+        return introspection.get_symbolic_node(node_id);
     }
 
-    auto get_virtual_nodes(std::vector<std::string> const &node_ids) const
+    auto get_symbolic_nodes(std::vector<std::string> const &node_ids) const
     {
-        return introspection.get_virtual_nodes(node_ids);
+        return introspection.get_symbolic_nodes(node_ids);
     }
 };
 } // namespace
@@ -345,7 +345,7 @@ namespace {
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
-        "iv_module_source_introspection_merged_virtual",
+        "iv_module_source_introspection_merged_symbolic",
         R"(#include <intravenous/dsl.h>
 
 namespace {
@@ -356,7 +356,7 @@ namespace {
             g, static_cast<iv::Sample>(I)).node_ref();
     }
 
-    void merged_virtual_module(iv::GraphBuilder& g)
+    void merged_symbolic_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
@@ -424,7 +424,7 @@ namespace {
     auto has_port_identifier = [&](std::string_view port_name,
                                    std::string_view identifier) {
         return std::ranges::any_of(
-            definition->introspection.virtual_nodes,
+            definition->introspection.symbolic_nodes,
             [&](auto const& node) {
                 return std::ranges::any_of(
                     node.continuous_inputs,
@@ -624,7 +624,7 @@ namespace {
     EXPECT_TRUE(query_at("\"trigger\"_F", std::string_view("\"trigger\"").size() + 1).nodes.empty());
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)
+TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedSymbolicNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
@@ -674,7 +674,7 @@ namespace {
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedSymbolicNode)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
@@ -928,7 +928,7 @@ namespace {
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
-TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndependentVirtualNodes)
+TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndependentSymbolicNodes)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_split_lvalue_types",
@@ -965,7 +965,7 @@ namespace {
         { { .start = { .line = 1, .column = 1 }, .end = { .line = 28, .column = 1 } } }
     );
 
-    std::vector<iv::VirtualNodeInfo const*> split_nodes;
+    std::vector<iv::SymbolicNodeInfo const*> split_nodes;
     for (auto const& node : result.nodes) {
         if (node.source_identity.ends_with("@p"))
             split_nodes.push_back(&node);
@@ -1038,10 +1038,10 @@ namespace {
             || node.continuous_inputs.size() != 1) continue;
         EXPECT_EQ(node.member_count, 1u);
         if (node.continuous_inputs.front().connectivity
-            == iv::VirtualPortConnectivity::connected) {
+            == iv::SymbolicPortConnectivity::connected) {
             ++connected_sum_count;
         } else if (node.continuous_inputs.front().connectivity
-                   == iv::VirtualPortConnectivity::disconnected) {
+                   == iv::SymbolicPortConnectivity::disconnected) {
             ++disconnected_sum_count;
         }
     }
@@ -1186,21 +1186,21 @@ void polyphonic_module(iv::GraphBuilder& g)
         {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
-    auto const& virtual_node = result.nodes.front();
-    EXPECT_EQ(virtual_node.kind, "iv::SawOscillator");
-    EXPECT_EQ(virtual_node.member_count, 2u);
-    ASSERT_EQ(virtual_node.members.size(), 2u);
-    EXPECT_EQ(virtual_node.members[0].index, 0u);
-    EXPECT_EQ(virtual_node.members[1].index, 1u);
-    EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
-    EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
-    ASSERT_EQ(virtual_node.continuous_inputs.size(), 2u);
-    EXPECT_EQ(virtual_node.continuous_inputs[0].name, "phase_offset");
-    EXPECT_EQ(virtual_node.continuous_inputs[1].name, "frequency");
-    ASSERT_EQ(virtual_node.continuous_outputs.size(), 1u);
-    EXPECT_EQ(virtual_node.continuous_outputs[0].name, "out");
+    auto const& symbolic_node = result.nodes.front();
+    EXPECT_EQ(symbolic_node.kind, "iv::SawOscillator");
+    EXPECT_EQ(symbolic_node.member_count, 2u);
+    ASSERT_EQ(symbolic_node.members.size(), 2u);
+    EXPECT_EQ(symbolic_node.members[0].index, 0u);
+    EXPECT_EQ(symbolic_node.members[1].index, 1u);
+    EXPECT_EQ(symbolic_node.members[0].kind, "iv::SawOscillator");
+    EXPECT_EQ(symbolic_node.members[1].kind, "iv::SawOscillator");
+    ASSERT_EQ(symbolic_node.continuous_inputs.size(), 2u);
+    EXPECT_EQ(symbolic_node.continuous_inputs[0].name, "phase_offset");
+    EXPECT_EQ(symbolic_node.continuous_inputs[1].name, "frequency");
+    ASSERT_EQ(symbolic_node.continuous_outputs.size(), 1u);
+    EXPECT_EQ(symbolic_node.continuous_outputs[0].name, "out");
 
-    auto const resolved = app.get_virtual_node(virtual_node.id);
+    auto const resolved = app.get_symbolic_node(symbolic_node.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
     ASSERT_EQ(resolved.continuous_inputs.size(), 2u);
@@ -1258,7 +1258,7 @@ void polyphonic_module(iv::GraphBuilder& g)
     }));
 }
 
-TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
+TEST(IvModuleSourceIntrospection, ReloadKeepsSymbolicNodeIdsAddressable)
 {
     auto const workspace = mutable_module_fixture_workspace("iv_module_source_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
@@ -1281,5 +1281,5 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
     iv::test::write_text(module_cpp, original_text);
 
     EXPECT_FALSE(reloaded.nodes.empty());
-    EXPECT_NO_THROW((void)app.get_virtual_node(initial.nodes.front().id));
+    EXPECT_NO_THROW((void)app.get_symbolic_node(initial.nodes.front().id));
 }

@@ -35,7 +35,7 @@ Every semantically addressable internal port is connectable without an explicit
 ports changes discovery/presentation only. GraphJit already handles unconnected
 ports through its normal specialization path; UI visibility is not a separate
 runtime port-enablement state. Direct automation wiring should use ordinary
-port connections, including to nested virtual-node ports.
+port connections, including to nested symbolic-node ports.
 
 ## Nested module presentation and project-owned scopes
 
@@ -108,19 +108,19 @@ child can appear in its module's expanded lanes and take part in project
 connections. Only project instances can be duplicated. Duplicating a module
 runs its constructor to create its children.
 
-Each virtual node has a lane with the C++ declaration name as its primary
+Each symbolic node has a lane with the C++ declaration name as its primary
 label and the node's display name as its secondary label. Expanding the lane
 shows its concrete members. A member lane puts the declaration name and
 one-based member index first and its display name second. When a tile expands,
 its children put their channel names first.
 
-A concrete member can appear under several virtual nodes. Those rows
+A concrete member can appear under several symbolic nodes. Those rows
 share project edits and saved presentation settings.
-Each virtual port maps to the matching ports of its members.
+Each symbolic port maps to the matching ports of its members.
 
 When a C++ declaration produces several concrete types, each type has
-its own virtual lane. Each lane exposes the inputs, outputs, and members
-for that type. A virtual output meter measures the sum of the members on
+its own symbolic lane. Each lane exposes the inputs, outputs, and members
+for that type. A symbolic output meter measures the sum of the members on
 each shared channel.
 
 Project-authored nested subgraph scopes remain planned separately; see

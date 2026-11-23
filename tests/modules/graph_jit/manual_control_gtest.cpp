@@ -106,9 +106,9 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
         for (iv::NodeBundleHandle bundle = 0; bundle < configured.node_bundles.size(); ++bundle) {
             auto const& node = configured.node_bundles.bundle(bundle);
             if (!node.is_concrete()) continue;
-            auto const identity = configured.virtual_nodes.create(
+            auto const identity = configured.symbolic_nodes.create(
                 "node:" + std::to_string(bundle), node.type_identity());
-            configured.virtual_nodes.attach_bundle_member(configured.node_bundles, identity, bundle);
+            configured.symbolic_nodes.attach_bundle_member(configured.node_bundles, identity, bundle);
         }
     }
     return std::make_shared<iv::ConfiguredGraph const>(std::move(configured));

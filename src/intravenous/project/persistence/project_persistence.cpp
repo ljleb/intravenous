@@ -501,7 +501,7 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
         });
     try {
         // Startup replay runs before any client attaches; clients read the
-        // replayed instances and virtual nodes when they connect, so the
+        // replayed instances and symbolic nodes when they connect, so the
         // rebuild's publication (builder.take_publication()) is not sent.
         ProjectAckBuilder builder;
         IV_INVOKE_LINKER_EVENT(

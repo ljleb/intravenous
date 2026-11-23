@@ -1,6 +1,9 @@
 import type { Point } from "../../src/graphScope";
 import type { CursorReturnMessage, CursorReturnPolicy, TraceLog } from "../../src/graphEditorProtocol";
 import type { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
+import type { PresentationCursor } from "../../src/presentationPlugin";
+import { timelineSampleFraction } from "../../src/timelineGeometry";
+import type { PresentationTime } from "../../src/timelineSamples";
 
 export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
 export type CursorFollowTarget = {
@@ -127,6 +130,14 @@ export class PointerLockCursorReturn {
         if (trace) trace.log("Cursor return skipped", { reason: detail });
         else this.send({ type: "cursorReturnSkipped", detail });
     }
+}
+
+export function presentationCursorPoint(destination: PresentationCursor, bounds: Pick<DOMRect, "left" | "top" | "width" | "height">,
+    time?: PresentationTime): Point | null {
+    if (!("sample" in destination)) return { x: bounds.left + destination.x, y: bounds.top + destination.y };
+    if (!time || !(time.spanSamples > 0)) return null;
+    return { x: bounds.left + timelineSampleFraction(BigInt(destination.sample), time) * bounds.width,
+        y: bounds.top + destination.yFraction * bounds.height };
 }
 
 export function visibleCursorDestination(surface: Element, position: Point): Point | null {

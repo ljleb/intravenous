@@ -50,7 +50,7 @@ test("curve gestures keep exact playhead detents, send drafts before release and
     assert.deepEqual(move.event.payload, { id: 1, seconds: 0, sample_index: "96000", value: .5 });
 
     const release = present([gesture("point:1", "finish", 20, point.y)], { clockMs: 95 });
-    assert.deepEqual(release.drag?.cursor, { x: 20, y: point.y });
+    assert.deepEqual(release.drag?.cursor, { sample: "96000", yFraction: point.y / snapshot.viewport.height });
     assert.deepEqual(release.commands, []);
     present([acknowledge(move, 2)]);
     await settle();
@@ -138,11 +138,11 @@ test("a connected bound uses the retained spans while its replacement is pending
         assert.equal(mark?.type, "polyline");
         return mark.points;
     };
-    const first = maxTrace(present([], { observations: { max: { status: "ready", result, spans } } }));
+    const first = maxTrace(present([], { observations: { max: { operation: "waveform", status: "ready", result, spans } } }));
     assert.equal(first[0].y, 50);
     assert.equal(first.at(-1)?.y, 25);
     const pending = { ...result, status: "pending" as const, regions: [] };
-    assert.deepEqual(maxTrace(present([], { observations: { max: { status: "pending", result: pending, spans } } })), first);
+    assert.deepEqual(maxTrace(present([], { observations: { max: { operation: "waveform", status: "pending", result: pending, spans } } })), first);
 });
 
 test("automation points and interpolation follow the same view through the signed seam", () => {

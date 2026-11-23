@@ -64,7 +64,19 @@ Both operations can continue while the worker is busy. Custom ruler grids
 still get their marks through server observations because their event
 positions can depend on arbitrary upstream nodes.
 
-Typed sample observations, exact event payloads, per-edit replies, and
-cursor return are separate surfaces. See the
+## How node edits return to the presentation
+
+The guest records the edit during `iv_present` and can draw a draft in the
+same frame. After the guest returns, the host checks the edit and queues
+it through `PresentationLaneEdits`. The host uses the regular node-event
+RPC to deliver it. The guest continues to receive viewport and input
+updates while that RPC is pending. A reply reaches the original worker
+as an `IvEditReply` in a subsequent frame. The accepted project snapshot
+can arrive later. The request ID identifies the completed operation.
+The accepted revision identifies the snapshot that includes it.
+[Placement example](../tutorials/presentation_event.md)
+
+Typed sample observations and exact event observations are separate from
+node edits. See the
 [migration notes](../../implementation_fronts_direction.md) for Automation
 Curve's requirements.

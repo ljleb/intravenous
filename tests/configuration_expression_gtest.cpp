@@ -335,9 +335,9 @@ TEST(ConfigurationExpression, ParsesStableNodeReferencesAndAllPathSelectors)
     EXPECT_EQ(reference->instance_id, "550e8400-e29b-41d4-a716-446655440000");
     ASSERT_EQ(reference->path.size(), 3u);
     EXPECT_EQ(
-        std::get<iv::ProjectVirtualNodeSelector>(reference->path[0]).source_identity,
+        std::get<iv::ProjectSymbolicNodeSelector>(reference->path[0]).source_identity,
         "processor");
-    EXPECT_EQ(std::get<iv::ProjectVirtualMemberSelector>(reference->path[1]).index, 2u);
+    EXPECT_EQ(std::get<iv::ProjectSymbolicMemberSelector>(reference->path[1]).index, 2u);
     EXPECT_EQ(std::get<iv::ProjectTiledChildSelector>(reference->path[2]).name, "right");
 }
 
@@ -460,11 +460,11 @@ TEST(ConfigurationExpression, SerializesSuppliedReplacementArgumentsAsOneArray)
     iv::NodeAddress const address{
         .instance_id = "instance:source",
         .path = {
-            iv::ProjectVirtualNodeSelector{
+            iv::ProjectSymbolicNodeSelector{
                 .source_identity = "processor",
                 .type_identity = "filter",
             },
-            iv::ProjectVirtualMemberSelector{.index = 2},
+            iv::ProjectSymbolicMemberSelector{.index = 2},
         },
     };
     auto const serialized = nlohmann::ordered_json::parse(
@@ -513,11 +513,11 @@ TEST(ConfigurationExpression, ConstructsNodeAddressEventFieldsFromJson)
             {"instanceId", "instance:source"},
             {"path", nlohmann::ordered_json::array({
                 nlohmann::ordered_json{
-                    {"kind", "virtualNode"},
+                    {"kind", "symbolicNode"},
                     {"sourceIdentity", "processor"},
                 },
                 nlohmann::ordered_json{
-                    {"kind", "virtualMember"},
+                    {"kind", "symbolicMember"},
                     {"index", 1},
                 },
             })},
@@ -528,7 +528,7 @@ TEST(ConfigurationExpression, ConstructsNodeAddressEventFieldsFromJson)
     EXPECT_EQ(address.instance_id, "instance:source");
     ASSERT_EQ(address.path.size(), 2u);
     EXPECT_EQ(
-        std::get<iv::ProjectVirtualMemberSelector>(address.path[1]).index,
+        std::get<iv::ProjectSymbolicMemberSelector>(address.path[1]).index,
         1u);
 }
 

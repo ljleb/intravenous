@@ -78,9 +78,9 @@ SourceInfo make_source_info(
   };
 }
 
-// Every node-bundle reference held by a virtual-node record.
+// Every node-bundle reference held by a symbolic-node record.
 template<class Visit>
-void for_each_record_bundle(VirtualNodeRecord& record, Visit&& visit) {
+void for_each_record_bundle(SymbolicNodeRecord& record, Visit&& visit) {
   for (auto& bundle : record.node_bundle_handles) visit(bundle);
   for (auto& mapping : record.sample_inputs) {
     for (auto& channel : mapping.channels) visit(channel.bundle);
@@ -99,17 +99,17 @@ void for_each_record_bundle(VirtualNodeRecord& record, Visit&& visit) {
 }
 
 template<class Predicate>
-bool record_bundles_all(VirtualNodeRecord const& record, Predicate&& predicate) {
+bool record_bundles_all(SymbolicNodeRecord const& record, Predicate&& predicate) {
   bool result = true;
-  for_each_record_bundle(const_cast<VirtualNodeRecord&>(record),
+  for_each_record_bundle(const_cast<SymbolicNodeRecord&>(record),
       [&](NodeBundleHandle& bundle) { result = result && predicate(bundle); });
   return result;
 }
 
 template<class Predicate>
-bool record_bundles_any(VirtualNodeRecord const& record, Predicate&& predicate) {
+bool record_bundles_any(SymbolicNodeRecord const& record, Predicate&& predicate) {
   bool result = false;
-  for_each_record_bundle(const_cast<VirtualNodeRecord&>(record),
+  for_each_record_bundle(const_cast<SymbolicNodeRecord&>(record),
       [&](NodeBundleHandle& bundle) { result = result || predicate(bundle); });
   return result;
 }
@@ -149,7 +149,7 @@ ConfiguredEventConnection remap_event_connection(
   return connection;
 }
 
-constexpr std::uint64_t imported_virtual_namespace =
+constexpr std::uint64_t imported_symbolic_namespace =
     std::numeric_limits<std::uint64_t>::max();
 } // namespace
 
@@ -336,7 +336,7 @@ GraphBuilderState::GraphBuilderState(
       .id = details::root_builder_scope_id,
       .kind = details::BuilderScopeKind::root,
       .ports = GraphBuilderPublicPorts(boundary),
-      .virtual_namespace = 0,
+      .symbolic_namespace = 0,
       .namespace_begin = 0,
       .record_begin = 0,
   });
@@ -348,7 +348,7 @@ GraphBuilderMark GraphBuilderState::mark() const noexcept
       .bundles = _node_bundles.size(),
       .sample_connections = _connections.sample_connection_count(),
       .event_connections = _connections.event_connection_count(),
-      .virtual_records = _virtual_nodes.size(),
+      .symbolic_records = _symbolic_nodes.size(),
   };
 }
 
@@ -386,7 +386,7 @@ details::BuilderScopeId GraphBuilderState::current_scope_id() const noexcept
 
 std::uint64_t GraphBuilderState::current_namespace() const noexcept
 {
-  return _scopes.back().virtual_namespace;
+  return _scopes.back().symbolic_namespace;
 }
 
 bool GraphBuilderState::scope_sample_outputs_defined(details::BuilderScopeId id) const
@@ -405,7 +405,7 @@ details::BuilderScopeId GraphBuilderState::push_scope(details::BuilderScopeKind 
     details::error("a builder session has exactly one root scope");
   }
   auto const& parent = _scopes.back();
-  auto const parent_namespace = parent.virtual_namespace;
+  auto const parent_namespace = parent.symbolic_namespace;
   auto const parent_namespace_begin = parent.namespace_begin;
   auto const boundary = _node_bundles.append_scope_boundary();
   auto const definition = kind == details::BuilderScopeKind::definition;
@@ -413,9 +413,9 @@ details::BuilderScopeId GraphBuilderState::push_scope(details::BuilderScopeKind 
       .id = _next_scope_id++,
       .kind = kind,
       .ports = GraphBuilderPublicPorts(boundary),
-      .virtual_namespace = definition ? _next_namespace++ : parent_namespace,
+      .symbolic_namespace = definition ? _next_namespace++ : parent_namespace,
       .namespace_begin = definition ? boundary : parent_namespace_begin,
-      .record_begin = _virtual_nodes.size(),
+      .record_begin = _symbolic_nodes.size(),
   });
   return _scopes.back().id;
 }
@@ -457,7 +457,7 @@ NodeBundleHandle GraphBuilderState::finish_scope(
   auto const sample_inputs = scope.ports.sample_inputs(_node_bundles);
   for (size_t input = 0; input < sample_inputs.size(); ++input) {
     for (auto const& info : scope.ports.sample_input_source_infos(input)) {
-      attach_virtual_input_source_info(
+      attach_symbolic_input_source_info(
           subgraph, info.declaration_identity, PortKind::sample,
           sample_inputs[input].name, info);
     }
@@ -465,7 +465,7 @@ NodeBundleHandle GraphBuilderState::finish_scope(
   auto const event_inputs = scope.ports.event_inputs(_node_bundles);
   for (size_t input = 0; input < event_inputs.size(); ++input) {
     for (auto const& info : scope.ports.event_input_source_infos(input)) {
-      attach_virtual_input_source_info(
+      attach_symbolic_input_source_info(
           subgraph, info.declaration_identity, PortKind::event,
           event_inputs[input].name, info);
     }
@@ -473,9 +473,9 @@ NodeBundleHandle GraphBuilderState::finish_scope(
   auto const record_begin = scope.record_begin;
   _scopes.pop_back();
   if (qualifier) {
-    _virtual_nodes.qualify(record_begin, *qualifier);
+    _symbolic_nodes.qualify(record_begin, *qualifier);
   } else {
-    _virtual_nodes.qualify(record_begin, relative_scope_qualifier(subgraph));
+    _symbolic_nodes.qualify(record_begin, relative_scope_qualifier(subgraph));
   }
   return subgraph;
 }
@@ -710,9 +710,9 @@ void GraphBuilderState::validate_tiled_module_interfaces(
   }
 }
 
-// ---- virtual records ----------------------------------------------------
+// ---- symbolic records ----------------------------------------------------
 
-std::string GraphBuilderState::virtual_record_key(
+std::string GraphBuilderState::symbolic_record_key(
     std::uint64_t name_space, std::string_view source_identity,
     std::string_view type_identity)
 {
@@ -724,60 +724,60 @@ std::string GraphBuilderState::virtual_record_key(
   return key;
 }
 
-VirtualNodeHandle GraphBuilderState::append_virtual_record(
+SymbolicNodeHandle GraphBuilderState::append_symbolic_record(
     std::string_view source_identity, std::string_view type_identity,
     std::uint64_t name_space)
 {
-  auto const handle = _virtual_nodes.create(source_identity, type_identity);
-  _virtual_namespaces.push_back(name_space);
+  auto const handle = _symbolic_nodes.create(source_identity, type_identity);
+  _symbolic_namespaces.push_back(name_space);
   return handle;
 }
 
-VirtualNodeHandle GraphBuilderState::virtual_record(
+SymbolicNodeHandle GraphBuilderState::symbolic_record(
     std::string_view source_identity, std::string_view type_identity)
 {
   auto const name_space = current_namespace();
-  auto key = virtual_record_key(name_space, source_identity, type_identity);
-  if (auto const found = _virtual_record_index.find(key);
-      found != _virtual_record_index.end()) {
+  auto key = symbolic_record_key(name_space, source_identity, type_identity);
+  if (auto const found = _symbolic_record_index.find(key);
+      found != _symbolic_record_index.end()) {
     return found->second;
   }
-  auto const handle = append_virtual_record(
+  auto const handle = append_symbolic_record(
       source_identity, type_identity, name_space);
-  _virtual_record_index.emplace(std::move(key), handle);
+  _symbolic_record_index.emplace(std::move(key), handle);
   return handle;
 }
 
 void GraphBuilderState::index_imported_records(std::size_t begin)
 {
-  _virtual_namespaces.resize(begin);
-  _virtual_namespaces.resize(_virtual_nodes.size(), imported_virtual_namespace);
+  _symbolic_namespaces.resize(begin);
+  _symbolic_namespaces.resize(_symbolic_nodes.size(), imported_symbolic_namespace);
 }
 
-void GraphBuilderState::qualify_virtual_records(
+void GraphBuilderState::qualify_symbolic_records(
     std::size_t begin, std::string_view qualifier)
 {
-  _virtual_nodes.qualify(begin, qualifier);
+  _symbolic_nodes.qualify(begin, qualifier);
 }
 
-void GraphBuilderState::attach_virtual_bundle_member(
+void GraphBuilderState::attach_symbolic_bundle_member(
     NodeBundleHandle bundle, std::string_view source_identity,
     SourceInfo const* source_info)
 {
   if (source_identity.empty()) return;
   auto const type_identity = std::string(_node_bundles.bundle(bundle).type_identity());
-  auto const record = virtual_record(source_identity, type_identity);
-  _virtual_nodes.attach_bundle_member(_node_bundles, record, bundle, source_info);
+  auto const record = symbolic_record(source_identity, type_identity);
+  _symbolic_nodes.attach_bundle_member(_node_bundles, record, bundle, source_info);
 }
 
-void GraphBuilderState::attach_virtual_input_source_info(
+void GraphBuilderState::attach_symbolic_input_source_info(
     NodeBundleHandle bundle, std::string_view source_identity, PortKind kind,
     std::string_view port_name, SourceInfo const& info)
 {
   if (source_identity.empty()) return;
   auto const type_identity = std::string(_node_bundles.bundle(bundle).type_identity());
-  auto const record = virtual_record(source_identity, type_identity);
-  _virtual_nodes.annotate_input_source_info(
+  auto const record = symbolic_record(source_identity, type_identity);
+  _symbolic_nodes.annotate_input_source_info(
       _node_bundles, record, bundle, kind, port_name, info);
 }
 
@@ -792,11 +792,11 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
         + ": g.outputs(...) must be called before insertion");
 
   auto const begin = _node_bundles.size();
-  auto const record_begin = _virtual_nodes.size();
+  auto const record_begin = _symbolic_nodes.size();
   auto const root_scope = begin + child.node_bundles.size();
   auto imported = GraphBuilderChildEmbedder::import(
-      _node_bundles, _connections, _virtual_nodes,
-      child.node_bundles, child.connections, child.virtual_nodes,
+      _node_bundles, _connections, _symbolic_nodes,
+      child.node_bundles, child.connections, child.symbolic_nodes,
       relative_scope_qualifier(root_scope));
   index_imported_records(record_begin);
   IV_ASSERT(imported.bundle_offset == begin,
@@ -810,12 +810,12 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
 
   // Once a child graph is embedded, its public inputs become input ports of
   // the surrounding subgraph. Keep child declaration/reference source
-  // identities on those virtual ports so source introspection does not lose
+  // identities on those symbolic ports so source introspection does not lose
   // provenance at the graph boundary.
   auto const sample_inputs = child.public_ports.sample_inputs(child.node_bundles);
   for (size_t index = 0; index < sample_inputs.size(); ++index) {
     for (auto const& info : child.public_ports.sample_input_source_infos(index)) {
-      attach_virtual_input_source_info(
+      attach_symbolic_input_source_info(
           subgraph, info.declaration_identity, PortKind::sample,
           sample_inputs[index].name, info);
     }
@@ -823,7 +823,7 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
   auto const event_inputs = child.public_ports.event_inputs(child.node_bundles);
   for (size_t index = 0; index < event_inputs.size(); ++index) {
     for (auto const& info : child.public_ports.event_input_source_infos(index)) {
-      attach_virtual_input_source_info(
+      attach_symbolic_input_source_info(
           subgraph, info.declaration_identity, PortKind::event,
           event_inputs[index].name, info);
     }
@@ -832,7 +832,7 @@ ConfiguredGraphEmbedding GraphBuilderState::embed_configured_graph(
   return ConfiguredGraphEmbedding{
       .root_scope = subgraph,
       .node_bundles = std::move(imported.node_bundles),
-      .virtual_nodes = std::move(imported.virtual_nodes),
+      .symbolic_nodes = std::move(imported.symbolic_nodes),
   };
 }
 
@@ -841,12 +841,12 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
 {
   auto const first = begin.bundles;
   auto const end = _node_bundles.size();
-  auto const record_begin = begin.virtual_records;
+  auto const record_begin = begin.symbolic_records;
   auto const inside = [&](NodeBundleHandle handle) {
     return handle >= first && handle < end;
   };
   // Closedness is structural. A cacheable invocation cannot change older
-  // graph state: its definition scope owns a fresh virtual-record namespace,
+  // graph state: its definition scope owns a fresh symbolic-record namespace,
   // and the only way to reach an older bundle is through a NodeRef or
   // SubgraphClosure argument, which already makes the invocation
   // uncacheable. Older records therefore need no scan here.
@@ -860,7 +860,7 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
   for (auto index = begin.event_connections; index < events.size(); ++index) {
     if (!event_connection_all(events[index], inside)) return std::nullopt;
   }
-  auto const& records = _virtual_nodes.records();
+  auto const& records = _symbolic_nodes.records();
   for (auto index = record_begin; index < records.size(); ++index) {
     if (!record_bundles_all(records[index], inside)) return std::nullopt;
   }
@@ -874,7 +874,7 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
   for (auto index = begin.event_connections; index < events.size(); ++index) {
     local_events.push_back(remap_event_connection(events[index], local));
   }
-  std::vector<VirtualNodeRecord> local_records(
+  std::vector<SymbolicNodeRecord> local_records(
       records.begin() + static_cast<std::ptrdiff_t>(record_begin), records.end());
   for (auto& record : local_records) {
     for_each_record_bundle(record, [&](NodeBundleHandle& bundle) {
@@ -893,7 +893,7 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
               local_samples, local_events),
           .public_ports = GraphBuilderPublicPorts::from_configured_record(ports),
           .annotations = {},
-          .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(
+          .symbolic_nodes = GraphBuilderSymbolicNodes::from_configured_records(
               local_records),
       },
       .local_root = local(result),
@@ -907,11 +907,11 @@ NodeBundleHandle GraphBuilderState::import_contents(
   if (local_root == 0 || local_root >= graph.node_bundles.size()) {
     details::error("invocation snapshot has an invalid local root");
   }
-  auto const record_begin = _virtual_nodes.size();
+  auto const record_begin = _symbolic_nodes.size();
   auto const offset = _node_bundles.import_contents(graph.node_bundles);
   _connections.import_child(graph.connections, offset);
-  (void)_virtual_nodes.import_child(
-      _node_bundles, graph.virtual_nodes, offset, qualifier);
+  (void)_symbolic_nodes.import_child(
+      _node_bundles, graph.symbolic_nodes, offset, qualifier);
   index_imported_records(record_begin);
   return local_root + offset;
 }
@@ -966,20 +966,20 @@ GraphBuilderState::snapshot_scope(details::BuilderScopeId id) const
           connection, [&](NodeBundleHandle h) { return h - first; }));
     }
   }
-  auto const& records = _virtual_nodes.records();
+  auto const& records = _symbolic_nodes.records();
   for (std::size_t index = 0; index < scope.record_begin; ++index) {
     if (record_bundles_any(records[index], inside)) {
       return std::unexpected(ConfiguredGraphSnapshotError{
           .kind = Kind::enclosing_scope_mutation,
-          .message = "virtual node '" + records[index].id
+          .message = "symbolic node '" + records[index].id
               + "' of an enclosing scope has members inside the scope",
       });
     }
   }
-  std::vector<VirtualNodeRecord> local_records;
+  std::vector<SymbolicNodeRecord> local_records;
   for (auto index = scope.record_begin; index < records.size(); ++index) {
     if (!record_bundles_all(records[index], inside)) {
-      return capture("virtual node '" + records[index].id
+      return capture("symbolic node '" + records[index].id
           + "' has members outside the scope");
     }
     auto record = records[index];
@@ -997,7 +997,7 @@ GraphBuilderState::snapshot_scope(details::BuilderScopeId id) const
           local_samples, local_events),
       .public_ports = GraphBuilderPublicPorts::from_configured_record(ports),
       .annotations = {},
-      .virtual_nodes = GraphBuilderVirtualNodes::from_configured_records(local_records),
+      .symbolic_nodes = GraphBuilderSymbolicNodes::from_configured_records(local_records),
   };
 }
 
@@ -1549,7 +1549,7 @@ void GraphBuilderState::annotate_node(
   info.declaration_name = name;
   auto& infos = _node_bundles.bundle(handle).source_annotations().infos;
   if (!std::ranges::contains(infos, info)) infos.push_back(info);
-  attach_virtual_bundle_member(handle, id, &info);
+  attach_symbolic_bundle_member(handle, id, &info);
 }
 
 void GraphBuilderState::annotate_node_input_source_info(
@@ -1561,7 +1561,7 @@ void GraphBuilderState::annotate_node_input_source_info(
     details::error(
         "builder " + _identity.value
         + ": cannot record input-port source info for an unknown NodeBundle");
-  attach_virtual_input_source_info(
+  attach_symbolic_input_source_info(
       handle, id, port_kind, port_name, make_source_info(id, file, begin, end));
 }
 
@@ -1629,8 +1629,8 @@ void GraphBuilderState::annotate_sample_port_source_info(
   if (id.empty() || ref.session != _session) return;
   auto const channels = sample_port_channels(ref);
   if (channels.empty()) return;
-  auto const record = virtual_record(id, "sample-port");
-  _virtual_nodes.attach_sample_output(
+  auto const record = symbolic_record(id, "sample-port");
+  _symbolic_nodes.attach_sample_output(
       record, ref.channel_type, channels,
       make_source_info(id, file, begin, end, declaration_line));
 }
@@ -1641,39 +1641,39 @@ void GraphBuilderState::annotate_event_port_source_info(
   if (id.empty() || ref.session != _session) return;
   auto const sources = event_port_sources(ref);
   if (sources.empty()) return;
-  auto const record = virtual_record(id, "event-port");
-  _virtual_nodes.attach_event_output(
+  auto const record = symbolic_record(id, "event-port");
+  _symbolic_nodes.attach_event_output(
       record, ref.type, sources, make_source_info(id, file, begin, end, declaration_line));
 }
 
 // ---- host introspection -----------------------------------------------
 
 GraphBuilderState::VacantInputs GraphBuilderState::vacant_inputs() const {
-  return _connections.collect_vacant_inputs(_node_bundles, _virtual_nodes);
+  return _connections.collect_vacant_inputs(_node_bundles, _symbolic_nodes);
 }
 
-GraphBuilderState::VirtualInputs GraphBuilderState::virtual_inputs() const {
-  return _connections.collect_virtual_inputs(_node_bundles, _virtual_nodes);
+GraphBuilderState::SymbolicInputs GraphBuilderState::symbolic_inputs() const {
+  return _connections.collect_symbolic_inputs(_node_bundles, _symbolic_nodes);
 }
 
-GraphBuilderState::VirtualSampleInputFamilies
-GraphBuilderState::virtual_sample_input_families() const {
-  return _connections.collect_virtual_sample_input_families(
-      _node_bundles, _virtual_nodes);
+GraphBuilderState::SymbolicSampleInputFamilies
+GraphBuilderState::symbolic_sample_input_families() const {
+  return _connections.collect_symbolic_sample_input_families(
+      _node_bundles, _symbolic_nodes);
 }
 
-GraphBuilderState::VirtualOutputs GraphBuilderState::virtual_outputs() const {
-  return _connections.collect_virtual_outputs(_node_bundles, _virtual_nodes);
+GraphBuilderState::SymbolicOutputs GraphBuilderState::symbolic_outputs() const {
+  return _connections.collect_symbolic_outputs(_node_bundles, _symbolic_nodes);
 }
 
-GraphBuilderState::VirtualSampleOutputFamilies
-GraphBuilderState::virtual_sample_output_families() const {
-  return _connections.collect_virtual_sample_output_families(
-      _node_bundles, _virtual_nodes);
+GraphBuilderState::SymbolicSampleOutputFamilies
+GraphBuilderState::symbolic_sample_output_families() const {
+  return _connections.collect_symbolic_sample_output_families(
+      _node_bundles, _symbolic_nodes);
 }
 
-GraphBuilderState::VirtualPorts GraphBuilderState::virtual_ports() const {
-  return _virtual_nodes.ports(_node_bundles);
+GraphBuilderState::SymbolicPorts GraphBuilderState::symbolic_ports() const {
+  return _symbolic_nodes.ports(_node_bundles);
 }
 
 GraphBuilderPublicContinuousPortFamilies
@@ -1724,7 +1724,7 @@ ConfiguredGraph GraphBuilderState::finish() const & {
       .connections = _connections,
       .public_ports = _scopes.front().ports,
       .annotations = _annotations,
-      .virtual_nodes = _virtual_nodes,
+      .symbolic_nodes = _symbolic_nodes,
   };
 }
 
@@ -1738,7 +1738,7 @@ ConfiguredGraph GraphBuilderState::finish() && {
       .connections = std::move(_connections),
       .public_ports = std::move(_scopes.front().ports),
       .annotations = std::move(_annotations),
-      .virtual_nodes = std::move(_virtual_nodes),
+      .symbolic_nodes = std::move(_symbolic_nodes),
   };
 }
 

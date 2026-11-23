@@ -20,18 +20,18 @@ namespace iv {
     SocketRpcJson iv_package_json(IvPackageInfo const &package);
     SocketRpcJson iv_package_definitions_json(std::vector<IvPackageInfo> const &packages);
 
-    SocketRpcJson virtual_continuous_port_json(
-        VirtualContinuousPortInfo const& port);
+    SocketRpcJson symbolic_continuous_port_json(
+        SymbolicContinuousPortInfo const& port);
     SocketRpcJson continuous_value_types_json(
         std::vector<ContinuousValueIntrospectionMetadata> const& metadata);
-    SocketRpcJson virtual_continuous_ports_json(
-        std::vector<VirtualContinuousPortInfo> const& ports);
-    SocketRpcJson virtual_event_port_json(VirtualEventPortInfo const& port);
-    SocketRpcJson virtual_event_ports_json(
-        std::vector<VirtualEventPortInfo> const& ports);
-    SocketRpcJson virtual_node_member_json(VirtualNodeMemberInfo const &member);
-    SocketRpcJson virtual_node_members_json(std::vector<VirtualNodeMemberInfo> const &members);
-    SocketRpcJson virtual_node_json(VirtualNodeInfo const &node);
-    SocketRpcJson virtual_nodes_json(std::vector<VirtualNodeInfo> const &nodes);
+    SocketRpcJson symbolic_continuous_ports_json(
+        std::vector<SymbolicContinuousPortInfo> const& ports);
+    SocketRpcJson symbolic_event_port_json(SymbolicEventPortInfo const& port);
+    SocketRpcJson symbolic_event_ports_json(
+        std::vector<SymbolicEventPortInfo> const& ports);
+    SocketRpcJson symbolic_node_member_json(SymbolicNodeMemberInfo const &member);
+    SocketRpcJson symbolic_node_members_json(std::vector<SymbolicNodeMemberInfo> const &members);
+    SocketRpcJson symbolic_node_json(SymbolicNodeInfo const &node);
+    SocketRpcJson symbolic_nodes_json(std::vector<SymbolicNodeInfo> const &nodes);
 
 } // namespace iv

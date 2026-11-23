@@ -83,9 +83,9 @@ A `ProjectNodePortMatcher` contains conceptually:
 - port matcher/name;
 - optional concrete port-channel selector.
 
-The node path uses `ProjectVirtualNodeSelector`, `ProjectVirtualMemberSelector`, and
-`ProjectTiledChildSelector`. Virtual-node lookup is local to the current subject scope.
-A selected virtual node provides the route into its backing subgraph.
+The node path uses `ProjectSymbolicNodeSelector`, `ProjectSymbolicMemberSelector`, and
+`ProjectTiledChildSelector`. Symbolic-node lookup is local to the current subject scope.
+A selected symbolic node provides the route into its backing subgraph.
 `ProjectSubgraphSelector` is not part of the intended persisted semantic path.
 
 Tiled child selection is a node-path operation. Port-channel selection is a

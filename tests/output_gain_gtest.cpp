@@ -50,10 +50,10 @@ TEST(OutputGain, UnityHasNoPrivateStageOrControlStorage)
     EXPECT_TRUE(graph.connections.configured_sample_connections().empty());
 }
 
-TEST(OutputGain, VirtualGainNeedsAConsumerOrAnObservation)
+TEST(OutputGain, SymbolicGainNeedsAConsumerOrAnObservation)
 {
     auto graph = gain_graph(false, 2);
-    graph.manual_controls.front().id.node.path.push_back(ProjectVirtualNodeSelector{.source_identity = "voice"});
+    graph.manual_controls.front().id.node.path.push_back(ProjectSymbolicNodeSelector{.source_identity = "voice"});
     auto visible = graph;
     EXPECT_TRUE(expand_output_gains(graph, gain_definitions()).stages.empty());
     EXPECT_TRUE(graph.connections.configured_sample_connections().empty());

@@ -277,7 +277,7 @@ TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
                             .realized = false,
                         },
                     },
-                    .virtual_nodes = ProjectVirtualNodesNotification{
+                    .symbolic_nodes = ProjectSymbolicNodesNotification{
                         .replace_instance_ids = {"instance:1"},
                     },
                 },

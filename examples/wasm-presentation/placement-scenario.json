@@ -1,0 +1,22 @@
+{
+  "presentationId": "example.marker/placement",
+  "snapshot": {
+    "node": {
+      "address": {"instanceId": "e541632f-ff83-47e2-ab4a-f6b8e737e33e"},
+      "definitionId": "builtin.automation.curve",
+      "arguments": [],
+      "ports": []
+    },
+    "revision": 0,
+    "mode": "editable",
+    "editable": true,
+    "viewport": {"width": 500, "height": 80},
+    "observations": {},
+    "state": null
+  },
+  "inputs": [
+    {"atMs": 80, "value": {"type": "gesture", "id": "1", "phase": "begin", "point": {"x": 250, "y": 40}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}},
+    {"atMs": 100, "value": {"type": "gesture", "id": "1", "phase": "move", "point": {"x": 250, "y": 20}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}},
+    {"atMs": 120, "value": {"type": "gesture", "id": "1", "phase": "finish", "point": {"x": 250, "y": 20}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}}
+  ]
+}

@@ -265,7 +265,7 @@ public:
 
     [[nodiscard]] ModuleMessageTarget member(std::size_t index) const
     {
-        return select(ProjectVirtualMemberSelector{.index = index});
+        return select(ProjectSymbolicMemberSelector{.index = index});
     }
 
     template<fixed_string Name>
@@ -301,7 +301,7 @@ public:
     {
         if (!local_refs_) {
             throw std::logic_error(
-                "module-message context has no local virtual-node references");
+                "module-message context has no local symbolic-node references");
         }
         auto const name = Name.view();
         auto const matches = std::ranges::count_if(
@@ -311,12 +311,12 @@ public:
             });
         if (matches == 0) {
             throw std::logic_error(
-                "module-message local virtual node '" + std::string(name)
+                "module-message local symbolic node '" + std::string(name)
                 + "' was not created by build_graph()");
         }
         if (matches != 1) {
             throw std::logic_error(
-                "module-message local virtual node '" + std::string(name)
+                "module-message local symbolic node '" + std::string(name)
                 + "' is ambiguous");
         }
         auto const& local = *std::ranges::find_if(
