@@ -2355,7 +2355,8 @@ public:
             };
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = stage.bundle, .native_background_node = true,
-                .configuration_identity = stage.configuration,
+                .identity = {.node_type_id = std::string(resolved_graph.node_bundles.bundle(stage.bundle).type_identity())},
+                .configuration_identity = graph_jit::CompilerSampleConfiguration{stage.configuration->gain},
                 .replay_mode = TickReplayMode::disabled,
                 .node_data = stage.configuration.get(), .declare_node = &declare_output_gain,
                 .tock_coverage = imported.callback(operations.tock_coverage),
@@ -2381,9 +2382,7 @@ public:
             implementations.push_back(graph_jit::NodeImplementation{
                 .node_bundle = stage.bundle, .native_background_node = true,
                 .identity = {.node_type_id = coverage_manual_node_type},
-                .configuration_identity = CompilerSampleConfiguration{
-                    .bits = std::bit_cast<std::uint32_t>(stage.value->value),
-                },
+                .configuration_identity = graph_jit::CompilerSampleConfiguration{*stage.value},
                 .node_data = stage.value.get(),
                 .declare_node = operations.declare_node,
                 .tock_coverage = imported.callback(operations.tock_coverage),

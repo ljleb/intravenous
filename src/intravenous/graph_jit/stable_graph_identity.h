@@ -1,7 +1,9 @@
 #pragma once
 
 #include <intravenous/ports.h>
+#include <intravenous/sample.h>
 
+#include <bit>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -51,7 +53,11 @@ using BundleMigrationIdentities = std::vector<std::optional<StableConcreteNodeId
 // Package configurations are immutable allocations. Compiler-generated
 // Sample configurations can compare the value copied into their callback.
 struct CompilerSampleConfiguration {
-    std::uint32_t bits = 0;
+    explicit constexpr CompilerSampleConfiguration(Sample value) noexcept
+        : bits(std::bit_cast<std::uint32_t>(value.value))
+    {}
+
+    std::uint32_t bits;
     bool operator==(CompilerSampleConfiguration const&) const = default;
 };
 

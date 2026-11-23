@@ -2007,16 +2007,8 @@ GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
 {
     PlaybackPreparationMetrics::Interval preparation{PlaybackPreparationPhase::prepare_playback};
     auto& background = target.background;
-    if (!target.background_initialized) {
+    if (!target.background_initialized)
         target.initialize_background_for_playback_preview();
-        // A prepared migration may reuse metadata from a previously unused
-        // Tock producer. Refresh it without inventing a local semantic change.
-        for (graph_jit::BackgroundNodeIndex node = 0; node < target.graph->background_evaluation_plan.nodes.size(); ++node) {
-            auto const& planned = target.graph->background_evaluation_plan.nodes[node];
-            if (planned.authored_forward_coverage || planned.uses_replay_forward_coverage)
-                background.reconciliation_roots.forward_nodes.push_back(node);
-        }
-    }
     auto const& plan = target.graph->background_evaluation_plan;
     auto const demand = owner_.read_playback_demand();
     IndexCoverage refill_demand = background.tick_materialization_demand;

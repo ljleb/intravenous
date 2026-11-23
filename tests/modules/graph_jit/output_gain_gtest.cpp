@@ -352,4 +352,55 @@ TEST_F(GraphJitRuntimeFixture, TockOutputGainPreservesLogicalCoverageAndScalesPr
     EXPECT_FLOAT_EQ(input->result.regions[0].values[3].second.load<float>(), 3.f);
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
+
+TEST_F(GraphJitRuntimeFixture, TockOutputGainInvalidatesCoverageOnlyWhenTheGainChanges)
+{
+    auto const source = configured_module_graph(*revision, graph_jit_multi_region_module_id);
+    ASSERT_TRUE(source);
+    auto graph = std::make_shared<ConfiguredGraph>(*source);
+    add_gain(*graph, first_output(*graph), .5f, false, true);
+    auto const inventory = graph_jit::ConfiguredBundleInventory{1, graph->node_bundles.size()};
+    auto const predecessor = jit->compile({.project_generation = 820, .graph = graph,
+        .definitions = definitions, .configured_bundles = inventory});
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
+    auto const& previous = *predecessor.compiled_graph;
+    auto const& previous_plan = previous.background_evaluation_plan;
+    auto const before = std::ranges::find(previous_plan.ports, std::string{"scaled"},
+        &graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(before, previous_plan.ports.end());
+    ASSERT_TRUE(before->stable_identity && before->accumulators.output_change);
+
+    BackgroundCoverageState previous_coverage(previous_plan.accumulators.output_change_count);
+    BackgroundPropagationWorkspace propagation(previous_plan, previous.specialization.sample_rate);
+    CoveragePropagationRequest initial;
+    for (std::size_t node = 0; node < previous_plan.nodes.size(); ++node)
+        initial.locally_changed_nodes.push_back(node);
+    auto prepared = propagation.prepare(previous.background_operations, previous_coverage, initial);
+    EXPECT_FALSE(prepared.output_coverages()[*before->accumulators.output_change].empty());
+    (void)propagation.commit(previous_coverage, std::move(prepared));
+
+    for (bool gain_changed : {false, true}) {
+        SCOPED_TRACE(gain_changed);
+        auto candidate = std::make_shared<ConfiguredGraph>(*graph);
+        if (gain_changed) candidate->manual_controls.front().settled_value = .75f;
+        auto const successor = jit->handle_project_graph_transaction({
+            .successor = {.project_generation = gain_changed ? 822u : 821u, .graph = candidate,
+                .definitions = definitions, .configured_bundles = inventory},
+            .predecessor = predecessor.compiled_graph,
+        });
+        ASSERT_TRUE(successor.succeeded())
+            << (successor.diagnostics.empty() ? "" : successor.diagnostics.front().message);
+        auto const& plan = successor.compiled_graph->background_evaluation_plan;
+        auto const gain = std::ranges::find(plan.ports, before->stable_identity,
+            &graph_jit::BackgroundPortPlan::stable_identity);
+        ASSERT_NE(gain, plan.ports.end());
+        BackgroundCoverageState coverage(plan.accumulators.output_change_count);
+        auto migration = coverage.prepare_migration_from(previous_coverage, plan, previous_plan);
+        migration.commit();
+        auto const roots = migration.take_reconciliation_roots();
+        EXPECT_EQ(std::ranges::contains(roots.locally_changed_nodes, gain->node), gain_changed);
+        EXPECT_FALSE(std::ranges::contains(roots.forward_nodes, gain->node));
+    }
+}
 } // namespace iv::test::graph_jit_tests

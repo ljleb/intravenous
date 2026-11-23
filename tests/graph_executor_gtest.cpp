@@ -3307,6 +3307,54 @@ TEST_F(
     EXPECT_TRUE(migration.outputs.empty());
 }
 
+TEST_F(BackgroundCoveragePropagationFixture, CoverageMigrationRefreshesOnlyUnknownOutputs)
+{
+    using namespace iv;
+    using namespace iv::graph_jit;
+    auto plan = background_fanin_plan();
+    auto const configuration = std::make_shared<int const>(0);
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
+        auto& producer = plan.nodes[node];
+        producer.stable_identity = StableConcreteNodeId{
+            .graph = "coverage-discovery", .symbolic_node = std::to_string(node),
+        };
+        producer.provider_version = 1;
+        producer.configuration_identity = configuration;
+        producer.authored_forward_coverage = true;
+        for (auto const output : producer.outputs)
+            plan.ports[output].stable_identity = StableOutputPortId{.node = *producer.stable_identity};
+        for (auto const input : producer.inputs)
+            plan.ports[input].stable_input_identity = StableInputPortId{.node = *producer.stable_identity};
+    }
+
+    auto const operations = CompiledGraphBackgroundOperations{
+        .propagate_forward = +[](BackgroundEvaluationCall* batch) {
+            for (auto& frame : std::span<BackgroundNodeCall>{batch->nodes}) {
+                if (!has_activity(frame.activity, BackgroundNodeActivity::forward)) continue;
+                for (auto& output : std::span<OutputCoverageChange>{frame.forward.outputs})
+                    output.publish_regions({});
+            }
+        },
+        .propagate_reverse = &propagate_background_reverse,
+        .evaluate = &no_op_background_evaluate,
+    };
+    BackgroundCoverageState previous(plan.accumulators.output_change_count);
+    BackgroundCoverageState current(plan.accumulators.output_change_count);
+    BackgroundPropagationWorkspace workspace(plan, 48000);
+    auto migration = current.prepare_migration_from(previous, plan, plan);
+
+    auto discarded = workspace.prepare(operations, previous, {.forward_nodes = {1}});
+    workspace.discard(std::move(discarded));
+    auto completed_after_preparation = workspace.prepare(operations, previous, {.forward_nodes = {0, 2}});
+    EXPECT_TRUE(completed_after_preparation.output_coverages()[0].empty());
+    (void)workspace.commit(previous, std::move(completed_after_preparation));
+
+    migration.commit();
+    auto roots = migration.take_reconciliation_roots();
+    EXPECT_TRUE(roots.locally_changed_nodes.empty());
+    EXPECT_EQ(roots.forward_nodes, (std::vector<BackgroundNodeIndex>{1}));
+}
+
 TEST_F(
     BackgroundCoveragePropagationFixture,
     CoverageMigrationSeedsOnlyNodesWhoseLocalSemanticsChanged)

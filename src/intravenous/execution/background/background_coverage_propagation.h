@@ -178,6 +178,8 @@ private:
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
     std::vector<std::vector<EventRegionInfo>> output_event_regions_{};
+    // An empty coverage set may have been established by a completed forward pass.
+    std::vector<bool> output_coverage_known_{};
     std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
 
     friend class BackgroundPropagationWorkspace;
@@ -233,6 +235,7 @@ class PreparedCoveragePropagation {
     std::vector<IndexCoverage> output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> output_region_ranges_{};
     std::vector<std::vector<EventRegionInfo>> output_event_regions_{};
+    std::vector<bool> output_coverage_known_{};
     std::vector<std::vector<EventRegionInfo>> event_regions_by_port_{};
     std::uint64_t selection_snapshot_ = 0;
     std::vector<BackgroundCoverageReadDependency> read_dependencies_{};
@@ -388,6 +391,7 @@ class BackgroundPropagationWorkspace {
     std::vector<IndexCoverage> candidate_output_coverages_{};
     std::vector<std::vector<GlobalIndexRange>> candidate_output_region_ranges_{};
     std::vector<std::vector<EventRegionInfo>> candidate_output_event_regions_{};
+    std::vector<bool> candidate_output_coverage_known_{};
     std::vector<InputChangeAccumulator> input_changes_{};
     std::vector<OutputChangeAccumulator> output_changes_{};
     std::vector<InputRequirementAccumulator> input_requirements_{};

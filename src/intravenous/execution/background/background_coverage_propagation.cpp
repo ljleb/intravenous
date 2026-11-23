@@ -757,6 +757,8 @@ void BackgroundPropagationWorkspace::initialize_planning()
                         output_ready_[output] = true;
                         finalized_outputs_[output] = true;
                         published_outputs_[output] = false;
+                        if (auto const index = port(output).accumulators.output_change)
+                            candidate_output_coverage_known_[*index] = true;
                     }
                 }
             };
@@ -1031,6 +1033,7 @@ PreparedCoveragePropagation BackgroundPropagationWorkspace::prepare_discovery(Co
     snapshot.output_coverages_ = candidate_output_coverages_;
     snapshot.output_region_ranges_ = candidate_output_region_ranges_;
     snapshot.output_event_regions_ = candidate_output_event_regions_;
+    snapshot.output_coverage_known_ = candidate_output_coverage_known_;
     BackgroundPropagationWorkspace scope{*plan_, sample_rate_};
     scope.planning_state_ = planning_state_;
     // Discovery completes only its explicit demand. Unrelated stale persisted
@@ -1226,6 +1229,7 @@ void BackgroundPropagationWorkspace::publish_output_coverage(
     }
     candidate_output_region_ranges_[index] = coverage_regions(coverage);
     candidate_output_event_regions_[index].clear();
+    candidate_output_coverage_known_[index] = true;
     published_outputs_[output] = true;
     output_ready_[output] = true;
     auto& accumulator = output_changes_[index];
@@ -1295,6 +1299,7 @@ void BackgroundPropagationWorkspace::publish_output_regions(
     }
     candidate_output_region_ranges_[index] = std::move(next_regions);
     candidate_output_event_regions_[index] = std::move(next_event_regions);
+    candidate_output_coverage_known_[index] = true;
     published_outputs_[output] = true;
     output_ready_[output] = true;
     candidate_output_coverages_[index] = std::move(next_coverage);
@@ -1364,6 +1369,7 @@ void BackgroundPropagationWorkspace::require_output(
         auto const& root = *planning_state_->root;
         candidate_output_coverages_[change_index] = root.candidate_output_coverages_[change_index];
         candidate_output_region_ranges_[change_index] = root.candidate_output_region_ranges_[change_index];
+        candidate_output_coverage_known_[change_index] = root.candidate_output_coverage_known_[change_index];
     }
     auto required = requested & candidate_output_coverages_[change_index];
     if (required.empty())
@@ -1497,6 +1503,7 @@ void BackgroundPropagationWorkspace::require_sample_output(
         auto const& root = *planning_state_->root;
         candidate_output_coverages_[change_index] = root.candidate_output_coverages_[change_index];
         candidate_output_region_ranges_[change_index] = root.candidate_output_region_ranges_[change_index];
+        candidate_output_coverage_known_[change_index] = root.candidate_output_coverage_known_[change_index];
     }
     auto selected = requested.intersected(candidate_output_coverages_[change_index]);
     if (selected.empty()) return;
@@ -1685,6 +1692,7 @@ void BackgroundPropagationWorkspace::require_sample_region(
     if (&root != this) {
         candidate_output_coverages_[change] = root.candidate_output_coverages_[change];
         candidate_output_region_ranges_[change] = regions;
+        candidate_output_coverage_known_[change] = root.candidate_output_coverage_known_[change];
     }
     auto const range = regions[region];
     auto& demands = indexed_output_demands_[output];
@@ -2036,6 +2044,7 @@ BackgroundCoverageState::BackgroundCoverageState(std::size_t output_count)
     : output_coverages_(output_count)
     , output_region_ranges_(output_count)
     , output_event_regions_(output_count)
+    , output_coverage_known_(output_count, false)
 {
 }
 
@@ -2050,9 +2059,13 @@ BackgroundCoverageState::prepare_migration_from(
             != current_plan.accumulators.output_change_count
         || output_region_ranges_.size()
             != current_plan.accumulators.output_change_count
+        || output_coverage_known_.size()
+            != current_plan.accumulators.output_change_count
         || previous.output_coverages_.size()
             != previous_plan.accumulators.output_change_count
         || previous.output_region_ranges_.size()
+            != previous_plan.accumulators.output_change_count
+        || previous.output_coverage_known_.size()
             != previous_plan.accumulators.output_change_count) {
         throw std::invalid_argument(
             "background coverage state does not match its compiled plan");
@@ -2164,6 +2177,9 @@ BackgroundCoverageState::prepare_migration_from(
         if (!unchanged) {
             migration.reconciliation_roots.locally_changed_nodes.push_back(
                 current_index);
+        } else if (current.authored_forward_coverage || current.uses_replay_forward_coverage) {
+            // Commit checks which retained outputs still need discovery.
+            migration.reconciliation_roots.forward_nodes.push_back(current_index);
         }
     }
 
@@ -2228,7 +2244,16 @@ void BackgroundCoverageState::Migration::commit()
             previous->output_region_ranges_[output.previous];
         current->output_event_regions_[output.current] =
             previous->output_event_regions_[output.previous];
+        current->output_coverage_known_[output.current] =
+            previous->output_coverage_known_[output.previous];
     }
+    // The predecessor may finish an output between preparation and the cutover.
+    std::erase_if(reconciliation_roots.forward_nodes, [&](auto node) {
+        return std::ranges::none_of(current_plan->nodes[node].outputs, [&](auto output) {
+            auto const index = current_plan->ports[output].accumulators.output_change;
+            return index && !current->output_coverage_known_[*index];
+        });
+    });
     for (auto const& input : changed_inputs) {
         auto current_coverage = derive_input_coverage(
             *current_plan, current->output_coverages_, input.current);
@@ -2280,6 +2305,7 @@ void BackgroundPropagationWorkspace::reset(
     candidate_output_coverages_ = coverage.output_coverages_;
     candidate_output_region_ranges_ = coverage.output_region_ranges_;
     candidate_output_event_regions_ = coverage.output_event_regions_;
+    candidate_output_coverage_known_ = coverage.output_coverage_known_;
     for (std::size_t index = 0; index < candidate_output_coverages_.size();
          ++index) {
         output_changes_[index].previous_coverage =
@@ -2338,6 +2364,7 @@ BackgroundPropagationWorkspace::BackgroundPropagationWorkspace(
       candidate_output_coverages_(plan.accumulators.output_change_count),
       candidate_output_region_ranges_(plan.accumulators.output_change_count),
       candidate_output_event_regions_(plan.accumulators.output_change_count),
+      candidate_output_coverage_known_(plan.accumulators.output_change_count),
       input_changes_(plan.accumulators.input_change_count),
       output_changes_(plan.accumulators.output_change_count),
       input_requirements_(plan.accumulators.input_requirement_count),
@@ -2475,6 +2502,7 @@ BackgroundPropagationWorkspace::prepare(
         candidate_output_coverages_ = root.candidate_output_coverages_;
         candidate_output_region_ranges_ = root.candidate_output_region_ranges_;
         candidate_output_event_regions_ = root.candidate_output_event_regions_;
+        candidate_output_coverage_known_ = root.candidate_output_coverage_known_;
         for (std::size_t index = 0; index < output_changes_.size(); ++index) {
             output_changes_[index].changed = root.output_changes_[index].changed;
             output_changes_[index].touched = root.output_changes_[index].touched;
@@ -2693,6 +2721,7 @@ BackgroundPropagationWorkspace::prepare(
     prepared.output_region_ranges_ =
         std::move(candidate_output_region_ranges_);
     prepared.output_event_regions_ = std::move(candidate_output_event_regions_);
+    prepared.output_coverage_known_ = std::move(candidate_output_coverage_known_);
     prepared.selection_snapshot_ = planning_state_->snapshot;
     prepared.output_regions_by_port_.resize(plan_->ports.size());
     prepared.event_regions_by_port_.resize(plan_->ports.size());
@@ -2727,9 +2756,11 @@ CoveragePropagationResult BackgroundPropagationWorkspace::commit(
     coverage.output_coverages_.swap(prepared.output_coverages_);
     coverage.output_region_ranges_.swap(prepared.output_region_ranges_);
     coverage.output_event_regions_.swap(prepared.output_event_regions_);
+    coverage.output_coverage_known_.swap(prepared.output_coverage_known_);
     candidate_output_coverages_.swap(prepared.output_coverages_);
     candidate_output_region_ranges_.swap(prepared.output_region_ranges_);
     candidate_output_event_regions_.swap(prepared.output_event_regions_);
+    candidate_output_coverage_known_.swap(prepared.output_coverage_known_);
     return std::move(prepared.result_);
 }
 
@@ -2739,6 +2770,7 @@ void BackgroundPropagationWorkspace::discard(
     candidate_output_coverages_.swap(prepared.output_coverages_);
     candidate_output_region_ranges_.swap(prepared.output_region_ranges_);
     candidate_output_event_regions_.swap(prepared.output_event_regions_);
+    candidate_output_coverage_known_.swap(prepared.output_coverage_known_);
 }
 
 } // namespace iv

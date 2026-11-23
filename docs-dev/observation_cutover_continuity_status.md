@@ -187,6 +187,17 @@ migration. An unchanged value can reuse the predecessor's output coverage. A
 value change keeps the producer's identity and marks its fallback regions
 changed. The GraphJit regression covers both cases across configured snapshots.
 
+Background output gains now use the same exact `Sample` comparison. A gain that
+retains its output and value keeps its coverage. A changed gain still invalidates
+its covered values.
+
+`BackgroundCoverageState` carries whether each output's coverage has been
+established, including an empty result. Migration checks the predecessor's
+committed results when it installs the handoff. Playback previews refresh
+retained producers with unknown outputs and use the existing invalidation roots
+for semantic changes and rewiring. A discarded candidate leaves the committed
+coverage and its established status unchanged.
+
 ## Optional migration declaration
 
 An explicit Tick migration declaration is a possible later API change. A
