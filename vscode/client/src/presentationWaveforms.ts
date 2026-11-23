@@ -1,6 +1,7 @@
 import { waveformPoint, waveformTracksForSpans } from "./observationWaveform";
 import type { PresentationObservation, PresentationSnapshot } from "./presentationPlugin";
-import { timelineSamples, type PresentationTime } from "./timelineSamples";
+import { presentationObservationSpans } from "./presentationObservationSpans";
+import { timelineObservationSpan, timelineSamples, type PresentationTime } from "./timelineSamples";
 
 export const waveformPointBytes = 24;
 const maximumPoints = 2048;
@@ -10,17 +11,21 @@ export type PresentationWaveform = {
     id: string; regions: WaveformRegion[]; partial: boolean;
     status: PresentationObservation["status"]; error?: string;
 };
-const projections = new WeakMap<PresentationSnapshot["observations"], { time: PresentationTime; waveforms: PresentationWaveform[] }>();
+const projections = new WeakMap<PresentationSnapshot["observations"], {
+    time: PresentationTime; exclude: string; waveforms: PresentationWaveform[];
+}>();
 
-export function presentationWaveforms({ observations, viewport: { time } }: PresentationSnapshot): PresentationWaveform[] {
+export function presentationWaveforms({ observations, viewport: { time } }: PresentationSnapshot,
+    hostWaveforms: readonly string[] = []): PresentationWaveform[] {
     if (!time?.sampleRate) return [];
     const previous = projections.get(observations);
-    if (previous?.time === time) return previous.waveforms;
+    const exclude = JSON.stringify(hostWaveforms);
+    if (previous?.time === time && previous.exclude === exclude) return previous.waveforms;
     const view = timelineSamples(time);
+    const window = timelineObservationSpan(view);
     const waveforms = Object.entries(observations).flatMap(([id, observation]) => {
-        if (observation?.operation !== "waveform") return [];
-        const spans = observation.spans.map(({ begin, end, windowOffset, result }) =>
-            ({ begin: BigInt(begin), end: BigInt(end), windowOffset: BigInt(windowOffset), result }));
+        if (observation?.operation !== "waveform" || hostWaveforms.includes(id)) return [];
+        const spans = presentationObservationSpans(observation, window);
         let remaining = maximumPoints;
         let partial = spans.some(({ result }) => result.truncated);
         const regions: WaveformRegion[] = [];
@@ -45,7 +50,7 @@ export function presentationWaveforms({ observations, viewport: { time } }: Pres
         }
         return [{ id, regions, partial, status: observation.status, error: observation.error }];
     });
-    projections.set(observations, { time, waveforms });
+    projections.set(observations, { time, exclude, waveforms });
     return waveforms;
 }
 

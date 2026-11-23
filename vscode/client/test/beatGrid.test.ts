@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { beatBpm, beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels,
+import { beatBpm, beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels, projectBeatMarks,
     maximumBeatBpm, maximumBeatSubdivisionCount, readBeatGrid } from "../src/beatGrid";
 import { BeatGridEditing } from "../src/beatGridEditing";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
@@ -8,7 +8,10 @@ import type { GraphScope } from "../src/graphScope";
 import { KnobScrub } from "../src/knobScrub";
 import { parseKnobValue } from "../src/knobValueEntry";
 import { serializeNodeEvent, type JsonValue } from "../src/nodeEvents";
-import { timelineSampleCount } from "../src/timelineSamples";
+import { firstSignedSample, shiftSamplePosition, timelineSampleCount } from "../src/timelineSamples";
+import { snapTimelineSample } from "../src/timelineGeometry";
+import { playheadTimeDrag } from "../src/timelineTimeDrag";
+import { detentHalfWidth } from "../src/scrubSensitivity";
 
 test("the Beats preview draws the default hierarchy from accepted empty arguments", () => {
     const grid = readBeatGrid([])!;
@@ -65,7 +68,7 @@ test("Custom ruler labels use each Region's start and keep their numbers when a 
     const marks = beatObservationMarks({
         marks: [{ index: "10", depth: 0 }],
         beatRuns: [
-            { ...positive, regionIndex: 0, regionBegin: "-1000", firstEventIndex: "15", samples: ["-207", "-47"] },
+            { ...positive, regionIndex: 0, regionBegin: "-1000", regionLength: "999", firstEventIndex: "15", samples: ["-207", "-47"] },
             positive,
             { ...positive, source: 2, regionBegin: "200", firstEventIndex: "0", samples: ["250"] },
             { ...positive, depth: 1, samples: ["223"] },
@@ -87,6 +90,21 @@ test("Custom ruler labels use each Region's start and keep their numbers when a 
     ]);
 });
 
+test("Custom labels on either side of zero match Beats, including when the observation skips bars", () => {
+    const half = timelineSampleCount / 2n;
+    const period = 96000n;
+    const count = half / period;
+    const positive = { source: 1, regionIndex: 1, regionBegin: "0", regionLength: String(half),
+        eventCount: String(count + 1n), depth: 0, firstEventIndex: "0", step: "2", samples: ["0", "192000"] };
+    const negative = { ...positive, regionIndex: 0, regionBegin: String(-half), eventCount: String(count),
+        firstEventIndex: String(count - 3n), samples: ["-288000", "-96000"] };
+    const marks = beatObservationMarks({ beatRuns: [negative, positive] })
+        .map(({ index, ...mark }, slot) => ({ ...mark, index: BigInt(index), x: slot * 50 }));
+    const custom = customBeatRulerLabels(marks, 250).map(({ text }) => text);
+    assert.deepEqual(custom, ["-2", "0", "1", "3"]);
+    assert.deepEqual(custom, beatRulerLabels(readBeatGrid([])!, marks, 48000, 250).map(({ text }) => text));
+});
+
 test("Custom ruler labels count backward from a Region's own halfway point", () => {
     const half = 1n << 63n;
     const origin = half - 10n;
@@ -97,6 +115,37 @@ test("Custom ruler labels count backward from a Region's own halfway point", () 
     assert.deepEqual(beatObservationMarks({ beatRuns: [run] }).map(({ bar }) => bar), ["2", "4", "-4", "-2", "0"]);
     assert.deepEqual(beatObservationMarks({ beatRuns: [{ ...run, firstEventIndex: "7", samples: [samples[3]] }] }),
         [{ index: samples[3], depth: 0, bar: "-2" }]);
+});
+
+test("observed Beats keep ruler and snap order when the viewport pans through the signed seam", () => {
+    const first = firstSignedSample, last = -first - 1n;
+    const origin = { index: last - 2n, fraction: 0 };
+    const span = 8;
+    const run = { source: 1, regionIndex: 0, regionBegin: String(last - 6n), regionLength: "16",
+        eventCount: "4", depth: 0, firstEventIndex: "1", step: "1", samples: [String(last), String(first + 2n)] };
+    const marks = beatObservationMarks({ beatRuns: [run], marks: [
+        { index: String(first + 1n), depth: 2 },
+        { index: String(last - 2n), depth: 1 },
+        { index: String(first + 2n), depth: 1 },
+        { index: String(last), depth: 3 },
+    ] });
+    const displayed = projectBeatMarks(marks, { origin, span }, 400);
+    assert.deepEqual(displayed.map(({ index, depth, x }) => [index, depth, x]), [
+        [last - 2n, 1, 0], [last, 0, 100], [first + 1n, 2, 200], [first + 2n, 0, 250],
+    ]);
+    assert.deepEqual(customBeatRulerLabels(displayed, 400).map(({ text }) => text), ["2", "3"]);
+    const targets = displayed.map(({ index }) => index);
+    assert.equal(snapTimelineSample(last - 1n, targets, 1), last);
+    assert.equal(snapTimelineSample(first, targets, 1), first + 1n);
+    const drag = playheadTimeDrag(last - 1n, { spanSamples: span, width: 400 }, targets);
+    assert.equal(drag(50).snappedIndex, last);
+    assert.equal(drag(100).sampleIndex, first);
+    assert.equal(drag(150 + 2 * detentHalfWidth).snappedIndex, first + 1n);
+
+    const panned = projectBeatMarks(marks, { origin: shiftSamplePosition(origin, 3), span }, 400);
+    assert.deepEqual(panned.map(({ index, depth, x }) => [index, depth, x]), [
+        [first + 1n, 2, 50], [first + 2n, 0, 100],
+    ]);
 });
 
 test("zooming out hides dense subdivisions before beats and keeps the bar origin", () => {

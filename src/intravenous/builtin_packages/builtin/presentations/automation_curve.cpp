@@ -7,13 +7,11 @@ namespace {
 constexpr uint32_t point_mark_base = 0x40000000;
 constexpr uint32_t tension_mark_base = 0x80000000;
 constexpr uint32_t selection_mark = 0xc0000000;
-constexpr unsigned max_point_targets = 490;
 
 constexpr IvChoice display_choices[]{{text("curved"), text("Curved")}, {text("cropped"), text("Cropped")}};
 constexpr IvChoice ruler_choices[]{{text("auto"), text("Auto")}, {text("whole"), text("Whole")},
     {text("half"), text("Halves")}, {text("off"), text("Off")}};
 constexpr IvChoice segment_choices[]{{text("empty"), text("Empty")}, {text("hold"), text("Hold")}, {text("bezier"), text("Bézier")}};
-constexpr IvString point_shortcuts = text("⇧Drag Keep type · ⇧Click Delete · Right-click Segment");
 constexpr IvString sensitivity_shortcut = text("Wheel ↑×2 ↓½");
 
 template<size_t N>
@@ -38,11 +36,6 @@ void describe_point(Label& label, Point const& point, bool tension)
         label.append(text(" · Tension "));
         label.decimal(point.tension, 2);
     }
-}
-
-IvRectangle around(IvPoint point, double radius)
-{
-    return {point.x - radius, point.y - radius, 2 * radius, 2 * radius};
 }
 
 struct SelectionBox {
@@ -70,14 +63,15 @@ class AutomationCurve {
     Array<uint8_t> selection_;
     Array<uint32_t> delete_ids_;
     Array<ValueGuide> guides_;
-    Array<IvShape> shapes_;
-    Array<IvDragTarget> point_targets_;
-    Array<IvDragTarget> tension_targets_;
-    CurveWindow window_;
-    CurvePreview preview_;
+    Array<IvTimelineCurvePoint> curve_points_;
+    uint32_t curve_generation_ = 0;
+    uint32_t curve_active_ = UINT32_MAX;
+    bool curve_dirty_ = true;
     StrokeBatch strokes_;
     SelectionBox marquee_{};
-    ValueAxis view_{}, retained_axis_{};
+    Timeline marquee_time_{};
+    double marquee_height_ = 0;
+    ValueAxis view_{}, marquee_axis_{};
     Timeline time_{};
     double height_ = 0;
     bool redraw_points_ = true;
@@ -99,11 +93,6 @@ class AutomationCurve {
 
     bool editing_pointer() const { return operation_ == Operation::drag && !released_ && !stopped_; }
     bool can_edit_points(Context const& frame) const { return frame.can_edit() && store_.available; }
-    ValueAxis const& view_axis() const
-    {
-        if (operation_ == Operation::drag && !stopped_) return drag_.axis;
-        return retained_.size() ? retained_axis_ : view_;
-    }
     IvPoint marker(Point const& point, ValueAxis const& axis) const
     {
         return {time_.x(time_.offset(point.sample)), clamp(axis.y(point.value, height_), 2., larger(2., height_ - 2))};
@@ -122,6 +111,7 @@ class AutomationCurve {
     {
         while (point.handle >= selection_.size()) if (!selection_.push(0)) return;
         selection_[point.handle] = toggle ? !selection_[point.handle] : true;
+        curve_dirty_ = true;
     }
     void select_all()
     {
@@ -132,13 +122,17 @@ class AutomationCurve {
     {
         auto const bounds = marquee_.bounds();
         auto const toggle = (marquee_.modifiers & (IV_CONTROL | IV_META)) != 0;
-        if (!toggle && !(marquee_.modifiers & IV_SHIFT)) selection_.clear();
+        if (!toggle && !(marquee_.modifiers & IV_SHIFT)) {
+            selection_.clear();
+            curve_dirty_ = true;
+        }
         if (bounds.width * bounds.width + bounds.height * bounds.height < 9) return;
-        for (auto index : window_.visible) {
-            auto const& point = display_[index];
-            if (!visible(point, view_axis())) continue;
-            auto const at = marker(point, view_axis());
-            if (at.x >= bounds.x && at.x <= bounds.x + bounds.width && at.y >= bounds.y && at.y <= bounds.y + bounds.height)
+        for (auto const& point : display_) {
+            auto const offset = marquee_time_.forward_offset(point.sample);
+            if (offset < 0 || offset > marquee_time_.span || !visible(point, marquee_axis_)) continue;
+            auto const x = marquee_time_.x(offset);
+            auto const y = clamp(marquee_axis_.y(point.value, marquee_height_), 2., larger(2., marquee_height_ - 2));
+            if (x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height)
                 set_selected(point, toggle);
         }
     }
@@ -201,7 +195,7 @@ class AutomationCurve {
             display_.push(point);
         }
         while (next < overlay_.size()) display_.push(overlay_[next++]);
-        window_.index(display_);
+        curve_dirty_ = true;
         redraw_points_ = false;
     }
 
@@ -226,7 +220,6 @@ class AutomationCurve {
             }
             if (!replaced) retained_.push({point, accepted_});
         }
-        retained_axis_ = drag_.axis;
     }
 
     void open(Context const& frame, Operation operation)
@@ -341,25 +334,25 @@ class AutomationCurve {
         return id;
     }
 
-    Point new_point(IvGestureInput const& input)
+    Point new_point(IvGestureInput const& input, Timeline const& time, ValueAxis const& axis, double height)
     {
         auto const id = next_point_id();
         auto const handle = store_.allocate_handle(id);
         store_.index_handles();
         if (handle < selection_.size()) selection_[handle] = false;
-        auto const unsnapped = time_.sample_at(input.point.x);
+        auto const unsnapped = time.sample_at(input.point.x);
         auto sample = unsnapped;
         if (input.snapping) {
-            auto nearest = sample_snap_radius(time_);
+            auto nearest = sample_snap_radius(time);
             for (uint32_t i = 0; i < input.snapping->marks.size; ++i) {
                 auto const candidate = static_cast<uint64_t>(input.snapping->marks.data[i]);
                 auto const distance = __builtin_fabs(signed_sample_distance(unsnapped, candidate));
                 if (distance < nearest) { nearest = distance; sample = candidate; }
             }
         }
-        auto const inset = view_axis().cropped ? 0 : smaller(.5, .5 / height_);
-        auto const fraction = clamp(1 - input.point.y / height_, inset, 1 - inset);
-        return {sample, id, 0, static_cast<float>(view_axis().value_at(fraction)), 1, Interpolation::empty, handle};
+        auto const inset = axis.cropped ? 0 : smaller(.5, .5 / height);
+        auto const fraction = clamp(1 - input.point.y / height, inset, 1 - inset);
+        return {sample, id, 0, static_cast<float>(axis.value_at(fraction)), 1, Interpolation::empty, handle};
     }
 
     bool begin_drag(Context const& frame, IvGestureInput const& input, bool from_menu = false)
@@ -369,12 +362,15 @@ class AutomationCurve {
         auto const* target = insert ? nullptr : store_.point_for_target(display_, input.id);
         bool const tension = !insert && (input.id & 1) == 0;
         if (!insert && (!target || (tension && target->interpolation != Interpolation::bezier))) return false;
-        auto const point = insert ? new_point(input) : *target;
+        auto const pickup = input_timeline(input);
+        auto const height = input.viewport ? input.viewport->height : height_;
+        if (pickup.rate != time_.rate) return false;
+        auto const axis = input_axis(input);
+        auto const point = insert ? new_point(input, pickup, axis, height) : *target;
         if (point.handle == UINT32_MAX || !__builtin_isfinite(point.value)) return false;
-        auto const axis = view_axis();
         open(frame, Operation::drag);
         drag_.begin(point, display_, {selection_.begin(), selection_.size()}, !insert && !tension && selected(point),
-            time_, axis, height_, input, insert, tension);
+            pickup, axis, height, input, insert, tension);
         point_in_accepted_ = find_point(store_.accepted, point.id) != nullptr;
         current_target_ = input.id;
         redraw_points_ = true;
@@ -382,12 +378,33 @@ class AutomationCurve {
         return true;
     }
 
-    IvPoint bounded(IvPoint point) const { return {clamp(point.x, 0., time_.width), clamp(point.y, 0., height_)}; }
+    Timeline input_timeline(IvGestureInput const& input) const
+    {
+        if (!input.viewport) return time_;
+        auto const& viewport = *input.viewport;
+        return {static_cast<uint64_t>(viewport.begin_sample), viewport.begin_fraction,
+            viewport.span_samples, viewport.width, viewport.sample_rate};
+    }
+    ValueAxis input_axis(IvGestureInput const& input) const
+    {
+        if (!input.viewport || !(input.viewport->flags & IV_GESTURE_VIEW_CURVE)) return view_;
+        auto const& viewport = *input.viewport;
+        return {viewport.value_pan, viewport.value_zoom, viewport.value_center,
+            bool(viewport.flags & IV_GESTURE_VIEW_CROPPED), view_.ruler};
+    }
+    IvPoint bounded(IvPoint point) const
+    {
+        return {clamp(point.x, 0., marquee_time_.width), clamp(point.y, 0., marquee_height_)};
+    }
     void gesture(Context const& frame, IvGestureInput const& input, IvEditorFeedback& feedback)
     {
         if (input.id == selection_target) {
             if (input.phase == IV_GESTURE_BEGIN) {
                 if (editing_pointer()) { feedback.flags |= IV_EDITOR_CANCEL_DRAG; return; }
+                marquee_time_ = input_timeline(input);
+                if (marquee_time_.rate != time_.rate) { feedback.flags |= IV_EDITOR_CANCEL_DRAG; return; }
+                marquee_axis_ = input_axis(input);
+                marquee_height_ = input.viewport ? input.viewport->height : height_;
                 auto const point = bounded(input.point);
                 marquee_ = {true, point, point, input.modifiers};
             } else if (marquee_.active) {
@@ -411,7 +428,7 @@ class AutomationCurve {
                 if (!drag_.tension) {
                     feedback.cursor = IV_CURSOR_SAMPLE;
                     feedback.sample = static_cast<int64_t>(drag_.desired.sample);
-                    feedback.position.y = clamp(marker(drag_.desired, view_axis()).y / height_, 0., 1.);
+                    feedback.position.y = clamp(marker(drag_.desired, view_).y / height_, 0., 1.);
                 }
                 remove_on_release_ = (input.modifiers & IV_SHIFT) && drag_.delete_click && !drag_.moved;
                 released_ = true;
@@ -483,7 +500,7 @@ class AutomationCurve {
                 bool const disconnected = input.action == IV_INTERRUPT_DISCONNECTED;
                 stop(disconnected);
                 marquee_.active = menu_open_ = false;
-                if (disconnected) { selection_.clear(); retained_.clear(); }
+                if (disconnected) { selection_.clear(); retained_.clear(); redraw_points_ = true; }
                 error_.size = 0;
                 break;
             }
@@ -500,7 +517,7 @@ class AutomationCurve {
                 if (input.action == IV_VALUE_RESET) view_.reset();
                 else if (input.action == IV_VALUE_ZOOM && input.value > 0 && __builtin_isfinite(input.value))
                     view_.zoom_by(input.value, 1 - input.point.y);
-                else if (input.action == IV_VALUE_PAN) view_.pan_by(input.value, height_);
+                else if (input.action == IV_VALUE_PAN && __builtin_isfinite(input.value)) view_.pan_by(input.value);
                 if (before != view_) frame.request_save();
                 break;
             }
@@ -524,27 +541,20 @@ class AutomationCurve {
     {
         frame.visit_interactions(
             [&](IvGestureInput const& input) {
-                if (input.phase == IV_GESTURE_BEGIN || (input.id == selection_target && input.phase == IV_GESTURE_FINISH)) refresh_scene();
+                if (input.phase == IV_GESTURE_BEGIN || (input.id == selection_target && input.phase == IV_GESTURE_FINISH)) refresh_display();
                 if (can_edit_points(frame)) gesture(frame, input, feedback);
             }, [&](IvControlInput const& input) {
-                if (menu_open_) refresh_scene();
+                if (menu_open_) refresh_display();
                 if (frame.can_edit()) control(frame, input);
             }, [&](IvEditorInput const& input) {
-                if (input.kind == IV_EDITOR_CONTEXT || input.kind == IV_EDITOR_ITEMS) refresh_scene();
+                if (input.kind == IV_EDITOR_CONTEXT || input.kind == IV_EDITOR_ITEMS) refresh_display();
                 editor_action(frame, input, feedback);
             });
     }
 
-    void refresh_scene()
-    {
-        if (!redraw_points_) return;
-        refresh_display();
-        window_.project(display_, time_);
-    }
-
     double draw_guides(Context const& frame)
     {
-        auto const& axis = view_axis();
+        auto const& axis = view_;
         value_guides(guides_, axis, height_);
         bool const labels = frame.lane_mode() != IV_LANE_NANO && (frame.lane_mode() != IV_LANE_COMPACT || height_ > 16);
         IvText marks[101];
@@ -612,76 +622,109 @@ class AutomationCurve {
         return length ? 9 + 6 * length : 0;
     }
 
-    void draw_points(Context const& frame)
+    bool refresh_curve()
     {
-        shapes_.clear(); point_targets_.clear(); tension_targets_.clear();
-        if (marquee_.active)
-            shapes_.push({selection_mark, IV_SHAPE_RECTANGLE, IV_INK_SELECTION, IV_INK_SELECTION, 0, {.rectangle = marquee_.bounds()}, .25});
-        if (!can_edit_points(frame)) {
-            frame.draw_shapes({shapes_.begin(), shapes_.size()});
+        auto const active = editing_pointer() ? drag_.desired.handle : UINT32_MAX;
+        if (!curve_dirty_ && curve_active_ == active) return true;
+        auto const count = display_.size();
+        if (!curve_points_.reserve(count)) return false;
+        curve_points_.clear();
+        auto group_end = [&](uint32_t begin) {
+            auto end = begin + 1;
+            while (end < count && display_[end].sample == display_[begin].sample) ++end;
+            return end;
+        };
+        auto previous = count ? count - 1 : 0;
+        for (uint32_t begin = 0; begin < count;) {
+            auto const end = group_end(begin);
+            auto const next = end == count ? 0 : end;
+            auto const next_end = group_end(next);
+            auto const& first = display_[end - 1];
+            auto const& last = display_[next];
+            double start_delta = 0, end_delta = 0;
+            if (begin != next && first.interpolation == Interpolation::bezier && first.tension) {
+                auto const length = static_cast<double>(last.sample - first.sample);
+                auto const slope = (double(last.value) - first.value) / length;
+                auto const& before = display_[previous];
+                if (before.interpolation == Interpolation::bezier && display_[begin].value == first.value) {
+                    auto const before_length = static_cast<double>(first.sample - before.sample);
+                    start_delta = iv::automation::curve_tangent((double(first.value) - before.value) / before_length,
+                        slope, before_length, length) * length;
+                }
+                auto const& outgoing = display_[next_end - 1];
+                if (outgoing.interpolation == Interpolation::bezier && outgoing.value == last.value) {
+                    auto const& after = display_[next_end == count ? 0 : next_end];
+                    auto const after_length = static_cast<double>(after.sample - last.sample);
+                    end_delta = iv::automation::curve_tangent(slope, (double(after.value) - last.value) / after_length,
+                        length, after_length) * length;
+                }
+            }
+            for (auto index = begin; index < end; ++index) {
+                auto const& point = display_[index];
+                bool const outgoing = index + 1 == end;
+                bool const tension = outgoing && point.interpolation == Interpolation::bezier;
+                curve_points_.push({.sample = static_cast<int64_t>(point.sample),
+                    .start_delta = outgoing ? start_delta : 0, .end_delta = outgoing ? end_delta : 0,
+                    .value = point.value, .tension = point.tension, .target = point_target(point),
+                    .mark = point_mark_base + 2 * point.handle,
+                    .tension_target = tension ? tension_target(point) : 0,
+                    .tension_mark = tension ? tension_mark_base + 2 * point.handle : 0,
+                    .interpolation = static_cast<uint32_t>(point.interpolation),
+                    .flags = (selected(point) ? uint32_t(IV_CURVE_SELECTED) : 0u)
+                        | (point.handle == active ? uint32_t(IV_CURVE_ACTIVE) : 0u)});
+            }
+            previous = end - 1;
+            begin = end;
+        }
+        curve_active_ = active;
+        curve_dirty_ = false;
+        ++curve_generation_;
+        return true;
+    }
+
+    void draw_curve(Context const& frame)
+    {
+        auto const& axis = view_;
+        if (!refresh_curve()) {
+            frame.set_status(text("Could not allocate Automation Curve view"));
             return;
         }
-        IvRectangle const content{0, 0, time_.width, height_};
-        point_targets_.push({selection_target, IV_DRAG_ABSOLUTE, content, 0, text("Drag to select · Right-drag to add"), {}});
-        point_targets_.push({addition_target, IV_DRAG_ABSOLUTE, content,
-            IV_TARGET_SECONDARY | IV_TARGET_WHEEL | IV_TARGET_HIDE_CURSOR | IV_TARGET_CURSOR_RETURN, {}, {}});
-
-        // Reserve once so the labels can be borrowed by all the descriptors
-        // until register_drag_targets copies the complete batch.
-        Array<Label>& labels = hit_labels_;
-        labels.clear();
-        if (!labels.reserve(2 * (max_point_targets + 1))) return;
-        auto const& axis = view_axis();
-        hit_points_.clear();
-        for (auto index : window_.visible) if (visible(display_[index], axis)) hit_points_.push(index);
-        auto const total = hit_points_.size(), count = smaller<unsigned>(total, max_point_targets);
-        auto const active = editing_pointer() ? drag_.desired.handle : UINT32_MAX;
-        bool active_drawn = false;
-        auto add = [&](unsigned position) {
-            auto const& point = display_[hit_points_[position]];
-            active_drawn |= point.handle == active;
-            auto const at = marker(point, axis);
-            auto const point_id = point_target(point);
-            auto const mark_id = point_mark_base + 2 * point.handle;
-            Label label;
-            describe_point(label, point, true);
-            labels.push(label);
-            point_targets_.push({point_id, IV_DRAG_ABSOLUTE, around(at, 8),
-                IV_TARGET_CONTEXT | IV_TARGET_HIDE_CURSOR | IV_TARGET_WHEEL | IV_TARGET_CURSOR_RETURN,
-                labels[labels.size() - 1].view(), point_shortcuts});
-            bool const is_selected = selected(point);
-            if (is_selected)
-                shapes_.push({mark_id, IV_SHAPE_CIRCLE, IV_INK_BACKGROUND, IV_INK_SELECTION, 0, {.circle = {at, 5.5}}, 1});
-            shapes_.push({mark_id + 1, IV_SHAPE_CIRCLE, IV_INK_INPUT, 0, point_id,
-                {.circle = {at, is_selected ? 3.2 : 2.6}}, 1});
-            if (point.interpolation != Interpolation::bezier
-                || (position + 1 < total && display_[hit_points_[position + 1]].sample == point.sample)) return;
-
-            auto const handle = IvPoint{at.x, at.y + (at.y < height_ / 2 ? 15 : -15)};
-            auto const target = tension_target(point);
-            auto const mark = tension_mark_base + 2 * point.handle;
-            Label tension;
-            tension.append(text("Tension "));
-            tension.decimal(point.tension, 2);
-            labels.push(tension);
-            tension_targets_.push({target, IV_DRAG_ABSOLUTE, around(handle, 6),
-                IV_TARGET_CONTEXT | IV_TARGET_HIDE_CURSOR | IV_TARGET_HORIZONTAL_RESIZE, labels[labels.size() - 1].view(), {}});
-            strokes_.line(mark, IV_INK_INPUT, at, handle, .22);
-            IvPoint const diamond[]{{handle.x, handle.y - 3.4}, {handle.x + 3.4, handle.y},
-                {handle.x, handle.y + 3.4}, {handle.x - 3.4, handle.y}};
-            strokes_.add(mark + 1, IV_INK_INPUT, {diamond, 4},
-                {IV_STROKE_FILL | IV_STROKE_OPACITY, target, .25 + point.tension * .75, 0, {}, {}});
-        };
-        for (unsigned i = 0; i < count; ++i) add(count == 1 ? 0 : i * (total - 1) / (count - 1));
-        if (active != UINT32_MAX && !active_drawn)
-            for (unsigned i = 0; i < total; ++i) if (display_[hit_points_[i]].handle == active) { add(i); break; }
-
-        frame.draw_shapes({shapes_.begin(), shapes_.size()});
-        // Empty-area actions are lowest priority. If a point and handle
-        // overlap, the point wins the host's last-target-first hit test.
-        frame.register_drag_targets({point_targets_.begin(), 2});
-        frame.register_drag_targets({tension_targets_.begin(), tension_targets_.size()});
-        frame.register_drag_targets({point_targets_.begin() + 2, point_targets_.size() - 2});
+        frame.set_timeline_curve({.points = {curve_points_.begin(), curve_points_.size()},
+            .pan = axis.pan, .zoom = axis.zoom, .center = axis.center,
+            .generation = curve_generation_,
+            .flags = (axis.cropped ? uint32_t(IV_CURVE_CROPPED) : 0u)
+                | (can_edit_points(frame) ? uint32_t(IV_CURVE_EDITABLE) : 0u)
+                | (editing_pointer() || marquee_.active ? uint32_t(IV_CURVE_VIEWPORT_DRAWING) : 0u),
+            .selection_target = selection_target, .addition_target = addition_target,
+            .minimum_input = text("min"), .maximum_input = text("max")});
+        if (marquee_.active) {
+            auto box = marquee_.bounds();
+            auto project_x = [&](double x) {
+                auto const offset = x / marquee_time_.width * marquee_time_.span;
+                auto const whole = __builtin_floor(offset);
+                auto const sample = marquee_time_.origin + sample_from_double(whole);
+                return time_.x(time_.offset(sample) + (offset - whole) + marquee_time_.fraction);
+            };
+            auto const first = project_x(box.x), last = project_x(box.x + box.width);
+            box.x = smaller(first, last);
+            box.width = __builtin_fabs(last - first);
+            if (marquee_axis_ == axis) {
+                box.y *= height_ / marquee_height_;
+                box.height *= height_ / marquee_height_;
+            } else {
+                auto project_y = [&](double y) {
+                    auto const inset = marquee_axis_.cropped ? 0 : smaller(.5, .5 / marquee_height_);
+                    auto const fraction = clamp(1 - y / marquee_height_, inset, 1 - inset);
+                    return clamp(axis.y(marquee_axis_.value_at(fraction), height_), 0., height_);
+                };
+                auto const top = project_y(box.y), bottom = project_y(box.y + box.height);
+                box.y = top;
+                box.height = larger(0., bottom - top);
+            }
+            IvShape const shape{selection_mark, IV_SHAPE_RECTANGLE, IV_INK_SELECTION, IV_INK_SELECTION,
+                0, {.rectangle = box}, .25};
+            frame.draw_shapes({&shape, 1});
+        }
     }
 
     void draw_panels(Context const& frame) const
@@ -706,9 +749,6 @@ class AutomationCurve {
         menu[size++] = {.id = text("remove"), .label = text("Delete point"), .row = action_row, .kind = IV_SETTING_ACTION};
         frame.set_context_menu({text("Automation segment"), {menu, size}});
     }
-
-    Array<Label> hit_labels_;
-    Array<uint32_t> hit_points_;
 
 public:
     void present(Context& frame)
@@ -743,10 +783,9 @@ public:
             feedback.flags |= IV_EDITOR_CANCEL_DRAG;
         }
         refresh_display();
-        window_.project(display_, time_);
         inputs(frame, feedback);
         dispatch(frame, feedback);
-        refresh_scene();
+        refresh_display();
 
         if (can_edit_points(frame)) feedback.flags |= IV_EDITOR_ITEM_EDITING;
         if (!editing_pointer() && !marquee_.active) feedback.flags |= IV_EDITOR_VALUE_NAVIGATION;
@@ -754,8 +793,7 @@ public:
 
         strokes_.clear();
         feedback.ruler_label_inset = draw_guides(frame);
-        preview_.draw(frame, strokes_, window_.arcs, time_, view_axis(), height_);
-        draw_points(frame);
+        draw_curve(frame);
         strokes_.submit(frame);
         draw_panels(frame);
         Label hint;

@@ -22,10 +22,10 @@ import { usePresentationSize } from "../presentation/presentationSize";
 import TimelinePlayhead from "../timeline/TimelinePlayhead.vue";
 import type { SeekBeatReader } from "../timeline/usePlayheadSeek";
 import { timelineBeatObservationWindow } from "../../src/timelineGeometry";
-import { beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels, minimumBeatMarkSpacing,
-    readBeatGrid, sameBeatGrid, selectVisibleBeatMarks, type BeatGrid, type ObservedRulerMark } from "../../src/beatGrid";
+import { beatGridTicks, beatObservationMarks, beatRulerLabels, customBeatRulerLabels, projectBeatMarks,
+    readBeatGrid, sameBeatGrid, type BeatGrid, type ObservedRulerMark, type ProjectedBeatMark } from "../../src/beatGrid";
 import { gridGuideStrengths } from "../../src/gridGuideStrength";
-import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition, type TimelineMark,
+import { provideTimelineMarks, provideTimelineNavigation, provideTimelineWindow, timelineMarkKey, timelineMarkPosition,
     type LaneHorizontalZoomGesture, type LaneValueGesture, type LaneValueNavigation } from "../timeline/timelineContext";
 import { editableHeightPx, formatPlaybackSeconds, initialTimelineViewport, isMiddleDoubleClick, middleClickMode, middleDragZoomFactor, middleZoomPickup, moveMiddleDrag,
     panTimeline, resetTimelineZoom, timelineMiddleDragAction, timelineWheelAction, wheelPixels, wrapTimelineCursor,
@@ -38,7 +38,7 @@ import { usePlayback } from "../timeline/playbackContext";
 import { useObservations, usePortObservationViewport } from "../presentation/observationContext";
 import { predictedObservationRows } from "../../src/observationWindows";
 import { sameObservationWindow, type ObservationWindow } from "../../src/observations";
-import { projectSampleRateFallback, timelineObservationSpan, timelineSampleOffset, type PresentationTime, type TimelineSamples } from "../../src/timelineSamples";
+import { projectSampleRateFallback, timelineObservationSpan, type PresentationTime, type TimelineSamples } from "../../src/timelineSamples";
 import { webviewApi } from "../host";
 
 const node = useNode();
@@ -227,8 +227,6 @@ const timeWindow = computed<PresentationTime>(() => {
 provideTimelineWindow(timeWindow);
 const observations = useObservations();
 const observedTimeline = computed(() => scope.value.timelineNodes?.find(isTimelineSnapAddress));
-type ProjectedBeatMark = TimelineMark & Pick<ObservedRulerMark, "bar">;
-const decodedBeatMarks = new WeakMap<readonly ObservedRulerMark[], Array<Omit<ProjectedBeatMark, "x">>>();
 const beatViewport = computed(() => {
     if (gridMode.value === "seconds" || !timeWindow.value.sampleRate || timeWidth.value <= 0) return undefined;
     const { begin, length } = timelineObservationSpan(sampleView.value);
@@ -278,30 +276,6 @@ const observedBeatMarks = computed<readonly ObservedRulerMark[]>((previous) => {
     if (previous?.length === marks.length && marks.every((mark, index) => mark === previous[index])) return previous;
     return marks;
 });
-function projectBeatMarks(raw: readonly ObservedRulerMark[], view: TimelineSamples, width: number) {
-    let marks = decodedBeatMarks.get(raw);
-    if (!marks) {
-        marks = raw.map(({ index, depth, bar }) => ({ index: BigInt(index), depth, bar }));
-        decodedBeatMarks.set(raw, marks);
-    }
-    const candidates: ProjectedBeatMark[] = [];
-    const barMarks = new Map<bigint, ProjectedBeatMark>();
-    for (const mark of marks) {
-        const x = timelineSampleOffset(view, mark.index) / view.span * width;
-        if (x < -minimumBeatMarkSpacing || x > width + minimumBeatMarkSpacing) continue;
-        const candidate = { ...mark, x };
-        if (mark.depth === 0) {
-            const previous = barMarks.get(mark.index);
-            if (previous) {
-                if (previous.bar !== mark.bar) previous.bar = undefined;
-                continue;
-            }
-            barMarks.set(mark.index, candidate);
-        }
-        candidates.push(candidate);
-    }
-    return selectVisibleBeatMarks(candidates, width);
-}
 const timelineMarks = computed<readonly ProjectedBeatMark[]>((previous) => profileGraphUi("Project timeline beat grid", () => {
     if (gridMode.value === "seconds") return [];
     const { spanSamples, beginSample, beginFraction, sampleRate } = timeWindow.value;

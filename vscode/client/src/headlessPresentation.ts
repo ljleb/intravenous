@@ -5,21 +5,24 @@ import { addressKey, graphScopeWithChildren, type NodeAddress } from "./graphSco
 import { NodeEventMessaging, answerNodeEventRequest } from "./nodeEventMessaging";
 import type { NodeEventInteractions } from "./nodeEventInteractions";
 import { PresentationLaneEdits } from "./presentationLaneEdits";
-import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
+import { samePresentationLayout, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
 import { readPresentationSave } from "./presentationStateJson";
 import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "./presentationSecondsRuler";
+import { projectTimelineCurveFrame } from "./timelineCurvePresentation";
 import { projectProgramsByDefinition } from "./presentationPrograms";
 import { PresentationArtifactReader } from "./presentationArtifacts";
 import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
 
+type PresentationScenarioInput = PresentationInput | { type: "viewport"; viewport: PresentationSnapshot["viewport"] };
+
 export type PresentationScenario = {
     snapshot: PresentationSnapshot;
     presentationId?: string;
     expanded?: NodeAddress[];
-    inputs: Timed<PresentationInput>[];
+    inputs: Timed<PresentationScenarioInput>[];
 };
 
 export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: NodeEventInteractions,
@@ -50,6 +53,8 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
     let failure: unknown;
     let snapshotReads = Promise.resolve();
     const frames: PresentationFrame[] = [];
+    let viewFrame: PresentationFrame | undefined;
+    const editErrors: string[] = [];
     let readCount = 0;
     const readSnapshot = async (minimumRevision: number, timeoutMs: number) => {
         const deadline = performance.now() + timeoutMs;
@@ -73,6 +78,16 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
     };
     const notifySnapshot = () => session.update({ ...snapshot,
         editsPending: edits.queue.pending || snapshot.revision < acceptedRevision });
+    const capture = (frame: PresentationFrame) => {
+        if (frames.length >= 8192) throw new Error("The presentation scenario produced too many frames");
+        const { time, width, height } = snapshot.viewport;
+        const grid = frame.timelineGrid && time
+            ? renderPresentationTimelineGrid(frame.timelineGrid, time, width, height, snapshot.mode === "editable") : undefined;
+        const ruler = time && frame.secondsRulerInset !== undefined
+            ? renderPresentationSecondsRuler(time, width, height, snapshot.mode, frame.secondsRulerInset) : undefined;
+        const projected = projectTimelineCurveFrame(frame, snapshot);
+        frames.push(grid || ruler ? { ...projected, marks: [...grid?.marks ?? [], ...ruler ?? [], ...projected.marks ?? []] } : projected);
+    };
     const nodeEvents = new NodeEventMessaging((request) => {
         void answerNodeEventRequest(interactions, owner, request).then((reply) => nodeEvents.receive(reply));
     }, randomUUID);
@@ -80,7 +95,10 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
         editable: () => snapshot.editable,
         gesture: () => nodeEvents.gesture(address),
         input: (input) => session.input(input),
-        setError: (editError) => { snapshot = { ...snapshot, editError }; },
+        setError: (editError) => {
+            if (editError) editErrors.push(editError);
+            snapshot = { ...snapshot, editError };
+        },
         fail: (error) => { failure = error; },
         changed: notifySnapshot,
         accepted: (revision) => {
@@ -100,13 +118,11 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
         setTimeout(() => { scheduled = false; void session.flush(); }, 16);
     }, (frame, draw, inputs) => {
         if (draw) {
-            if (frames.length >= 8192) throw new Error("The presentation scenario produced too many frames");
-            const { time, width, height } = snapshot.viewport;
-            const grid = frame.timelineGrid && time
-                ? renderPresentationTimelineGrid(frame.timelineGrid, time, width, height, snapshot.mode === "editable") : undefined;
-            const ruler = time && frame.secondsRulerInset !== undefined
-                ? renderPresentationSecondsRuler(time, width, height, snapshot.mode, frame.secondsRulerInset) : undefined;
-            frames.push(grid || ruler ? { ...frame, marks: [...grid?.marks ?? [], ...ruler ?? [], ...frame.marks ?? []] } : frame);
+            viewFrame = { ...frame, commands: undefined };
+            capture(frame);
+        } else if (frame.timelineCurve) {
+            viewFrame = { ...viewFrame, timelineCurve: frame.timelineCurve };
+            capture({ ...viewFrame, commands: frame.commands });
         }
         edits.accept(frame.commands, inputs.length > 0 || wake.pending);
         wake.follow(frame);
@@ -127,7 +143,18 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             const remaining = started + atMs - performance.now();
             if (remaining > 0) await delay(remaining);
             if (failure) throw failure;
-            if (value.type === "interrupt") session.interrupt(value.reason, edits.interrupt());
+            if (value.type === "viewport") {
+                const previous = snapshot.viewport;
+                snapshot = { ...snapshot, viewport: value.viewport };
+                if (viewFrame?.timelineCurve && !viewFrame.timelineCurve.viewportDrawing && samePresentationLayout(previous, value.viewport)) {
+                    capture(viewFrame);
+                    session.updateViewport(value.viewport, snapshot.observations);
+                } else notifySnapshot();
+            } else if (value.type === "interrupt") session.interrupt(value.reason, edits.interrupt());
+            else if (value.type === "gesture" && value.phase === "begin" && !value.curveAxis && viewFrame?.timelineCurve) {
+                const { pan, zoom, center, cropped } = viewFrame.timelineCurve;
+                session.input({ ...value, curveAxis: { pan, zoom, center, cropped } });
+            }
             else session.input(value);
         }
         const deadline = performance.now() + 15_000;
@@ -136,7 +163,7 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             await delay(5);
         }
         if (failure) throw failure;
-        return { presentation: program.id, frames, snapshot, acceptedRevision };
+        return { presentation: program.id, frames, snapshot, acceptedRevision, editErrors };
     } finally {
         wake.cancel();
         session.dispose();

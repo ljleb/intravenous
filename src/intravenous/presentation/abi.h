@@ -67,10 +67,12 @@ struct IvPresentationContext {
     IvEditorFeedback *editor_feedback;
     IvRecordedShapes *shapes, *last_shapes;
     uint32_t construction_snapshot;
+    IvTimelineCurve *timeline_curve;
 };
 
 #if defined(__wasm32__)
 _Static_assert(sizeof(IvGestureInput) == 64 && offsetof(IvGestureInput, snapping) == 56, "gesture layout");
+_Static_assert(offsetof(IvGestureInput, viewport) == 60 && sizeof(IvGestureViewport) == 72, "gesture viewport layout");
 _Static_assert(sizeof(IvSnapCandidates) == 24, "snap layout");
 _Static_assert(offsetof(IvGestureInput, point) == 16, "gesture position layout");
 _Static_assert(sizeof(IvPolyline) == 72 && offsetof(IvPolyline, stroke) == 16, "polyline layout");
@@ -110,6 +112,8 @@ _Static_assert(offsetof(IvPresentationContext, context_menu) == 232, "context me
 _Static_assert(offsetof(IvPresentationContext, editor_feedback) == 236 && sizeof(IvEditorFeedback) == 64, "editor feedback layout");
 _Static_assert(offsetof(IvPresentationContext, shapes) == 240, "shape output layout");
 _Static_assert(offsetof(IvPresentationContext, construction_snapshot) == 248, "construction snapshot layout");
+_Static_assert(offsetof(IvPresentationContext, timeline_curve) == 252, "timeline curve output layout");
+_Static_assert(sizeof(IvTimelineCurve) == 64 && sizeof(IvTimelineCurvePoint) == 56, "timeline curve layout");
 _Static_assert(sizeof(IvWaveformPoint) == 24, "waveform point layout");
 _Static_assert(sizeof(IvWaveformRegion) == 32 && offsetof(IvWaveformRegion, points) == 20, "waveform region layout");
 _Static_assert(sizeof(IvObservedWaveform) == 32, "observed waveform layout");

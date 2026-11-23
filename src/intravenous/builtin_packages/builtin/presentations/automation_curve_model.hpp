@@ -286,10 +286,10 @@ struct ValueAxis {
     }
     double y(double value, double height) const { return (1 - fraction(value)) * height; }
     void reset() { pan = 0; zoom = 1; center = .5; }
-    void pan_by(double pixels, double height)
+    void pan_by(double fraction)
     {
-        if (!cropped && zoom > 1) { center = crop_center(center + pixels / (height * zoom), zoom); return; }
-        auto const next = pan + (cropped ? cropped_span() : pi / smaller(1., zoom)) * pixels / height;
+        if (!cropped && zoom > 1) { center = crop_center(center + fraction / zoom, zoom); return; }
+        auto const next = pan + (cropped ? cropped_span() : pi / smaller(1., zoom)) * fraction;
         if (__builtin_isfinite(static_cast<float>(next))) pan = next;
     }
     void zoom_by(double multiplier, double anchor)

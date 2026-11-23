@@ -49,7 +49,7 @@ test("the published Click Detector WASM draws retained trigger columns through t
     };
     try {
         const frame = readPresentationFrame(await worker.run({
-            ...snapshot, observations: { clicks: { operation: "trigger-bins" as const, status: "pending", result,
+            ...snapshot, observations: { clicks: { operation: "trigger-bins" as const, beginSample: "0", status: "pending", result,
                 spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
         }, []));
         assert.equal(frame.status, "4 recorded clicks in view");
@@ -68,7 +68,7 @@ test("Click Detector bounds drawing while preserving large counts and hides its 
         const result = { id: "clicks", status: "ready" as const, approximate: true,
             window: { begin: "0", length: "96000", points: 500 }, triggerBins, regions: [] };
         const displayed = { ...snapshot, mode: "mini" as const,
-            observations: { clicks: { operation: "trigger-bins" as const, status: "ready" as const, result,
+            observations: { clicks: { operation: "trigger-bins" as const, beginSample: "0", status: "ready" as const, result,
                 spans: [{ begin: "0", end: "96000", windowOffset: "0", result }] } },
         };
         const frame = readPresentationFrame(instance.present(wasmPresentationUpdate(displayed, [])).frame);
@@ -76,7 +76,7 @@ test("Click Detector bounds drawing while preserving large counts and hides its 
         assert.equal(frame.marks?.length, 500);
         assert.ok(frame.marks?.every(({ type }) => type === "packedPolyline"));
 
-        const clipped = { ...displayed, observations: { clicks: { operation: "trigger-bins" as const, status: "pending" as const, result,
+        const clipped = { ...displayed, observations: { clicks: { operation: "trigger-bins" as const, beginSample: "0", status: "pending" as const, result,
             spans: [{ begin: "1", end: "192", windowOffset: "0", result }] } } };
         assert.equal(instance.present(wasmPresentationUpdate(clipped, [])).frame?.status, "At least 1 recorded click in view");
 
@@ -331,7 +331,7 @@ test("a package waveform borrows retained regions with exact native indices acro
         ] }] };
     const display: PresentationSnapshot = { ...snapshot, node,
         viewport: { ...snapshot.viewport, time: { beginSample: begin, beginFraction: 0, spanSamples: 4, sampleRate: 48000 } },
-        observations: { value: { operation: "waveform", status: "pending",
+        observations: { value: { operation: "waveform", beginSample: begin, status: "pending",
             spans: [{ begin: "0", end: "4", windowOffset: "0", result }] } },
     };
     const update = wasmPresentationUpdate(display, []);
@@ -385,13 +385,15 @@ test("a slow presentation preserves gesture ordering while coalescing viewport c
     const move: PresentationInput = { ...begin, phase: "move", point: { x: 8, y: 12 }, delta: { x: 3, y: 0 } };
     const changed: PresentationInput = { ...begin, phase: "modifiers", point: move.point, modifiers: { ...modifiers, shift: true } };
     const finish: PresentationInput = { ...changed, phase: "finish" };
+    const movedViewport = { ...snapshot.viewport, width: 600 };
+    const finalViewport = { ...snapshot.viewport, width: 700 };
 
     session.update(snapshot);
     session.input(begin);
     const first = session.flush();
-    session.update({ ...snapshot, viewport: { ...snapshot.viewport, width: 600 } });
+    session.update({ ...snapshot, viewport: movedViewport });
     session.input(move);
-    session.update({ ...snapshot, viewport: { ...snapshot.viewport, width: 700 } });
+    session.update({ ...snapshot, viewport: finalViewport });
     session.input(changed);
     session.input(finish);
     await session.flush();
@@ -402,7 +404,14 @@ test("a slow presentation preserves gesture ordering while coalescing viewport c
     assert.deepEqual(saves, [saveRequest]);
 
     const second = session.flush();
-    assert.deepEqual(calls, [{ width: 500, inputs: [begin] }, { width: 700, inputs: [move, changed, finish] }]);
+    assert.deepEqual(calls, [
+        { width: 500, inputs: [{ ...begin, viewport: snapshot.viewport }] },
+        { width: 700, inputs: [
+            { ...move, viewport: movedViewport },
+            { ...changed, viewport: finalViewport },
+            { ...finish, viewport: finalViewport },
+        ] },
+    ]);
     session.dispose();
     replies[1]({});
     await second;
@@ -596,15 +605,20 @@ test("a headless snapshot can replay compact WASM state through a fresh worker",
             nodes: [{ address, definitionId: "builtin.beats", loadState: "ready" }] }),
     } as unknown as WorkspaceRpc;
     const events = workspaceNodeEvents(() => rpc, () => 4, (error) => assert.fail(String(error)));
+    const viewport = { ...snapshot.viewport, width: 240, height: 120 };
     const first = await runPresentationScenario(rpc, events, "first", {
-        snapshot: { ...snapshot, node: { ...snapshot.node, address }, state }, inputs: [],
+        snapshot: { ...snapshot, node: { ...snapshot.node, address }, state },
+        inputs: [{ atMs: 40, value: { type: "viewport", viewport } }],
     });
+    assert.deepEqual(first.snapshot.viewport, viewport);
+    assert.deepEqual(first.editErrors, []);
     const replay = JSON.parse(JSON.stringify({ snapshot: first.snapshot, inputs: [] }));
     const second = await runPresentationScenario(rpc, events, "second", replay);
     assert.equal(second.snapshot.state, state);
     const line = second.frames[0].marks?.[0];
     assert.equal(line?.type, "packedPolyline");
     assert.ok(Object.is(line.coordinates[0], -0));
+    assert.equal(line.coordinates[3], viewport.height);
 });
 
 test("the presentation reader fetches and verifies one compatible artifact per digest", async () => {

@@ -1,6 +1,6 @@
 # Presentation C ABI
 
-This reference describes the core wasm32 ABI version 10.
+This reference describes the core wasm32 ABI version 11.
 [`abi.h`](../../../src/intravenous/presentation/abi.h) declares the exports
 and wire layout. [`presentation.h`](../../../src/intravenous/presentation/presentation.h)
 declares the C guest API.
@@ -15,7 +15,7 @@ the WebAssembly interface and publishes its drawing records.
 | --- | --- |
 | Container | Core wasm32 module with exported linear memory named `memory` and zero imports |
 | Descriptor | Exactly one custom section named `iv.presentation` |
-| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `10`, flags |
+| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `11`, flags |
 | Descriptor flags | Bit 0 enables shared timeline overlays. Bit 1 requests snap candidates for pointer gestures and requires bit 0. |
 | Icon suffix | Optional UTF-8 SVG path data in a 16 × 16 coordinate space. The byte limit is 1,024. |
 | Artifact size | At most 256 KiB for package distribution |
@@ -90,6 +90,7 @@ count at offset 4. The context is 256 bytes on wasm32.
 | 232 and 236 | Context menu and editor feedback pointers |
 | 240 and 244 | Head and tail of shape batches |
 | 248 | Construction snapshot token |
+| 252 | Retained timeline curve pointer |
 
 The host allocates separate frame, gesture, scene-input, and output
 storage. The arena holds up to 1 MiB of output. The scene starts with
@@ -150,9 +151,19 @@ and delta at offset 32 are two doubles each. The wheel value at offset 48
 is a double. The phases are begin, move, modifiers, wheel, finish, and
 cancel in that order. Modifier masks are shift 1, alt 2, control 4, and meta
 8. The optional `IvSnapCandidates` pointer at 56 borrows the visible grid
-indices and background playhead position. Coordinates use the lane
-content's top-left origin. `IV_EDITOR_INTERRUPT` supplies a distinct
+indices and background playhead position. The optional `IvGestureViewport`
+pointer at 60 captures the timeline and content dimensions used for the
+gesture coordinates. The record occupies 72 bytes. The signed sample
+index is at 0. The fraction, span in samples, width, and height are
+doubles at 8, 16, 24, and 32. The sample rate and flags are uint32 at 40
+and 44. `IV_GESTURE_VIEW_CURVE` supplies the value-axis pan, zoom, and
+center as doubles at 48, 56, and 64. `IV_GESTURE_VIEW_CROPPED` selects
+the cropped value axis for that gesture.
+Coordinates use the lane content's top-left origin. The browser's
+pointer drag delivers movement in the coordinate system at pickup. `IV_EDITOR_INTERRUPT` supplies a distinct
 history or disconnection notification.
+For `IV_EDITOR_VALUE_VIEW` with action `IV_VALUE_PAN`, the input value
+is a fraction of the lane height at the time of the pan.
 
 An `IvObservedTriggerColumns` record is 40 bytes. It holds its ID at
 offset 0, a span of unsigned 32-bit display columns at 8, a uint64 count
@@ -293,6 +304,61 @@ The uint32 ink and flags are at 48 and 52. `IV_GRID_SEEK` exposes the
 grid to host playhead seeking. `IV_GRID_LABEL_MAJOR` labels major lines
 with their signed index plus 1. The host limits mark density at every zoom.
 
+## Retained timeline curves
+
+`iv_set_timeline_curve` records an `IvTimelineCurve` once per frame. The
+host can project these records after the viewport changes. The point
+span contains up to 32,768 points in nondecreasing signed sample order.
+Equal-sample points retain their sequence within their group. The first
+point in a group supplies the incoming value and the last supplies the
+outgoing interpolation and coefficients. Segments advance cyclically,
+use half-open intervals, and can be empty, hold, or Bézier. A single
+nonempty group holds its last value over the full sample cycle.
+
+An `IvTimelineCurvePoint` occupies 56 bytes. It carries the signed
+sample index at 0, start and end derivatives multiplied by the segment
+duration at 8 and 16, and
+the binary32 value and tension at 24 and 28. The uint32 fields at 32,
+36, 40, and 44 specify the point target, point mark base, tension
+target, and tension mark base. A zero tension target and mark omit the
+handle. Only the outgoing Bézier point in a group can have a tension
+handle. Each mark base reserves two consecutive mark IDs. Interpolation
+at 48 uses `IV_CURVE_EMPTY`, `IV_CURVE_HOLD`, or `IV_CURVE_BEZIER`.
+Flags at 52 mark the selected and active points. The host reserves
+track mark IDs 1001 through 2156 for the projected curves and bounds.
+Targets and marks must have unique IDs within their respective spaces.
+For a Bézier segment, let `t` and `u` be the fractions of the duration
+elapsed and remaining, and let `d` be the last value minus the first.
+The host adds `tension * t * u * ((start_delta - d) * u + (d - end_delta) * t)`
+to the linear interpolation and clamps the result between the endpoint
+values.
+
+An `IvTimelineCurve` occupies 64 bytes. The point span is at 0. The
+value-axis pan, zoom, and fractional center are doubles at 8, 16, and
+24. The uint32 fields at 32, 36, 40, and 44 give the point generation,
+flags, selection target, and addition target. The minimum and maximum
+input names are `IvString` fields at 48 and 56. Each name also names
+the manifest's waveform observation ID for that port. An empty name
+omits the corresponding bound. The host projects and interpolates
+these observations. After the first curve frame it can omit these
+waveforms from the guest's scene inputs.
+
+Point memory must remain readable after `iv_present` returns. Change
+the generation when any point data changes. The host copies the points
+once per generation. Axis settings and flags arrive every guest frame.
+`IV_CURVE_EDITABLE` enables the point and background targets.
+`IV_CURVE_CROPPED` selects a linear value axis centered at `pan`, with
+visible span `2 * max(abs(pan) * 2^-23, 1 / zoom)`. The curved axis uses
+`0.5 + atan((value - pan) * min(1, zoom)) / pi` as its fraction from the
+bottom. If zoom exceeds one, it subtracts `center`, multiplies by zoom,
+and adds 0.5.
+`IV_CURVE_VIEWPORT_DRAWING` identifies transient pixel drawing that
+depends on the specific timeline origin and span, such as a marquee or
+snap highlight. When the flag is clear, the host may reuse pixel drawing
+across horizontal pans at the same layout, sample rate, and grid mode.
+
+[Historical ABI 10 requirements](../../historical/presentation_abi_10_before_retained_timeline_curves_2026-11-23.md)
+
 ## Layout checks
 
 These compile-time assertions verify the layout described above for wasm32.
@@ -301,7 +367,7 @@ These compile-time assertions verify the layout described above for wasm32.
 ```c
 #include <intravenous/presentation/abi.h>
 
-_Static_assert(IV_PRESENTATION_ABI_VERSION == 10, "ABI version");
+_Static_assert(IV_PRESENTATION_ABI_VERSION == 11, "ABI version");
 _Static_assert(sizeof(IvPresentationContext) == 256, "context size");
 _Static_assert(offsetof(IvPresentationContext, trigger_columns) == 80, "observation span");
 _Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation record");
@@ -315,6 +381,9 @@ _Static_assert(offsetof(IvPresentationContext, timeline) == 104, "timeline view"
 _Static_assert(sizeof(IvControlInput) == 40 && sizeof(IvSetting) == 88, "controls");
 _Static_assert(sizeof(IvNodeEdit) == 20 && sizeof(IvEditReply) == 24, "node edits");
 _Static_assert(sizeof(IvTimelineGrid) == 56, "grid");
+_Static_assert(sizeof(IvGestureViewport) == 72 && offsetof(IvGestureInput, viewport) == 60, "gesture viewport");
+_Static_assert(sizeof(IvTimelineCurvePoint) == 56 && sizeof(IvTimelineCurve) == 64, "retained curve");
+_Static_assert(offsetof(IvPresentationContext, timeline_curve) == 252, "retained curve output");
 _Static_assert(IV_LANE_NANO == 3 && IV_OBSERVATION_FAILED == 3, "encoded enums");
 ```
 

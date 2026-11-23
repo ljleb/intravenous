@@ -5,8 +5,8 @@ usage() {
     cat <<'EOF'
 Usage: scripts/test_release.sh [-j<n> | --help]
 
-Build the preconfigured build-release tree and run CTest with
---output-on-failure. Passing tests update one live line in a terminal.
+Build the preconfigured build-release tree and run CTest and the
+TypeScript client tests. Passing tests update one live line in a terminal.
 
 Options
   -j<n>                Use n parallel jobs for both the build and tests.
@@ -45,6 +45,16 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="$repo_root/build-release"
+client_dir="$repo_root/vscode/client"
+
+if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
+    printf '%s\n' 'Node.js and npm are required. Run this script in the development shell.' >&2
+    exit 1
+fi
+if [[ ! -x "$client_dir/node_modules/.bin/tsc" ]]; then
+    printf 'Install the TypeScript test dependencies with npm --prefix "%s" ci.\n' "$client_dir" >&2
+    exit 1
+fi
 
 cmake --build "$build_dir" --parallel "$jobs"
 
@@ -54,8 +64,8 @@ if [[ -t 1 && "${TERM:-dumb}" != dumb ]]; then
     terminal_columns="${terminal_size##* }"
 fi
 
-ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 |
-    awk -v columns="$terminal_columns" '
+filter_test_output() {
+    awk -v columns="$terminal_columns" -v runner="$1" '
         function clear_progress() {
             if (showing_progress) {
                 printf "\r\033[K"
@@ -71,14 +81,18 @@ ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 |
             fflush()
             showing_progress = 1
         }
-        /^[[:space:]]*Start[[:space:]]+[0-9]+:[[:space:]]/ {
+        runner == "node" && /^[[:space:]]*✔ / && / \([0-9.eE+-]+ms\)[[:space:]]*$/ {
+            show_progress($0)
+            next
+        }
+        runner == "ctest" && /^[[:space:]]*Start[[:space:]]+[0-9]+:[[:space:]]/ {
             test_id = $2 + 0
             start[test_id] = $0
             name[test_id] = $0
             sub(/^[^:]+:[[:space:]]*/, "", name[test_id])
             next
         }
-        /^[[:space:]]*[0-9]+\/[0-9]+[[:space:]]+Test[[:space:]]+#[[:space:]]*[0-9]+:/ {
+        runner == "ctest" && /^[[:space:]]*[0-9]+\/[0-9]+[[:space:]]+Test[[:space:]]+#[[:space:]]*[0-9]+:/ {
             result = $0
             sub(/^[^#]+#[[:space:]]*/, "", result)
             test_id = result + 0
@@ -106,3 +120,12 @@ ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 |
                 print start[test_id]
         }
     '
+}
+
+ctest --test-dir "$build_dir" --parallel "$jobs" --output-on-failure 2>&1 | filter_test_output ctest
+
+npm --prefix "$client_dir" run test:prepare
+(
+    cd "$client_dir"
+    FORCE_COLOR=0 node --test --test-concurrency="$jobs" --test-reporter=spec "dist-test/test/**/*.test.js"
+) 2>&1 | filter_test_output node

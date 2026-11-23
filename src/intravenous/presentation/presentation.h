@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 10
+#define IV_PRESENTATION_ABI_VERSION 11
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
 #define IV_PRESENTATION_TIMELINE_SNAPPING 2
@@ -49,6 +49,14 @@ typedef struct {
     uint32_t has_playhead;
 } IvSnapCandidates;
 
+enum { IV_GESTURE_VIEW_CURVE = 1, IV_GESTURE_VIEW_CROPPED = 2 };
+typedef struct {
+    int64_t begin_sample;
+    double begin_fraction, span_samples, width, height;
+    uint32_t sample_rate, flags;
+    double value_pan, value_zoom, value_center;
+} IvGestureViewport;
+
 enum {
     IV_GESTURE_BEGIN, IV_GESTURE_MOVE, IV_GESTURE_MODIFIERS,
     IV_GESTURE_WHEEL, IV_GESTURE_FINISH, IV_GESTURE_CANCEL
@@ -59,6 +67,7 @@ typedef struct {
     IvPoint point, delta;
     double wheel;
     const IvSnapCandidates *snapping;
+    const IvGestureViewport *viewport;
 } IvGestureInput;
 IV_TYPEDEF_SPAN(IvGestureInput, IvGestureInputSpan);
 
@@ -145,6 +154,24 @@ typedef struct {
     uint32_t sample_rate, flags;
 } IvTimelineView;
 enum { IV_TIMELINE_CUSTOM_GRID = 1 };
+
+enum { IV_CURVE_EMPTY, IV_CURVE_HOLD, IV_CURVE_BEZIER };
+enum { IV_CURVE_SELECTED = 1, IV_CURVE_ACTIVE = 2 };
+typedef struct {
+    int64_t sample;
+    double start_delta, end_delta;
+    float value, tension;
+    uint32_t target, mark, tension_target, tension_mark;
+    uint32_t interpolation, flags;
+} IvTimelineCurvePoint;
+IV_TYPEDEF_SPAN(IvTimelineCurvePoint, IvTimelineCurvePointSpan);
+enum { IV_CURVE_CROPPED = 1, IV_CURVE_EDITABLE = 2, IV_CURVE_VIEWPORT_DRAWING = 4 };
+typedef struct {
+    IvTimelineCurvePointSpan points;
+    double pan, zoom, center;
+    uint32_t generation, flags, selection_target, addition_target;
+    IvString minimum_input, maximum_input;
+} IvTimelineCurve;
 
 IV_TYPEDEF_SPAN(double, IvNumberSpan);
 enum { IV_NUMERIC_UNAVAILABLE, IV_NUMERIC_SCALAR, IV_NUMERIC_SEQUENCE };
@@ -275,6 +302,9 @@ bool iv_set_editor_feedback(IvPresentationContext *context, IvEditorFeedback fee
 void *iv_copy_edit_payload(IvPresentationContext *context, const void *data, uint32_t size);
 bool iv_submit_edit(IvPresentationContext *context, IvNodeEdit edit);
 bool iv_set_timeline_grid(IvPresentationContext *context, const IvTimelineGrid *grid);
+/* The point storage must remain readable after iv_present returns. Change
+   generation whenever the point records change, including selection. */
+bool iv_set_timeline_curve(IvPresentationContext *context, IvTimelineCurve curve);
 void iv_reuse_drawing(IvPresentationContext *context);
 void iv_set_status(IvPresentationContext *context, IvString status);
 

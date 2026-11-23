@@ -93,6 +93,12 @@ input. Use `inspect` to find the address, and provide `expanded` if
 you need a node inside an expanded module. The headless runner reads
 accepted node arguments from the server and takes viewport and observation
 data from the scenario. Inspect the returned frames and final state.
+When supplying observations, set each observation's `beginSample` to
+the exact signed sample at the start of the window used to compute its
+relative spans. Viewport events can then move independently of the
+retained observation window.
+For a value-view pan, set `fraction` to the movement divided by the lane
+height at input time.
 
 Set `snapshot.state` to a string that contains the saved JSON, or to `null`.
 To replay the final state, copy the returned `snapshot` into the new scenario.
@@ -100,3 +106,21 @@ Keep `snapshot.state` as a string so that the runner can restore the original by
 
 [Example scenario](../../../examples/wasm-presentation/marker-scenario.json) ·
 [Headless command setup](../../development_run.md#replay-graph-editor-interactions)
+
+## Replay generated curve edits
+
+Copy `examples/wasm-presentation/iv_project.jsonl` into a new scratch project.
+Generate a scenario with an explicit seed and run it with the headless client.
+
+```sh
+python3 scripts/generate_curve_fuzz_scenario.py 67 > curve-67.json
+node build-release/vscode/client/dist/headlessClient.js present \
+  --server "$IV_TEST_SERVER" --project "$IV_TEST_PROJECT" \
+  --scenario curve-67.json > curve-67-result.json
+```
+
+The generator varies the viewport, edits points, and interrupts gestures. The
+runner records frames, rejected edit messages, the final snapshot, and the
+latest accepted edit revision. Keep the scenario file and the starting project
+to replay a failure. Each run uses the same inputs and requested timing. Server
+work and frame completion can still interleave differently.

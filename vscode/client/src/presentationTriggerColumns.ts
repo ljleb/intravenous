@@ -1,6 +1,7 @@
 import type { PresentationObservation, PresentationSnapshot } from "./presentationPlugin";
 import { recordedTriggerBinsOperation } from "./observations";
-import { timelineSamples } from "./timelineSamples";
+import { presentationObservationSpans } from "./presentationObservationSpans";
+import { timelineSamples, timelineVisibleEventSpan } from "./timelineSamples";
 
 export const triggerColumnLimit = 1024;
 export type TriggerColumns = {
@@ -14,6 +15,7 @@ export type TriggerColumns = {
 export function presentationTriggerColumns({ observations, viewport: { time, width } }: PresentationSnapshot): TriggerColumns[] {
     if (!time?.sampleRate) return [];
     const view = timelineSamples(time);
+    const window = timelineVisibleEventSpan(view);
     const visibleOffset = view.origin.fraction > 0 ? 1 - view.origin.fraction : 0;
     const pixelsPerSample = width / view.span;
     return Object.entries(observations).flatMap(([id, observation]) => {
@@ -21,11 +23,10 @@ export function presentationTriggerColumns({ observations, viewport: { time, wid
         const columns = new Set<number>();
         let count = 0n;
         let partial = false;
-        for (const span of observation.spans) {
+        for (const span of presentationObservationSpans(observation, window)) {
             if (span.result.status !== "ready") continue;
-            const begin = BigInt(span.begin), end = BigInt(span.end);
+            const { begin, end, windowOffset: base } = span;
             const windowBegin = BigInt(span.result.window.begin);
-            const base = BigInt(span.windowOffset);
             for (const bin of span.result.triggerBins ?? []) {
                 const binBegin = base + BigInt.asUintN(64, BigInt(bin.begin) - windowBegin);
                 const binEnd = binBegin + BigInt(bin.length);

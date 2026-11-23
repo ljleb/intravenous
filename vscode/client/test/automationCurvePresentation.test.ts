@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createWasmPresentation, readWasmPresentationDescriptor, wasmPresentationUpdate } from "../src/wasmPresentation";
 import { renderPresentationSecondsRuler } from "../src/presentationSecondsRuler";
+import { projectTimelineCurveFrame } from "../src/timelineCurvePresentation";
 import { PresentationLaneEdits } from "../src/presentationLaneEdits";
 import { parsePresentationState } from "../src/presentationStateJson";
 import type { ObservationWindowResult } from "../src/observations";
@@ -36,11 +37,12 @@ function harness(t: TestContext, initial = snapshot) {
     t.after(() => present.dispose());
     let argumentsInGuest: readonly unknown[] | undefined;
     return (inputs: PresentationInput[] = [], update?: Partial<PresentationSnapshot>) => {
-        const input = wasmPresentationUpdate({ ...initial, ...update }, inputs);
+        const current = { ...initial, ...update };
+        const input = wasmPresentationUpdate(current, inputs);
         if (input.construction?.arguments === argumentsInGuest) delete input.construction;
         else argumentsInGuest = input.construction?.arguments;
         const reply = present.present(input);
-        const frame = readPresentationFrame(reply.frame);
+        const frame = projectTimelineCurveFrame(readPresentationFrame(reply.frame), current);
         return { ...frame, commands: frame.commands ?? [] };
     };
 }
@@ -211,11 +213,18 @@ test("a connected bound uses the retained spans while its replacement is pending
         assert.ok(run?.length);
         return run;
     };
-    const first = maxTrace(present([], { observations: { max: { operation: "waveform", status: "ready", result, spans } } }));
+    const first = maxTrace(present([], { observations: { max: { operation: "waveform", beginSample: "0", status: "ready", result, spans } } }));
     assert.equal(first[0].y, 50);
     assert.equal(first.at(-1)?.y, 25);
     const pending = { ...result, status: "pending" as const, regions: [] };
-    assert.deepEqual(maxTrace(present([], { observations: { max: { operation: "waveform", status: "pending", result: pending, spans } } })), first);
+    assert.deepEqual(maxTrace(present([], { observations: { max: { operation: "waveform", beginSample: "0", status: "pending", result: pending, spans } } })), first);
+    const panned = present([], { viewport: { ...snapshot.viewport,
+        time: { ...snapshot.viewport.time!, beginSample: "240000" } },
+        observations: { max: { operation: "waveform", beginSample: "0", status: "pending", result: pending, spans } } });
+    const run = maxTrace(panned);
+    assert.equal(run[0].x, 0);
+    assert.ok(Math.abs(run[0].y - (1 - (.5 + Math.atan(240000 / 479999) / Math.PI)) * 100) < 1e-9);
+    assert.equal(run.at(-1)?.x, 50);
 });
 
 test("automation points and interpolation follow the same view through the signed seam", (t) => {
@@ -347,4 +356,70 @@ test("point edits require an accepted invocation, including a valid default cons
     const command = editable.commands[0];
     assert.equal(command?.type, "edit");
     assert.equal(command.event.payload["insert"], true);
+});
+
+test("retained automation geometry and hit targets reproject through the sample seam without a guest frame", (t) => {
+    const seam = 1n << 63n;
+    const node = { ...snapshot.node, arguments: [[
+        { ...points[0], sample_index: String(seam - 8n), value: 0, tension: 1 },
+        { ...points[1], sample_index: String(-seam + 8n), value: 1 },
+    ]] };
+    const initial = { ...snapshot, node, viewport: { ...snapshot.viewport,
+        time: { beginSample: String(seam - 8n), beginFraction: 0, spanSamples: 16, sampleRate: 48000 } } };
+    const present = createWasmPresentation(artifact.toString("base64"));
+    t.after(() => present.dispose());
+    present.restore("");
+    const frame = readPresentationFrame(present.present(wasmPresentationUpdate(initial, [])).frame);
+    assert.ok(frame.timelineCurve);
+    const original = projectTimelineCurveFrame(frame, initial);
+    const first = trace(original, tracks.authored).flat().find(({ x }) => x === 25);
+    assert.ok(first);
+    const expected = (1 - (.5 + Math.atan(.15625) / Math.PI)) * 100;
+    assert.ok(Math.abs(first.y - expected) < 1e-9);
+    const panned = projectTimelineCurveFrame(frame, { ...initial, viewport: { ...initial.viewport,
+        time: { ...initial.viewport.time, beginSample: String(seam - 4n) } } });
+    assert.ok(Math.abs(trace(panned, tracks.authored)[0][0].y - first.y) < 1e-9);
+    assert.equal(dot(panned, 2).x, 75);
+    assert.equal(panned.targets?.find(({ id }) => id === "5")?.x, 67);
+});
+
+test("a queued add-point press uses its captured viewport and scale after both have changed", (t) => {
+    const seam = 1n << 63n;
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node, arguments: [[]] } });
+    const pickup = { width: 200, height: 80,
+        time: { beginSample: String(seam - 7n), beginFraction: .25, spanSamples: 100, sampleRate: 48000 } };
+    const shifted = { ...snapshot.viewport,
+        time: { ...snapshot.viewport.time!, beginSample: "5000", spanSamples: 200 } };
+    const frame = present([
+        { type: "valueView", action: "pan", fraction: .25 },
+        gesture(addTarget, "begin", 20, 40, { viewport: pickup, curveAxis: { pan: 0, zoom: 1, center: .5, cropped: false } }),
+    ], { viewport: shifted });
+    const command = frame.commands[0];
+    assert.equal(command?.type, "edit");
+    assert.deepEqual(command.event.payload["point"], {
+        id: 0, seconds: 0, sample_index: String(-seam + 3n), value: 0, interpolation: "empty", tension: 1, order: 0,
+    });
+    assert.equal(parsePresentationState(frame.saveRequest!)?.pan, Math.PI / 4);
+});
+
+test("a missing connected bound leaves the authored curve and omits the output preview", (t) => {
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node,
+        ports: [{ name: "max", direction: "input", kind: "continuous", connected: true, manualValue: 0 }] } });
+    const frame = present();
+    assert.ok(trace(frame, tracks.authored).length);
+    assert.deepEqual(trace(frame, tracks.output), []);
+    assert.deepEqual(trace(frame, tracks.max), []);
+});
+
+test("an observed empty bound interval permits the output preview from the other bound", (t) => {
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node, ports: [
+        { name: "min", direction: "input", kind: "continuous", manualValue: .8 },
+        { name: "max", direction: "input", kind: "continuous", connected: true },
+    ] } });
+    const result: ObservationWindowResult = { id: "max", status: "ready", approximate: false, regions: [],
+        window: { begin: "0", length: "480000", points: 1024 } };
+    const frame = present([], { observations: { max: { operation: "waveform", beginSample: "0", status: "ready", result,
+        spans: [{ begin: "0", end: "480000", windowOffset: "0", result }] } } });
+    assert.ok(trace(frame, tracks.output).length);
+    assert.deepEqual(trace(frame, tracks.max), []);
 });

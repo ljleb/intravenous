@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/dsl.h>
+#include <intravenous/basic_nodes/automation_segment.h>
 
 #include <algorithm>
 #include <array>
@@ -274,18 +275,6 @@ struct Curve {
         ctx.input<"max">().require(wanted);
     }
 
-    // Weighted harmonic endpoint derivative (PCHIP). Opposing secants produce
-    // a flat tangent. A derivative never exceeds three times either secant.
-    static double tangent(double previous_slope, double next_slope,
-                          double previous_length, double next_length) {
-        if (previous_slope == 0 || next_slope == 0
-            || std::signbit(previous_slope) != std::signbit(next_slope)) return 0;
-        auto const first_weight = 2 * next_length + previous_length;
-        auto const second_weight = next_length + 2 * previous_length;
-        return (first_weight + second_weight)
-            / (first_weight / previous_slope + second_weight / next_slope);
-    }
-
     struct Segment {
         GlobalIndex begin{}, end{};
         double length = 0x1p64;
@@ -344,7 +333,7 @@ struct Curve {
                 auto const previous_value = value(*previous.at_or_before);
                 auto const first_at_begin = value(*previous.after);
                 auto const length = static_cast<double>(previous.at_or_before->time.forward_distance_to(before.time));
-                if (length > 0 && first_at_begin == result.first) result.start_delta = tangent(
+                if (length > 0 && first_at_begin == result.first) result.start_delta = curve_tangent(
                     (result.first - previous_value) / length, slope, length, result.length) * result.length;
             }
         }
@@ -354,7 +343,7 @@ struct Curve {
                 auto const last_at_end_value = value(*next.at_or_before);
                 auto const following = value(*next.after);
                 auto const length = static_cast<double>(after.time.forward_distance_to(next.after->time));
-                if (length > 0 && result.last == last_at_end_value) result.end_delta = tangent(slope,
+                if (length > 0 && result.last == last_at_end_value) result.end_delta = curve_tangent(slope,
                     (following - result.last) / length, result.length, length) * result.length;
             }
         }

@@ -20,7 +20,8 @@
         "watch": "node ./esbuild.mjs --watch",
         "generate-node-events": "tsc -p ./tsconfig.bindings.json && node dist-tools/generateNodeEventBindings.js",
         "typecheck": "tsc --noEmit -p ./tsconfig.json && vue-tsc --noEmit -p ./webview/tsconfig.json",
-        "test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p ./tsconfig.tests.json && python3 ../../scripts/build_presentation_test_assets.py dist-test/presentations && node --test \"dist-test/test/**/*.test.js\""
+        "test:prepare": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p ./tsconfig.tests.json && python3 ../../scripts/build_presentation_test_assets.py dist-test/presentations",
+        "test": "npm run test:prepare && node --test \"dist-test/test/**/*.test.js\""
     },
     "dependencies": {
         "reflect-metadata": "^0.2.2",

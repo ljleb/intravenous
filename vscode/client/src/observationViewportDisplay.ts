@@ -12,6 +12,7 @@ export type ObservationViewportRead = {
 };
 
 type ObservationViewportPlot = {
+    beginSample: string;
     result?: ObservationWindowResult;
     spans: ObservationSpan[];
     status: ObservationWindowResult["status"];
@@ -95,5 +96,5 @@ function viewportPlot(read: ObservationViewportRead, spans: ObservationSpan[], w
     const unavailable = read.current.every((result) => result?.status === "unavailable");
     const status = failure ? "failed" : unavailable ? "unavailable" : waiting || pending ? "pending" : "ready";
     const result = spans.find(({ result }) => result.status === "ready")?.result ?? spans[0]?.result ?? failure;
-    return { result, spans, status, error: failure?.error };
+    return { beginSample: read.visible.begin, result, spans, status, error: failure?.error };
 }

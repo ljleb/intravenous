@@ -463,14 +463,22 @@ Region start and length, event count, depth, first event index, and stride.
 The run lists its sample positions once. Marks read by time stay in `marks`.
 Subscribers that omit the option receive the flat list of sample positions and
 depths.
+Order flat marks by forward sample distance from the requested window's
+start. At the same sample, list the coarsest depth first. A window that
+crosses the signed sample seam keeps its local order. Indexed runs keep
+their event indices in source Region order.
 
 The Custom ruler numbers the bars in each indexed depth-zero Region from
-its start. Recover each bar's event index from the run's first index and
-stride. Add one to get the bar number in the first half of the sample circle
-relative to the Region start. In the second half, also subtract the Region's
-total event count so the last bar there is 0. Marks read by time supply lines
-and snap targets.
+its start by default. Recover each bar's event index from the run's first
+index and stride, then add one. For a Region that starts at a negative
+sample and ends at sample zero, subtract the Region's total event count
+as well. Its last bar is 0, and the first bar in a Region starting at
+sample zero is 1. This matches Beats when its output drives Custom.
+For other Regions, also subtract the event count for bars in the second
+half of the sample circle relative to the Region start. Marks read by
+time supply lines and snap targets.
 Coincident bar marks with conflicting labels share one line without a number.
+[Previous Region-only rule](./historical/custom_beat_labels_before_zero_ending_regions_2026-11-23.md) ·
 [Earlier sample-zero labels](./historical/custom_beat_labels_before_region_relative_numbering_2026-11-22.md).
 
 The viewport picks marks by a minimum horizontal pixel distance at its current

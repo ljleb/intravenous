@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, ref, shallowRef, toRaw, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
-import type { PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
-    PresentationArtifact, PresentationSnapshot } from "../../src/presentationPlugin";
+import { samePresentationLayout, type PresentationCursor, type PresentationFrame, type PresentationGestureInput, type PresentationInput,
+    type PresentationObservation, type PresentationPoint, type PresentationArtifact, type PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
 import type { SerializedPresentationState } from "../../src/presentationStateJson";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
@@ -12,6 +12,7 @@ import { renderPresentationSecondsRuler } from "../../src/presentationSecondsRul
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { timelineSamples, timelineVisibleEventSpan } from "../../src/timelineSamples";
+import { projectTimelineCurve } from "../../src/timelineCurvePresentation";
 import { recordedTriggerBinsOperation } from "../../src/observations";
 import { useOptionalGraphEditor } from "../graph/context";
 import { presentationCursorPoint, visibleCursorDestination } from "../graph/cursorReturn";
@@ -44,6 +45,7 @@ const navigation = useTimelineNavigation();
 const surface = ref<HTMLElement | null>(null);
 const size = usePresentationSize(surface);
 const frame = shallowRef<PresentationFrame>();
+const retainedCurve = shallowRef<PresentationFrame["timelineCurve"]>();
 const state = shallowRef<SerializedPresentationState>(null);
 const error = ref("");
 const editError = ref("");
@@ -142,6 +144,7 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
         settleCursorReply(cursor && (draw || "sample" in cursor) ? cursor : undefined);
     }
     laneEdits.accept(next.commands, allowsFrameChanges(inputs));
+    if (active.value && (draw || next.timelineCurve)) retainedCurve.value = next.timelineCurve;
     if (active.value && draw) frame.value = next;
     wake.follow(next);
     waking.value = wake.pending;
@@ -166,27 +169,41 @@ const session = new PresentationPluginSession((snapshot, inputs) => {
     restore: (accepted) => worker.restore(accepted),
 });
 
-const snapshot = computed((): PresentationSnapshot | undefined => {
-    if (error.value || !stateReady.value || !active.value || !size.value?.width || !size.value.height) return;
-    const timeline = time?.value;
+const snapshotNode = computed((): PresentationSnapshot["node"] => {
     const scopedNode = node.value;
-    const revision = editor?.scope.value?.sessionRevision ?? 0;
     const construction = scopedNode.construction;
-    return { node: { address: scopedNode.address, definitionId: scopedNode.definitionId,
+    return { address: scopedNode.address, definitionId: scopedNode.definitionId,
         constructionDefinitionId: construction?.definitionId, arguments: construction ? toRaw(construction.arguments) : [],
         ports: scopedNode.ports.map((port) => ({ name: port.name, direction: port.direction, kind: port.kind,
             connected: port.connectivity === "connected", ...(port.kind === "continuous" && port.manualControl ? {
                 manualValue: port.manualControl.liveValue ?? (port.manualControl.participates ? port.manualControl.value : undefined),
-            } : {}) })) },
+            } : {}) })) };
+});
+const snapshot = computed((): PresentationSnapshot | undefined => {
+    if (error.value || !stateReady.value || !active.value || !size.value?.width || !size.value.height) return;
+    const revision = editor?.scope.value?.sessionRevision ?? 0;
+    return { node: snapshotNode.value,
         revision, editable: editable.value, mode: props.mode, editsPending: editsPending.value || revision < acceptedRevision.value,
         editError: editError.value || undefined,
-        viewport: { ...size.value, time: timeline },
+        viewport: { ...size.value, time: time?.value },
         observations: observations.value,
         state: state.value };
 });
-watch([snapshot, () => props.program, dragging], ([snapshot]) => {
+watch([snapshot, () => props.program, dragging], ([snapshot, program, dragging], [previous, previousProgram, wasDragging]) => {
     clearTimeout(idleTimer);
-    if (snapshot) session.update(snapshot);
+    if (snapshot) {
+        const curve = retainedCurve.value;
+        const hostObservation = (id: string) => id === curve?.minimumInput || id === curve?.maximumInput;
+        const projectionOnly = !!curve && !curve.viewportDrawing && !!previous && program === previousProgram && !dragging && !wasDragging
+            && previous.node === snapshot.node && previous.revision === snapshot.revision
+            && previous.editable === snapshot.editable && previous.mode === snapshot.mode
+            && previous.state === snapshot.state && previous.editsPending === snapshot.editsPending && previous.editError === snapshot.editError
+            && samePresentationLayout(previous.viewport, snapshot.viewport)
+            && Object.keys({ ...previous.observations, ...snapshot.observations })
+                .every((id) => hostObservation(id) || previous.observations[id] === snapshot.observations[id]);
+        if (projectionOnly) session.updateViewport(snapshot.viewport, snapshot.observations);
+        else session.update(snapshot);
+    }
     else if (!disposed) {
         // The next viewport replaces this snapshot. Keep the last frame for
         // display and release a worker that repeatedly goes off screen.
@@ -203,8 +220,15 @@ const secondsRuler = computed(() => {
     const view = time?.value, bounds = size.value, inset = frame.value?.secondsRulerInset;
     if (view && bounds && inset !== undefined) return renderPresentationSecondsRuler(view, bounds.width, bounds.height, props.mode, inset);
 });
-const laneMarks = computed(() => timelineGrid.value || secondsRuler.value
-    ? [...timelineGrid.value?.marks ?? [], ...secondsRuler.value ?? [], ...frame.value?.marks ?? []] : frame.value?.marks);
+const projectedCurve = computed(() => {
+    const curve = retainedCurve.value, current = snapshot.value;
+    if (curve && current) return projectTimelineCurve(curve, current);
+});
+const laneMarks = computed(() => timelineGrid.value || secondsRuler.value || projectedCurve.value
+    ? [...timelineGrid.value?.marks ?? [], ...secondsRuler.value ?? [], ...frame.value?.marks ?? [], ...projectedCurve.value?.marks ?? []]
+    : frame.value?.marks);
+const laneTargets = computed(() => projectedCurve.value
+    ? [...frame.value?.targets ?? [], ...projectedCurve.value.targets] : frame.value?.targets);
 const seek = usePlayheadSeek(surface, () => frame.value?.timelineGrid?.seek ? time?.value : undefined,
     () => timelineGrid.value?.samples ?? [], () => {
         const grid = frame.value?.timelineGrid;
@@ -213,7 +237,7 @@ const seek = usePlayheadSeek(surface, () => frame.value?.timelineGrid?.seek ? ti
 const hovered = ref<string>();
 const activeTarget = ref<string>();
 function targetAt(point: PresentationPoint, matches: (target: NonNullable<PresentationFrame["targets"]>[number]) => boolean) {
-    const targets = editable.value ? frame.value?.targets : undefined;
+    const targets = editable.value ? laneTargets.value : undefined;
     if (!targets) return;
     for (let i = targets.length - 1; i >= 0; --i) {
         const item = targets[i];
@@ -224,7 +248,7 @@ function targetAt(point: PresentationPoint, matches: (target: NonNullable<Presen
 function localPoint(event: MouseEvent, box: DOMRect): PresentationPoint {
     return { x: event.clientX - box.left, y: event.clientY - box.top };
 }
-const hoveredTarget = computed(() => frame.value?.targets?.find(({ id }) => id === (activeTarget.value ?? hovered.value)));
+const hoveredTarget = computed(() => laneTargets.value?.find(({ id }) => id === (activeTarget.value ?? hovered.value)));
 function hover(event: PointerEvent) {
     if (!surface.value || activeTarget.value) return;
     hovered.value = targetAt(localPoint(event, surface.value.getBoundingClientRect()), (item) => !!item.hint || !!item.cursor)?.id;
@@ -244,7 +268,14 @@ function pointerDown(event: PointerEvent) {
     menu.close();
     settleCursorReply();
     let released: Promise<PresentationCursor | undefined> | undefined;
+    const pickup = snapshot.value?.viewport;
+    const curve = retainedCurve.value;
     cancelDrag = editor.startObjectDrag(event, presentationDrag(event, box, target, (input) => {
+        if (pickup?.time) input.viewport = pickup;
+        if (curve && input.phase === "begin") {
+            const { pan, zoom, center, cropped } = curve;
+            input.curveAxis = { pan, zoom, center, cropped };
+        }
         if (input.phase === "begin" && props.program.manifest.timelineSnapping && time?.value) input.snapping = {
             marks: (timelineMarks?.value ?? []).map(({ index }) => String(index)),
             playhead: playback?.backgroundPlayhead.value?.toString(),
@@ -330,9 +361,10 @@ const valueNavigation: LaneValueNavigation = {
         return mode === "zoom" ? { ...base, mode, zoom(factor, cursorY) {
             if (valueNavigation.zoom(factor, cursorY)) changed = true;
         } } : { ...base, mode, pan(delta) {
-            if (!delta) return;
+            const height = element.getBoundingClientRect().height;
+            if (!delta || !height) return;
             changed = true;
-            session.input({ type: "valueView", action: "pan", delta });
+            session.input({ type: "valueView", action: "pan", fraction: delta / height });
         } };
     },
     zoom(factor, cursorY) {

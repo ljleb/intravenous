@@ -1,6 +1,7 @@
-import { regularTimelineGridTicks } from "./presentationTimelineGrid";
+import { regularTimelineGridTicks, selectVisibleGridMarks } from "./presentationTimelineGrid";
 import type { ObservationWindowResult, ObservedBeatMark, ObservedBeatRun } from "./observations";
-import { firstSignedSample as timelineBegin, roundedSampleAtSeconds, sampleOffsetFromSeconds } from "./timelineSamples";
+import { firstSignedSample as timelineBegin, roundedSampleAtSeconds, sampleOffsetFromSeconds, timelineSampleOffset,
+    type TimelineSamples } from "./timelineSamples";
 
 const bpmScale = 1_000_000;
 const maximumBeatSubdivisions = 1024;
@@ -61,6 +62,7 @@ function floorDivide(value: bigint, divisor: bigint): bigint {
 export type BeatGridTick = { x: number; depth: number; sample: bigint; bar?: bigint };
 export type BeatRulerLabel = { x: number; text: string; key?: string };
 export type ObservedRulerMark = ObservedBeatMark & { bar?: string };
+export type ProjectedBeatMark = { index: bigint; depth: number; x: number; bar?: string };
 
 function layoutBeatRulerLabels(candidates: Array<BeatRulerLabel & { depth: number }>, width: number): BeatRulerLabel[] {
     // Give bar numbers room before considering the individual beat labels.
@@ -104,11 +106,14 @@ function decodeBeatRun(run: ObservedBeatRun): ObservedRulerMark[] {
     const count = BigInt(run.eventCount);
     const first = BigInt(run.firstEventIndex) + 1n;
     const step = BigInt(run.step);
+    const length = BigInt(run.regionLength);
+    // Beats publishes separate Regions before and after sample zero.
+    const endsAtZero = origin < 0n && origin + length === 0n;
     // Use signed distance from this Region's start, including when its
     // samples cross the timeline's signed boundary.
-    const hasSecondHalf = BigInt(run.regionLength) > -timelineBegin;
+    const hasSecondHalf = length > -timelineBegin;
     return run.samples.map((index, slot) => {
-        const negative = hasSecondHalf && BigInt.asIntN(64, BigInt(index) - origin) < 0n;
+        const negative = endsAtZero || (hasSecondHalf && BigInt.asIntN(64, BigInt(index) - origin) < 0n);
         return { index, depth: run.depth, bar: String(first + BigInt(slot) * step - (negative ? count : 0n)) };
     });
 }
@@ -122,6 +127,33 @@ export function beatObservationMarks(result: Pick<ObservationWindowResult, "beat
         decodedBeatRuns.set(run, marks);
         return marks;
     })];
+}
+
+const decodedBeatMarks = new WeakMap<readonly ObservedRulerMark[], Array<Omit<ProjectedBeatMark, "x">>>();
+
+export function projectBeatMarks(raw: readonly ObservedRulerMark[], view: TimelineSamples, width: number): ProjectedBeatMark[] {
+    let marks = decodedBeatMarks.get(raw);
+    if (!marks) {
+        marks = raw.map(({ index, depth, bar }) => ({ index: BigInt(index), depth, bar }));
+        decodedBeatMarks.set(raw, marks);
+    }
+    const candidates: ProjectedBeatMark[] = [];
+    const barMarks = new Map<bigint, ProjectedBeatMark>();
+    for (const mark of marks) {
+        const x = timelineSampleOffset(view, mark.index) / view.span * width;
+        if (x < -minimumBeatMarkSpacing || x > width + minimumBeatMarkSpacing) continue;
+        const candidate = { ...mark, x };
+        if (mark.depth === 0) {
+            const previous = barMarks.get(mark.index);
+            if (previous) {
+                if (previous.bar !== mark.bar) previous.bar = undefined;
+                continue;
+            }
+            barMarks.set(mark.index, candidate);
+        }
+        candidates.push(candidate);
+    }
+    return selectVisibleGridMarks(candidates, width, minimumBeatMarkSpacing);
 }
 
 export function customBeatRulerLabels(marks: readonly { index: bigint; x: number; depth: number; bar?: string }[],

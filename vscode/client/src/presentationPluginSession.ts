@@ -1,4 +1,5 @@
-import { interruptedPresentationEditReplies, readPresentationFrame, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
+import { interruptedPresentationEditReplies, readPresentationFrame, samePresentationLayout,
+    type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
 import type { SerializedPresentationState } from "./presentationStateJson";
 
 type Run = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame | Promise<unknown>;
@@ -55,11 +56,19 @@ export class PresentationPluginSession {
     }
 
     update(snapshot: PresentationSnapshot, pacing: "frame" | "immediate" = "frame"): void {
-        this.snapshot = snapshot;
-        this.viewport = JSON.stringify(snapshot.viewport);
+        this.setSnapshot(snapshot);
         this.dirty = true;
         if (pacing === "immediate") void this.flush();
         else this.request();
+    }
+
+    updateViewport(viewport: PresentationSnapshot["viewport"], observations: PresentationSnapshot["observations"]): void {
+        if (this.snapshot) this.setSnapshot({ ...this.snapshot, viewport, observations });
+    }
+
+    private setSnapshot(snapshot: PresentationSnapshot): void {
+        this.snapshot = snapshot;
+        this.viewport = JSON.stringify(snapshot.viewport);
     }
 
     input(input: PresentationInput, pacing: "frame" | "immediate" = "frame"): void {
@@ -68,7 +77,8 @@ export class PresentationPluginSession {
             this.stop(new Error("Presentation input queue exceeded its limit"));
             return;
         }
-        this.inputs.push(input);
+        this.inputs.push(input.type === "gesture" && !input.viewport && this.snapshot?.viewport.time
+            ? { ...input, viewport: this.snapshot.viewport } : input);
         if (pacing === "immediate") void this.flush();
         else this.request();
     }
@@ -107,8 +117,14 @@ export class PresentationPluginSession {
         try {
             const reply = this.run({ ...snapshot, clockMs: performance.now() }, inputs);
             const result = reply instanceof Promise ? await reply : reply;
-            if (!this.closed) this.acceptFrame(readPresentationFrame(result), inputs,
-                interruption === this.interruption, viewport === this.viewport);
+            if (!this.closed) {
+                const frame = readPresentationFrame(result);
+                const latest = this.snapshot?.viewport;
+                const sameLayout = frame.timelineCurve && !frame.timelineCurve.viewportDrawing && latest
+                    && samePresentationLayout(snapshot.viewport, latest);
+                this.acceptFrame(frame, inputs, interruption === this.interruption, viewport === this.viewport || !!sameLayout,
+                    snapshot.state === this.snapshot?.state);
+            }
         } catch (error) { this.stop(error); }
         finally {
             this.running = false;
@@ -117,7 +133,8 @@ export class PresentationPluginSession {
         }
     }
 
-    private acceptFrame(frame: PresentationFrame, inputs: readonly PresentationInput[], current: boolean, sameViewport: boolean): void {
+    private acceptFrame(frame: PresentationFrame, inputs: readonly PresentationInput[], current: boolean,
+        sameViewport: boolean, sameState: boolean): void {
         if (frame.reuseDrawing) {
             if (!this.drawing) throw new Error("Presentation has no drawing to reuse");
             delete frame.reuseDrawing;
@@ -126,8 +143,12 @@ export class PresentationPluginSession {
         }
 
         const { saveRequest } = frame;
-        const discardedSave = saveRequest !== undefined && (!current || !this.saves?.canSave(inputs));
-        if (discardedSave) this.saves?.restore(this.snapshot?.state ?? null);
+        const discardedSave = saveRequest !== undefined && (!current || !sameState || !this.saves?.canSave(inputs));
+        const draw = sameState && !discardedSave;
+        if (!draw) {
+            if (discardedSave) this.saves?.restore(this.snapshot?.state ?? null);
+            delete frame.timelineCurve;
+        }
         else {
             this.drawing = frame.marks;
             this.timelineGrid = frame.timelineGrid;
@@ -138,7 +159,7 @@ export class PresentationPluginSession {
             for (const reply of interruptedPresentationEditReplies(frame.commands ?? [])) this.input(reply);
             return;
         }
-        this.accept(frame, sameViewport && !discardedSave, inputs);
+        this.accept(frame, sameViewport && draw, inputs);
         if (saveRequest !== undefined && !discardedSave && this.snapshot) {
             this.snapshot = { ...this.snapshot, state: saveRequest };
             this.saves?.save(saveRequest, inputs);

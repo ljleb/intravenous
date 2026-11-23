@@ -190,6 +190,11 @@ public:
     {
         return iv_reserve_polylines(context_, lines, points);
     }
+
+    bool set_timeline_curve(IvTimelineCurve curve) const
+    {
+        return iv_set_timeline_curve(context_, curve);
+    }
     bool register_drag_targets(Span<IvDragTarget const> targets) const
     {
         return iv_register_drag_targets(context_, {targets.data, targets.size});

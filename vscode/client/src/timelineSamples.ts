@@ -53,7 +53,7 @@ export function timelineSampleAt(view: TimelineSamples, fraction: number): bigin
 export function timelineSampleOffset(view: TimelineSamples, sample: bigint): number {
     let offset = BigInt.asUintN(64, sample - view.origin.index);
     if (offset === 0n) return view.origin.fraction && view.span === Number(timelineSampleCount)
-        ? view.span - view.origin.fraction : -view.origin.fraction;
+        ? view.span - view.origin.fraction : 0 - view.origin.fraction;
     const cut = (Number(timelineSampleCount) + view.span) / 2;
     if (Number(offset) >= cut && view.span < Number(timelineSampleCount)) offset -= timelineSampleCount;
     return Number(offset) - view.origin.fraction;

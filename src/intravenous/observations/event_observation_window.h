@@ -87,9 +87,9 @@ class BeatGridObservation {
     std::vector<IndexedSelection> indexed_;
     std::size_t mark_budget_;
 
-    static auto mark_order(TimedEvent const& event)
+    auto mark_order(TimedEvent const& event) const
     {
-        return std::pair{SignedGlobalIndexOrder::key(event.time), std::get<BeatEvent>(event.value).depth};
+        return std::pair{query_.window.begin.forward_distance_to(event.time), std::get<BeatEvent>(event.value).depth};
     }
 
     void project_indexed_runs()
@@ -98,8 +98,8 @@ class BeatGridObservation {
         auto& events = result.events;
         std::vector<std::uint8_t> retained;
         if (events.size() > mark_budget_) {
-            // Preserve the plain observation's time and depth budget. The
-            // retained events can split a run at the signed timeline seam.
+            // Match the flat response's window order when applying its budget.
+            // Keep the surviving slots in each source Region's index order.
             std::vector<std::size_t> ordered(events.size());
             std::iota(ordered.begin(), ordered.end(), std::size_t{0});
             std::ranges::partial_sort(ordered, ordered.begin() + mark_budget_, {}, [&](auto index) {
@@ -306,7 +306,7 @@ public:
             else selected->for_each(window.range, receive);
         }
         if (query_.window.include_indexed_runs && !indexed_.empty()) project_indexed_runs();
-        std::ranges::sort(result.events, {}, mark_order);
+        std::ranges::sort(result.events, {}, [this](TimedEvent const& event) { return mark_order(event); });
         if (result.events.size() > mark_budget_) {
             result.events.resize(mark_budget_);
             result.truncated = true;

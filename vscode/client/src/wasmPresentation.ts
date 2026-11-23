@@ -1,11 +1,12 @@
-import type { PresentationCommand, PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
+import { isPresentationCurveAxis, maxTimelineCurvePoints, timelineCurvePointBytes, type PresentationCommand, type PresentationCurveAxis, type PresentationFrame,
+    type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
 import { maxPresentationStateBytes } from "./presentationStateJson";
 import { readWasmEventBindings, wasmEventReader } from "./wasmPresentationEvents";
 import { packWasmArguments, readWasmArgumentBindings, type WasmConstruction } from "./wasmPresentationArguments";
 import { presentationTriggerColumns, triggerColumnLimit, type TriggerColumns } from "./presentationTriggerColumns";
 import { presentationWaveforms, waveformPointBytes, type PresentationWaveform } from "./presentationWaveforms";
 
-export const wasmPresentationAbiVersion = 10;
+export const wasmPresentationAbiVersion = 11;
 
 type WasmDescriptor = { timeline?: true; timelineSnapping?: true; icon?: string };
 export function readWasmPresentationDescriptor(bytes: Uint8Array): WasmDescriptor {
@@ -54,6 +55,8 @@ type WasmGesture = {
     id: number; phase: number; modifiers: number;
     x: number; y: number; dx: number; dy: number; wheel: number;
     sequence: number; snapping?: { marks: string[]; playhead?: string };
+    viewport?: PresentationSnapshot["viewport"];
+    curveAxis?: PresentationCurveAxis;
 };
 type WasmControl = { id: string; phase: number; value?: number | string; sequence: number };
 type WasmEditorInput = { kind: number; action: number; id?: number; sequence: number; x?: number; y?: number; value?: number };
@@ -71,7 +74,7 @@ export type WasmPresentationUpdate = {
     session: number; revision: number; editReplies: WasmEditReply[];
 };
 export type WasmPresentationReply = {
-    frame?: PresentationFrame; storage?: ArrayBuffer; error?: string; closed?: true;
+    frame?: PresentationFrame; storage?: ArrayBuffer; reuseCurvePoints?: true; error?: string; closed?: true;
 };
 
 const gesturePhases = ["begin", "move", "modifiers", "wheel", "finish", "cancel"];
@@ -83,7 +86,7 @@ function targetId(id: string): number {
 }
 
 export function wasmPresentationUpdate(snapshot: PresentationSnapshot, inputs: readonly PresentationInput[],
-    session = 0): WasmPresentationUpdate {
+    session = 0, hostWaveforms: readonly string[] = []): WasmPresentationUpdate {
     const gestures: WasmGesture[] = [];
     const controls: WasmControl[] = [];
     const editorInputs: WasmEditorInput[] = [];
@@ -108,7 +111,8 @@ export function wasmPresentationUpdate(snapshot: PresentationSnapshot, inputs: r
             if (phase < 0) throw new Error("Invalid presentation gesture");
             gestures.push({ id, phase, modifiers: +modifiers.shift | (+modifiers.alt << 1)
                 | (+modifiers.control << 2) | (+modifiers.meta << 3), x: point.x, y: point.y,
-                dx: delta?.x ?? 0, dy: delta?.y ?? 0, wheel: wheel ?? 0, sequence, snapping: input.snapping });
+                dx: delta?.x ?? 0, dy: delta?.y ?? 0, wheel: wheel ?? 0, sequence, snapping: input.snapping,
+                viewport: input.viewport ?? snapshot.viewport, curveAxis: input.curveAxis });
         } else if (input.type === "context") {
             editorInputs.push({ kind: 0, action: 0, id: targetId(input.id), sequence, ...input.point });
         } else if (input.type === "dismissContext") {
@@ -116,7 +120,7 @@ export function wasmPresentationUpdate(snapshot: PresentationSnapshot, inputs: r
         } else if (input.type === "items") {
             editorInputs.push({ kind: 2, action: +(input.action === "selectAll"), sequence });
         } else if (input.type === "valueView") {
-            if (input.action === "pan") editorInputs.push({ kind: 3, action: 0, sequence, value: input.delta });
+            if (input.action === "pan") editorInputs.push({ kind: 3, action: 0, sequence, value: input.fraction });
             else if (input.action === "zoom") editorInputs.push({ kind: 3, action: 1, sequence, y: input.y, value: input.factor });
             else editorInputs.push({ kind: 3, action: 2, sequence });
         }
@@ -142,7 +146,7 @@ export function wasmPresentationUpdate(snapshot: PresentationSnapshot, inputs: r
         manualInputs: snapshot.node.ports.flatMap((port) => port.direction === "input" && !port.connected
             && Number.isFinite(port.manualValue) ? [{ id: port.name, value: port.manualValue! }] : []),
         connectedInputs: snapshot.node.ports.filter((port) => port.direction === "input" && port.connected).map(({ name }) => name),
-        triggerColumns: presentationTriggerColumns(snapshot), waveforms: presentationWaveforms(snapshot) };
+        triggerColumns: presentationTriggerColumns(snapshot), waveforms: presentationWaveforms(snapshot, hostWaveforms) };
 }
 
 const inks = [undefined, "foreground", "muted", "input", "output", "selection", "highlight", "warning", "background"] as const;
@@ -184,7 +188,8 @@ function sceneInputSize(update: WasmPresentationUpdate): number {
     add(update.editorInputs.length * layout.editorInput);
     add(update.manualInputs.length * layout.manualInput);
     for (const port of update.manualInputs) string(port.id, 160);
-    for (const { snapping } of update.gestures) {
+    for (const { viewport, snapping } of update.gestures) {
+        if (viewport?.time) add(72);
         if (!snapping) continue;
         add(layout.snapCandidates);
         add(snapping.marks.length * 8);
@@ -270,6 +275,7 @@ export function createWasmPresentation(bytes: string) {
     let constructionCapacity = 0;
     let hasConstruction = false;
     let constructionSnapshot = 0;
+    let curvePoints: { generation: number; count: number; points: ArrayBuffer } | undefined;
     const fixedBlocks = [[context, layout.context], [gestures, maxGestures * layout.gesture], [output, capacity]];
     const overlaps = (blocks: number[][]) => {
         blocks.sort(([a], [b]) => a - b);
@@ -441,9 +447,31 @@ export function createWasmPresentation(bytes: string) {
         span(context + 212, manualInputs, update.manualInputs.length);
         view.setFloat64(context + 224, update.clock, true);
 
-        for (const [i, { snapping }] of update.gestures.entries()) {
+        for (const [i, { viewport, curveAxis, snapping }] of update.gestures.entries()) {
             const at = gestures + i * layout.gesture + 56;
             view.setUint32(at, 0, true);
+            view.setUint32(at + 4, 0, true);
+            if (viewport?.time) {
+                const { time, width, height } = viewport;
+                const rate = time.sampleRate ?? 0;
+                if (![width, height, time.spanSamples, time.beginFraction, rate].every(Number.isFinite)
+                    || width <= 0 || height <= 0 || time.spanSamples <= 0 || time.spanSamples > 2 ** 64
+                    || time.beginFraction < 0 || time.beginFraction >= 1 || !Number.isInteger(rate) || rate < 0 || rate > 0xffffffff)
+                    throw new Error("Invalid presentation gesture viewport");
+                if (curveAxis && !isPresentationCurveAxis(curveAxis)) throw new Error("Invalid presentation gesture value axis");
+                const start = reserve(72);
+                view.setBigInt64(start, BigInt(time.beginSample), true);
+                view.setFloat64(start + 8, time.beginFraction, true);
+                view.setFloat64(start + 16, time.spanSamples, true);
+                view.setFloat64(start + 24, width, true);
+                view.setFloat64(start + 32, height, true);
+                view.setUint32(start + 40, rate, true);
+                view.setUint32(start + 44, curveAxis ? 1 | (+curveAxis.cropped << 1) : 0, true);
+                view.setFloat64(start + 48, curveAxis?.pan ?? 0, true);
+                view.setFloat64(start + 56, curveAxis?.zoom ?? 1, true);
+                view.setFloat64(start + 64, curveAxis?.center ?? .5, true);
+                view.setUint32(at + 4, start, true);
+            }
             if (!snapping) continue;
             const candidates = reserve(layout.snapCandidates);
             const marks = reserve(snapping.marks.length * 8);
@@ -543,6 +571,53 @@ export function createWasmPresentation(bytes: string) {
         };
         const storage = drawing ? memory.buffer.slice(output, output + size) : undefined;
         const frame: PresentationFrame = {};
+        const curve = uint(context + 252);
+        if (curve) {
+            check(curve, 64, 8);
+            const start = uint(curve), count = uint(curve + 4), generation = uint(curve + 32);
+            const curveFlags = uint(curve + 36), byteLength = count * timelineCurvePointBytes;
+            if (count > maxTimelineCurvePoints || curveFlags & ~7
+                || (count && (!start || start % 8 || start + byteLength > view.byteLength)))
+                throw new Error("Invalid presentation timeline curve");
+            if (curvePoints?.generation !== generation) {
+                const selectionTarget = uint(curve + 40), additionTarget = uint(curve + 44);
+                const targets = new Set([selectionTarget, additionTarget]);
+                const marks = new Set<number>();
+                let previous: bigint | undefined;
+                let previousTension = 0;
+                for (let i = 0; i < count; ++i) {
+                    const at = start + i * timelineCurvePointBytes;
+                    const sample = view.getBigInt64(at, true);
+                    const value = view.getFloat32(at + 24, true), tension = view.getFloat32(at + 28, true);
+                    const target = uint(at + 32), mark = uint(at + 36), tensionTarget = uint(at + 40), tensionMark = uint(at + 44);
+                    const interpolation = uint(at + 48);
+                    if ((previous !== undefined && (sample < previous || (sample === previous && previousTension)))
+                        || ![number(at + 8), number(at + 16), value, tension].every(Number.isFinite)
+                        || tension < 0 || tension > 1 || interpolation > 2 || uint(at + 52) & ~3
+                        || !target || targets.has(target) || !mark || mark >= 0xffffffff || marks.has(mark) || marks.has(mark + 1)
+                        || (!!tensionTarget !== !!tensionMark))
+                        throw new Error("Invalid presentation timeline curve point");
+                    targets.add(target);
+                    marks.add(mark); marks.add(mark + 1);
+                    if (tensionTarget) {
+                        if (interpolation !== 2 || targets.has(tensionTarget) || tensionMark >= 0xffffffff
+                            || marks.has(tensionMark) || marks.has(tensionMark + 1))
+                            throw new Error("Invalid presentation timeline curve handle");
+                        targets.add(tensionTarget);
+                        marks.add(tensionMark); marks.add(tensionMark + 1);
+                    }
+                    previous = sample;
+                    previousTension = tensionTarget;
+                }
+                curvePoints = { generation, count,
+                    points: count ? memory.buffer.slice(start, start + byteLength) : new ArrayBuffer(0) };
+            } else if (curvePoints.count !== count) throw new Error("Presentation curve generation changed size");
+            frame.timelineCurve = { points: curvePoints.points,
+                pan: number(curve + 8), zoom: number(curve + 16), center: number(curve + 24),
+                cropped: !!(curveFlags & 1), editable: !!(curveFlags & 2), viewportDrawing: !!(curveFlags & 4),
+                selectionTarget: uint(curve + 40), additionTarget: uint(curve + 44),
+                minimumInput: string(curve + 48, 160), maximumInput: string(curve + 56, 160) };
+        }
         const status = uint(context + 64), statusSize = uint(context + 68);
         if (statusSize) {
             if (statusSize > 512) throw new Error("Invalid presentation status size");

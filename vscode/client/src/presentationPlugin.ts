@@ -25,6 +25,7 @@ export type PresentationCursor = PresentationPoint | { sample: string; yFraction
 export type PresentationModifiers = { shift: boolean; alt: boolean; control: boolean; meta: boolean };
 export type PresentationObservation = {
     operation: "waveform" | typeof recordedTriggerBinsOperation;
+    beginSample: string;
     status: ObservationWindowResult["status"];
     error?: string;
     result?: ObservationWindowResult;
@@ -48,7 +49,8 @@ export type PresentationSnapshot = {
 export type PresentationGestureInput = { type: "gesture"; id: string;
     phase: "begin" | "move" | "modifiers" | "wheel" | "finish" | "cancel";
     point: PresentationPoint; delta?: PresentationPoint; wheel?: number; modifiers: PresentationModifiers;
-    snapping?: { marks: string[]; playhead?: string } };
+    snapping?: { marks: string[]; playhead?: string };
+    viewport?: PresentationSnapshot["viewport"]; curveAxis?: PresentationCurveAxis };
 
 export type PresentationInput =
     | { type: "control"; id: string; phase: "preview" | "commit" | "finish"; value?: number | string }
@@ -56,7 +58,7 @@ export type PresentationInput =
     | { type: "context"; id: string; point: PresentationPoint }
     | { type: "dismissContext"; cancelled?: true }
     | { type: "items"; action: "delete" | "selectAll" }
-    | { type: "valueView"; action: "pan"; delta: number }
+    | { type: "valueView"; action: "pan"; fraction: number }
     | { type: "valueView"; action: "zoom"; factor: number; y: number }
     | { type: "valueView"; action: "reset" }
     | { type: "editResult"; requestId: string; acceptedRevision?: number; error?: string }
@@ -98,6 +100,21 @@ export type PresentationTimelineGrid = {
     ink?: PresentationInk; seek: boolean; labelMajor: boolean;
 };
 
+export const timelineCurvePointBytes = 56;
+export const maxTimelineCurvePoints = 32768;
+export type PresentationCurveAxis = { pan: number; zoom: number; center: number; cropped: boolean };
+export type PresentationTimelineCurve = PresentationCurveAxis & {
+    points: ArrayBuffer;
+    editable: boolean; viewportDrawing: boolean;
+    selectionTarget: number; additionTarget: number;
+    minimumInput: string; maximumInput: string;
+};
+
+export function samePresentationLayout(previous: PresentationSnapshot["viewport"], next: PresentationSnapshot["viewport"]): boolean {
+    return previous.width === next.width && previous.height === next.height
+        && previous.time?.sampleRate === next.time?.sampleRate && previous.time?.gridMode === next.time?.gridMode;
+}
+
 export type PresentationFrame = {
     status?: string;
     marks?: PresentationMark[];
@@ -112,6 +129,7 @@ export type PresentationFrame = {
     wakeAfterMs?: number;
     secondsRulerInset?: number;
     timelineGrid?: PresentationTimelineGrid;
+    timelineCurve?: PresentationTimelineCurve;
     commands?: PresentationCommand[];
     saveRequest?: SerializedPresentationState;
 };
@@ -260,14 +278,32 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
             || (value.drag.shortcuts !== undefined && !text(value.drag.shortcuts, 256))))
         || (value.commands !== undefined && !list(value.commands, 32,
             (entry): entry is PresentationCommand => command(entry, commandBudget)))
-        || !timelineGrid(value.timelineGrid) || (value.reuseDrawing && value.timelineGrid))
+        || !timelineGrid(value.timelineGrid) || (value.reuseDrawing && value.timelineGrid)
+        || (value.timelineCurve !== undefined && !timelineCurve(value.timelineCurve)))
         throw new Error("Invalid presentation frame");
     const { status, marks, reuseDrawing, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
-        wakeAfterMs, secondsRulerInset, commands, saveRequest, timelineGrid: grid } = value as PresentationFrame;
+        wakeAfterMs, secondsRulerInset, commands, saveRequest, timelineGrid: grid, timelineCurve: curve } = value as PresentationFrame;
     for (const entries of [marks, targets, settings?.rows.flat(), contextMenu?.rows.flat()]) {
         if (entries && new Set(entries.map(({ id }) => id)).size !== entries.length) throw new Error("Duplicate presentation item ID");
     }
     return { status, marks, ...(reuseDrawing && { reuseDrawing }), targets, panel: settings, contextMenu,
         itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid,
+        timelineCurve: curve,
         saveRequest: saveRequest === undefined ? undefined : readPresentationSave(saveRequest) };
+}
+
+function timelineCurve(value: unknown): value is PresentationTimelineCurve {
+    return record(value) && value.points instanceof ArrayBuffer
+        && value.points.byteLength <= maxTimelineCurvePoints * timelineCurvePointBytes
+        && value.points.byteLength % timelineCurvePointBytes === 0
+        && typeof value.editable === "boolean" && typeof value.viewportDrawing === "boolean"
+        && [value.selectionTarget, value.additionTarget].every((id) => Number.isInteger(id) && id > 0 && id <= 0xffffffff)
+        && value.selectionTarget !== value.additionTarget
+        && text(value.minimumInput) && text(value.maximumInput)
+        && isPresentationCurveAxis(value);
+}
+
+export function isPresentationCurveAxis(value: unknown): value is PresentationCurveAxis {
+    return record(value) && finite(value.pan) && finite(value.zoom) && value.zoom >= 2 ** -20 && value.zoom <= 2 ** 20
+        && finite(value.center) && value.center >= 0 && value.center <= 1 && typeof value.cropped === "boolean";
 }

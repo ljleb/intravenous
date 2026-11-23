@@ -5,6 +5,8 @@
 #include <nlohmann/json.hpp>
 #include <array>
 #include <chrono>
+#include <iterator>
+#include <limits>
 #include <thread>
 
 namespace iv::test::graph_jit_tests {
@@ -647,6 +649,9 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
     auto compiled = compile("iv.test.replay.project_beat_grid", 751);
     ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     auto const& graph = *compiled.compiled_graph;
+    auto const seam = index(std::numeric_limits<std::int64_t>::min());
+    auto const initial = seam.retreated_by(44100);
+    auto const panned = seam.retreated_by(22050);
     ObservationCollectRequest collection;
     for (auto const& input : graph.background_evaluation_plan.public_event_coverage_inputs) {
         if (input.type != EventTypeId::beat) continue;
@@ -657,6 +662,10 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
             ObservationWindow{.begin = index(0), .length = 44101, .points = 32, .max_depth = 2, .include_indexed_runs = true},
             ObservationWindow{.begin = index(-3000000), .length = 6000001, .points = 4, .max_depth = 0},
             ObservationWindow{.begin = index(-3000000), .length = 6000001, .points = 4, .max_depth = 0, .include_indexed_runs = true},
+            ObservationWindow{.begin = initial, .length = 88200, .points = 32, .max_depth = 2},
+            ObservationWindow{.begin = initial, .length = 88200, .points = 32, .max_depth = 2, .include_indexed_runs = true},
+            ObservationWindow{.begin = panned, .length = 88200, .points = 32, .max_depth = 2},
+            ObservationWindow{.begin = panned, .length = 88200, .points = 32, .max_depth = 2, .include_indexed_runs = true},
         }) {
             auto& query = collection.windows.emplace_back(std::make_shared<ObservationWindowQuery>());
             query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
@@ -665,13 +674,13 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
             query->window = window;
         }
     }
-    ASSERT_EQ(collection.windows.size(), 8u);
+    ASSERT_EQ(collection.windows.size(), 16u);
 
     GraphExecutor executor(resources);
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
     auto const activation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     bool activated = false;
-    while (!(activated = executor.activate_pending(index(0))) && std::chrono::steady_clock::now() < activation_deadline)
+    while (!(activated = executor.activate_pending(initial)) && std::chrono::steady_clock::now() < activation_deadline)
         std::this_thread::yield();
     ASSERT_TRUE(activated);
 
@@ -686,6 +695,9 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
         ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
         ASSERT_TRUE(query->result.unavailable_regions.empty());
         auto& marks = observed.emplace_back();
+        auto const window_order = [&](Mark const& mark) {
+            return std::pair{query->window.begin.forward_distance_to(index(mark.first)), mark.second};
+        };
         for (auto const& event : query->result.events)
             marks.emplace_back(event.time.signed_value(), std::get<BeatEvent>(event.value).depth);
         if (query->window.include_indexed_runs) {
@@ -700,14 +712,30 @@ TEST_F(GraphJitRuntimeFixture, BeatGridObservationReadsRootAndNestedTimelineInpu
                     marks.emplace_back(sample.signed_value(), run.depth);
                 }
             }
-            std::ranges::sort(marks);
+            std::ranges::sort(marks, {}, window_order);
         } else {
             EXPECT_TRUE(query->result.beat_runs.empty());
+            EXPECT_TRUE(std::ranges::is_sorted(marks, {}, window_order));
         }
     }
     for (std::size_t query = 0; query < observed.size(); query += 2)
         EXPECT_EQ(observed[query], observed[query + 1]) << "Query " << query;
-    std::vector fine{observed[0], observed[4]};
+    for (auto const start : {0u, 8u}) {
+        auto const& original = observed[start + 4];
+        auto const& moved = observed[start + 6];
+        ASSERT_FALSE(original.empty());
+        EXPECT_GE(original.front().first, 0);
+        EXPECT_LT(original.back().first, 0);
+        auto in_window = [](GlobalIndex begin, Mark const& mark) {
+            return begin.forward_distance_to(index(mark.first)) < 88200;
+        };
+        std::vector<Mark> before, after;
+        std::ranges::copy_if(original, std::back_inserter(before), [&](auto const& mark) { return in_window(panned, mark); });
+        std::ranges::copy_if(moved, std::back_inserter(after), [&](auto const& mark) { return in_window(initial, mark); });
+        EXPECT_FALSE(before.empty());
+        EXPECT_EQ(before, after);
+    }
+    std::vector fine{observed[0], observed[8]};
     std::ranges::sort(fine);
     EXPECT_EQ(fine, (std::vector<std::vector<Mark>>{
         {{0, 0}, {7350, 2}, {14700, 2}, {22050, 1}, {29400, 2}, {36750, 2}, {44100, 1}},

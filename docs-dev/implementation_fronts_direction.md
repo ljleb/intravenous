@@ -7444,6 +7444,114 @@ retains waveform observations for the two bounds. The worker and headless
 client load the same artifact. The TypeScript edit model remains in test
 fixtures as a reference during migration of its edge-case coverage.
 
+### Automation Curve event contract proposal, 2026-11-23
+
+The owner reports that three Automation Curve lanes in `simple_sine` show
+lines where they expect curves. The lanes also lag while the owner pans.
+The cause of the wrong geometry still needs a runtime comparison. The
+redesign below is a proposal for the presentation boundary.
+
+#### Source evidence
+
+`TimelineScopePresentation` already owns the current sample window and
+applies each pan there. `PluginLane` includes that window in a
+`PresentationSnapshot`. `AutomationCurve::present` then builds the curve,
+the bounds, and the hit targets in pixel coordinates. `PresentationScene`
+converts each new packed polyline to an SVG point string.
+[Timeline window](../vscode/client/webview/graph/TimelineScopePresentation.vue#L216) ·
+[Guest frame](../src/intravenous/builtin_packages/builtin/presentations/automation_curve.cpp#L714) ·
+[Scene](../vscode/client/webview/presentation/PresentationScene.vue#L7)
+
+`PresentationPluginSession` retains pointer inputs and replaces its
+snapshot as the viewport moves. The next worker call combines those
+inputs with that snapshot. A pointer coordinate from an earlier viewport
+then reaches the guest with the later viewport. The guest uses the one
+viewport to interpret the whole batch. The session also rejects drawing
+from replies whose viewport changed in flight. During continuous pan,
+the host can reject each new drawing and keep showing the old pixels.
+[Session](../vscode/client/src/presentationPluginSession.ts#L57)
+
+#### Events and the data at their source
+
+| Event and source | Data at the source | Receiver and effect |
+| --- | --- | --- |
+| `ProjectGraph` publishes an accepted node invocation | `NodeAddress`, accepted definition, constructor points, sample rate, and committed revision | The presentation replaces its accepted curve data. It keeps the exact sample indices, point IDs, ordering, values, interpolation, and tension. An unreadable invocation stays distinct from an accepted empty point list. |
+| The timeline changes its viewport | Exact sample origin, origin fraction, span, lane dimensions, and the local value-axis settings | The host clips and projects retained data for the new viewport. It requests more data if a needed interval is missing. The host displays available overlap while it waits. |
+| The browser receives a pointer action | The hit target from the displayed projection, its stable point ID, the pointer position, and the transform at pickup or movement | The host resolves the input in the coordinate system that applied when it arrived. The guest receives the target, gesture identity, exact sample position and value, modifiers, and relevant snap candidates. It interprets the edit against its accepted data and draft. |
+| The guest emits an edit | The typed node event, its request identity, and its active gesture | The host submits the existing node event through `PresentationLaneEdits`. The server checks the target and applies the edit through the root node interaction. |
+| The server completes an edit or publishes a new invocation | The edit reply identifies the request and its accepted revision or error. The publication contains the accepted values. | The presentation uses the reply to settle the request. It uses the publication to replace the accepted data. It keeps a confirmed draft visible until that publication includes the edit. The two messages can arrive in either order. |
+| `PresentationObservations` receives a window | Port, exact window, samples, coverage, and the identity of the observation snapshot | The host retains compatible windows for `min` and `max`. It projects their overlap with the current viewport. It tracks pending data, empty coverage, and unconnected ports as distinct conditions. |
+| The host begins history navigation or loses the connection | Lane, session, and the gestures or requests that the host interrupts | The guest retires affected drafts and gestures. A reply from that session cannot reopen a retired gesture. Accepted points arrive from the next authoritative publication. |
+| The user commits a lane view setting | Local pan, zoom, display mode, or ruler preference | The host persists the view settings at the commit boundary. The view state carries no accepted points or sampled output. |
+
+#### Drawing and edit ordering
+
+Retain curve segments in sample and value coordinates. The guest can
+derive these segments when the accepted points or an edit draft changes.
+Each segment carries its exact endpoints, outgoing interpolation, and
+the data needed to evaluate it. The host projects the segments for the
+current viewport. It also projects the corresponding point IDs for hit
+testing. Subtract sample positions in integer arithmetic before converting
+relative distances for drawing. If a range request is needed, it names the
+sample interval and resolution. The host keeps projecting every interval
+it already has while the request is pending.
+
+Use one interpolation implementation for the runtime and the
+presentation. The runtime `Curve::Segment` and the presentation `Arc`
+currently calculate their own tangents and values. The common code must
+preserve cyclic order, equal-sample jumps, half-open coverage, and empty
+segments. Keep the authored curve available when bound observations lag.
+When an output preview depends on incomplete observations, draw only the
+intervals for which the necessary data is available.
+[Runtime segment](../src/intravenous/basic_nodes/automation.h#L277) ·
+[Presentation arc](../src/intravenous/builtin_packages/builtin/presentations/automation_curve_drawing.hpp#L7) ·
+[Curve semantics](automation_and_suspendable_coverage_direction.md#1-points-describe-outgoing-segments-on-the-circular-domain)
+
+A pan can replace an older pan before a frame. An ordered gesture still
+delivers its begin, finish, cancel, and replies. It can combine moves when
+it preserves their meaning. The host must capture the input coordinates
+before it combines events. A slow drawing result can still supply data
+for a compatible sample interval. Compatibility depends on the accepted
+invocation, the draft if present, and the observation snapshot it used.
+
+#### Implementation dependency
+
+The current WASM output records carry viewport-specific drawing. An SVG
+transform can move their pixels during pan, but it cannot recover unseen
+segments or evaluate the curve after a nonlinear value-axis change. A
+separate Automation Curve renderer in Vue can solve that locally, at the
+cost of another presentation contract for the headless runner. This
+proposal adds retained timeline data to the shared host and guest contract.
+Automation Curve supplies the first use. The browser and example runner
+must use the same projection and input conversion rules.
+
+Define the segment data and projection first. Then connect input capture,
+accepted publications, observations, and gesture retirement to that data
+in one feature. Compare the four `simple_sine` lanes with native curve
+evaluation across the sample boundary and at coincident points. Exercise
+a continuous pan with the worker delayed. The ruler, curve, and hit
+targets must move together over retained intervals. A gesture captured
+before a viewport change must still edit the position the user picked.
+
+#### ABI 11 implementation attempt, 2026-11-23
+
+Automation Curve publishes `IvTimelineCurvePoint` records grouped by
+exact sample index. The worker transfers the point data when its
+generation changes. The browser and headless runner use the same
+projection for authored curves, observed bounds, and hit targets.
+An idle horizontal pan at the same layout reuses this data. Node
+publication, edit replies, pointer input, and scale controls still run
+through the guest. A pointer press carries its viewport and value axis.
+Waveform spans carry their own sample origin.
+[ABI](api/reference/presentation_c_abi.md#retained-timeline-curves) ·
+[Projection](../vscode/client/src/timelineCurvePresentation.ts)
+
+The runtime and guest share tangent calculation. The TypeScript host
+evaluates the Bézier segment from the transferred endpoint derivatives.
+The host still samples projected curves and produces SVG polylines. The
+build, runtime comparison of the four saved lanes, and continuous-pan
+measurements remain pending.
+
 ### Release package portability
 
 **Policy for future distribution (2026-11-22).** A package release may

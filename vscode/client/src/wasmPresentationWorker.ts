@@ -13,6 +13,8 @@ export class WasmPresentationWorker {
     private session = 0;
     private pendingRestore?: SerializedPresentationState;
     private construction?: WasmConstruction | null;
+    private curvePoints?: ArrayBuffer;
+    private hostWaveforms: string[] = [];
     private pending?: { resolve: (value: PresentationFrame | undefined) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
     private readonly closing = new Map<WorkerTransport, () => void>();
 
@@ -37,6 +39,19 @@ export class WasmPresentationWorker {
                     this.stop(new Error(reply.error));
                     return;
                 }
+                if (reply?.frame?.timelineCurve) {
+                    if (reply.reuseCurvePoints) {
+                        if (!this.curvePoints) {
+                            this.stop(new Error("Presentation has no retained curve points"));
+                            return;
+                        }
+                        reply.frame.timelineCurve.points = this.curvePoints;
+                    } else this.curvePoints = reply.frame.timelineCurve.points;
+                    const { minimumInput, maximumInput } = reply.frame.timelineCurve;
+                    this.hostWaveforms = [minimumInput, maximumInput];
+                } else {
+                    this.hostWaveforms = [];
+                }
                 const { resolve, timeout } = this.pending;
                 this.pending = undefined;
                 clearTimeout(timeout);
@@ -53,7 +68,7 @@ export class WasmPresentationWorker {
             const timeout = setTimeout(() => this.stop(new Error("Presentation worker timed out")), 1500);
             this.pending = { resolve, reject, timeout };
             try {
-                const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs, this.session) };
+                const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs, this.session, this.hostWaveforms) };
                 const construction = message.update.construction;
                 if (!initialize && this.construction?.definitionId === construction?.definitionId
                     && this.construction?.arguments === construction?.arguments) delete message.update.construction;
@@ -75,6 +90,8 @@ export class WasmPresentationWorker {
         this.pending = undefined;
         const worker = this.worker;
         this.worker = undefined;
+        this.curvePoints = undefined;
+        this.hostWaveforms = [];
         if (pending) {
             clearTimeout(pending.timeout);
             pending.reject(error ?? new Error("Presentation worker closed"));

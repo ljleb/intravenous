@@ -180,6 +180,20 @@ static bool copy_numbers(IvPresentationContext *context, IvNumberSpan *values, u
     return true;
 }
 
+bool iv_set_timeline_curve(IvPresentationContext *context, IvTimelineCurve curve)
+{
+    if (curve.points.size > 32768 || context->timeline_curve) {
+        context->error = 1;
+        return false;
+    }
+    IvTimelineCurve *record = reserve_output(context, sizeof(IvTimelineCurve));
+    if (!record || !copy_string(context, &curve.minimum_input, 160)
+        || !copy_string(context, &curve.maximum_input, 160)) return false;
+    *record = curve;
+    context->timeline_curve = record;
+    return true;
+}
+
 static bool copy_choices(IvPresentationContext *context, IvChoiceSpan *choices)
 {
     if (choices->size == 0) return true;
