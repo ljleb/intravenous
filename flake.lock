@@ -1,5 +1,26 @@
 {
   "nodes": {
+    "dagdocdiff": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1795397461,
+        "narHash": "sha256-Pma0/GzwlBNZehQlJ+3CANbBx604g3crceKUle322WU=",
+        "owner": "ljleb",
+        "repo": "dagdocdiff",
+        "rev": "23579ae6ab0fdb7ed2fe0b50fedec1ed67f50cd0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ljleb",
+        "ref": "1.12.0",
+        "repo": "dagdocdiff",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1788614874,
@@ -18,6 +39,7 @@
     },
     "root": {
       "inputs": {
+        "dagdocdiff": "dagdocdiff",
         "nixpkgs": "nixpkgs"
       }
     }

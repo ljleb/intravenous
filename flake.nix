@@ -3,9 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    dagdocdiff = {
+      url = "github:ljleb/dagdocdiff/1.12.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, ... }:
+  outputs = { self, nixpkgs, dagdocdiff, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -58,6 +62,7 @@
             libxcursor.dev
           ];
           devOnlyPackages = with pkgs; [
+            dagdocdiff.packages.${system}.default
             vscode-extensions.vadimcn.vscode-lldb
             nodejs
             python3
