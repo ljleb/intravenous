@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../src/presentationTimelineGrid";
-import { WorkspaceRpc } from "../src/workspaceRpc";
+import { WorkspaceRpc, workspaceNodeEvents } from "../src/workspaceRpc";
+import { runPresentationScenario } from "../src/headlessPresentation";
 import type { JsonRpcSocketClient } from "../src/rpcClient";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
 import { PlacePoint } from "../src/generated/automationEvents";
@@ -495,6 +496,14 @@ test("presentation saves reject lone surrogates in nested values and keys", () =
     assert.equal(readPresentationFrame({ saveRequest }).saveRequest, saveRequest);
 });
 
+test("presentation saves validate duplicate property values before they can be overwritten", () => {
+    assert.throws(() => readPresentationFrame({ saveRequest: String.raw`{"label":"\ud83d","label":"ok"}` }),
+        /Invalid Unicode in presentation save/);
+    assert.throws(() => readPresentationFrame({ saveRequest: '{"level":1e999,"level":1}' }), /Invalid presentation save number/);
+    const saveRequest = '{"level":1e10,"level":2}';
+    assert.equal(readPresentationFrame({ saveRequest }).saveRequest, saveRequest);
+});
+
 test("a discarded Marker save is rolled back in the live worker and on restart or replacement", async () => {
     const presentation = new ReloadableWasmPresentation(createNodePresentationWorker, (error) => { if (error) throw error; });
     let view = snapshot;
@@ -562,7 +571,7 @@ test("a remounted WASM lane restores the original compact JSON and its negative 
     const state = `{"position":-0,"values":[${"1e10,".repeat(19999)}1e10]}`;
     assert.ok(Buffer.byteLength(state) <= maxPresentationStateBytes);
     assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(state))) > maxPresentationStateBytes);
-    const rpc = new WorkspaceRpc({ request: async () => JSON.parse(JSON.stringify(state)) } as unknown as JsonRpcSocketClient);
+    const rpc = new WorkspaceRpc({ request: async () => JSON.parse(JSON.stringify({ value: state, sessionRevision: 9 })) } as unknown as JsonRpcSocketClient);
     const restored = await rpc.getLaneView("1");
     assert.equal(restored, state);
     const worker = createNodePresentationWorker(moduleBytes);
@@ -572,6 +581,30 @@ test("a remounted WASM lane restores the original compact JSON and its negative 
         assert.equal(line?.type, "packedPolyline");
         assert.ok(Object.is(line.coordinates[0], -0));
     } finally { worker.stop(); }
+});
+
+test("a headless snapshot can replay compact WASM state through a fresh worker", async () => {
+    const state = `{"position":-0,"values":[${"1e10,".repeat(19999)}1e10]}`;
+    const address = { instanceId: "beats" };
+    const manifest = { version: presentationPluginVersion, id: "marker", title: "Marker", definitionIds: ["builtin.beats"] };
+    const digest = createHash("sha256").update(Buffer.from(moduleBytes, "base64")).digest("hex");
+    const entry = { id: "example/marker", provider: "example", format: "wasm", schemaVersion: presentationPluginVersion, digest, manifest };
+    const rpc = {
+        listPresentations: async () => ({ ready: true, entries: [entry] }),
+        fetchPresentation: async () => ({ digest, bytes: moduleBytes }),
+        getGraphScope: async () => ({ generation: 1, sessionRevision: 4, editable: true, connections: [],
+            nodes: [{ address, definitionId: "builtin.beats", loadState: "ready" }] }),
+    } as unknown as WorkspaceRpc;
+    const events = workspaceNodeEvents(() => rpc, () => 4, (error) => assert.fail(String(error)));
+    const first = await runPresentationScenario(rpc, events, "first", {
+        snapshot: { ...snapshot, node: { ...snapshot.node, address }, state }, inputs: [],
+    });
+    const replay = JSON.parse(JSON.stringify({ snapshot: first.snapshot, inputs: [] }));
+    const second = await runPresentationScenario(rpc, events, "second", replay);
+    assert.equal(second.snapshot.state, state);
+    const line = second.frames[0].marks?.[0];
+    assert.equal(line?.type, "packedPolyline");
+    assert.ok(Object.is(line.coordinates[0], -0));
 });
 
 test("the presentation reader fetches and verifies one compatible artifact per digest", async () => {

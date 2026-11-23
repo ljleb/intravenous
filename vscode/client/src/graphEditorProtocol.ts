@@ -3,7 +3,7 @@ import type { ObservationDelivery } from "./observationDelivery";
 import type { ObservationProfileSummary } from "./observationProfile";
 import type { GraphUiProfileSummary } from "./graphUiProfile";
 import type { ManualControlAction, ManualControlId, ManualControlInteractionState, ManualControlLiveValue } from "./manualControls";
-import type { GraphLaneCopy, GraphScope, NodeAddress } from "./graphScope";
+import type { GraphLaneCopy, GraphScope, NodeAddress, ProjectEditReceipt } from "./graphScope";
 import type { SerializedPresentationState } from "./presentationStateJson";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
 import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
@@ -62,7 +62,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
-    | { type: "graphPresentationAccepted"; requestId: number; revision?: number }
+    | { type: "graphPresentationAccepted"; requestId: number; receipt?: ProjectEditReceipt }
     | { type: "laneViewState"; requestId: number; version: string; state: string | null }
     | { type: "interruptProjectHistory"; requestId: number }
     | { type: "projectHistoryFinished"; requestId: number }

@@ -20,6 +20,11 @@ struct ProjectLaneViewId {
     friend bool operator==(ProjectLaneViewId const&, ProjectLaneViewId const&) = default;
 };
 
+struct ProjectLaneViewReference {
+    ProjectLaneViewId id{};
+    std::uint64_t version = 0;
+};
+
 class ProjectLaneView {
     struct State {
         std::string json;

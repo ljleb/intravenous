@@ -3,6 +3,8 @@ import { provideObservations } from "../presentation/observationContext";
 import { ClientInteractionRecorder, observationConfiguration } from "../../src/clientInteractionTrace";
 import { PresentationObservations } from "../../src/presentationObservations";
 import type { SerializedPresentationState } from "../../src/presentationStateJson";
+import type { ProjectEditReceipt } from "../../src/graphScope";
+import { LaneViewReads, type PresentationStateRead } from "../../src/laneViewReads";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
     GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
@@ -658,39 +660,33 @@ const dropPreviewWires = computed(() => {
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
 const changedPresentationStates = shallowReactive(new Map<string, SerializedPresentationState>());
-const pendingPresentation = shallowReactive(new Map<number, { patch: GraphPresentationPatch; revision?: number }>());
+const pendingPresentation = shallowReactive(new Map<number, { patch: GraphPresentationPatch; receipt?: ProjectEditReceipt }>());
 const laneViewVersions = computed(() => new Map((state.value.scope?.presentation?.laneViews ?? []).map(
     ({ address, presentationId, version }) => [presentationStateKey(address, presentationId), version])));
-const laneViewStates = shallowReactive(new Map<string, string>());
-const laneViewReads = shallowReactive(new Map<string, number>());
+const laneViewReads = new LaneViewReads((version, requestId) => {
+    webviewApi.postMessage({ type: "readLaneView", requestId, version } satisfies GraphEditorWebviewMessage);
+}, shallowReactive(new Map()));
 let nextPresentationRequest = 0;
-let nextLaneViewRead = 0;
 
-function requestPresentationState(key: string): SerializedPresentationState | undefined {
+function requestPresentationState(key: string): PresentationStateRead {
     const pending = changedPresentationStates.get(key);
-    if (pending !== undefined) return pending;
+    if (pending !== undefined) return { status: "ready", state: pending };
     let submitted: SerializedPresentationState | undefined;
     for (const { patch } of pendingPresentation.values()) {
         if (Object.hasOwn(patch.presentationStates, key)) submitted = patch.presentationStates[key];
     }
-    if (submitted !== undefined) return submitted;
+    if (submitted !== undefined) return { status: "ready", state: submitted };
 
     const version = laneViewVersions.value.get(key);
-    if (version === undefined) return null;
-    const saved = laneViewStates.get(version);
-    if (saved === undefined && !laneViewReads.has(version)) {
-        const requestId = ++nextLaneViewRead;
-        laneViewReads.set(version, requestId);
-        webviewApi.postMessage({ type: "readLaneView", requestId, version } satisfies GraphEditorWebviewMessage);
-    }
-    return saved;
+    return version === undefined ? { status: "ready", state: null } : laneViewReads.read(version);
 }
 
 function updateProjectPresentation() {
     const scope = state.value.scope;
     const view = readGraphViewState(scope?.presentation);
-    for (const [id, { patch, revision }] of pendingPresentation) {
-        if (revision !== undefined && (scope?.sessionRevision ?? -1) >= revision) {
+    for (const [id, { patch, receipt }] of pendingPresentation) {
+        if (receipt && (scope?.sessionRevision ?? -1) >= receipt.sessionRevision) {
+            laneViewReads.rememberCommitted(patch.presentationStates, receipt.laneViews ?? [], laneViewVersions.value);
             pendingPresentation.delete(id);
             continue;
         }
@@ -1319,11 +1315,11 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         return;
     }
     if (event.data?.type === "graphPresentationAccepted") {
-        const { requestId, revision } = event.data;
+        const { requestId, receipt } = event.data;
         const pending = pendingPresentation.get(requestId);
         if (!pending) return;
-        if (revision === undefined) pendingPresentation.delete(requestId);
-        else pending.revision = revision;
+        if (!receipt) pendingPresentation.delete(requestId);
+        else pending.receipt = receipt;
         updateProjectPresentation();
         return;
     }
@@ -1352,7 +1348,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type === "graphVisibility") {
         graphVisible = event.data.visible;
         // A suspended webview may have missed replies for these reads.
-        if (graphVisible) laneViewReads.clear();
+        if (graphVisible) laneViewReads.retryUnread();
         graphUiRecording?.setVisible(graphVisible);
         observations.setVisible(event.data.visible);
         return;
@@ -1458,10 +1454,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type === "laneViewState") {
         const { version, requestId, state } = event.data;
-        if (laneViewReads.get(version) === requestId && state !== null) {
-            laneViewStates.set(version, state);
-            laneViewReads.delete(version);
-        }
+        laneViewReads.receive(version, requestId, state);
         return;
     }
     if (event.data?.type === "interruptProjectHistory") {
@@ -1483,13 +1476,13 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     if (event.data?.type !== "graphState") return;
     if (state.value.connectionNumber !== event.data.state.connectionNumber) {
         laneViewReads.clear();
-        laneViewStates.clear();
+        pendingPresentation.clear();
+        changedPresentationStates.clear();
     }
     state.value = event.data.state;
     const versions = new Set(laneViewVersions.value.values());
     if (state.value.sessionStatus !== "running") versions.clear();
-    for (const version of laneViewReads.keys()) if (!versions.has(version)) laneViewReads.delete(version);
-    for (const version of laneViewStates.keys()) if (!versions.has(version)) laneViewStates.delete(version);
+    laneViewReads.retain(versions);
     if (editing.value !== null && !editedNode.value) editing.value = null;
     if (!state.value.scope?.editable && pickerOpen.value) closeNodePicker();
     manualGestures.configuredGeneration(state.value.scope?.generation ?? null);

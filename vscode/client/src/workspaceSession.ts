@@ -2,7 +2,7 @@ import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
 import { ManualControlInteractions, resolveManualControl, type ManualControlId } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress } from "./graphScope";
+import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress, type ProjectEditReceipt } from "./graphScope";
 import type { GraphPresentationPatch } from "./graphEditorProtocol";
 import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
 import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
@@ -182,7 +182,7 @@ export class WorkspaceSession {
     private timelineSnapChange: Promise<void> = Promise.resolve();
     private presentationChanges: Promise<unknown> = Promise.resolve();
 
-    saveGraphPresentation(patch: GraphPresentationPatch): Promise<{ sessionRevision: number }> {
+    saveGraphPresentation(patch: GraphPresentationPatch): Promise<ProjectEditReceipt> {
         const rpc = this.rpc;
         const change = this.presentationChanges.catch(() => {}).then(async () => {
             if (!rpc || rpc !== this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
@@ -1018,7 +1018,7 @@ export class WorkspaceSession {
             },
             (error) => this.handleServerConnectionLost(client, error),
             (revision) => {
-                this.lastSessionRevision = revision;
+                this.lastSessionRevision = Math.max(this.lastSessionRevision, revision);
             },
         );
         this.client = client;

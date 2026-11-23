@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -142,6 +143,10 @@ struct SessionSubscribeRequest {
     std::vector<std::string> topics{};
 };
 struct SessionSnapshotRequest {};
+struct SessionReadResultRequest {
+    std::string transfer_id{};
+    std::size_t offset = 0;
+};
 struct ServerShutdownRequest {};
 struct UnsupportedSocketRpcRequest { std::string method{}; };
 
@@ -191,6 +196,7 @@ using SocketRpcRequestPayload = std::variant<
     SessionHelloRequest,
     SessionSubscribeRequest,
     SessionSnapshotRequest,
+    SessionReadResultRequest,
     ServerShutdownRequest,
     UnsupportedSocketRpcRequest>;
 

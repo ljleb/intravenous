@@ -7,7 +7,7 @@ import type { NodeEventInteractions } from "./nodeEventInteractions";
 import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
-import { parsePresentationState, serializePresentationState, type PresentationStateValue } from "./presentationStateJson";
+import { readPresentationSave } from "./presentationStateJson";
 import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "./presentationSecondsRuler";
 import { projectProgramsByDefinition } from "./presentationPrograms";
@@ -16,7 +16,7 @@ import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
 
 export type PresentationScenario = {
-    snapshot: Omit<PresentationSnapshot, "state"> & { state: PresentationStateValue };
+    snapshot: PresentationSnapshot;
     presentationId?: string;
     expanded?: NodeAddress[];
     inputs: Timed<PresentationInput>[];
@@ -24,7 +24,7 @@ export type PresentationScenario = {
 
 export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: NodeEventInteractions,
     owner: string, { snapshot: initial, presentationId, expanded, inputs }: PresentationScenario) {
-    let snapshot: PresentationSnapshot = { ...initial, state: serializePresentationState(initial.state) };
+    let snapshot: PresentationSnapshot = { ...initial, state: readPresentationSave(initial.state) };
     const { address, definitionId } = snapshot.node;
     const allowEdits = snapshot.editable;
     if (!address || !Array.isArray(inputs) || inputs.length > 8192
@@ -136,7 +136,7 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             await delay(5);
         }
         if (failure) throw failure;
-        return { presentation: program.id, frames, snapshot: { ...snapshot, state: parsePresentationState(snapshot.state) }, acceptedRevision };
+        return { presentation: program.id, frames, snapshot, acceptedRevision };
     } finally {
         wake.cancel();
         session.dispose();

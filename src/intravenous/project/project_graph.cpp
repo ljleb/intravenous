@@ -2908,6 +2908,13 @@ void ProjectGraph::handle_project_apply_edit(ProjectEditBatch const& batch, Proj
         auto rebuilt = apply_edit_locked(batch, true);
         changed = rebuilt.state_changed;
         builder.set_publication(std::move(rebuilt.publication));
+        if (!batch.lane_views.empty()) {
+            std::unordered_set<ProjectLaneViewId, ProjectRecordKeyHash> edited;
+            for (auto const& edit : batch.lane_views) edited.insert(edit.key);
+            for (auto const& view : presentation_.lane_views) {
+                if (edited.contains(view.id)) builder.accepted_lane_views.push_back({view.id, view.version()});
+            }
+        }
     }
     builder.succeed();
     if (changed) IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
@@ -3458,7 +3465,7 @@ void ProjectGraph::handle_socket_rpc_apply_project_edit(
         handle_project_apply_edit(request.batch, project_builder);
         builder.set_publication(project_builder.take_publication());
         project_builder.build();
-        builder.succeed();
+        builder.succeed(std::move(project_builder.accepted_lane_views));
     } catch (std::exception const& error) { builder.fail(error.what()); }
 }
 

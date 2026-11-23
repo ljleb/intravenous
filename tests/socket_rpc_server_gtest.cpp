@@ -121,21 +121,43 @@ namespace {
 
     SocketRpcTestState socket_rpc_test_state;
 
-    // session.snapshot reaches one module per part of the snapshot, as in the
-    // server, so each stand-in is its own module type: one fake answering
-    // several parts would be entered several times by one request.
+    std::string snapshot_configuration(std::size_t size)
+    {
+        // Four-byte UTF-8 characters exercise chunk boundaries in both JSON layers.
+        std::string configuration;
+        configuration.reserve(size);
+        while (configuration.size() < size) configuration += "\xf0\x9f\x8e\xb5";
+        return configuration;
+    }
 
-    // Stands in for ProjectPersistence.
+    std::string snapshot_lane_state()
+    {
+        std::string state = R"({"text":")";
+        for (int index = 0; index < 63'000; ++index) state += "\\n";
+        return state + R"("})";
+    }
+
+    // Persistence collection reaches NodeInstances in the real server.
     struct SessionProjectStateFake {
+        std::atomic<unsigned> captures{0};
+
         void handle_get_session_project_state(
             iv::SessionSnapshotRequest const&,
             iv::SocketRpcSessionProjectStateResultBuilder& builder)
         {
-            builder.succeed({iv::ProjectCommand{
+            ++captures;
+            iv::SocketRpcNodeInstancesResultBuilder instances;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_instances_event, iv::GetNodeInstancesRequest{}, instances);
+            std::vector<iv::ProjectCommand> commands{iv::ProjectCommand{
                 .command = "nodeInstances.update",
                 .args = nlohmann::ordered_json{
-                    {"instance_id", "snapshot-instance"}},
-            }});
+                    {"instance_id", "snapshot-instance"}, {"configuration_source", snapshot_configuration(540'000)}},
+            }};
+            auto const state = snapshot_lane_state();
+            for (int lane = 0; lane < 7; ++lane) {
+                commands.push_back({"projectPresentation.setLaneView", {{"index", lane}, {"state", state}}});
+            }
+            builder.succeed(std::move(commands));
         }
     };
 
@@ -151,16 +173,29 @@ namespace {
 
     // Stands in for NodeInstances.
     struct NodeInstancesFake {
+        std::atomic<bool> large_configurations{false};
+
         void handle_get_node_instances(
             iv::GetNodeInstancesRequest const&,
             iv::SocketRpcNodeInstancesResultBuilder& builder)
         {
-            builder.succeed({iv::IvModuleInstanceInfo{
+            iv::IvModuleInstanceInfo instance{
                 .instance_id = "snapshot-instance",
                 .definition_id = "iv.test.snapshot.module",
                 .display_name = "Snapshot instance",
                 .realized = true,
-            }});
+            };
+            if (!large_configurations.load()) {
+                builder.succeed({std::move(instance)});
+                return;
+            }
+            instance.configuration_source = snapshot_configuration(360'000);
+            std::vector<iv::IvModuleInstanceInfo> instances;
+            for (int index = 0; index < 3; ++index) {
+                instance.instance_id = "snapshot-instance-" + std::to_string(index);
+                instances.push_back(instance);
+            }
+            builder.succeed(std::move(instances));
         }
     };
 
@@ -613,41 +648,67 @@ TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
     EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
 }
 
-TEST(SocketRpcServer, AggregatesApplicationStateIntoASessionSnapshot)
+TEST(SocketRpcServer, TransfersOneCapturedSnapshotWithLargeDurableCommandsAndRuntimeReads)
 {
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
     ASSERT_FALSE(harness.read_line().empty());
+    harness.node_instances.large_configurations.store(true);
 
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":10,"method":"session.snapshot","params":{}})"
-        "\n");
-    auto const response = nlohmann::ordered_json::parse(
-        harness.read_response(10));
+    using Json = nlohmann::ordered_json;
+    int id = 10;
+    auto request = [&](std::string const& method, Json params = Json::object()) {
+        auto const request_id = id++;
+        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", request_id}, {"method", method},
+            {"params", std::move(params)}}.dump() + "\n");
+        auto const line = harness.read_response(request_id);
+        EXPECT_LT(line.size(), 512 * 1024u);
+        return Json::parse(line);
+    };
+    auto assemble = [&](Json reply) {
+        if (!reply.contains("resultChunk")) return reply.at("result");
+        auto const transfer_id = reply.at("resultChunk").at("transferId");
+        std::string document;
+        for (;;) {
+            auto const& chunk = reply.at("resultChunk");
+            EXPECT_EQ(chunk.at("transferId"), transfer_id);
+            EXPECT_EQ(chunk.at("offset"), document.size());
+            document += chunk.at("text").get<std::string>();
+            auto const next = chunk.at("nextOffset");
+            if (next.is_null()) break;
+            EXPECT_EQ(next, document.size());
+            reply = request("session.readResult", {{"transferId", transfer_id}, {"offset", next}});
+        }
+        EXPECT_TRUE(request("session.readResult", {{"transferId", transfer_id}, {"offset", document.size()}}).contains("error"));
+        return Json::parse(document).at("result");
+    };
 
-    ASSERT_TRUE(response.contains("result")) << response;
-    auto const& result = response["result"];
-    EXPECT_EQ(result["sessionRevision"], 0);
-    ASSERT_EQ(result["project"]["commands"].size(), 1u);
-    EXPECT_EQ(
-        result["project"]["commands"][0]["command"],
-        "nodeInstances.update");
-    EXPECT_EQ(result["autosave"]["enabled"], true);
-    ASSERT_EQ(result["nodeInstances"]["instances"].size(), 1u);
-    EXPECT_EQ(
-        result["nodeInstances"]["instances"][0]["instanceId"],
-        "snapshot-instance");
-    ASSERT_EQ(result["packages"]["packages"].size(), 1u);
-    EXPECT_EQ(
-        result["packages"]["packages"][0]["packageId"],
-        "iv.test.snapshot");
-    EXPECT_FALSE(result["audioDevices"]["outputDevices"].empty());
-    EXPECT_EQ(
-        result["nodeEventProtocol"]["projectGraphGeneration"],
-        12);
-    EXPECT_EQ(
-        result["nodeEventProtocol"]["definitionsGeneration"],
-        7);
+    auto initial = request("session.snapshot");
+    ASSERT_TRUE(initial.contains("resultChunk")) << initial.value("error", Json(nullptr));
+    EXPECT_EQ(request("nodeInstances.delete", {{"instanceId", "other"}}).at("result").at("sessionRevision"), 1);
+    auto const snapshot = assemble(std::move(initial));
+    EXPECT_EQ(harness.session_project_state.captures.load(), 1u);
+    EXPECT_EQ(snapshot.at("sessionRevision"), 0);
+    EXPECT_EQ(snapshot.at("autosave").at("enabled"), true);
+    EXPECT_EQ(snapshot.at("packages").at("packages").at(0).at("packageId"), "iv.test.snapshot");
+    EXPECT_FALSE(snapshot.at("audioDevices").at("outputDevices").empty());
+    EXPECT_EQ(snapshot.at("nodeEventProtocol").at("projectGraphGeneration"), 12);
+    auto const& commands = snapshot.at("project").at("commands");
+    ASSERT_EQ(commands.size(), 8u);
+    EXPECT_TRUE(commands[0].at("args").at("configuration_source") == snapshot_configuration(540'000));
+    auto const state = snapshot_lane_state();
+    for (std::size_t index = 1; index < commands.size(); ++index) {
+        EXPECT_EQ(commands[index].at("args").at("index"), index - 1);
+        EXPECT_TRUE(commands[index].at("args").at("state") == state);
+    }
+    auto runtime = request("nodeInstances.get");
+    ASSERT_TRUE(runtime.contains("resultChunk"));
+    auto const instances = assemble(std::move(runtime));
+    EXPECT_EQ(instances.at("sessionRevision"), 1);
+    auto const& captured = snapshot.at("nodeInstances").at("instances");
+    ASSERT_EQ(captured.size(), 3u);
+    EXPECT_TRUE(instances.at("instances") == captured);
+    EXPECT_TRUE(captured.at(2).at("configurationSource") == snapshot_configuration(360'000));
 }
 
 TEST(SocketRpcServer, DeliversOneOrderedNotificationToEverySubscribedClient)

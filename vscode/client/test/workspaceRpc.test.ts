@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Duplex } from "node:stream";
 
 import { JsonRpcSocketClient } from "../src/rpcClient";
 import { WorkspaceRpc } from "../src/workspaceRpc";
+import { LaneViewReads } from "../src/laneViewReads";
+import { presentationStateKey } from "../src/graphScope";
 
 test("workspace mutations include the current project session revision", async () => {
     const requests: Array<{
@@ -98,10 +101,10 @@ test("large lane view reads share their version and run one at a time per connec
     const payload = JSON.stringify({ text: "\n".repeat(63_000) });
     assert.ok(Buffer.byteLength(payload) < 128 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify(Array(7).fill(payload))) > 1024 * 1024);
-    const active: Array<{ version: string; resolve: (state: string) => void }> = [];
+    const active: Array<{ version: string; resolve: (reply: { value: string; sessionRevision: number }) => void }> = [];
     const rpc = new WorkspaceRpc({ request: (method: string, { version }: { version: string }) => {
         assert.equal(method, "projectPresentation.getLaneView");
-        return new Promise<string>((resolve) => { active.push({ version, resolve }); });
+        return new Promise<{ value: string; sessionRevision: number }>((resolve) => { active.push({ version, resolve }); });
     } } as unknown as JsonRpcSocketClient);
     const versions = Array.from({ length: 7 }, (_, index) => String(index + 1));
     const pending = versions.map((version) => rpc.getLaneView(version));
@@ -109,9 +112,78 @@ test("large lane view reads share their version and run one at a time per connec
     for (const version of versions) {
         await new Promise<void>((resolve) => setImmediate(resolve));
         assert.deepEqual(active.map((read) => read.version), [version]);
-        active.shift()!.resolve(payload);
+        active.shift()!.resolve({ value: payload, sessionRevision: 23 });
     }
     assert.deepEqual(await Promise.all(pending), versions.map(() => payload));
+});
+
+test("a lane read retries a failed reply for the same version and leaves an error after a second failure", () => {
+    const requests: Array<[string, number]> = [];
+    const reads = new LaneViewReads((version, id) => requests.push([version, id]));
+    assert.equal(reads.read("7").status, "pending");
+    reads.receive("7", 1, null);
+    assert.deepEqual(requests, [["7", 1], ["7", 2]]);
+    reads.receive("7", 1, '{"late":true}');
+    assert.equal(reads.read("7").status, "pending");
+    reads.receive("7", 2, '{"position":0.25}');
+    assert.deepEqual(reads.read("7"), { status: "ready", state: '{"position":0.25}' });
+
+    reads.read("8");
+    reads.receive("8", 3, null);
+    reads.receive("8", 4, null);
+    assert.equal(reads.read("8").status, "failed");
+    assert.equal(requests.length, 4);
+    reads.retryUnread();
+    assert.equal(reads.read("8").status, "pending");
+    assert.equal(reads.read("7").status, "ready");
+});
+
+test("a successful local save keeps exact bytes ready for its committed version", () => {
+    const requests: string[] = [];
+    const reads = new LaneViewReads((version) => requests.push(version));
+    const address = { instanceId: "beats" };
+    const presentationId = "example.marker/marker";
+    const key = presentationStateKey(address, presentationId);
+    const state = '{"position":-0,"precise":1e10}';
+    const receipt = [{ address, presentationId, version: "7" }];
+    // A newer scope can arrive before the acknowledgment of our save.
+    reads.rememberCommitted({ [key]: state }, receipt, new Map([[key, "8"]]));
+    assert.equal(reads.read("8").status, "pending");
+    reads.rememberCommitted({ [key]: state }, receipt, new Map([[key, "7"]]));
+    assert.deepEqual(reads.read("7"), { status: "ready", state });
+    assert.deepEqual(requests, ["8"]);
+});
+
+test("session recovery reads one frozen reply through UTF-8 byte offsets", async () => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const revisions: number[] = [];
+    const result = { sessionRevision: 9, project: { commands: ['🎵 \\ "'] }, nodeInstances: { instances: ["runtime"] } };
+    let originalId: number;
+    const socket = new Duplex({
+        read() {},
+        write(data, _encoding, done) {
+            const { id, method, params } = JSON.parse(String(data));
+            calls.push({ method, params });
+            if (method === "session.snapshot") originalId = id;
+            const text = JSON.stringify({ jsonrpc: "2.0", id: originalId, result });
+            const cut = text.indexOf("🎵") + "🎵".length;
+            const nextOffset = Buffer.byteLength(text.slice(0, cut));
+            const resultChunk = method === "session.snapshot"
+                ? { transferId: "1", offset: 0, nextOffset, text: text.slice(0, cut) }
+                : { transferId: "1", offset: nextOffset, nextOffset: null, text: text.slice(cut) };
+            this.push(JSON.stringify({ jsonrpc: "2.0", id, resultChunk }) + "\n");
+            done();
+        },
+    });
+    const client = new JsonRpcSocketClient(socket, null, null, (revision) => revisions.push(revision));
+    const rpc = new WorkspaceRpc(client);
+    await client.connect();
+    try {
+        assert.deepEqual(await rpc.snapshot(), result);
+        assert.deepEqual(calls.map(({ method }) => method), ["session.snapshot", "session.readResult"]);
+        assert.equal(calls[1].params.transferId, "1");
+        assert.deepEqual(revisions, [9]);
+    } finally { client.dispose(); }
 });
 
 test("manual control gestures survive revision changes while standalone edits check their revision", async () => {

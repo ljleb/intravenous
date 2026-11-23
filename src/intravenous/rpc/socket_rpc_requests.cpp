@@ -8,6 +8,7 @@
 #include <cmath>
 #include <charconv>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -770,6 +771,13 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
     }
     if (method == "session.snapshot") {
         return parsed(SessionSnapshotRequest{});
+    }
+    if (method == "session.readResult") {
+        auto id = parse_string_param(params, "transferId");
+        auto const& offset = params.at("offset");
+        if (!offset.is_number_unsigned() || offset > std::numeric_limits<std::size_t>::max())
+            throw std::invalid_argument("result offset must be an unsigned byte offset");
+        return parsed(SessionReadResultRequest{std::move(id), offset.get<std::size_t>()});
     }
     if (method == "server.shutdown") {
         return parsed(ServerShutdownRequest{});

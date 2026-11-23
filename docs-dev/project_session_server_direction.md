@@ -141,14 +141,23 @@ type switch.
 - It applies `expectedRevision` before a mutation callback runs.
 - It records complete notification revisions in a bounded replay log.
 - It supports topic filters and replay through `session.subscribe`.
-- It returns durable project commands and current runtime records through
-  `session.snapshot`.
+- It captures the durable commands and runtime records for `session.snapshot`
+  in one turn of the command queue.
 
-The snapshot contains the commands from `ProjectPersistence::snapshot()`. These
-commands include node instances, node replacements, graph connections, project
-toolchain values, and audio-device selection. The snapshot also contains the
-current package list, realized node instances, audio-device state, autosave
-state, and node-message protocol.
+`session.snapshot` calls `ProjectPersistence::snapshot()` once. Separate linker
+events read realized node instances, packages, audio devices, and the
+node-message protocol. The complete reply carries the revision at capture time.
+A later edit can change the live project while the client reads that reply.
+
+Large replies use the same framing for every RPC. A `resultChunk` contains text
+from the encoded reply and a `transferId`, `offset`, and `nextOffset`. Pass the
+`transferId` and `nextOffset` as the `transferId` and `offset` parameters of
+`session.readResult` until `nextOffset` is null. Offsets count UTF-8 bytes.
+`JsonRpcSocketClient` joins the text and parses the complete reply. A chunk can
+split a record and stays below the socket queue limit. The server retains up to
+four unfinished replies per connection and releases each after its final chunk.
+Closing the connection releases any replies that remain.
+[Former command paging](historical/session_snapshot_command_paging_2026-11-23.md)
 
 On Linux, a server without `--rpc-fd` owns the project lock and publishes
 `descriptor.json` plus `server.sock`. The descriptor contains the canonical

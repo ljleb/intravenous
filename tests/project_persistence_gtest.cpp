@@ -734,6 +734,7 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
         iv::ProjectAckBuilder builder;
         in_event_source([&] { project_graph.handle_project_apply_edit(batch, builder); });
         builder.build();
+        return std::move(builder.accepted_lane_views);
     };
     auto undo = [&] {
         iv::ProjectAckBuilder builder;
@@ -751,14 +752,19 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     iv::ProjectLaneView const view{{{.instance_id = "curve"}, "curve"}, R"({"pan":8})"};
     iv::ProjectEditBatch adjust;
     adjust.lane_views.push_back({view.id, view});
-    edit(adjust);
+    auto const committed = edit(adjust);
+    ASSERT_EQ(committed.size(), 1u);
+    EXPECT_EQ(committed.front().id, view.id);
+    EXPECT_EQ(committed.front().version, view.version());
     expect_same_configuration(project_graph, *generation);
     EXPECT_THROW(undo(), std::runtime_error);
 
     // An identical save leaves existing scope references readable.
     iv::ProjectLaneView const identical{view.id, view.state_json()};
     adjust.lane_views = {{identical.id, identical}};
-    edit(adjust);
+    auto const unchanged = edit(adjust);
+    ASSERT_EQ(unchanged.size(), 1u);
+    EXPECT_EQ(unchanged.front().version, view.version());
 
     iv::ProjectEditBatch duplicate;
     duplicate.instance_duplicates.push_back({"curve", "copy"});

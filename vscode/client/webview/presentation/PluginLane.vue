@@ -60,7 +60,7 @@ const { panel: contextPanel } = menu;
 const editsPending = ref(false);
 const waking = ref(false);
 const active = usePresentationActive(() => dragging.value || panelOpen.value || menu.key.value !== null || editsPending.value || waking.value);
-const { ready: stateReady, save } = usePresentationState({
+const { ready: stateReady, error: stateLoadError, save } = usePresentationState({
     serialize: () => state.value,
     restore: (saved) => {
         state.value = saved ?? null;
@@ -368,7 +368,7 @@ onBeforeUnmount(() => {
 
 <template>
     <NodeLane v-if="!program.manifest.timeline || time" :mode="mode" flush-content>
-        <div ref="surface" class="plugin-surface" :data-status-hint="error || replacementError || editError || hoveredTarget?.hint || frame?.status"
+        <div ref="surface" class="plugin-surface" :data-status-hint="error || stateLoadError || replacementError || editError || hoveredTarget?.hint || frame?.status"
             :class="{ 'plugin-seek': frame?.timelineGrid?.seek }"
             :data-status-shortcuts="hoveredTarget?.shortcuts ?? (frame?.timelineGrid?.seek ? 'Click/drag seek · Space ▶/Ⅱ' : undefined)"
             :style="{ cursor: hoveredTarget?.cursor }" :tabindex="frame?.itemEditing && editable ? -1 : undefined"
@@ -381,7 +381,7 @@ onBeforeUnmount(() => {
                 @toggle="(open) => { panelOpen = open; if (open) menu.close(); }">
                 <PresentationControls :rows="frame.panel.rows" :identity="addressKey(node.address)" :editable="editable" @input="control" />
             </LaneSettings>
-            <span v-if="error" class="plugin-error" role="status">{{ error }}</span>
+            <span v-if="error || stateLoadError" class="plugin-error" role="status">{{ error || stateLoadError }}</span>
         </div>
     </NodeLane>
     <GenericPresentation v-else :mode="mode" />

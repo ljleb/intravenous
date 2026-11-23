@@ -11,6 +11,7 @@
 #include <intravenous/project/runtime_project_api_types.h>
 #include <intravenous/devices/audio_device.h>
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -37,21 +38,13 @@ namespace iv {
     };
 
     class SocketRpcSessionProjectStateResultBuilder {
-        int error_code = -32000;
         std::string error_message{};
         std::optional<std::vector<ProjectCommand>> result{};
 
     public:
         void succeed(std::vector<ProjectCommand> value);
         void fail(std::string message);
-        void fail(int code, std::string message);
-
-        [[nodiscard]] bool has_response() const noexcept
-        {
-            return result.has_value() || !error_message.empty();
-        }
-
-        [[nodiscard]] std::string build(int request_id) const;
+        [[nodiscard]] nlohmann::ordered_json commands_json() const;
     };
 
     class SocketRpcNodeEventProtocolResultBuilder {
@@ -108,9 +101,10 @@ namespace iv {
         std::string error_message;
         bool has_response_ = false;
         ProjectGraphPublication publication_{};
+        std::vector<ProjectLaneViewReference> accepted_lane_views_{};
 
     public:
-        void succeed() noexcept;
+        void succeed(std::vector<ProjectLaneViewReference> accepted_lane_views = {}) noexcept;
         void fail(std::string message);
         void fail(int code, std::string message);
 

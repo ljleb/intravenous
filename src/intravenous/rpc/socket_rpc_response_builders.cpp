@@ -18,6 +18,16 @@ namespace iv {
 namespace {
 using Json = nlohmann::ordered_json;
 
+Json lane_view_references_json(std::span<ProjectLaneViewReference const> views)
+{
+    auto references = Json::array();
+    for (auto const& view : views) {
+        references.push_back({{"address", node_address_json(view.id.address, ProjectConnectionJsonNames::socket_rpc)},
+            {"presentationId", view.id.presentation_id}, {"version", std::to_string(view.version)}});
+    }
+    return references;
+}
+
 std::string serialize_json_line(Json const &value) {
     return value.dump() + "\n";
 }
@@ -239,33 +249,18 @@ void SocketRpcSessionProjectStateResultBuilder::succeed(
 
 void SocketRpcSessionProjectStateResultBuilder::fail(std::string message)
 {
-    fail(-32000, std::move(message));
-}
-
-void SocketRpcSessionProjectStateResultBuilder::fail(
-    int code, std::string message)
-{
     result.reset();
-    error_code = code;
     error_message = std::move(message);
 }
 
-std::string SocketRpcSessionProjectStateResultBuilder::build(int request_id) const
+Json SocketRpcSessionProjectStateResultBuilder::commands_json() const
 {
-    if (!error_message.empty()) {
-        return jsonrpc_error(request_id, error_code, error_message);
-    }
-    if (!result) {
-        throw_unbuilt_response("SocketRpcSessionProjectStateResultBuilder");
-    }
+    if (!error_message.empty()) throw std::runtime_error(error_message);
+    if (!result) throw std::runtime_error("project persistence service is unavailable");
     auto commands = Json::array();
-    for (auto const& command : *result) {
-        commands.push_back(Json{
-            {"command", command.command},
-            {"args", command.args},
-        });
-    }
-    return jsonrpc_result(request_id, Json{{"commands", std::move(commands)}});
+    for (auto const& command : *result)
+        commands.push_back({{"command", command.command}, {"args", command.args}});
+    return commands;
 }
 
 void SocketRpcNodeEventProtocolResultBuilder::succeed(
@@ -339,7 +334,8 @@ std::string SocketRpcNodeMessageResultBuilder::build(int request_id) const
     });
 }
 
-void SocketRpcAckResponseBuilder::succeed() noexcept {
+void SocketRpcAckResponseBuilder::succeed(std::vector<ProjectLaneViewReference> accepted_lane_views) noexcept {
+    accepted_lane_views_ = std::move(accepted_lane_views);
     has_response_ = true;
 }
 
@@ -359,7 +355,9 @@ std::string SocketRpcAckResponseBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
-    return jsonrpc_result(request_id, Json{{"ok", true}});
+    Json result{{"ok", true}};
+    if (!accepted_lane_views_.empty()) result["laneViews"] = lane_view_references_json(accepted_lane_views_);
+    return jsonrpc_result(request_id, std::move(result));
 }
 
 void SocketRpcGraphQueryResultBuilder::succeed(ProjectQueryResult value) {
@@ -590,17 +588,12 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     for (auto const& address : result->timeline_nodes)
         timelines.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
     auto lane_order = Json::array();
-    auto lane_views = Json::array();
     auto unavailable_lane_parents = Json::array();
     constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
     for (auto const& address : result->unavailable_lane_parents)
         unavailable_lane_parents.push_back(node_address_json(address, names));
     for (auto const& address : result->presentation.lane_order)
         lane_order.push_back(node_address_json(address, names));
-    for (auto const& view : result->presentation.lane_views) {
-        lane_views.push_back({{"address", node_address_json(view.id.address, names)},
-            {"presentationId", view.id.presentation_id}, {"version", std::to_string(view.version)}});
-    }
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
         {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},
@@ -610,7 +603,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         {"editable", result->editable},
         {"timelineNodes", std::move(timelines)},
         {"unavailableLaneParents", std::move(unavailable_lane_parents)},
-        {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", std::move(lane_views)},
+        {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", lane_view_references_json(result->presentation.lane_views)},
             {"laneParents", project_lane_parents_json(result->presentation.lane_parents, names)},
             {"timelineSnapMemory", Json::parse(result->presentation.timeline_snap_memory_json)}}},
         {"nodes", graph_scope_nodes_json(result->nodes)},

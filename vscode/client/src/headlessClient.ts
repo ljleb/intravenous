@@ -99,7 +99,7 @@ async function run(options: Options, trace?: ClientInteractionTrace) {
             if (recording && graphEvents.length < 8192) graphEvents.push({ atMs: performance.now() - started, value: { method, params } });
             refreshScope?.();
         }
-    }, (error) => { connected = false; failReady?.(startupFailure ?? error); }, (current) => { revision = current; });
+    }, (error) => { connected = false; failReady?.(startupFailure ?? error); }, (current) => { revision = Math.max(revision, current); });
     child.on("error", (error) => { startupFailure = error; failReady?.(error); });
     const rpc = new WorkspaceRpc(client, () => revision);
     const stopObserving = client.observeSends((value) => {

@@ -104,6 +104,7 @@ export type ProjectLaneView = {
     presentationId: string;
     version: string;
 };
+export type ProjectEditReceipt = { sessionRevision: number; laneViews?: ProjectLaneView[] };
 export type ProjectPresentation = {
     laneOrder: NodeAddress[];
     laneParents?: Array<{ instanceId: string; parent: NodeAddress }>;

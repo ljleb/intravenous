@@ -348,6 +348,13 @@ TEST(SocketRpcRequestParser, ParsesSessionHandshakeSubscriptionAndSnapshot)
         R"({"jsonrpc":"2.0","id":52,"method":"session.snapshot","params":{}})");
     EXPECT_NE(
         std::get_if<iv::SessionSnapshotRequest>(&snapshot.payload), nullptr);
+
+    auto const page = iv::parse_socket_rpc_request(
+        R"({"jsonrpc":"2.0","id":53,"method":"session.readResult","params":{"transferId":"4","offset":300000}})");
+    auto const* read = std::get_if<iv::SessionReadResultRequest>(&page.payload);
+    ASSERT_NE(read, nullptr);
+    EXPECT_EQ(read->transfer_id, "4");
+    EXPECT_EQ(read->offset, 300000u);
 }
 
 TEST(SocketRpcRequestParser, PreservesExpectedRevisionOnMutation)
@@ -558,14 +565,13 @@ TEST(SocketRpcSessionProjectStateResultBuilder, SerializesCanonicalCommands)
         .args = Json{{"connection_id", "sample:main"}},
     }});
 
-    auto const response = parse_json_line(builder.build(54));
-
-    ASSERT_EQ(response["result"]["commands"].size(), 1u);
+    auto const commands = builder.commands_json();
+    ASSERT_EQ(commands.size(), 1u);
     EXPECT_EQ(
-        response["result"]["commands"][0]["command"],
+        commands[0]["command"],
         "graphConnections.upsert");
     EXPECT_EQ(
-        response["result"]["commands"][0]["args"]["connection_id"],
+        commands[0]["args"]["connection_id"],
         "sample:main");
 }
 

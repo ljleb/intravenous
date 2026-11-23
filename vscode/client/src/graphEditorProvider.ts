@@ -774,14 +774,14 @@ export class GraphEditorProvider implements vscode.Disposable {
                 let state: string | null = null;
                 try { state = await this.session.readLaneView(version); }
                 catch (error) { this.outputChannel.appendLine(`Cannot read lane view: ${String(error)}`); }
+                if (state === null) await this.refresh();
                 const reply: GraphEditorHostMessage = { type: "laneViewState", requestId, version, state };
                 if (this.panels.has(panel)) void panel.webview.postMessage(reply);
-                if (state === null) await this.refresh();
             } else if (message?.type === "saveGraphPresentation") {
                 const { requestId, presentationStates, laneOrder, laneParents } = message;
                 try {
                     const result = await this.session.saveGraphPresentation({ presentationStates, laneOrder, laneParents });
-                    void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId, revision: result.sessionRevision });
+                    void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId, receipt: result });
                     await this.refresh();
                 } catch (error) {
                     void panel.webview.postMessage({ type: "graphPresentationAccepted", requestId });

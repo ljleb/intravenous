@@ -77,11 +77,6 @@ struct ProjectGraphChildScope {
     bool has_boundary = false;
 };
 
-struct ProjectLaneViewReference {
-    ProjectLaneViewId id{};
-    std::uint64_t version = 0;
-};
-
 struct ProjectGraphScopePresentation {
     std::vector<NodeAddress> lane_order{};
     std::vector<ProjectLaneParent> lane_parents{};

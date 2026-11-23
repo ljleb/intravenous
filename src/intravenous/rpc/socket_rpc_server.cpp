@@ -29,6 +29,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,6 +47,9 @@ namespace {
 using Json = nlohmann::ordered_json;
 
 constexpr std::size_t max_client_outbound_bytes = 1024 * 1024;
+// Leave room in the outbound queue for the envelope and for notifications.
+constexpr std::size_t result_chunk_json_bytes = 480 * 1024;
+constexpr std::size_t max_result_transfers = 4;
 constexpr std::size_t max_replay_entries = 2048;
 // A complete replay is enqueued after its subscription response. Keep the
 // replay budget below the per-client queue budget so that a valid replay does
@@ -212,12 +216,33 @@ std::string stamp_response(std::string const& response, std::uint64_t revision)
     }
     return json_line(value);
 }
+
+std::size_t result_chunk_end(std::string_view document, std::size_t begin)
+{
+    std::size_t end = begin;
+    std::size_t encoded_bytes = 0;
+    // document is already JSON, so it contains no raw ASCII control characters.
+    for (; end < document.size(); ++end) {
+        auto const byte = document[end];
+        // The terminating newline is also escaped in the outer frame.
+        encoded_bytes += byte == '"' || byte == '\\' || byte == '\n' ? 2 : 1;
+        if (encoded_bytes > result_chunk_json_bytes) break;
+    }
+    // The outer JSON string must itself be valid UTF-8.
+    while (end < document.size() && (static_cast<unsigned char>(document[end]) & 0xc0) == 0x80) --end;
+    return end;
+}
 } // namespace
 
 struct SocketRpcServer::Impl {
     struct OutboundMessage {
         std::string value{};
         bool shutdown_after_write = false;
+    };
+
+    struct ResultTransfer {
+        std::string document;
+        std::size_t next_offset = 0;
     };
 
     struct Client : std::enable_shared_from_this<Client> {
@@ -229,6 +254,9 @@ struct SocketRpcServer::Impl {
         bool authenticated = false;
         bool subscribed = false;
         std::string identity{};
+        // These unfinished replies belong to the connection's command thread.
+        std::unordered_map<std::string, ResultTransfer> result_transfers{};
+        std::uint64_t next_transfer_id = 0;
         std::unordered_set<std::string> capabilities{};
         std::unordered_set<std::string> topics{};
         mutable std::mutex mutex{};
@@ -972,6 +1000,71 @@ struct SocketRpcServer::Impl {
         });
     }
 
+    SocketRpcRouteResult dispatch_route(ParsedSocketRpcRequest const& request, SocketRpcRouteContext const& context)
+    {
+        SocketRpcRouteResult result;
+        IV_EVENT_SOURCE(SocketRpcServer, request.method) {
+            result = routes.dispatch(request, context);
+        }
+        return result;
+    }
+
+    Json capture_session_snapshot(SessionSnapshotRequest const& request, SocketRpcRouteContext const& context)
+    {
+        SocketRpcSessionProjectStateResultBuilder project;
+        SocketRpcAutosaveStateResultBuilder autosave;
+        IV_EVENT_SOURCE(SocketRpcServer, "session.snapshot") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_session_project_state_event, request, project);
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_autosave_state_event, request, autosave);
+        }
+        auto const enabled = autosave.enabled();
+        if (!enabled) throw std::runtime_error("project autosave service is unavailable");
+        auto read = [&](std::string method, SocketRpcRequestPayload payload) -> Json {
+            // These reads can reach modules already visited by persistence.
+            auto response = Json::parse(dispatch_route({.method = method, .payload = std::move(payload)}, context).response);
+            if (auto result = response.find("result"); result != response.end()) return std::move(*result);
+            throw std::runtime_error(method + ": " + response.at("error").at("message").get<std::string>());
+        };
+        return Json{
+            {"project", {{"commands", project.commands_json()}}},
+            {"autosave", {{"enabled", *enabled}}},
+            {"nodeInstances", read("nodeInstances.get", GetNodeInstancesRequest{})},
+            {"packages", read("ivPackages.list", GetIvPackageDefinitionsRequest{})},
+            {"audioDevices", read("audioDevices.get", GetAudioDevicesRequest{})},
+            {"nodeEventProtocol", read("nodeMessages.getProtocol", GetNodeEventProtocolRequest{})},
+        };
+    }
+
+    std::string read_result(Client& client, int id, std::string const& transfer_id, std::size_t offset)
+    {
+        auto const found = client.result_transfers.find(transfer_id);
+        if (found == client.result_transfers.end() || offset != found->second.next_offset)
+            throw std::runtime_error("RPC result is no longer available at this offset");
+        auto& transfer = found->second;
+        auto const end = result_chunk_end(transfer.document, offset);
+        bool const complete = end == transfer.document.size();
+        auto response = json_line(Json{
+            {"jsonrpc", "2.0"}, {"id", id}, {"resultChunk", {
+                {"transferId", transfer_id}, {"offset", offset},
+                {"nextOffset", complete ? Json(nullptr) : Json(end)},
+                {"text", transfer.document.substr(offset, end - offset)},
+            }},
+        });
+        if (complete) client.result_transfers.erase(found);
+        else transfer.next_offset = end;
+        return response;
+    }
+
+    std::string bound_response(Client& client, int id, std::string response, std::uint64_t response_revision)
+    {
+        if (response.size() <= result_chunk_json_bytes) return response;
+        if (client.result_transfers.size() >= max_result_transfers)
+            return stamp_response(jsonrpc_error(id, -32000, "too many unfinished RPC results"), response_revision);
+        auto const transfer_id = std::to_string(++client.next_transfer_id);
+        client.result_transfers.emplace(transfer_id, ResultTransfer{std::move(response)});
+        return read_result(client, id, transfer_id, 0);
+    }
+
     void process_command(Command command)
     {
         std::optional<int> request_id;
@@ -979,49 +1072,58 @@ struct SocketRpcServer::Impl {
         std::vector<std::string> after_response;
         SocketRpcRouteResult route;
         bool route_known = false;
+        bool reading_result = false;
         begin_deferred_notifications();
         try {
             auto const request = parse_socket_rpc_request(command.line);
             request_id = request.request_id;
-            // One client message is one event source entry: its route's whole
-            // propagation is one tree, which may not come back to this server.
-            IV_EVENT_SOURCE(SocketRpcServer, request.method) {
-                route = routes.dispatch(request, SocketRpcRouteContext{
-                    .client_id = connected_client_id(command.client->key),
-                    .authorize = [this, client = command.client](
-                        std::string const& required) {
-                        authorize(client, required);
-                    },
-                    .before_invoke = [this, &request](bool mutates) {
-                        if (request.expected_revision && !mutates) {
-                            throw std::runtime_error(
-                                "expectedRevision is only valid for mutation routes");
-                        }
-                        auto const current = current_revision();
-                        if (request.expected_revision
-                            && *request.expected_revision != current) {
-                            throw std::runtime_error(
-                                "stale project session revision: expected "
-                                + std::to_string(*request.expected_revision)
-                                + ", current " + std::to_string(current));
-                        }
-                    },
-                    .hello = [this, client = command.client](
-                        int id, SessionHelloRequest const& request) {
-                        return hello(client, id, request);
-                    },
-                    .subscribe = [this, client = command.client, &after_response](
-                        int id, SessionSubscribeRequest const& request) {
-                        return subscribe(client, id, request, after_response);
-                    },
-                    .publish_project_graph = [this](
-                        ProjectGraphPublication const& publication) {
-                        publish_project_graph(publication);
-                    },
-                    .discard_live_frames = [this](std::string const& key) {
-                        discard_live_frames(key);
-                    },
-                });
+            auto const context = SocketRpcRouteContext{
+                .client_id = connected_client_id(command.client->key),
+                .authorize = [this, client = command.client](
+                    std::string const& required) {
+                    authorize(client, required);
+                },
+                .before_invoke = [this, &request](bool mutates) {
+                    if (request.expected_revision && !mutates) {
+                        throw std::runtime_error(
+                            "expectedRevision is only valid for mutation routes");
+                    }
+                    auto const current = current_revision();
+                    if (request.expected_revision
+                        && *request.expected_revision != current) {
+                        throw std::runtime_error(
+                            "stale project session revision: expected "
+                            + std::to_string(*request.expected_revision)
+                            + ", current " + std::to_string(current));
+                    }
+                },
+                .hello = [this, client = command.client](
+                    int id, SessionHelloRequest const& request) {
+                    return hello(client, id, request);
+                },
+                .subscribe = [this, client = command.client, &after_response](
+                    int id, SessionSubscribeRequest const& request) {
+                    return subscribe(client, id, request, after_response);
+                },
+                .publish_project_graph = [this](
+                    ProjectGraphPublication const& publication) {
+                    publish_project_graph(publication);
+                },
+                .discard_live_frames = [this](std::string const& key) {
+                    discard_live_frames(key);
+                },
+            };
+            if (auto const* snapshot = std::get_if<SessionSnapshotRequest>(&request.payload)) {
+                context.authorize("project.read");
+                context.before_invoke(false);
+                route.response = jsonrpc_result(request.request_id, capture_session_snapshot(*snapshot, context));
+            } else if (auto const* result = std::get_if<SessionReadResultRequest>(&request.payload)) {
+                context.authorize("project.read");
+                context.before_invoke(false);
+                route.response = read_result(*command.client, request.request_id, result->transfer_id, result->offset);
+                reading_result = true;
+            } else {
+                route = dispatch_route(request, context);
             }
             route_known = true;
             response = std::move(route.response);
@@ -1042,15 +1144,17 @@ struct SocketRpcServer::Impl {
             response = jsonrpc_error(request_id, -32000, error.what());
         }
         auto deferred = finish_deferred_notifications();
-        auto const succeeded = response_succeeded(response);
+        auto const succeeded = route_known && (route.mutates_session || route.shutdown_after_response)
+            && response_succeeded(response);
         auto response_revision = current_revision();
         if (route_known && route.mutates_session && succeeded) {
             response_revision = advance_revision();
         }
-        if (!enqueue(
-                command.client,
-                stamp_response(response, response_revision),
-                route_known && route.shutdown_after_response && succeeded)) {
+        if (!reading_result) {
+            response = stamp_response(response, response_revision);
+            if (request_id) response = bound_response(*command.client, *request_id, std::move(response), response_revision);
+        }
+        if (!enqueue(command.client, std::move(response), route_known && route.shutdown_after_response && succeeded)) {
             return;
         }
         for (auto& message : after_response) {

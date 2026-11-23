@@ -2,7 +2,7 @@ import { recordedEventTimestampsOperation, type ObservationInterest, type Observ
 import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { SymbolicNode, SourceSpan } from "./graphModel";
-import type { GraphScope } from "./graphScope";
+import type { GraphScope, ProjectEditReceipt } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type NodeEventProtocol, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
@@ -104,7 +104,7 @@ export class WorkspaceRpc {
         return this.client.request("session.subscribe", { afterRevision, topics });
     }
 
-    snapshot(): Promise<Record<string, unknown> & { sessionRevision?: number }> {
+    snapshot(): Promise<Record<string, unknown> & { sessionRevision: number }> {
         return this.client.request("session.snapshot", {});
     }
 
@@ -140,7 +140,12 @@ export class WorkspaceRpc {
         const existing = this.pendingLaneViewReads.get(version);
         if (existing) return existing;
         // Keep one payload response in flight on this connection.
-        const read = this.laneViewRead.then(() => this.client.request<string | null>("projectPresentation.getLaneView", { version }))
+        const read = this.laneViewRead.then(async () => {
+            const reply = await this.client.request<{ value: unknown }>("projectPresentation.getLaneView", { version });
+            if (reply?.value === null) return null;
+            if (typeof reply?.value === "string") return reply.value;
+            throw new Error("Invalid lane view response");
+        })
             .finally(() => this.pendingLaneViewReads.delete(version));
         this.pendingLaneViewReads.set(version, read);
         this.laneViewRead = read.then(() => {}, () => {});
@@ -223,7 +228,7 @@ export class WorkspaceRpc {
             "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
     }
 
-    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number | null): Promise<{ sessionRevision: number }> {
+    applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number | null): Promise<ProjectEditReceipt> {
         return this.client.request("project.applyEdit", expectedRevision === null ? { operations }
             : this.mutationParams({ operations }, expectedRevision));
     }

@@ -17,19 +17,24 @@ export function readPresentationSave(value: unknown): SerializedPresentationStat
     const state: unknown = JSON.parse(value);
     if (state === null) return null;
     if (typeof state !== "object" || Array.isArray(state)) throw new Error("Invalid presentation save payload");
-    const pending: unknown[] = [state];
-    while (pending.length) {
-        const entry = pending.pop();
-        if (typeof entry === "number" && !Number.isFinite(entry)) throw new Error("Invalid presentation save number");
-        if (typeof entry === "string" && unpairedSurrogate.test(entry)) throw new Error("Invalid Unicode in presentation save");
-        if (entry && typeof entry === "object") {
-            for (const [key, item] of Object.entries(entry)) {
-                if (unpairedSurrogate.test(key)) throw new Error("Invalid Unicode in presentation save key");
-                pending.push(item);
-            }
+    validateSaveTokens(value);
+    return value;
+}
+
+function validateSaveTokens(json: string): void {
+    // The document has passed syntax validation. Read the original tokens so
+    // a later property cannot hide a value replaced by JSON.parse.
+    for (let offset = 0; offset < json.length;) {
+        const start = offset++;
+        if (json[start] === '"') {
+            while (json[offset] !== '"') offset += json[offset] === "\\" ? 2 : 1;
+            const text: string = JSON.parse(json.slice(start, ++offset));
+            if (unpairedSurrogate.test(text)) throw new Error("Invalid Unicode in presentation save");
+        } else if (json[start] === "-" || (json[start] >= "0" && json[start] <= "9")) {
+            while (offset < json.length && /[0-9.eE+-]/.test(json[offset])) ++offset;
+            if (!Number.isFinite(Number(json.slice(start, offset)))) throw new Error("Invalid presentation save number");
         }
     }
-    return value;
 }
 
 export function serializePresentationState(state: PresentationStateValue): SerializedPresentationState {

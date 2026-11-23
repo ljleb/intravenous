@@ -29,6 +29,8 @@ class ProjectAckBuilder {
     ProjectGraphPublication publication_{};
 
 public:
+    std::vector<ProjectLaneViewReference> accepted_lane_views{};
+
     void succeed();
     void fail(std::string message);
     void build() const;

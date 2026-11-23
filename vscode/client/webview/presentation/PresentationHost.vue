@@ -50,12 +50,14 @@ const stateKey = computed(() => props.node.address ? presentationStateKey(props.
 providePresentationState(({ serialize, restore }) => {
     const key = stateKey.value;
     const ready = ref(false);
+    const error = ref("");
     watchEffect(() => {
-        const state = editor && key !== null ? editor.requestPresentationState(key) : null;
-        if (state !== undefined && (!ready.value || state !== serialize())) restore(state);
-        ready.value = state !== undefined;
+        const read = editor && key !== null ? editor.requestPresentationState(key) : { status: "ready" as const, state: null };
+        if (read.status === "ready" && (!ready.value || read.state !== serialize())) restore(read.state);
+        ready.value = read.status === "ready";
+        error.value = read.status === "failed" ? read.error : "";
     });
-    return { ready, save: (saveNow = true) => {
+    return { ready, error, save: (saveNow = true) => {
         if (!editor || key === null) return;
         editor.presentationStateChanged(key, serialize());
         if (saveNow) editor.save();

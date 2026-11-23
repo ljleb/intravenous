@@ -69,23 +69,6 @@ std::string jsonrpc_error(int id, int code, std::string message)
     }.dump() + "\n";
 }
 
-Json built_result(std::string const& response)
-{
-    auto parsed = Json::parse(response);
-    if (auto const error = parsed.find("error"); error != parsed.end()) {
-        auto const message = error->find("message");
-        throw std::runtime_error(
-            message != error->end() && message->is_string()
-                ? message->get<std::string>()
-                : "session snapshot query failed");
-    }
-    auto const result = parsed.find("result");
-    if (result == parsed.end()) {
-        throw std::runtime_error("session snapshot query produced no result");
-    }
-    return *result;
-}
-
 Json playback_output_profile(PlaybackOutputProfileResult const& profile)
 {
     if (profile.status != "ready") return {{"status", profile.status}};
@@ -638,64 +621,6 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
         [](auto const& request, int id, Context const& context) {
             if (!context.subscribe) throw std::logic_error("session subscribe is unavailable");
             return context.subscribe(id, request);
-        });
-    impl_->add<SessionSnapshotRequest>(
-        "session.snapshot", "project.read", false, false,
-        [](auto const& request, int id, Context const&) {
-            SocketRpcSessionProjectStateResultBuilder project;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_session_project_state_event,
-                request,
-                project);
-            if (!project.has_response()) {
-                project.fail("project persistence service is unavailable");
-            }
-
-            SocketRpcAutosaveStateResultBuilder autosave;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_autosave_state_event,
-                request,
-                autosave);
-            if (!autosave.has_response()) {
-                autosave.fail("project autosave service is unavailable");
-            }
-
-            SocketRpcNodeInstancesResultBuilder instances;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_node_instances_event,
-                GetNodeInstancesRequest{},
-                instances);
-            if (!instances.has_response()) instances.fail("node instance service is unavailable");
-
-            SocketRpcIvPackageDefinitionsResultBuilder packages;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_iv_package_definitions_event,
-                GetIvPackageDefinitionsRequest{},
-                packages);
-            if (!packages.has_response()) packages.fail("IV package service is unavailable");
-
-            SocketRpcAudioDevicesResultBuilder audio;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_audio_devices_event,
-                GetAudioDevicesRequest{},
-                audio);
-            if (!audio.has_response()) audio.fail("audio device service is unavailable");
-
-            SocketRpcNodeEventProtocolResultBuilder events;
-            IV_INVOKE_LINKER_EVENT(
-                iv_socket_rpc_get_node_event_protocol_event,
-                GetNodeEventProtocolRequest{},
-                events);
-            if (!events.has_response()) events.fail("project graph service is unavailable");
-
-            return jsonrpc_result(id, Json{
-                {"project", built_result(project.build(id))},
-                {"autosave", built_result(autosave.build(id))},
-                {"nodeInstances", built_result(instances.build(id))},
-                {"packages", built_result(packages.build(id))},
-                {"audioDevices", built_result(audio.build(id))},
-                {"nodeEventProtocol", built_result(events.build(id))},
-            });
         });
     impl_->add<ServerShutdownRequest>(
         "server.shutdown", "server.shutdown", false, true,

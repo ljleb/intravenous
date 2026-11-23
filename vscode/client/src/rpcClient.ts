@@ -8,9 +8,13 @@ export type JsonRpcDisconnectHandler = ((error: Error) => void) | null;
 export type JsonRpcRevisionHandler = ((revision: number) => void) | null;
 
 type PendingRequest = {
-    resolve: (value: unknown) => void;
+    resolve: (value: RpcReply) => void;
     reject: (error: Error) => void;
 };
+
+type ResultChunk = { transferId: string; offset: number; nextOffset: number | null; text: string };
+type RpcReply = { id?: number; result?: unknown; resultChunk?: ResultChunk;
+    error?: { message?: string; data?: { currentRevision?: number } } };
 
 export class JsonRpcSocketClient {
     private readonly socketPath: string | null;
@@ -88,6 +92,38 @@ export class JsonRpcSocketClient {
     }
 
     async request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+        let reply = await this.sendRequest(method, params);
+        let chunk = reply.resultChunk;
+        if (chunk) {
+            const id = reply.id;
+            const { transferId } = chunk;
+            if (typeof transferId !== "string" || !transferId) throw new Error("Invalid RPC result transfer ID");
+            const text: string[] = [];
+            let offset = 0;
+            for (;;) {
+                if (!chunk || chunk.transferId !== transferId || chunk.offset !== offset || typeof chunk.text !== "string" || !chunk.text)
+                    throw new Error("Invalid RPC result chunk");
+                text.push(chunk.text);
+                if (chunk.nextOffset === null) break;
+                offset += Buffer.byteLength(chunk.text, "utf8");
+                if (chunk.nextOffset !== offset) throw new Error("Invalid RPC result offset");
+                chunk = this.requireSuccess(await this.sendRequest("session.readResult", { transferId, offset })).resultChunk;
+            }
+            reply = JSON.parse(text.join(""));
+            if (reply.id !== id) throw new Error("RPC result ID changed during transfer");
+        }
+        return this.requireSuccess(reply).result as T;
+    }
+
+    private requireSuccess(reply: RpcReply): RpcReply {
+        const revision = (reply.result as { sessionRevision?: number } | undefined)?.sessionRevision
+            ?? reply.error?.data?.currentRevision;
+        if (typeof revision === "number") this.revisionHandler?.(revision);
+        if (reply.error) throw new Error(reply.error.message || "unknown JSON-RPC error");
+        return reply;
+    }
+
+    private sendRequest(method: string, params: Record<string, unknown>): Promise<RpcReply> {
         const id = this.nextId++;
         const payload = JSON.stringify({
             jsonrpc: "2.0",
@@ -100,7 +136,7 @@ export class JsonRpcSocketClient {
             throw new Error("JSON-RPC client is not connected");
         }
 
-        return await new Promise<T>((resolve, reject) => {
+        return new Promise<RpcReply>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
             this.socket!.write(payload, "utf8");
             for (const observe of this.sendObservers) observe({ method, params, notification: false });
@@ -152,15 +188,7 @@ export class JsonRpcSocketClient {
             }
             this.pending.delete(message.id);
 
-            const revision = message.result?.sessionRevision
-                ?? message.error?.data?.currentRevision;
-            if (typeof revision === "number") this.revisionHandler?.(revision);
-
-            if (message.error) {
-                pending.reject(new Error(message.error.message || "unknown JSON-RPC error"));
-            } else {
-                pending.resolve(message.result);
-            }
+            pending.resolve(message);
         }
     }
 
