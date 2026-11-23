@@ -466,7 +466,8 @@ export class GraphEditorProvider implements vscode.Disposable {
         ]);
         if (!this.panels.has(panel)) return;
         this.session.manualControls.reconcile(graphScopeWithChildren(scope));
-        this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus };
+        this.state = { ...this.state, scope, definitions, sessionStatus: this.session.graphSessionStatus,
+            connectionNumber: this.session.graphConnectionNumber };
         this.post(panel);
         if (action === "addNode" || action === "createPackage") {
             void panel.webview.postMessage({ type: "graphAction", action });
@@ -529,7 +530,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             const becameVisible = panel.visible && !wasVisible;
             wasVisible = panel.visible;
             this.recordClientView(panel, { type: "view", visible: panel.visible, active: panel.active });
-            void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
+            void panel.webview.postMessage({ type: "graphVisibility", visible: panel.visible });
             if (!panel.visible) {
                 this.panelObservations.delete(panel);
                 this.finishPlaybackDrag(panel);
@@ -631,7 +632,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.history.panelReady(panel);
                 void this.postProjectPresentations(panel);
                 this.panelObservations.delete(panel);
-                void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
+                void panel.webview.postMessage({ type: "graphVisibility", visible: panel.visible });
                 this.postControls(panel);
                 void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
                 this.post(panel);
@@ -768,6 +769,14 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`);
                 }
+            } else if (message?.type === "readLaneView") {
+                const { requestId, version } = message;
+                let state: string | null = null;
+                try { state = await this.session.readLaneView(version); }
+                catch (error) { this.outputChannel.appendLine(`Cannot read lane view: ${String(error)}`); }
+                const reply: GraphEditorHostMessage = { type: "laneViewState", requestId, version, state };
+                if (this.panels.has(panel)) void panel.webview.postMessage(reply);
+                if (state === null) await this.refresh();
             } else if (message?.type === "saveGraphPresentation") {
                 const { requestId, presentationStates, laneOrder, laneParents } = message;
                 try {
@@ -887,6 +896,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                         if (this.dirty || this.disposed) continue;
                         this.session.manualControls.reconcile(graphScopeWithChildren(scope));
                         this.state.scope = scope;
+                        this.state.connectionNumber = this.session.graphConnectionNumber;
                         this.playbackProfile?.recorder.recordGraph(scope.execution, performance.now());
                         this.state.definitions = definitions;
                         this.state.error = "";

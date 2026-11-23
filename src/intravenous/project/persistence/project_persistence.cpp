@@ -437,7 +437,7 @@ void ProjectPersistence::replay(std::vector<ProjectMessageNotification>& message
                     auto state = parse_project_lane_view_state(args.at("state"));
                     if (existing == presentation.lane_views.end())
                         presentation.lane_views.push_back({std::move(key), std::move(state)});
-                    else existing->state_json = std::move(state);
+                    else *existing = ProjectLaneView{std::move(key), std::move(state)};
                 }
             } else if (command.command == "projectPresentation.setTimelineSnapMemory") {
                 presentation.timeline_snap_memory_json = encode_project_presentation_object(args.at("memory"));

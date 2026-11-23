@@ -17,6 +17,7 @@
 #include <intravenous/app/bridges/project_graph_graph_connections_bridge.h>
 #include <intravenous/app/bridges/project_graph_node_instances_bridge.h>
 #include <intravenous/project/runtime_project_events.h>
+#include <intravenous/rpc/socket_rpc_requests.h>
 #include <intravenous/presentation/state_json.h>
 
 #include <gtest/gtest.h>
@@ -754,6 +755,11 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     expect_same_configuration(project_graph, *generation);
     EXPECT_THROW(undo(), std::runtime_error);
 
+    // An identical save leaves existing scope references readable.
+    iv::ProjectLaneView const identical{view.id, view.state_json()};
+    adjust.lane_views = {{identical.id, identical}};
+    edit(adjust);
+
     iv::ProjectEditBatch duplicate;
     duplicate.instance_duplicates.push_back({"curve", "copy"});
     duplicate.lane_order = std::vector<iv::NodeAddress>{{.instance_id = "curve"}, {.instance_id = "copy"}};
@@ -762,19 +768,25 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     ASSERT_EQ(copied.size(), 6u);
     EXPECT_EQ(copied[2]["args"]["order"][1]["instance_id"], "copy");
     EXPECT_EQ(copied[3]["args"]["address"]["instance_id"], "copy");
-    EXPECT_EQ(copied[3]["args"]["state"], view.state_json);
+    EXPECT_EQ(copied[3]["args"]["state"], view.state_json());
+
+    std::optional<std::string> read;
+    project_graph.handle_socket_rpc_get_project_lane_view({view.version()}, read);
+    ASSERT_TRUE(read);
+    EXPECT_EQ(*read, view.state_json());
 
     // A later pan on the copy does not prevent undo from removing the copy.
-    auto changed = view;
-    changed.id.address.instance_id = "copy";
-    changed.state_json = R"({"pan":5})";
+    iv::ProjectLaneView const changed{{{.instance_id = "copy"}, "curve"}, R"({"pan":5})"};
     adjust.lane_views = {{changed.id, changed}};
     edit(adjust);
     undo();
     auto const undone = save_commands();
     ASSERT_EQ(undone.size(), 4u);
     EXPECT_EQ(undone[1]["args"]["order"].size(), 1u);
-    EXPECT_EQ(undone[2]["args"]["state"], view.state_json);
+    EXPECT_EQ(undone[2]["args"]["state"], view.state_json());
+    read.reset();
+    project_graph.handle_socket_rpc_get_project_lane_view({changed.version()}, read);
+    EXPECT_FALSE(read);
 }
 
 TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGraph)

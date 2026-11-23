@@ -196,7 +196,9 @@ void apply_project_record_edits(std::vector<Record>& records,
                 indices.emplace(edit.key, records.size());
                 records.push_back(*edit.value);
                 removed.push_back(false);
-            } else records[found->second] = *edit.value;
+            } else if (records[found->second] != *edit.value) {
+                records[found->second] = *edit.value;
+            }
         } else if (found != indices.end()) removed[found->second] = true;
     }
     std::vector<Record> retained;

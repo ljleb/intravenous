@@ -147,6 +147,8 @@ export class WorkspaceSession {
         return this.graphSessionStatus === "running" ? this.rpc ?? undefined : undefined;
     }
     graphSessionStatus: LiveGraphSessionStatus = "starting";
+    private connectionNumber = 0;
+    get graphConnectionNumber(): number { return this.connectionNumber; }
     private readonly manualChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeManualControls = this.manualChanges.event;
     readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
@@ -168,6 +170,13 @@ export class WorkspaceSession {
     async readGraphScope(expanded: NodeAddress[] = []) {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         return this.rpc.getGraphScope(expanded);
+    }
+
+    async readLaneView(version: string): Promise<string | null> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") return null;
+        const state = await rpc.getLaneView(version);
+        return this.rpc === rpc ? state : null;
     }
 
     private timelineSnapChange: Promise<void> = Promise.resolve();
@@ -1016,6 +1025,7 @@ export class WorkspaceSession {
         await client.connect();
         if (this.client !== client) throw new Error("Server disconnected before startup completed");
         this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
+        ++this.connectionNumber;
         // The inherited client is trusted and subscribed to every notification
         // from the moment it is attached, so nothing needs replaying.
         await this.waitForServerReady(this.serverReadyTimeoutMs);

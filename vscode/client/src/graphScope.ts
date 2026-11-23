@@ -102,7 +102,7 @@ export type GraphLaneCopy = { sourceInstanceId: string; instanceId: string };
 export type ProjectLaneView = {
     address: NodeAddress;
     presentationId: string;
-    state: string;
+    version: string;
 };
 export type ProjectPresentation = {
     laneOrder: NodeAddress[];
@@ -111,7 +111,6 @@ export type ProjectPresentation = {
     timelineSnapMemory: import("./timelineSnap").TimelineSnapMemory;
 };
 export type GraphViewState = {
-    presentationStates: Record<string, string>;
     laneOrder: string[];
     laneParents: Record<string, string>;
 };
@@ -155,7 +154,7 @@ export function addressFromKey(key: string): NodeAddress {
     return { instanceId, path };
 }
 
-export function laneViewFromKey(key: string, state: SerializedPresentationState): Omit<ProjectLaneView, "state"> & { state: SerializedPresentationState } {
+export function laneViewFromKey(key: string, state: SerializedPresentationState): Omit<ProjectLaneView, "version"> & { state: SerializedPresentationState } {
     const [presentationId, instanceId, path] = JSON.parse(key) as [string, string, NodeAddress["path"]];
     return { address: { instanceId, path }, presentationId, state };
 }
@@ -165,8 +164,6 @@ export function readGraphViewState(presentation?: ProjectPresentation): GraphVie
         laneOrder: presentation?.laneOrder.map(addressKey) ?? [],
         laneParents: Object.fromEntries((presentation?.laneParents ?? []).map(({ instanceId, parent }) =>
             [addressKey({ instanceId }), addressKey(parent)])),
-        presentationStates: Object.fromEntries((presentation?.laneViews ?? []).map(
-            ({ address, presentationId, state }) => [presentationStateKey(address, presentationId), state])),
     };
 }
 

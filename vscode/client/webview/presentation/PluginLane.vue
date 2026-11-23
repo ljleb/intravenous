@@ -49,7 +49,7 @@ const error = ref("");
 const editError = ref("");
 const replacementError = ref("");
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
-    && !editor.historyPending.value && !!node.value.address && node.value.loadState === "ready");
+    && stateReady.value && !editor.historyPending.value && !!node.value.address && node.value.loadState === "ready");
 const worker = new ReloadableWasmPresentation(createWebPresentationWorker,
     (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); });
 let cancelDrag: (() => void) | undefined;
@@ -60,7 +60,7 @@ const { panel: contextPanel } = menu;
 const editsPending = ref(false);
 const waking = ref(false);
 const active = usePresentationActive(() => dragging.value || panelOpen.value || menu.key.value !== null || editsPending.value || waking.value);
-const save = usePresentationState({
+const { ready: stateReady, save } = usePresentationState({
     serialize: () => state.value,
     restore: (saved) => {
         state.value = saved ?? null;
@@ -157,7 +157,7 @@ const session = new PresentationPluginSession((snapshot, inputs) => {
     const program = props.program;
     return worker.run(program.bytes, snapshot, inputs, () => !dragging.value && props.program === program);
 }, job.schedule, accept, fail, {
-    canSave: (inputs) => allowsFrameChanges(inputs) && !!editor?.scope.value?.editable && !!node.value.address,
+    canSave: (inputs) => stateReady.value && allowsFrameChanges(inputs) && !!editor?.scope.value?.editable && !!node.value.address,
     save: (accepted, inputs) => {
         state.value = accepted;
         const deferred = inputs.length > 0 && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
@@ -167,7 +167,7 @@ const session = new PresentationPluginSession((snapshot, inputs) => {
 });
 
 const snapshot = computed((): PresentationSnapshot | undefined => {
-    if (error.value || !active.value || !size.value?.width || !size.value.height) return;
+    if (error.value || !stateReady.value || !active.value || !size.value?.width || !size.value.height) return;
     const timeline = time?.value;
     const scopedNode = node.value;
     const revision = editor?.scope.value?.sessionRevision ?? 0;

@@ -2,6 +2,9 @@
 
 #include <intravenous/node/address.h>
 
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <stdexcept>
@@ -17,12 +20,28 @@ struct ProjectLaneViewId {
     friend bool operator==(ProjectLaneViewId const&, ProjectLaneViewId const&) = default;
 };
 
-struct ProjectLaneView {
-    ProjectLaneViewId id{};
-    // Validated JSON objects encoded at the persistence and RPC boundaries.
-    std::string state_json{"{}"};
+class ProjectLaneView {
+    struct State {
+        std::string json;
+        std::uint64_t version;
+    };
+    static inline std::atomic_uint64_t next_version{};
 
-    friend bool operator==(ProjectLaneView const&, ProjectLaneView const&) = default;
+public:
+    ProjectLaneViewId id{};
+    ProjectLaneView(ProjectLaneViewId id, std::string state_json)
+        : id(std::move(id)), state_(std::make_shared<State const>(State{
+            std::move(state_json), next_version.fetch_add(1, std::memory_order_relaxed) + 1})) {}
+
+    std::string const& state_json() const { return state_->json; }
+    std::uint64_t version() const { return state_->version; }
+
+    friend bool operator==(ProjectLaneView const& left, ProjectLaneView const& right) {
+        return left.id == right.id && (left.state_ == right.state_ || left.state_json() == right.state_json());
+    }
+
+private:
+    std::shared_ptr<State const> state_;
 };
 
 struct ProjectLaneParent {

@@ -64,7 +64,7 @@ inline nlohmann::ordered_json project_lane_view_json(
     return {
         {"address", node_address_json(view.id.address, names)},
         {field, view.id.presentation_id},
-        {"state", view.state_json},
+        {"state", view.state_json()},
     };
 }
 

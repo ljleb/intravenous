@@ -38,7 +38,7 @@ export type KnobClipboard = {
 type GraphEditorContext = {
     layout: Ref<GraphLayout>;
     save: () => void;
-    readPresentationState: (key: string) => string | undefined;
+    requestPresentationState: (key: string) => SerializedPresentationState | undefined;
     presentationStateChanged: (key: string, state: SerializedPresentationState) => void;
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;

@@ -534,6 +534,22 @@ TEST(SocketRpcAckResponseBuilder, BuildsOkByDefault)
     EXPECT_EQ(response["result"]["ok"], true);
 }
 
+TEST(SocketRpcGraphScopeResultBuilder, ListsLaneViewVersionsWithoutStatePayloads)
+{
+    iv::ProjectGraphScope scope;
+    for (std::uint64_t version = 1; version <= 7; ++version) {
+        scope.presentation.lane_views.push_back({{{.instance_id = "lane" + std::to_string(version)}, "marker"}, version});
+    }
+    iv::SocketRpcGraphScopeResultBuilder builder;
+    builder.succeed(std::move(scope));
+    auto const response = builder.build(18);
+    EXPECT_LT(response.size(), 4096u);
+    auto const views = parse_json_line(response).at("result").at("presentation").at("laneViews");
+    ASSERT_EQ(views.size(), 7u);
+    EXPECT_EQ(views.at(6).at("version"), "7");
+    EXPECT_FALSE(views.at(6).contains("state"));
+}
+
 TEST(SocketRpcSessionProjectStateResultBuilder, SerializesCanonicalCommands)
 {
     iv::SocketRpcSessionProjectStateResultBuilder builder;

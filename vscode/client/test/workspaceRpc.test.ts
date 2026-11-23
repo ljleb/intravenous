@@ -94,6 +94,26 @@ test("lane view patches and save on blur do not require a graph revision", async
     ]);
 });
 
+test("large lane view reads share their version and run one at a time per connection", async () => {
+    const payload = JSON.stringify({ text: "\n".repeat(63_000) });
+    assert.ok(Buffer.byteLength(payload) < 128 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(Array(7).fill(payload))) > 1024 * 1024);
+    const active: Array<{ version: string; resolve: (state: string) => void }> = [];
+    const rpc = new WorkspaceRpc({ request: (method: string, { version }: { version: string }) => {
+        assert.equal(method, "projectPresentation.getLaneView");
+        return new Promise<string>((resolve) => { active.push({ version, resolve }); });
+    } } as unknown as JsonRpcSocketClient);
+    const versions = Array.from({ length: 7 }, (_, index) => String(index + 1));
+    const pending = versions.map((version) => rpc.getLaneView(version));
+    assert.equal(rpc.getLaneView("1"), pending[0]);
+    for (const version of versions) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(active.map((read) => read.version), [version]);
+        active.shift()!.resolve(payload);
+    }
+    assert.deepEqual(await Promise.all(pending), versions.map(() => payload));
+});
+
 test("manual control gestures survive revision changes while standalone edits check their revision", async () => {
     const calls: unknown[] = [];
     let revision = 1;

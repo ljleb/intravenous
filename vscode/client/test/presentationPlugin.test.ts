@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../src/presentationTimelineGrid";
-import { laneViewFromKey, presentationStateKey, readGraphViewState } from "../src/graphScope";
+import { WorkspaceRpc } from "../src/workspaceRpc";
+import type { JsonRpcSocketClient } from "../src/rpcClient";
 import { SetBeatGrid } from "../src/generated/beatsEvents";
 import { PlacePoint } from "../src/generated/automationEvents";
 import { serializeNodeEvent } from "../src/nodeEvents";
@@ -486,6 +487,14 @@ test("presentation saves use the ABI's UTF-8 byte limit", () => {
     assert.throws(() => readPresentationFrame({ saveRequest: "[]" }), /Invalid presentation save payload/);
 });
 
+test("presentation saves reject lone surrogates in nested values and keys", () => {
+    for (const saveRequest of [String.raw`{"values":[{"emoji":"\ud83d"}]}`, String.raw`{"\ude00":"missing high surrogate"}`]) {
+        assert.throws(() => readPresentationFrame({ saveRequest }), /Invalid Unicode in presentation save/);
+    }
+    const saveRequest = String.raw`{"\ud83d\ude00":["\ud83d\ude00","😀"]}`;
+    assert.equal(readPresentationFrame({ saveRequest }).saveRequest, saveRequest);
+});
+
 test("a discarded Marker save is rolled back in the live worker and on restart or replacement", async () => {
     const presentation = new ReloadableWasmPresentation(createNodePresentationWorker, (error) => { if (error) throw error; });
     let view = snapshot;
@@ -550,14 +559,11 @@ test("a discarded Marker save is rolled back in the live worker and on restart o
 });
 
 test("a remounted WASM lane restores the original compact JSON and its negative zero", async () => {
-    const address = { instanceId: "marker" };
-    const key = presentationStateKey(address, "marker");
     const state = `{"position":-0,"values":[${"1e10,".repeat(19999)}1e10]}`;
     assert.ok(Buffer.byteLength(state) <= maxPresentationStateBytes);
     assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(state))) > maxPresentationStateBytes);
-    const laneView = laneViewFromKey(key, state);
-    const reopened = JSON.parse(JSON.stringify({ laneOrder: [], laneViews: [laneView], timelineSnapMemory: {} }));
-    const restored = readGraphViewState(reopened).presentationStates[key];
+    const rpc = new WorkspaceRpc({ request: async () => JSON.parse(JSON.stringify(state)) } as unknown as JsonRpcSocketClient);
+    const restored = await rpc.getLaneView("1");
     assert.equal(restored, state);
     const worker = createNodePresentationWorker(moduleBytes);
     try {

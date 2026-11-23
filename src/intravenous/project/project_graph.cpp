@@ -3952,6 +3952,13 @@ void append_source_scope_connections(ProjectGraphScope& scope,
 }
 } // namespace
 
+void ProjectGraph::handle_socket_rpc_get_project_lane_view(GetProjectLaneViewRequest const& request, std::optional<std::string>& state)
+{
+    std::scoped_lock lock(mutex_);
+    auto const view = std::ranges::find(presentation_.lane_views, request.version, &ProjectLaneView::version);
+    if (view != presentation_.lane_views.end()) state = view->state_json();
+}
+
 void ProjectGraph::handle_socket_rpc_get_graph_scope(
     GetGraphScopeRequest const& request,
     SocketRpcGraphScopeResultBuilder& builder)
@@ -3973,7 +3980,12 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         }
 
         ProjectGraphScope scope;
-        scope.presentation = presentation_;
+        scope.presentation.lane_order = presentation_.lane_order;
+        scope.presentation.lane_parents = presentation_.lane_parents;
+        scope.presentation.timeline_snap_memory_json = presentation_.timeline_snap_memory_json;
+        scope.presentation.lane_views.reserve(presentation_.lane_views.size());
+        for (auto const& view : presentation_.lane_views)
+            scope.presentation.lane_views.push_back({view.id, view.version()});
         auto const generation = current_generation_;
         if (generation && generation->graph) {
             std::unordered_set<NodeAddress, ProjectRecordKeyHash> seen;

@@ -597,8 +597,10 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
         unavailable_lane_parents.push_back(node_address_json(address, names));
     for (auto const& address : result->presentation.lane_order)
         lane_order.push_back(node_address_json(address, names));
-    for (auto const& view : result->presentation.lane_views)
-        lane_views.push_back(project_lane_view_json(view, names));
+    for (auto const& view : result->presentation.lane_views) {
+        lane_views.push_back({{"address", node_address_json(view.id.address, names)},
+            {"presentationId", view.id.presentation_id}, {"version", std::to_string(view.version)}});
+    }
     return jsonrpc_result(request_id, Json{
         {"generation", result->generation ? Json(*result->generation) : Json(nullptr)},
         {"sampleRate", result->sample_rate ? Json(*result->sample_rate) : Json(nullptr)},

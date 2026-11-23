@@ -298,6 +298,14 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         }
         return parsed(std::move(query));
     }
+    if (method == "projectPresentation.getLaneView") {
+        auto const version_text = parse_string_param(params, "version");
+        std::uint64_t version = 0;
+        auto const end = version_text.data() + version_text.size();
+        auto const [ptr, error] = std::from_chars(version_text.data(), end, version);
+        if (error != std::errc{} || ptr != end || version == 0) throw std::invalid_argument("invalid lane view version");
+        return parsed(GetProjectLaneViewRequest{version});
+    }
     if (method == "nodeDefinitions.search") {
         auto const& params = parse_request_params(request);
         auto source = parse_string_param(params, "source");

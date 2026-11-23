@@ -77,6 +77,18 @@ struct ProjectGraphChildScope {
     bool has_boundary = false;
 };
 
+struct ProjectLaneViewReference {
+    ProjectLaneViewId id{};
+    std::uint64_t version = 0;
+};
+
+struct ProjectGraphScopePresentation {
+    std::vector<NodeAddress> lane_order{};
+    std::vector<ProjectLaneParent> lane_parents{};
+    std::vector<ProjectLaneViewReference> lane_views{};
+    std::string timeline_snap_memory_json{"{}"};
+};
+
 // The project root, its requested child scopes, and their connections share
 // one configured graph and project revision.
 struct ProjectGraphScope {
@@ -95,6 +107,6 @@ struct ProjectGraphScope {
     std::vector<ProjectGraphScopeConnection> connections{};
     std::vector<NodeAddress> timeline_nodes{};
     std::vector<NodeAddress> unavailable_lane_parents{};
-    ProjectPresentation presentation{};
+    ProjectGraphScopePresentation presentation{};
 };
 } // namespace iv

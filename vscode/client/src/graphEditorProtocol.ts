@@ -36,6 +36,7 @@ export type GraphPresentationPatch = {
 
 export type GraphEditorState = {
     sessionStatus: LiveGraphSessionStatus;
+    connectionNumber?: number;
     scope: GraphScope | null;
     definitions: NodeDefinitionCatalog | null;
     definitionUsage: Readonly<Record<string, number>>;
@@ -48,7 +49,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "playbackUpdate"; snapshot: PlaybackSnapshot | null; requestedPosition: string | null;
         releasedDragPosition: string | null; dragReleaseId?: string }
     | ObservationResponse
-    | { type: "observationVisibility"; visible: boolean }
+    | { type: "graphVisibility"; visible: boolean }
     | { type: "observationUpdate"; update: ObservationDelivery; sequence: number; previousSequence?: number }
     | { type: "startObservationProfile"; durationMs: number }
     | { type: "startClientInteractionTrace"; traceId: string; durationMs: number }
@@ -62,6 +63,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
     | { type: "graphPresentationAccepted"; requestId: number; revision?: number }
+    | { type: "laneViewState"; requestId: number; version: string; state: string | null }
     | { type: "interruptProjectHistory"; requestId: number }
     | { type: "projectHistoryFinished"; requestId: number }
     | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
@@ -88,6 +90,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "projectHistoryInterrupted"; requestId: number }
+    | { type: "readLaneView"; requestId: number; version: string }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "openSymbolicNodeSource"; nodeKey: string }
     | { type: "flushProjectAutosave" }

@@ -133,6 +133,20 @@ export class WorkspaceRpc {
         } : {});
     }
 
+    private laneViewRead = Promise.resolve();
+    private readonly pendingLaneViewReads = new Map<string, Promise<string | null>>();
+
+    getLaneView(version: string): Promise<string | null> {
+        const existing = this.pendingLaneViewReads.get(version);
+        if (existing) return existing;
+        // Keep one payload response in flight on this connection.
+        const read = this.laneViewRead.then(() => this.client.request<string | null>("projectPresentation.getLaneView", { version }))
+            .finally(() => this.pendingLaneViewReads.delete(version));
+        this.pendingLaneViewReads.set(version, read);
+        this.laneViewRead = read.then(() => {}, () => {});
+        return read;
+    }
+
     getNodeEventProtocol(): Promise<NodeEventProtocol> {
         return this.client.request("nodeMessages.getProtocol", {});
     }

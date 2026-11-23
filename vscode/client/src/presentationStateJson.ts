@@ -4,6 +4,7 @@ export type PresentationStateValue = { [name: string]: JsonValue } | null;
 export type SerializedPresentationState = string | null;
 export const maxPresentationStateBytes = 128 * 1024;
 const encoder = new TextEncoder();
+const unpairedSurrogate = /[\uD800-\uDFFF]/u;
 
 export function parsePresentationState(state: SerializedPresentationState): PresentationStateValue {
     return state === null ? null : JSON.parse(state);
@@ -20,7 +21,13 @@ export function readPresentationSave(value: unknown): SerializedPresentationStat
     while (pending.length) {
         const entry = pending.pop();
         if (typeof entry === "number" && !Number.isFinite(entry)) throw new Error("Invalid presentation save number");
-        if (entry && typeof entry === "object") for (const item of Object.values(entry)) pending.push(item);
+        if (typeof entry === "string" && unpairedSurrogate.test(entry)) throw new Error("Invalid Unicode in presentation save");
+        if (entry && typeof entry === "object") {
+            for (const [key, item] of Object.entries(entry)) {
+                if (unpairedSurrogate.test(key)) throw new Error("Invalid Unicode in presentation save key");
+                pending.push(item);
+            }
+        }
     }
     return value;
 }

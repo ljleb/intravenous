@@ -67,23 +67,23 @@ test("zoom keeps the graph point under the cursor fixed, including at zoom limit
     }
 });
 
-test("project presentation preserves lane addresses and local values independently of navigation", () => {
+test("project presentation preserves lane addresses and layout independently of navigation", () => {
     const address = { instanceId: "source", path: [{ kind: "tiledChild" as const, name: "left" }] };
     const state = '{"pan":-4,"zoom":{"factor":2,"center":2.5e-1}}';
-    const presentation = { laneOrder: [address], laneViews: [{ address, presentationId: "curve", state }],
+    const presentationId = "curve";
+    const presentation = { laneOrder: [address], laneViews: [{ address, presentationId, version: "9" }],
         laneParents: [{ instanceId: "modulation", parent: address }], timelineSnapMemory: {} };
     const view = readGraphViewState(presentation);
     assert.deepEqual(view.laneOrder.map(addressFromKey), [address]);
-    const key = presentationStateKey(address, "curve");
-    assert.deepEqual(view.presentationStates, { [key]: state });
+    const key = presentationStateKey(address, presentationId);
     assert.deepEqual(view.laneParents, { [addressKey({ instanceId: "modulation" })]: addressKey(address) });
-    assert.deepEqual(laneViewFromKey(key, view.presentationStates[key]), presentation.laneViews[0]);
+    assert.deepEqual(laneViewFromKey(key, state), { address, presentationId, state });
     assert.deepEqual(laneViewFromKey(key, null), { address, presentationId: "curve", state: null });
     const layout = newGraphLayout();
     assert.deepEqual(layout.positions, {});
     assert.deepEqual(layout.viewport, { x: 40, y: 40, scale: 1 });
     assert.equal(layout.timeline.scrollTop, 0);
-    assert.deepEqual(Object.keys(view).sort(), ["laneOrder", "laneParents", "presentationStates"]);
+    assert.deepEqual(Object.keys(view).sort(), ["laneOrder", "laneParents"]);
 });
 
 test("scope port resolution respects kind, direction, all-port matchers, and nested selectors", () => {

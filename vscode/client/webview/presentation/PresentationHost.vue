@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from "vue";
+import { computed, ref, toRef, watch, watchEffect } from "vue";
 
 import { effectiveDisplayMode, type NodeDisplayMode, type NodeViewChoice } from "./displayMode";
 import { provideNode } from "./nodeContext";
@@ -49,15 +49,17 @@ const editor = useOptionalGraphEditor();
 const stateKey = computed(() => props.node.address ? presentationStateKey(props.node.address, selection.value.presentationId) : null);
 providePresentationState(({ serialize, restore }) => {
     const key = stateKey.value;
-    restore(editor && key !== null ? editor.readPresentationState(key) : undefined);
-    if (!editor || key === null) return () => {};
-    watch(() => editor.readPresentationState(key), (state) => {
-        if ((state ?? null) !== serialize()) restore(state);
+    const ready = ref(false);
+    watchEffect(() => {
+        const state = editor && key !== null ? editor.requestPresentationState(key) : null;
+        if (state !== undefined && (!ready.value || state !== serialize())) restore(state);
+        ready.value = state !== undefined;
     });
-    return (saveNow = true) => {
+    return { ready, save: (saveNow = true) => {
+        if (!editor || key === null) return;
         editor.presentationStateChanged(key, serialize());
         if (saveNow) editor.save();
-    };
+    } };
 });
 
 const root = ref<HTMLElement | null>(null);
