@@ -88,6 +88,48 @@ TEST(GraphJitBundleMigration, AReusedMembershipDoesNotDuplicateAnInheritedIdenti
     EXPECT_NE(next[0], next[1]);
 }
 
+TEST(GraphJitBundleMigration, ReusedInvocationsKeepImplicitBundlesWhenTheirRootHandlesMove)
+{
+    auto before = graph_with_ordered_memberships({{}, {"voice"}, {}, {}});
+    before.project_invocations = {{{.instance_id = "saw"}, {0, 2, 1, 1}}, {{.instance_id = "curve"}, {2, 2, 1, 2}}};
+    auto after = graph_with_ordered_memberships({{}, {}, {}, {"voice"}, {}, {}});
+    after.project_invocations = {
+        {{.instance_id = "curve"}, {0, 2, 2, 3}},
+        {{.instance_id = "saw"}, {2, 2, 1, 1}},
+        {{.instance_id = "otherSaw"}, {4, 2, 2, 1}},
+    };
+    auto const prior = iv::graph_jit::assign_bundle_migration_identities(before, {1, 4});
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(after, {2, 6}, &before, &prior);
+    ASSERT_TRUE(prior[0]);
+    ASSERT_TRUE(prior[1]);
+    EXPECT_EQ(next[2], prior[0]);
+    EXPECT_EQ(next[3], prior[1]);
+    EXPECT_NE(next[0], prior[2]);
+    EXPECT_NE(next[1], prior[3]);
+    EXPECT_NE(next[4], next[2]);
+    EXPECT_NE(next[5], next[3]);
+}
+
+TEST(GraphJitBundleMigration, ReusedSiblingKeepsItsImplicitBundlesWhenTheParentIsRebuilt)
+{
+    iv::NodeAddress const parent{.instance_id = "rack"};
+    iv::NodeAddress const sibling{.instance_id = "rack", .path = {
+        iv::ProjectSymbolicNodeSelector{.source_identity = "sibling"},
+        iv::ProjectSymbolicMemberSelector{.index = 0},
+    }};
+    auto before = graph_with_ordered_memberships({{}, {}, {}, {}});
+    before.project_invocations = {{parent, {0, 4, 1, 1}}, {sibling, {2, 2, 1, 2}}};
+    auto after = graph_with_ordered_memberships({{}, {}, {}, {}, {}});
+    after.project_invocations = {{parent, {0, 5, 2, 3}}, {sibling, {3, 2, 1, 2}}};
+
+    auto const prior = iv::graph_jit::assign_bundle_migration_identities(before, {1, 4});
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(after, {2, 5}, &before, &prior);
+    ASSERT_TRUE(prior[2] && prior[3]);
+    EXPECT_NE(next[0], prior[0]);
+    EXPECT_EQ(next[3], prior[2]);
+    EXPECT_EQ(next[4], prior[3]);
+}
+
 std::vector<std::byte> sample_value_bytes(iv::Sample value)
 {
     std::vector<std::byte> result(sizeof(value));

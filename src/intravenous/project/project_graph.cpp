@@ -1811,9 +1811,44 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     generation->definitions_generation = definitions_generation;
     generation->definitions = definitions;
     generation->placements = std::move(request.result.placements);
+    static std::atomic<std::uint64_t> next_configured_bundle_snapshot{1};
+    generation->configured_bundles = {
+        .snapshot = next_configured_bundle_snapshot.fetch_add(1, std::memory_order_relaxed),
+        .size = finished_graph.node_bundles.size(),
+    };
+    auto const* previous_graph = current_generation_ ? current_generation_->graph.get() : nullptr;
+    auto record_invocation = [&](auto const& self, NodeAddress& address,
+        ConfiguredNodeInstance const& configured, NodeBundleHandle first) -> void {
+        if (configured.graph) {
+            auto birth_snapshot = generation->configured_bundles.snapshot;
+            if (previous_graph) {
+                auto const& invocations = previous_graph->project_invocations;
+                auto const previous = invocations.find(address);
+                if (previous != invocations.end()
+                    && previous->second.frozen_invocation_id == configured.frozen_invocation_id)
+                    birth_snapshot = previous->second.birth_snapshot;
+            }
+            finished_graph.project_invocations.emplace(address, ConfiguredInvocationBundles{
+                .first = first,
+                // The frozen copy has a synthetic boundary at local handle 0.
+                .count = configured.graph->node_bundles.size() - 1,
+                .birth_snapshot = birth_snapshot,
+                .frozen_invocation_id = configured.frozen_invocation_id,
+            });
+        }
+        for (auto const& child : configured.dependencies) {
+            auto const parent_path_size = address.path.size();
+            address.path.insert(address.path.end(), child.relative_path.begin(), child.relative_path.end());
+            self(self, address, *child.configured, first + child.bundle_offset);
+            address.path.resize(parent_path_size);
+        }
+    };
     for (auto const& [instance_id, placement] : generation->placements) {
         if (finished_graph.node_bundles.bundle(placement.root).is_concrete())
             finished_graph.project_leaf_instances.emplace(placement.root, instance_id);
+        if (!placement.configured) continue;
+        NodeAddress address{.instance_id = instance_id};
+        record_invocation(record_invocation, address, *placement.configured, placement.first_bundle);
     }
     generation->source_sample_connection_count = connections_request.result.source_sample_count;
     generation->source_event_connection_count = connections_request.result.source_event_count;
@@ -1873,11 +1908,6 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     }
     generation->graph = std::make_shared<ConfiguredGraph const>(
         std::move(finished_graph));
-    static std::atomic<std::uint64_t> next_configured_bundle_snapshot{1};
-    generation->configured_bundles = {
-        .snapshot = next_configured_bundle_snapshot.fetch_add(1, std::memory_order_relaxed),
-        .size = generation->graph->node_bundles.size(),
-    };
     for (auto const& [instance_id, placement] : generation->placements) {
         if (!placement.configured) continue;
         for (auto const& handler : placement.configured->message_handlers) {

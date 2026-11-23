@@ -6,11 +6,23 @@
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/builder/public_ports.hpp>
 #include <intravenous/graph/builder/symbolic_nodes.hpp>
+#include <intravenous/node/address.h>
 #include <intravenous/node/manual_control.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <map>
 #include <unordered_map>
 
 namespace iv {
+
+struct ConfiguredInvocationBundles {
+  NodeBundleHandle first = 0;
+  std::size_t count = 0;
+  // Retained while this project instance reuses the same frozen invocation.
+  std::uint64_t birth_snapshot = 0;
+  std::uint64_t frozen_invocation_id = 0;
+};
 
 // The lossless configuration representation. Lowering never reaches back into
 // GraphBuilder after this value is finished.
@@ -28,6 +40,7 @@ struct ConfiguredGraph {
   // ProjectGraph supplies authored instance IDs for top-level concrete leaves.
   // Package configuration snapshots have no project placements.
   std::unordered_map<NodeBundleHandle, std::string> project_leaf_instances{};
+  std::map<NodeAddress, ConfiguredInvocationBundles> project_invocations{};
 };
 
 } // namespace iv

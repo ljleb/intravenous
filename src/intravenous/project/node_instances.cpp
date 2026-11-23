@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <concepts>
 #include <new>
 #include <ranges>
@@ -295,15 +296,25 @@ struct NodeInstances::ConfigurationContext {
     // only anchors replacement lookup and nested addresses.
     struct SemanticScope {
         NodeAddress address{};
+        NodeBundleHandle first_bundle = 0;
+        std::vector<ConfiguredNodeDependency>* dependencies = nullptr;
     };
 
     NodeInstances* owner = nullptr;
     std::shared_ptr<NodeDefinitionsSnapshot const> snapshot{};
     std::vector<ProjectNodeReplacement> replacements{};
     std::vector<std::string> stack{};
-    std::vector<std::vector<std::shared_ptr<ConfiguredNodeInstance const>>*>
-        dependency_frames{};
     std::vector<SemanticScope> semantic_scopes{};
+
+    void remember_dependency(std::span<ProjectNodePathSelector const> path, RealizedInvocation const& invocation)
+    {
+        auto const& parent = semantic_scopes.back();
+        parent.dependencies->push_back({
+            .relative_path = {path.begin(), path.end()},
+            .bundle_offset = invocation.first_bundle - parent.first_bundle,
+            .configured = invocation.configured,
+        });
+    }
 };
 
 NodeInstances::NodeInstances()
@@ -784,13 +795,14 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
         return {};
     };
     auto* const session = builder._builder_session();
+    auto const first_bundle = details::builder_session_state(session).node_bundles().size();
     if (auto cached = find_cached()) {
         // A hit substitutes the frozen contents of an equivalent earlier
         // construction directly into the current scope.
         auto const root = details::import_builder_invocation(
             session, *cached->configured->graph, cached->configured->local_root,
             qualifier);
-        return {.root = root, .configured = cached->configured};
+        return {.root = root, .configured = cached->configured, .first_bundle = first_bundle};
     }
 
     std::shared_ptr<RetainedConfigurationArguments> pristine_arguments;
@@ -832,15 +844,11 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
         invocation_arguments.push_back(argument_lifetime->values.back().argument());
     }
 
-    std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies;
-    context.dependency_frames.push_back(&dependencies);
-    struct DependencyFrameGuard {
-        ConfigurationContext& context;
-        ~DependencyFrameGuard() { context.dependency_frames.pop_back(); }
-    } dependency_frame_guard{context};
-
+    std::vector<ConfiguredNodeDependency> dependencies;
     context.semantic_scopes.push_back(ConfigurationContext::SemanticScope{
         .address = address,
+        .first_bundle = first_bundle,
+        .dependencies = &dependencies,
     });
     struct SemanticScopeGuard {
         ConfigurationContext& context;
@@ -860,11 +868,14 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
     auto finished = details::finish_builder_invocation(
         session, invocation, root, qualifier, cacheable);
 
+    static std::atomic<std::uint64_t> next_frozen_invocation{1};
     auto configured = std::make_shared<ConfiguredNodeInstance const>(ConfiguredNodeInstance{
         .definition_id = definition.definition_id,
         .definitions_generation = context.snapshot->generation,
         .definition_version = definition.version,
         .local_root = finished.snapshot_root,
+        .frozen_invocation_id = finished.snapshot
+            ? next_frozen_invocation.fetch_add(1, std::memory_order_relaxed) : 0,
         .definitions = context.snapshot,
         .configuration_lifetime = std::move(argument_lifetime),
         .dependencies = std::move(dependencies),
@@ -873,27 +884,25 @@ NodeInstances::RealizedInvocation NodeInstances::configure_cached(
         .read_construction_arguments = std::move(read_construction_arguments),
     });
 
-    if (cacheable && configured->graph) {
+    // Equality/hash callbacks belong to package code and may execute user
+    // operators. Never invoke them while holding the app-module mutex.
+    if (cacheable && configured->graph && !find_cached()) {
         auto entry = std::make_shared<CacheEntry>();
         entry->configured = configured;
         entry->tiled_layout = tiled_layout;
         entry->argument_hash = argument_hash;
         entry->key_arguments = std::move(pristine_arguments);
         entry->subtree_replacements = std::move(subtree_replacements);
-        // Equality/hash callbacks belong to package code and may execute user
-        // operators. Never invoke them while holding the app-module mutex.
-        if (!find_cached()) {
-            std::scoped_lock lock(mutex_);
-            // A newer definitions publication may have invalidated the cache
-            // while this older batch was still evaluating. Let the batch finish
-            // against its pinned snapshot, but do not resurrect an invalidated
-            // generation.
-            if (context.snapshot->generation >= minimum_cache_generation_) {
-                configuration_cache_.push_back(std::move(entry));
-            }
+        std::scoped_lock lock(mutex_);
+        // A newer definitions publication may have invalidated the cache
+        // while this older batch was still evaluating. Let the batch finish
+        // against its pinned snapshot, but do not resurrect an invalidated
+        // generation.
+        if (context.snapshot->generation >= minimum_cache_generation_) {
+            configuration_cache_.push_back(std::move(entry));
         }
     }
-    return {.root = root, .configured = std::move(configured)};
+    return {.root = root, .configured = std::move(configured), .first_bundle = first_bundle};
 }
 
 std::optional<NodeBundleHandle>
@@ -955,9 +964,7 @@ NodeInstances::resolve_builder_concrete_node_replacement(
         builder,
         relative_path,
         realized.configured->message_handlers);
-    if (!context.dependency_frames.empty()) {
-        context.dependency_frames.back()->push_back(realized.configured);
-    }
+    context.remember_dependency(relative_path, realized);
     return realized.root;
 }
 
@@ -1035,9 +1042,7 @@ NodeRef NodeInstances::resolve_builder_definition(
         builder,
         relative_path,
         realized.configured->message_handlers);
-    if (!context.dependency_frames.empty()) {
-        context.dependency_frames.back()->push_back(realized.configured);
-    }
+    context.remember_dependency(relative_path, realized);
     NodeRef result(builder, realized.root);
     // A captured NodeRef addresses its declaration and member relative to the
     // module that made the call.
@@ -1287,6 +1292,7 @@ NodeInstancesBatchResult NodeInstances::configure_and_embed(
             result.placements.emplace(request.instance_id, NodeInstancePlacement{
                 .configured = std::move(realized.configured),
                 .root = realized.root,
+                .first_bundle = realized.first_bundle,
             });
         } catch (...) {
             details::record_builder_failure(
@@ -1585,6 +1591,7 @@ void NodeInstances::apply_project_graph_transaction(
     if (request.capture_effect && !request.validate_only) {
         request.before = {desired_instances(), desired_node_replacements()};
     }
+    std::optional<std::vector<ProjectNodeReplacement>> preview_replacements;
     std::visit(
         [&](auto const& mutation) {
             using Mutation = std::remove_cvref_t<decltype(mutation)>;
@@ -1809,44 +1816,8 @@ void NodeInstances::apply_project_graph_transaction(
                     changes.instances_list_changed = true;
                 }
                 if (list_changed) changes.instance_declarations_changed = true;
-            } else if constexpr (std::same_as<
-                                     Mutation,
-                                     NodeReplacementPreviewMutation>) {
-                std::vector<NodeAddress> addresses;
-                addresses.reserve(mutation.replacements.size());
-                for (auto const& replacement : mutation.replacements) {
-                    if (replacement.address.instance_id.empty()
-                        || replacement.definition_id.empty()) {
-                        throw std::invalid_argument(
-                            "node replacement preview has an incomplete replacement");
-                    }
-                    if (!request.snapshot->by_id.contains(
-                            replacement.definition_id)) {
-                        throw std::runtime_error(
-                            "node replacement definition is not loaded: "
-                            + replacement.definition_id);
-                    }
-                    (void)canonical_replacement_arguments(
-                        replacement.configuration_arguments_json);
-                    if (std::ranges::contains(
-                            addresses, replacement.address)) {
-                        throw std::invalid_argument(
-                            "node replacement preview contains a duplicate address");
-                    }
-                    addresses.push_back(replacement.address);
-                }
-                std::scoped_lock lock(mutex_);
-                for (auto const& replacement : mutation.replacements) {
-                    if (!desired_instances_by_id_.contains(
-                            replacement.address.instance_id)) {
-                        throw std::runtime_error(
-                            "node replacement addresses an unknown project instance: "
-                            + replacement.address.instance_id);
-                    }
-                }
-            } else if constexpr (std::same_as<
-                                     Mutation,
-                                     NodeReplacementsReplaceMutation>) {
+            } else if constexpr (std::same_as<Mutation, NodeReplacementPreviewMutation>
+                                 || std::same_as<Mutation, NodeReplacementsReplaceMutation>) {
                 auto replacements = mutation.replacements;
                 std::vector<NodeAddress> addresses;
                 addresses.reserve(replacements.size());
@@ -1887,10 +1858,14 @@ void NodeInstances::apply_project_graph_transaction(
                                 + replacement.address.instance_id);
                         }
                     }
-                    if (desired_node_replacements_ != replacements) {
-                        desired_node_replacements_ = std::move(replacements);
+                    if constexpr (std::same_as<Mutation, NodeReplacementPreviewMutation>) {
+                        preview_replacements = std::move(replacements);
+                    } else {
+                        if (desired_node_replacements_ != replacements) {
+                            desired_node_replacements_ = std::move(replacements);
+                        }
+                        required_diff = rebuild_required_definitions_locked();
                     }
-                    required_diff = rebuild_required_definitions_locked();
                 }
                 if (!required_diff.created.empty()
                     || !required_diff.updated.empty()
@@ -1909,9 +1884,8 @@ void NodeInstances::apply_project_graph_transaction(
     }
 
     std::vector<ProjectNodeReplacement> replacements_for_realization;
-    if (auto const* preview = std::get_if<NodeReplacementPreviewMutation>(
-            &request.mutation)) {
-        replacements_for_realization = preview->replacements;
+    if (preview_replacements) {
+        replacements_for_realization = std::move(*preview_replacements);
     } else {
         std::scoped_lock lock(mutex_);
         replacements_for_realization = desired_node_replacements_;

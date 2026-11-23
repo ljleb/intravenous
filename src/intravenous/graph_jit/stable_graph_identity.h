@@ -25,8 +25,8 @@ struct ConfiguredBundleInventory {
 };
 
 // An authored identity names a project leaf instance or a symbolic node and
-// direct member. Anonymous concrete nodes have a bundle coordinate only within
-// one configured snapshot.
+// direct member. Anonymous concrete nodes start with a snapshot-local bundle
+// coordinate, which a reused frozen invocation can inherit in a later root.
 struct StableConcreteNodeId {
     std::string graph{};
     std::string symbolic_node{};

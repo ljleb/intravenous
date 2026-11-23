@@ -152,16 +152,49 @@ BundleMigrationIdentities assign_bundle_migration_identities(
     ConfiguredGraph const& graph, ConfiguredBundleInventory inventory,
     ConfiguredGraph const* predecessor, BundleMigrationIdentities const* predecessor_identities)
 {
-    auto const memberships = ordered_memberships(graph);
+    auto memberships = ordered_memberships(graph);
     BundleMigrationIdentities result(memberships.size());
     std::unordered_set<std::string> occupied;
     if (predecessor && predecessor_identities && predecessor->identity.value == graph.identity.value) {
-        auto const matched = match_old_first(ordered_memberships(*predecessor), memberships);
+        auto old_memberships = ordered_memberships(*predecessor);
+        // A reused frozen invocation has one correspondence per local bundle,
+        // regardless of where the project builder placed it in either root.
+        NodeAddress const* matched_invocation = nullptr;
+        for (auto const& [address, current] : graph.project_invocations) {
+            // Address order visits parents before descendants. A matched
+            // parent already maps every bundle in those descendants.
+            if (matched_invocation && address.instance_id == matched_invocation->instance_id
+                && address.path.size() >= matched_invocation->path.size()
+                && std::equal(matched_invocation->path.begin(), matched_invocation->path.end(), address.path.begin()))
+                continue;
+            auto const found = predecessor->project_invocations.find(address);
+            if (found == predecessor->project_invocations.end()) continue;
+            auto const& previous = found->second;
+            if (!current.birth_snapshot || current.birth_snapshot != previous.birth_snapshot
+                || !current.frozen_invocation_id || current.frozen_invocation_id != previous.frozen_invocation_id
+                || current.count != previous.count
+                || current.first > result.size() || current.count > result.size() - current.first
+                || previous.first > old_memberships.size() || previous.count > old_memberships.size() - previous.first
+                || previous.first > predecessor_identities->size()
+                || previous.count > predecessor_identities->size() - previous.first)
+                continue;
+            matched_invocation = &address;
+            for (std::size_t local = 0; local < current.count; ++local) {
+                auto const old = previous.first + local;
+                auto const next = current.first + local;
+                if (auto const& identity = (*predecessor_identities)[old]) {
+                    result[next] = identity;
+                    old_memberships[old].clear();
+                    memberships[next].clear();
+                }
+            }
+        }
+        auto const matched = match_old_first(old_memberships, memberships);
         for (auto const& identity : *predecessor_identities)
             if (identity) occupied.insert(migration_identity_fields(*identity));
         for (NodeBundleHandle bundle = 0; bundle < result.size(); ++bundle) {
             auto const old = matched[bundle].bundle;
-            if (old < predecessor_identities->size()) result[bundle] = (*predecessor_identities)[old];
+            if (!result[bundle] && old < predecessor_identities->size()) result[bundle] = (*predecessor_identities)[old];
         }
     }
 

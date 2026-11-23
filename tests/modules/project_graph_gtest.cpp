@@ -238,6 +238,26 @@ void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
     graph.outputs("main"_P = input);
 }
 
+void configure_sibling_modules(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
+{
+    ++configure_calls;
+    int initial_value = 30;
+    // This fixture is compiled without source introspection.
+    ConfigurationArgument arguments[]{
+        {.data = &initial_value, .type = &int_identity, .is_rvalue = true},
+    };
+    iv::details::iv_builder_prepare_node_source_identity(
+        &graph, "project-graph-test:editable-child", "editable");
+    auto editable = iv::details::configure_package_definition(
+        graph, replacing_definition_id, arguments);
+    editable._annotate_source_info("project-graph-test:editable-child", source_file, 1, 2);
+    iv::details::iv_builder_prepare_node_source_identity(
+        &graph, "project-graph-test:untouched-child", "untouched");
+    auto untouched = graph.node<"iv.test.project_graph.receiver">();
+    untouched._annotate_source_info("project-graph-test:untouched-child", source_file, 3, 4);
+    graph.outputs();
+}
+
 template<class Module, class Event,
          void (Module::*Handler)(
              iv::ModuleMessageContext<Module>&, Event const&) const>
@@ -637,10 +657,11 @@ std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_snapshot(
 }
 
 std::shared_ptr<iv::NodeDefinitionsSnapshot const> make_replacement_snapshot(
-    std::uint64_t generation)
+    std::uint64_t generation,
+    iv::details::IvModuleConfigureFunction module_build = &configure_module)
 {
     auto snapshot = std::const_pointer_cast<iv::NodeDefinitionsSnapshot>(
-        make_snapshot(generation));
+        make_snapshot(generation, module_build));
     auto revision = std::const_pointer_cast<iv::PackageRevision>(
         snapshot->package_revisions.front());
     revision->provider_definitions.push_back(PackageDefinition{
@@ -1732,6 +1753,14 @@ TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArgum
         },
         create_builder); });
     ASSERT_EQ(create_builder.build(), "instance:replaceable");
+    iv::ProjectStringBuilder create_unrelated;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{
+            .instance_id = "instance:unrelated",
+            .definition_id = receiver_definition_id,
+        },
+        create_unrelated); });
+    ASSERT_EQ(create_unrelated.build(), "instance:unrelated");
     auto const before = project_graph.current_generation();
     ASSERT_TRUE(before);
 
@@ -1744,6 +1773,20 @@ TEST_F(ProjectGraphFixture, NodeMessageReplacementPersistsCompleteSuccessorArgum
     auto const replaced = project_graph.current_generation();
     ASSERT_TRUE(replaced);
     EXPECT_GT(replaced->configured_generation, before->configured_generation);
+    EXPECT_EQ(replaced->placements.at("instance:unrelated").configured,
+        before->placements.at("instance:unrelated").configured);
+    auto const& old_invocations = before->graph->project_invocations;
+    auto const& new_invocations = replaced->graph->project_invocations;
+    auto const unrelated_address = iv::NodeAddress{.instance_id = "instance:unrelated"};
+    auto const replaced_address = iv::NodeAddress{.instance_id = "instance:replaceable"};
+    auto const& reused = new_invocations.at(unrelated_address);
+    EXPECT_EQ(reused.birth_snapshot, old_invocations.at(unrelated_address).birth_snapshot);
+    auto const& placement = replaced->placements.at("instance:unrelated");
+    ASSERT_TRUE(placement.configured->graph);
+    EXPECT_EQ(reused.count, placement.configured->graph->node_bundles.size() - 1);
+    EXPECT_EQ(reused.first + placement.configured->local_root - 1, placement.root);
+    EXPECT_NE(new_invocations.at(replaced_address).birth_snapshot,
+        old_invocations.at(replaced_address).birth_snapshot);
     ASSERT_EQ(replaced->node_replacements.size(), 1u);
     EXPECT_EQ(
         replaced->node_replacements[0].definition_id,
@@ -1861,6 +1904,61 @@ TEST_F(ProjectGraphFixture, FailedReplacementPreviewDoesNotCommitReplacement)
     EXPECT_TRUE(project_graph.current_generation()->node_replacements.empty());
     EXPECT_TRUE(instances.desired_node_replacements().empty());
     EXPECT_EQ(successor_configure_calls.load(), 0);
+}
+
+TEST_F(ProjectGraphFixture, ReplacingANestedNodeKeepsItsFrozenSiblingAcrossParentRebuilds)
+{
+    publish_definitions_snapshot(project_graph, {
+        .snapshot = make_replacement_snapshot(1, &configure_sibling_modules),
+    });
+    iv::ProjectStringBuilder create_parent;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{.instance_id = "parent", .definition_id = definition_id},
+        create_parent); });
+    ASSERT_EQ(create_parent.build(), "parent");
+    auto const before = project_graph.current_generation();
+    ASSERT_TRUE(before && before->graph);
+    ASSERT_TRUE(before->placements.contains("parent"));
+    auto const& parent = before->placements.at("parent").configured;
+    ASSERT_EQ(parent->dependencies.size(), 2u);
+    ASSERT_EQ(parent->dependencies[0].configured->definition_id, replacing_definition_id);
+    ASSERT_EQ(parent->dependencies[1].configured->definition_id, receiver_definition_id);
+    iv::NodeAddress const parent_address{.instance_id = "parent"};
+    iv::NodeAddress const edited{.instance_id = "parent", .path = parent->dependencies[0].relative_path};
+    iv::NodeAddress const untouched{.instance_id = "parent", .path = parent->dependencies[1].relative_path};
+    auto const& original = before->graph->project_invocations;
+    ASSERT_TRUE(original.contains(parent_address) && original.contains(edited) && original.contains(untouched));
+    auto const original_parent_builds = configure_calls.load();
+
+    auto const result = in_event_source([&] { return project_graph.dispatch_node_message(
+        edited, iv::OwnedNodeMessage(ReplaceWithValue{.value = 37})); });
+    ASSERT_TRUE(result.project_state_changed);
+    ASSERT_TRUE(result.diagnostics.empty());
+    EXPECT_EQ(configure_calls.load(), original_parent_builds + 1);
+    auto const edited_generation = project_graph.current_generation();
+    ASSERT_TRUE(edited_generation && edited_generation->graph);
+    auto const& rebuilt = edited_generation->graph->project_invocations;
+    ASSERT_TRUE(rebuilt.contains(parent_address) && rebuilt.contains(edited) && rebuilt.contains(untouched));
+    EXPECT_NE(rebuilt.at(parent_address).birth_snapshot, original.at(parent_address).birth_snapshot);
+    EXPECT_NE(rebuilt.at(edited).birth_snapshot, original.at(edited).birth_snapshot);
+    EXPECT_EQ(rebuilt.at(untouched).birth_snapshot, original.at(untouched).birth_snapshot);
+    EXPECT_EQ(rebuilt.at(untouched).frozen_invocation_id, original.at(untouched).frozen_invocation_id);
+
+    iv::ProjectStringBuilder create_other;
+    in_event_source([&] { return project_graph.handle_project_create_node_instance(
+        iv::ProjectCreateNodeInstanceRequest{.instance_id = "other", .definition_id = receiver_definition_id},
+        create_other); });
+    ASSERT_EQ(create_other.build(), "other");
+    auto const reused_generation = project_graph.current_generation();
+    ASSERT_TRUE(reused_generation && reused_generation->graph);
+    auto const& reused = reused_generation->graph->project_invocations;
+    ASSERT_TRUE(reused.contains(untouched));
+    EXPECT_EQ(reused_generation->placements.at("parent").configured,
+        edited_generation->placements.at("parent").configured);
+    EXPECT_EQ(configure_calls.load(), original_parent_builds + 1);
+    EXPECT_EQ(reused.at(untouched).birth_snapshot, original.at(untouched).birth_snapshot);
+    auto const& placement = reused_generation->placements.at("parent");
+    EXPECT_EQ(reused.at(untouched).first, placement.first_bundle + placement.configured->dependencies[1].bundle_offset);
 }
 
 TEST_F(ProjectGraphFixture, ReplacementThenSendUsesTheSuccessorHandler)

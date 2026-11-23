@@ -482,9 +482,9 @@ cold metadata capable of reading that semantic window again during a later graph
 transition.
 
 Newly settled (2026-11-09, human co-author): observable state survives an edit exactly
-when its owner is identified in both graphs. A concrete node under no symbolic node has
-no identity, so none of its state survives, including compiler-owned storage that
-holds its outputs; it behaves like a node the edit adds. A `detach()` is a first-class
+when its owner is identified in both graphs. New anonymous concrete nodes start
+with fresh state, including the compiler-owned storage that holds their outputs.
+A `detach()` is a first-class
 structure, not a node. Its structures (delayed timelines, alignment rings) are
 identified by its producer port when that port has an identity; then also by its
 consumer port, when that port has an identity and the producer port is missing or does
@@ -495,10 +495,20 @@ Newly settled on 2026-11-21. Observation changes can require new storage for
 the same immutable configured graph. Within that snapshot, the original
 bundle coordinate identifies an anonymous concrete node. The compiler
 matches its State and port windows using this identity. Compiler-owned
-stages use the configured port they serve and their execution role. A
-bundle coordinate cannot preserve state across a change to the configured
-graph. If an observation cutover cannot preserve the required state, the
+stages use the configured port they serve and their execution role.
+If an observation cutover cannot preserve the required state, the
 executor keeps the active graph.
+
+Newly settled on 2026-11-23. When a project instance reuses the same frozen
+invocation in a rebuilt root, pair its bundles by invocation-local handle.
+This correspondence also applies to anonymous concrete nodes. Use the
+existing state and port compatibility checks for those pairs. A new invocation
+at the same project instance starts a separate lifetime for this matching rule.
+The same rule applies to nested invocations at their full `NodeAddress`.
+A rebuilt parent preserves the correspondence for each child whose frozen
+invocation it reuses. An imported parent carries its children's paths and
+bundle offsets with it.
+[Previous rule](historical/anonymous_port_state_before_frozen_invocation_reuse_2026-11-23.md)
 
 Connection analysis therefore emits one cold semantic-state requirement for every
 non-empty owned extent before storage selection:

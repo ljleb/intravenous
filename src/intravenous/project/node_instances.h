@@ -69,6 +69,16 @@ struct NodeConstructionArguments {
     std::optional<std::string> json{};
     std::string error{};
 };
+
+struct ConfiguredNodeInstance;
+struct ConfiguredNodeDependency {
+    // Paths and offsets are relative to the parent invocation so they can
+    // be placed again when the parent is imported from its frozen graph.
+    std::vector<ProjectNodePathSelector> relative_path{};
+    NodeBundleHandle bundle_offset = 0;
+    std::shared_ptr<ConfiguredNodeInstance const> configured{};
+};
+
 // The record of one configured invocation: its definition provenance, the
 // lifetimes its live graph state depends on, and its message handlers. A
 // reusable invocation additionally carries a closed copy of its contents
@@ -78,6 +88,7 @@ struct ConfiguredNodeInstance {
     std::uint64_t definitions_generation = 0;
     std::uint64_t definition_version = 0;
     NodeBundleHandle local_root = 0;
+    std::uint64_t frozen_invocation_id = 0;
 
     // Ownership roots are declared before the objects that depend on them so
     // reverse member destruction keeps provider code and typed values alive
@@ -93,7 +104,7 @@ struct ConfiguredNodeInstance {
     // Nested configured results that were embedded while this graph was
     // evaluated. This is required even when a nested invocation is deliberately
     // not reusable because its value type has no safe equality/hash operation.
-    std::vector<std::shared_ptr<ConfiguredNodeInstance const>> dependencies{};
+    std::vector<ConfiguredNodeDependency> dependencies{};
     // Paths are relative to the invocation root, so a cached configured
     // result can be placed at any durable project NodeAddress without
     // capturing its first placement.
@@ -128,8 +139,8 @@ inline bool configured_definition_closure_matches(
             return false;
         }
         for (auto const& dependency : current->dependencies) {
-            if (!dependency) return false;
-            pending.push_back(dependency.get());
+            if (!dependency.configured) return false;
+            pending.push_back(dependency.configured.get());
         }
     }
     return true;
@@ -140,6 +151,8 @@ struct NodeInstancePlacement {
     std::shared_ptr<ConfiguredNodeInstance const> configured{};
     // The invocation's result in the root graph.
     NodeBundleHandle root = 0;
+    // Root-graph handle for local handle 1 of a frozen invocation.
+    NodeBundleHandle first_bundle = 0;
 };
 
 struct NodeInstanceDiagnostic {
@@ -344,6 +357,7 @@ private:
     struct RealizedInvocation {
         NodeBundleHandle root = 0;
         std::shared_ptr<ConfiguredNodeInstance const> configured{};
+        NodeBundleHandle first_bundle = 0;
     };
     // Realizes one registered call in `builder`'s session: a cache hit
     // imports the cached contents, a miss constructs in place.

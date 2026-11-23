@@ -135,6 +135,51 @@ signal, and system audio across activation. It also checks that device
 resolution completes before activation.
 See [Tick State across graph generations](./node_interaction_and_presentation_communication_direction.md#tick-state-across-graph-generations).
 
+## Disconnected Automation Curve edits
+
+Investigation recorded on 2026-11-23. The owner hears a click when moving
+a point on a disconnected Automation Curve. No output capture has been
+made for this edit.
+
+`AutomationCurve::replace_points` replaces the constructor invocation.
+`ProjectGraph::rebuild_locked` gives the rebuilt graph a fresh
+`ConfiguredBundleInventory::snapshot` and schedules execution preparation.
+This includes edits whose curve has no connection to the audio output.
+`NodeInstances::configure_cached` can reuse Saw's frozen invocation in
+the new root. The execution compiler receives the new root snapshot and
+bundle coordinates. It has no record linking those anonymous coordinates
+to Saw's reused invocation. `assign_bundle_migration_identities` therefore
+assigns fresh identities to those bundles, and the port-state transition
+can initialize their delayed pan-weight windows again. The earlier Saw
+capture shows what happens when those windows start at zero.
+
+One possible project change is to give the pan multipliers authored
+identities. That gives their windows a migration identity under the
+current rules. A runtime solution would carry the identity of a reused
+configured invocation, its project address, and its local-to-root bundle
+mapping into migration. Address matters because different instances can
+share the same cached invocation. This would require a decision about
+when an anonymous bundle retains state across different configured
+snapshots. The first regression should edit a disconnected node while
+checking every output sample at the execution cutover. A second case
+should replace the audio invocation itself and check the separate lifetime.
+
+The implementation now records each frozen project's invocation bundle range
+in `ConfiguredGraph::project_invocations`. `ProjectGraph::rebuild_locked`
+preserves the range's `birth_snapshot` when the same project instance keeps
+its `ConfiguredNodeInstance`. `assign_bundle_migration_identities` pairs the
+local handles before symbolic matching. The project-graph regression covers
+a node message replacement alongside an unrelated invocation. The migration
+regression covers shifted root handles and a new invocation lifetime. The
+native test run and a live audio capture are pending.
+
+Nested configuration now records each dependency's relative node path and
+bundle offset. The root rebuild publishes those ranges under their full
+`NodeAddress`. This lets migration preserve an unchanged child's concrete
+bundles when its parent rebuilds to replace a sibling. The project regression
+also imports the rebuilt parent again and checks the child's relocated bundle
+range and preserved state-transfer identity.
+
 ## Optional migration declaration
 
 An explicit Tick migration declaration is a possible later API change. A

@@ -439,7 +439,7 @@ TEST(NodeInstancesConfiguration, NestedCacheMissesUseOneSnapshotAndReuseChildVal
     ASSERT_EQ(result.placements.at("first").configured->dependencies.size(), 1u);
     EXPECT_EQ(
         result.placements.at("first").configured->dependencies.front()
-            ->definitions_generation,
+            .configured->definitions_generation,
         7u);
 }
 
