@@ -4,8 +4,17 @@ import { firstSignedSample, projectSampleRateFallback, signedTimelineSpans, time
     timelineSamples, type PresentationTime } from "./timelineSamples";
 
 export type RulerTick = { key: number | string; x: number; label: string; sampleLabel?: string; minor?: boolean; seam?: boolean };
-export const rulerMarkerPoints = "-5.5,0 5.5,0 0,7";
+const rulerMarkerHalfWidth = 5.5;
+const rulerMarkerHeight = 7;
+export const rulerMarkerPoints = `${-rulerMarkerHalfWidth},0 ${rulerMarkerHalfWidth},0 0,${rulerMarkerHeight}`;
 export const timelineSnapRadiusPx = 6;
+
+export function rulerPlayheadPath(height: number): string {
+    const stemHalfWidth = 0.5;
+    const join = rulerMarkerHeight * (1 - stemHalfWidth / rulerMarkerHalfWidth);
+    const bottom = Math.max(height, rulerMarkerHeight);
+    return `M${-rulerMarkerHalfWidth} 0 H${rulerMarkerHalfWidth} L${stemHalfWidth} ${join} V${bottom} H${-stemHalfWidth} V${join} Z`;
+}
 
 function tickStep(target: number) {
     const exponent = Math.floor(Math.log10(target));

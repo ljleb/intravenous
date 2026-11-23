@@ -15,7 +15,7 @@ import { usePlayheadSeek, type SeekBeatReader } from "./usePlayheadSeek";
 const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[];
     beatLabels?: readonly BeatRulerLabel[];
     beatStrengths?: ReadonlyMap<number, number>; playback?: boolean; openBeatReader?: () => SeekBeatReader | undefined }>();
-const { state, requestedPosition, dragPreview } = usePlayback();
+const { state, backgroundPlayhead, requestedPosition, dragPreview } = usePlayback();
 const root = ref<HTMLElement | null>(null);
 const size = usePresentationSize(root);
 const width = computed(() => size.value?.width ?? 0);
@@ -29,10 +29,9 @@ const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : un
 const markerPosition = (selected: bigint | null) => selected === null ? -1
     : timelineSampleFraction(selected, props.window) * width.value;
 const displayedStart = computed(() => dragPreview.value?.toString() ?? state.value?.startPosition);
-const startMarker = computed(() => {
-    const start = displayedStart.value;
-    return markerPosition(start === undefined ? null : BigInt(start));
-});
+const startPosition = computed(() => displayedStart.value === undefined ? null : BigInt(displayedStart.value));
+const startMarker = computed(() => markerPosition(startPosition.value));
+const startAtBackground = computed(() => startPosition.value !== null && startPosition.value === backgroundPlayhead.value);
 const startLabel = computed(() => `Selected start at sample ${displayedStart.value}`);
 const requestedMarker = computed(() => markerPosition(dragPreview.value === null ? requestedPosition.value : null));
 </script>
@@ -49,13 +48,14 @@ const requestedMarker = computed(() => markerPosition(dragPreview.value === null
             <text v-for="label in showBeats ? beatLabels : []" :key="label.key ?? label.text" class="beat-label"
                 :x="label.x + 4" y="11">{{ label.text }}</text>
 
-            <TimelinePlayhead v-if="playback" :window="window" ruler />
             <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
                 :x1="requestedMarker" :x2="requestedMarker" y1="0" y2="100%"
                 role="img" aria-label="Requested background playhead position" />
-            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker" :points="rulerMarkerPoints"
+            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker"
+                :class="{ 'joined-start': playback && startAtBackground }" :points="rulerMarkerPoints"
                 :style="{ transform: `translateX(${startMarker}px)` }" role="img" :aria-label="startLabel"
                 :data-status-hint="`Start ${displayedStart} smp`" />
+            <TimelinePlayhead v-if="playback" :window="window" :ruler-height="size?.height ?? 0" />
         </svg>
     </div>
 </template>
@@ -68,4 +68,5 @@ const requestedMarker = computed(() => markerPosition(dragPreview.value === null
 .beat-label { fill: var(--vscode-descriptionForeground); font: 10px monospace; }
 .requested-marker { stroke: var(--vscode-focusBorder, #569cd6); stroke-dasharray: 3 3; }
 .start-marker { fill: var(--iv-background-playhead); pointer-events: auto; }
+.start-marker.joined-start { fill: none; pointer-events: fill; }
 </style>
