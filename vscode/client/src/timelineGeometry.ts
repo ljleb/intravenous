@@ -84,7 +84,7 @@ export function timelineSeamX(time: PresentationTime, width: number): number | u
     if (seam > 0 && seam < view.span) return seam / view.span * width;
 }
 
-export function automationTimelineTicks(time: PresentationTime, width: number): RulerTick[] {
+export function timelineTicksWithSampleDivisions(time: PresentationTime, width: number): RulerTick[] {
     const major = timelineTicks(time, width, true);
     const view = timelineSamples(time);
     const ticks: RulerTick[] = [...major];

@@ -1,7 +1,7 @@
 import { compareAutomationPoints, type AutomationPoint } from "./automationCurveGeometry";
-import type { SetSegmentPayload } from "./generated/automationEvents";
-import { detentHalfWidth } from "./scrubSensitivity";
-import { timelineTimeDrag, type TimelineDragScale } from "./timelineTimeDrag";
+import type { SetSegmentPayload } from "../../src/generated/automationEvents";
+import { detentHalfWidth } from "../../src/scrubSensitivity";
+import { timelineTimeDrag, type TimelineDragScale } from "../../src/timelineTimeDrag";
 
 export function pointInsertionIndex(points: readonly AutomationPoint[], point: AutomationPoint): number {
     let first = 0, end = points.length;

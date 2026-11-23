@@ -31,7 +31,7 @@ export type PresentationObservation = {
 };
 export type PresentationSavedState = { [key: string]: JsonValue } | null;
 export type PresentationSnapshot = {
-    node: { address?: NodeAddress; definitionId: string; arguments: unknown[];
+    node: { address?: NodeAddress; definitionId: string; arguments: unknown[]; constructionDefinitionId?: string;
         ports: Array<{ name: string; direction: "input" | "output"; kind: "continuous" | "event";
             connected?: boolean; manualValue?: number }> };
     revision: number;
@@ -71,10 +71,11 @@ export type PresentationControl =
     | { type: "action"; id: string; label: string; disabled?: boolean };
 
 export type PresentationInk = "foreground" | "muted" | "input" | "output" | "selection" | "highlight" | "warning" | "background";
+type PresentationStroke = { strokeWidth?: number; dashed?: true; fill?: true;
+    fade?: { from: PresentationPoint; to: PresentationPoint } };
 export type PresentationMark = { id: string; ink?: PresentationInk; opacity?: number; target?: string } & (
-    | { type: "polyline"; points: PresentationPoint[]; strokeWidth?: number; dashed?: true; fill?: true;
-        fade?: { from: PresentationPoint; to: PresentationPoint } }
-    | { type: "packedPolyline"; coordinates: Float64Array }
+    | (PresentationStroke & ({ type: "polyline"; points: PresentationPoint[] }
+        | { type: "packedPolyline"; coordinates: Float64Array }))
     | { type: "rect"; x: number; y: number; width: number; height: number; border?: PresentationInk }
     | { type: "circle"; x: number; y: number; radius: number; border?: PresentationInk }
     | { type: "text"; x: number; y: number; text: string });
@@ -105,12 +106,12 @@ export type PresentationFrame = {
     drag?: { hint?: string; shortcuts?: string; cursor?: PresentationCursor };
     cancelDrag?: true;
     wakeAfterMs?: number;
+    secondsRulerInset?: number;
     timelineGrid?: PresentationTimelineGrid;
     commands?: PresentationCommand[];
 };
 export type Present = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame;
 export type PresentationArtifact = { id: string; manifest: PresentationManifest; digest: string; bytes: string };
-export type PresentationProgram = PresentationArtifact | { manifest: PresentationManifest; create: () => Present };
 
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown, length = 160): value is string => typeof value === "string" && value.length <= length;
@@ -170,15 +171,19 @@ function area(value: Record<string, any>): boolean {
     return finite(value.x) && finite(value.y) && finite(value.width) && finite(value.height) && value.width >= 0 && value.height >= 0;
 }
 
+function stroke(value: Record<string, any>): boolean {
+    return flag(value.dashed) && flag(value.fill)
+        && (value.strokeWidth === undefined || (finite(value.strokeWidth) && value.strokeWidth >= 0 && value.strokeWidth <= 32))
+        && (value.fade === undefined || (record(value.fade) && point(value.fade.from) && point(value.fade.to)));
+}
+
 function mark(value: unknown): value is PresentationMark {
     if (!record(value) || !identifier(value.id) || (value.opacity !== undefined && !finite(value.opacity))
         || !ink(value.ink) || (value.target !== undefined && !identifier(value.target))) return false;
     switch (value.type) {
-        case "polyline": return list(value.points, 4096, point) && flag(value.dashed) && flag(value.fill)
-            && (value.strokeWidth === undefined || (finite(value.strokeWidth) && value.strokeWidth >= 0 && value.strokeWidth <= 32))
-            && (value.fade === undefined || (record(value.fade) && point(value.fade.from) && point(value.fade.to)));
+        case "polyline": return list(value.points, 4096, point) && stroke(value);
         case "packedPolyline": return value.coordinates instanceof Float64Array && value.coordinates.length <= 8192
-            && value.coordinates.length % 2 === 0 && value.coordinates.every(Number.isFinite);
+            && value.coordinates.length % 2 === 0 && value.coordinates.every(Number.isFinite) && stroke(value);
         case "rect": return area(value) && ink(value.border);
         case "circle": return finite(value.x) && finite(value.y) && finite(value.radius) && value.radius >= 0 && ink(value.border);
         case "text": return finite(value.x) && finite(value.y) && text(value.text, 1024);
@@ -245,6 +250,7 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
                 && (entry.cursor === undefined || entry.cursor === "default" || entry.cursor === "ew-resize")))
         || !panel(value.panel) || !panel(value.contextMenu) || !flag(value.itemEditing) || !flag(value.valueNavigation) || !flag(value.cancelDrag)
         || (value.wakeAfterMs !== undefined && (!finite(value.wakeAfterMs) || value.wakeAfterMs < 0 || value.wakeAfterMs > 10000))
+        || (value.secondsRulerInset !== undefined && (!finite(value.secondsRulerInset) || value.secondsRulerInset < 0))
         || (value.drag !== undefined && (!record(value.drag) || (value.drag.cursor !== undefined && !cursor(value.drag.cursor))
             || (value.drag.hint !== undefined && !text(value.drag.hint, 512))
             || (value.drag.shortcuts !== undefined && !text(value.drag.shortcuts, 256))))
@@ -253,10 +259,10 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
         || !timelineGrid(value.timelineGrid) || (value.reuseDrawing && value.timelineGrid))
         throw new Error("Invalid presentation frame");
     const { status, marks, reuseDrawing, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
-        wakeAfterMs, commands, timelineGrid: grid } = value as PresentationFrame;
+        wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid } = value as PresentationFrame;
     for (const entries of [marks, targets, settings?.rows.flat(), contextMenu?.rows.flat()]) {
         if (entries && new Set(entries.map(({ id }) => id)).size !== entries.length) throw new Error("Duplicate presentation item ID");
     }
     return { status, marks, ...(reuseDrawing && { reuseDrawing }), targets, panel: settings, contextMenu,
-        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, commands, timelineGrid: grid };
+        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid };
 }

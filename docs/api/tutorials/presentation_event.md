@@ -7,7 +7,8 @@ project as [Change a C++ presentation](presentation_cpp.md).
 1. On the Placement Demo lane, choose **Placement Event Example**. Drag
    the yellow line upward and release it. The line follows your pointer.
    The status changes from “Placement pending” to “Placement accepted”
-   when the accepted project revision is available.
+   when the guest reads the placed point from the accepted constructor
+   arguments. The line then follows the accepted point's value.
 2. Open `placement.cpp` in the scratch package. Follow `read_input` and
    `submit`. On begin, `frame.begin_edit()` reserves the ID for one undo
    group. `frame.send(PlacePoint{…}, gesture_)` copies the event into the

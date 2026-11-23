@@ -1,0 +1,7 @@
+{
+  "AcceptedPoints": {
+    "definitionId": "builtin.automation.curve",
+    "index": 0,
+    "sequenceElement": {"event": "PlacePoint", "field": "point"}
+  }
+}

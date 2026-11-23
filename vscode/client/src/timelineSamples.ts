@@ -10,6 +10,27 @@ export type TimelineSamples = { origin: SamplePosition; span: number };
 export type PresentationTime = { beginSample: string; beginFraction: number; spanSamples: number;
     sampleRate?: number; gridMode?: "seconds" | "beats" | "custom" };
 
+function secondsSamplePosition(seconds: number, sampleRate: number, offset = 0) {
+    if (!Number.isFinite(seconds) || !Number.isSafeInteger(sampleRate) || sampleRate <= 0) return;
+    const whole = Math.trunc(seconds), wholeOffset = Math.trunc(offset);
+    const samples = (seconds - whole + (offset - wholeOffset)) * sampleRate;
+    if (!Number.isFinite(samples)) return;
+    const floor = Math.floor(samples);
+    return { index: (BigInt(whole) + BigInt(wholeOffset)) * BigInt(sampleRate) + BigInt(floor), fraction: samples - floor };
+}
+
+export function roundedSampleAtSeconds(seconds: number, sampleRate: number, offset = 0): bigint | undefined {
+    const position = secondsSamplePosition(seconds, sampleRate, offset);
+    if (!position) return;
+    const { index, fraction } = position;
+    return fraction > .5 || (fraction === .5 && index >= 0n) ? index + 1n : index;
+}
+
+export function sampleOffsetFromSeconds(index: bigint, origin: number, sampleRate: number): number {
+    const position = secondsSamplePosition(origin, sampleRate);
+    return position ? (Number(index - position.index) - position.fraction) / sampleRate : NaN;
+}
+
 export function shiftSamplePosition(origin: SamplePosition, offset: number): SamplePosition {
     // Split before adding so a wide offset does not absorb the origin's fraction.
     const whole = Math.floor(offset);

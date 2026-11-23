@@ -150,13 +150,13 @@ bool apply_control(BeatGrid& grid, IvControlInput input, uint32_t sample_rate)
             --grid.size;
             return true;
         }
-        if (input.has_value && equal(input.id, indexed_id("subdivision:", i).view())) {
+        if (input.value_kind == IV_CONTROL_NUMBER && equal(input.id, indexed_id("subdivision:", i).view())) {
             auto const maximum = limit / (divisions / grid.subdivisions[i]);
             if (maximum < 2) return false;
             return set_count(grid.subdivisions[i], input.value, 2, maximum);
         }
     }
-    if (!input.has_value) return false;
+    if (input.value_kind != IV_CONTROL_NUMBER) return false;
     if (equal(input.id, string("bpm"))) {
         auto const maximum = tempo_limit(divisions, sample_rate);
         grid.tempo = clamp_integer(input.value * bpm_scale, 1, maximum);

@@ -29,6 +29,7 @@ class Bindings:
         self.types = []
         self.records = []
         self.names = set(event_names)
+        self.aggregate_names = {}
 
     def name(self, suggestion):
         candidate = suggestion
@@ -76,6 +77,7 @@ class Bindings:
             raise ValueError(schema.get("reason") or f"Unsupported presentation event field {kind}")
 
         name = fixed_name or self.name(suggestion)
+        self.aggregate_names[id(schema)] = name
         declarations = []
         retained = []
         for field in schema["fields"]:
@@ -97,7 +99,44 @@ class Bindings:
         return name
 
 
-def generate(protocol, names, namespace):
+def binding_section(name, metadata):
+    section = json.dumps(metadata, ensure_ascii=True, separators=(",", ":"))
+    if len(section) > 65536:
+        raise ValueError(f"Presentation {name} schema section exceeds 64 KiB")
+    assembly = f'.section .custom_section.iv.presentation.{name},"",@\n.ascii ' + json.dumps(section) + "\n.text\n"
+    return f"__asm__({json.dumps(assembly)});"
+
+
+def construction_bindings(arguments, events, bindings):
+    if not isinstance(arguments, dict) or len(arguments) > 64:
+        raise ValueError("Expected up to 64 named construction argument bindings")
+    metadata = []
+    for slot, (name, argument) in enumerate(arguments.items()):
+        identifier(name)
+        if name in bindings.names:
+            raise ValueError(f"Duplicate presentation binding name {name}")
+        bindings.names.add(name)
+        # Reuse a reflected record that the node accepts both as a constructor
+        # sequence element and as a message field.
+        record = argument["sequenceElement"]
+        payload = events[record["event"]]
+        schema = next((field["value"] for field in payload["fields"] if field["name"] == record["field"]), None)
+        if schema is None or id(schema) not in bindings.aggregate_names:
+            raise ValueError(f"Argument {name!r} must reference a reflected record field")
+        index = argument["index"]
+        definition_id = argument["definitionId"]
+        if type(index) is not int or index < 0 or not isinstance(definition_id, str) or not definition_id:
+            raise ValueError(f"Invalid constructor signature for {name!r}")
+        metadata.append({"definitionId": definition_id, "index": index,
+                         "value": {"kind": "sequence", "element": schema}})
+        element = bindings.aggregate_names[id(schema)]
+        bindings.types.append(f"struct {name} {{\n"
+                              f"    using Value = ::iv::presentation::Span<{element} const>;\n"
+                              f"    static constexpr uint32_t index = {slot};\n}};")
+    return metadata
+
+
+def generate(protocol, names, namespace, arguments=None):
     if protocol.get("formatVersion") != 0:
         raise ValueError("Unsupported node-event protocol version")
     namespace = "::".join(identifier(part) for part in namespace.split("::"))
@@ -106,6 +145,7 @@ def generate(protocol, names, namespace):
     bindings = Bindings(namespace, (identifier(name) for name in names))
     metadata = []
     entries = []
+    events = {}
     for index, (name, selector) in enumerate(names.items()):
         nominal = selector if isinstance(selector, str) else selector["nominalId"]
         candidates = [schema for schema in protocol["eventTypes"] if schema["nominalId"] == nominal
@@ -117,19 +157,19 @@ def generate(protocol, names, namespace):
         if entry["payload"]["kind"] != "aggregate":
             raise ValueError(f"Event {name!r} must have a record payload")
         metadata.append({key: entry[key] for key in ("nominalId", "definitionFingerprint", "payload")})
+        events[name] = entry["payload"]
         bindings.type(entry["payload"], name, fixed_name=name)
         entries.append(f"template<> struct EventBinding<::{namespace}::{name}> {{\n"
                        f"    static constexpr uint32_t index = {index};\n}};")
-    section = json.dumps(metadata, ensure_ascii=True, separators=(",", ":"))
-    if len(section) > 65536:
-        raise ValueError("Presentation event schema section exceeds 64 KiB")
-    assembly = '.section .custom_section.iv.presentation.events,"",@\n.ascii ' + json.dumps(section) + "\n.text\n"
+    sections = [binding_section("events", metadata)]
+    if arguments:
+        sections.append(binding_section("arguments", construction_bindings(arguments, events, bindings)))
     return "\n".join([
         "// Generated from the compiler's node-event protocol. Do not edit.",
         "#pragma once", "#include <intravenous/presentation/presentation.hpp>", "",
         f"namespace {namespace} {{", "\n\n".join(bindings.types), "}", "",
         "namespace iv::presentation::detail {", "\n\n".join(bindings.records + entries), "}", "",
-        "#if defined(__wasm32__)", f"__asm__({json.dumps(assembly)});", "#endif", "",
+        "#if defined(__wasm32__)", *sections, "#endif", "",
     ])
 
 
@@ -139,9 +179,11 @@ def main():
     parser.add_argument("names", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--namespace", required=True)
+    parser.add_argument("--arguments", type=Path, help="constructor bindings that reuse reflected event records")
     args = parser.parse_args()
     try:
-        source = generate(json.loads(args.protocol.read_text()), json.loads(args.names.read_text()), args.namespace)
+        arguments = json.loads(args.arguments.read_text()) if args.arguments else None
+        source = generate(json.loads(args.protocol.read_text()), json.loads(args.names.read_text()), args.namespace, arguments)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(source)
     except (OSError, ValueError, TypeError, KeyError) as error:

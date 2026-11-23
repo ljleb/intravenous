@@ -67,12 +67,13 @@ await drag.finish();
 The first send opens the server group. Each accepted message publishes normally;
 finish closes its one history entry. Capture the handle outside the component
 lifetime if the interaction can survive remounts. `PluginLane` owns the handle
-and passes replies to `AutomationCurveEditing` through
-`PresentationEditRequests`. Closing a view or disconnecting closes
+and delivers replies with the request IDs issued by the presentation worker.
+Closing a view or disconnecting closes
 accepted history. Conflicting edits end the old group; later updates reject rather
 than retry against the new curve. Gesture closure does not cancel accepted data.
 
 The bundled curve presentation reads accepted constructor values from
-`graph.getScope`, independently of desired source text. Its source and new backend
-routes await owner verification. The earlier status is preserved in
+`graph.getScope`, independently of desired source text. It borrows the values as
+typed WASM records and uses the same node event route as the example above.
+The earlier status is preserved in
 [historical documentation](../../../docs/historical/stage_3_before_automation_presentation_2026-11-14.md).

@@ -1,13 +1,13 @@
-import { addressKey, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "./graphScope";
-import { MovePoint, PlacePoint, RemovePoint, SetSegment, type SetSegmentPayload } from "./generated/automationEvents";
-import type { NodeEvent } from "./nodeEvents";
-import type { NodeEventGesture } from "./nodeEventMessaging";
-import { NodeEventUpdates, type NodeEventUpdateTimers } from "./nodeEventUpdates";
-import { ScrubSensitivity } from "./scrubSensitivity";
+import { addressKey, type GraphScopeNode, type NodeAddress, type Point as ScreenPoint } from "../../src/graphScope";
+import { MovePoint, PlacePoint, RemovePoint, SetSegment, type SetSegmentPayload } from "../../src/generated/automationEvents";
+import type { NodeEvent } from "../../src/nodeEvents";
+import type { NodeEventGesture } from "../../src/nodeEventMessaging";
+import { NodeEventUpdates, type NodeEventUpdateTimers } from "../../src/nodeEventUpdates";
+import { ScrubSensitivity } from "../../src/scrubSensitivity";
 import { automationTimeDrag, initialGapAttachment, placeAutomationPoint, pointInsertionIndex,
     type GapAttachment, type PointTime } from "./automationPointPlacement";
-import { updateSelection } from "./selection";
-import { timelineSampleAt, type TimelineSamples } from "./timelineSamples";
+import { updateSelection } from "../../src/selection";
+import { timelineSampleAt, type TimelineSamples } from "../../src/timelineSamples";
 
 import { automationCycleSeconds, automationSampleIndex, automationUnitsPerPixel, automationValueAtFraction,
     automationValueGuides, clampAutomationValue, compareAutomationPoints,

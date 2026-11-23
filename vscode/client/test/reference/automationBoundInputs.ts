@@ -1,8 +1,8 @@
 import { clampAutomationValue, type AutomationValueBounds, type CurvePath } from "./automationCurveGeometry";
-import type { ObservationSpan } from "./observationWindows";
-import type { ObservationWindowResult } from "./observations";
-import { waveformTracks, waveformTracksForSpans, type WaveformTrack } from "./observationWaveform";
-import type { TimelineSamples } from "./timelineSamples";
+import type { ObservationSpan } from "../../src/observationWindows";
+import type { ObservationWindowResult } from "../../src/observations";
+import { waveformTracks, waveformTracksForSpans, type WaveformTrack } from "../../src/observationWaveform";
+import type { TimelineSamples } from "../../src/timelineSamples";
 
 export type AutomationBoundInput = "min" | "max";
 

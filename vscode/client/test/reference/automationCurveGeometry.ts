@@ -1,5 +1,6 @@
-import { valueScaleFraction } from "./knobPresentation";
-import { signedTimelineSpans, timelineSampleCount, timelineSampleExtent, type SamplePosition, type TimelineSamples } from "./timelineSamples";
+import { valueScaleFraction } from "../../src/knobPresentation";
+import { signedTimelineSpans, timelineSampleCount, timelineSampleExtent, type SamplePosition, type TimelineSamples } from "../../src/timelineSamples";
+import { roundedSampleAtSeconds as automationSampleIndex, sampleOffsetFromSeconds as automationSampleOffset } from "../../src/timelineSamples";
 
 export type CurveInterpolation = "empty" | "hold" | "bezier";
 export type AutomationPointPosition = { id: number; seconds: number; value: number; sampleIndex?: bigint;
@@ -49,26 +50,7 @@ export function automationCycleSeconds(sampleRate: number | null | undefined): n
     return sampleRate && sampleRate > 0 ? 2 ** 64 / sampleRate : Infinity;
 }
 
-function samplePosition(seconds: number, sampleRate: number, offset = 0) {
-    if (!Number.isFinite(seconds) || !Number.isSafeInteger(sampleRate) || sampleRate <= 0) return;
-    const whole = Math.trunc(seconds), wholeOffset = Math.trunc(offset);
-    const samples = (seconds - whole + (offset - wholeOffset)) * sampleRate;
-    if (!Number.isFinite(samples)) return;
-    const floor = Math.floor(samples);
-    return { index: (BigInt(whole) + BigInt(wholeOffset)) * BigInt(sampleRate) + BigInt(floor), fraction: samples - floor };
-}
-
-export function automationSampleIndex(seconds: number, sampleRate: number, offset = 0): bigint | undefined {
-    const position = samplePosition(seconds, sampleRate, offset);
-    if (!position) return;
-    const { index, fraction } = position;
-    return fraction > .5 || (fraction === .5 && index >= 0n) ? index + 1n : index;
-}
-
-export function automationSampleOffset(index: bigint, origin: number, sampleRate: number): number {
-    const position = samplePosition(origin, sampleRate);
-    return position ? (Number(index - position.index) - position.fraction) / sampleRate : NaN;
-}
+export { automationSampleIndex, automationSampleOffset };
 
 export function compareAutomationTime(a: AutomationPointPosition, b: AutomationPointPosition): number {
     if (a.sampleIndex !== undefined && b.sampleIndex !== undefined)

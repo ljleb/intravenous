@@ -11,7 +11,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     builtins = root / "src/intravenous/builtin_packages/builtin/presentations"
     examples = root / "examples/wasm-presentation/packages/marker/presentations"
-    for directory, names in ((builtins, ("beats", "click_detector")),
+    for directory, names in ((builtins, ("automation_curve", "beats", "click_detector")),
                              (examples, ("marker", "placement"))):
         for name in names:
             subprocess.run([sys.executable, root / "scripts/build_presentation.py",

@@ -41,15 +41,23 @@ rendering.
 | `can_edit()` | Host edit permission, independent of visual size |
 | `lane_mode()` | A value from `IV_LANE_EDITABLE` through `IV_LANE_NANO` |
 | `gestures()` | `Span<const IvGestureInput>` |
+| `visit_interactions(gesture, control, editor)` | Call typed handlers in delivery order across the three interaction spans |
 | `connected_inputs()` | `Span<const IvString>` of connected input names |
 | `observed_trigger_columns()` | `Span<const IvObservedTriggerColumns>` for manifest bindings |
 | `observed_waveforms()` | `Span<const IvObservedWaveform>` for manifest bindings |
 | `observed_waveform(id)` | Pointer to the matching borrowed waveform, or null when no view is available |
 | `timeline_view()` | `IvTimelineView` with exact first sample, span, and project sample rate |
 | `numeric_arguments()` | `Span<const IvNumericValue>` in constructor argument order |
+| `construction_argument<Binding>()` | Borrow the accepted value as `Binding::Value const*` for this frame |
+| `construction_snapshot()` | Change token for the accepted argument data |
 | `control_inputs()` | `Span<const IvControlInput>` in delivery order |
+| `editor_inputs()` | `Span<const IvEditorInput>` with context actions, shortcuts, value navigation, and interruptions |
+| `manual_inputs()` | `Span<const IvManualInput>` with enabled manual values for unconnected inputs |
+| `frame_time()` | Monotonic frame clock in milliseconds |
 | `edits_pending()`, `edit_failed()` | Preview and accepted edit state from the host |
 | `set_settings_panel(panel)` | Copy the panel and its controls |
+| `set_context_menu(panel)` | Copy the active target's menu and controls |
+| `set_editor_feedback(feedback)` | Return an optional cursor position, wake delay, or seconds ruler inset, together with editing flags |
 | `begin_edit()` | Reserve an `EditGesture` ID for an undo group |
 | `send(event, gesture = {})` | Copy a generated event to the output arena and return an `EditRequest` |
 | `replace_pending(event, gesture)` | Submit a full-state preview that can replace a queued preview in this gesture. Returns whether it was recorded. |
@@ -60,6 +68,7 @@ rendering.
 | `draw_polylines(lines)` | Copy a `Span<const IvPolyline>` to the arena |
 | `reserve_polylines(lines, points)` | Return an `IvPolylineBatch` with writable descriptor and point pointers |
 | `draw_texts(texts)` | Copy a `Span<const IvText>` into the drawing |
+| `draw_shapes(shapes)` | Copy a `Span<const IvShape>` into the drawing |
 | `register_drag_targets(targets)` | Submit a `Span<const IvDragTarget>` |
 | `reuse_drawing()` | Keep the last drawing and supply the current targets |
 | `set_status(status)` | Set the host status from an `IvString` |
@@ -84,6 +93,12 @@ with the protocol's `nodeAddress` kind are currently unsupported.
 ```sh
 python3 scripts/generate_presentation_events.py protocol.json names.json events.hpp --namespace my_events
 ```
+
+The Placement example also passes `--arguments automation.construction.json`.
+Its `AcceptedPoints` binding reads argument zero of `builtin.automation.curve`
+and reuses the reflected `PlacePoint.point` type for each sequence element.
+The returned span preserves the accepted order. An omitted argument returns a
+null pointer. A supplied empty list returns a pointer to a span of size zero.
 
 Use `converted_string` to put an exact decimal sample index into an
 `IvConvertedScalar`. String and span data may point to local arrays.

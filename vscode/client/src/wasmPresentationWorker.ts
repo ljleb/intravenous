@@ -2,6 +2,7 @@ import type { PresentationFrame, PresentationInput, PresentationSavedState, Pres
 import { wasmPresentationUpdate, type WasmPresentationReply } from "./wasmPresentation";
 
 import type { WasmPresentationRequest } from "./wasmPresentationEndpoint";
+import type { WasmConstruction } from "./wasmPresentationArguments";
 type WorkerTransport = { postMessage(request: WasmPresentationRequest): void; terminate(): void };
 type StartWorker = (receive: (reply: WasmPresentationReply) => void, fail: (error: Error) => void) => WorkerTransport;
 let nextSession = 0;
@@ -11,6 +12,7 @@ export class WasmPresentationWorker {
     private session = 0;
     private state: PresentationSavedState = null;
     private restoring = true;
+    private construction?: WasmConstruction | null;
     private pending?: { resolve: (value: PresentationFrame | undefined) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
     private readonly closing = new Map<WorkerTransport, () => void>();
 
@@ -55,6 +57,10 @@ export class WasmPresentationWorker {
             this.pending = { resolve, reject, timeout };
             try {
                 const message: WasmPresentationRequest = { update: wasmPresentationUpdate(snapshot, inputs, this.session) };
+                const construction = message.update.construction;
+                if (!initialize && this.construction?.definitionId === construction?.definitionId
+                    && this.construction?.arguments === construction?.arguments) delete message.update.construction;
+                else this.construction = construction;
                 if (initialize) message.bytes = this.bytes;
                 if (initialize || this.restoring) message.restore = this.state === null ? "" : JSON.stringify(this.state);
                 this.restoring = false;

@@ -5,6 +5,22 @@
 
 extern unsigned char __heap_base;
 
+/* Clang may lower aggregate copies to these functions in freestanding code. */
+void *memcpy(void *destination, void const *source, size_t count)
+{
+    unsigned char *out = destination;
+    unsigned char const *in = source;
+    for (size_t i = 0; i < count; ++i) out[i] = in[i];
+    return destination;
+}
+
+void *memset(void *destination, int value, size_t count)
+{
+    unsigned char *out = destination;
+    for (size_t i = 0; i < count; ++i) out[i] = (unsigned char)value;
+    return destination;
+}
+
 typedef struct Block {
     struct Block *next;
     uint32_t size;
@@ -106,12 +122,21 @@ IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationCont
 }
 IvTimelineView iv_timeline_view(const IvPresentationContext *context) { return context->timeline; }
 IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context) { return context->arguments; }
+const void *iv_construction_argument(const IvPresentationContext *context, uint32_t binding)
+{
+    IvConstructionArgumentSpan const arguments = context->construction_arguments;
+    return binding < arguments.size ? arguments.data[binding] : NULL;
+}
+uint32_t iv_construction_snapshot(const IvPresentationContext *context) { return context->construction_snapshot; }
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context) { return context->controls; }
 bool iv_edits_pending(const IvPresentationContext *context) { return (context->edit_state & 1u) != 0; }
 bool iv_edit_failed(const IvPresentationContext *context) { return (context->edit_state & 2u) != 0; }
 uint64_t iv_project_revision(const IvPresentationContext *context) { return context->revision; }
 IvEditReplySpan iv_edit_replies(const IvPresentationContext *context) { return context->edit_replies; }
 IvObservedWaveformSpan iv_observed_waveforms(const IvPresentationContext *context) { return context->waveforms; }
+IvEditorInputSpan iv_editor_inputs(const IvPresentationContext *context) { return context->editor_inputs; }
+IvManualInputSpan iv_manual_inputs(const IvPresentationContext *context) { return context->manual_inputs; }
+double iv_frame_time(const IvPresentationContext *context) { return context->frame_time; }
 
 static void *reserve_output(IvPresentationContext *context, uint32_t size)
 {
@@ -150,9 +175,23 @@ static bool copy_numbers(IvPresentationContext *context, IvNumberSpan *values, u
     return true;
 }
 
-bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel)
+static bool copy_choices(IvPresentationContext *context, IvChoiceSpan *choices)
 {
-    if (context->panel || panel.settings.size > 256) {
+    if (choices->size == 0) return true;
+    if (choices->size > 64) { context->error = 1; return false; }
+    IvChoice *values = reserve_output(context, choices->size * sizeof(*values));
+    if (!values) return false;
+    for (uint32_t i = 0; i < choices->size; ++i) {
+        values[i] = choices->data[i];
+        if (!copy_string(context, &values[i].value, 160) || !copy_string(context, &values[i].label, 160)) return false;
+    }
+    choices->data = values;
+    return true;
+}
+
+static bool record_panel(IvPresentationContext *context, IvSettingsPanel **destination, IvSettingsPanel panel)
+{
+    if (*destination || panel.settings.size > 256) {
         context->error = 1;
         return false;
     }
@@ -162,10 +201,31 @@ bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel
     for (uint32_t i = 0; i < panel.settings.size; ++i) {
         settings[i] = panel.settings.data[i];
         if (!copy_string(context, &settings[i].id, 160)
-            || !copy_string(context, &settings[i].label, 1024)) return false;
+            || !copy_string(context, &settings[i].label, 1024)
+            || !copy_choices(context, &settings[i].choices)) return false;
     }
     *record = (IvSettingsPanel){panel.label, {settings, panel.settings.size}};
-    context->panel = record;
+    *destination = record;
+    return true;
+}
+
+bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel)
+{
+    return record_panel(context, &context->panel, panel);
+}
+
+bool iv_set_context_menu(IvPresentationContext *context, IvSettingsPanel panel)
+{
+    return record_panel(context, &context->context_menu, panel);
+}
+
+bool iv_set_editor_feedback(IvPresentationContext *context, IvEditorFeedback feedback)
+{
+    if (context->editor_feedback) { context->error = 1; return false; }
+    IvEditorFeedback *record = reserve_output(context, sizeof(*record));
+    if (!record || !copy_string(context, &feedback.hint, 512) || !copy_string(context, &feedback.shortcuts, 512)) return false;
+    *record = feedback;
+    context->editor_feedback = record;
     return true;
 }
 
@@ -257,9 +317,25 @@ bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines)
     for (uint32_t i = 0; i < polylines.size; ++i) {
         IvPolyline line = polylines.data[i];
         for (uint32_t j = 0; j < line.points.size; ++j) next[j] = line.points.data[j];
-        batch.polylines[i] = (IvPolyline){line.id, line.ink, {next, line.points.size}};
+        batch.polylines[i] = line;
+        batch.polylines[i].points.data = next;
         next += line.points.size;
     }
+    return true;
+}
+
+bool iv_draw_shapes(IvPresentationContext *context, IvShapeSpan shapes)
+{
+    if (!shapes.size) return true;
+    if (shapes.size > 1024 || (context->flags & IV_REUSE_DRAWING)) { context->error = 1; return false; }
+    IvRecordedShapes *batch = reserve_output(context, sizeof(*batch));
+    IvShape *descriptors = reserve_output(context, shapes.size * sizeof(*descriptors));
+    if (context->error) return false;
+    for (uint32_t i = 0; i < shapes.size; ++i) descriptors[i] = shapes.data[i];
+    *batch = (IvRecordedShapes){.values = {descriptors, shapes.size}};
+    if (context->last_shapes) context->last_shapes->next = batch;
+    else context->shapes = batch;
+    context->last_shapes = batch;
     return true;
 }
 
@@ -273,7 +349,11 @@ bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan t
     IvRecordedDragTargets *batch = reserve_output(context, sizeof(*batch));
     IvDragTarget *descriptors = reserve_output(context, targets.size * sizeof(*descriptors));
     if (context->error) return false;
-    for (uint32_t i = 0; i < targets.size; ++i) descriptors[i] = targets.data[i];
+    for (uint32_t i = 0; i < targets.size; ++i) {
+        descriptors[i] = targets.data[i];
+        if (!copy_string(context, &descriptors[i].hint, 512)
+            || !copy_string(context, &descriptors[i].shortcuts, 512)) return false;
+    }
     *batch = (IvRecordedDragTargets){.values = {descriptors, targets.size}};
     if (context->last_targets) context->last_targets->next = batch;
     else context->targets = batch;
@@ -312,7 +392,7 @@ bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts)
 
 void iv_reuse_drawing(IvPresentationContext *context)
 {
-    if (context->drawing || context->texts || context->grid) context->error = 1;
+    if (context->drawing || context->texts || context->grid || context->shapes) context->error = 1;
     context->flags |= IV_REUSE_DRAWING;
 }
 

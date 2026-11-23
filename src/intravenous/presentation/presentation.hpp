@@ -91,6 +91,12 @@ public:
     bool can_edit() const { return iv_can_edit(context_); }
     uint32_t lane_mode() const { return iv_lane_mode(context_); }
     IvTimelineView timeline_view() const { return iv_timeline_view(context_); }
+    uint32_t construction_snapshot() const { return iv_construction_snapshot(context_); }
+    template<class Binding>
+    typename Binding::Value const* construction_argument() const
+    {
+        return static_cast<typename Binding::Value const*>(iv_construction_argument(context_, Binding::index));
+    }
     Span<IvNumericValue const> numeric_arguments() const
     {
         auto const args = iv_numeric_arguments(context_);
@@ -101,6 +107,17 @@ public:
         auto const inputs = iv_control_inputs(context_);
         return {inputs.data, inputs.size};
     }
+    Span<IvEditorInput const> editor_inputs() const
+    {
+        auto const inputs = iv_editor_inputs(context_);
+        return {inputs.data, inputs.size};
+    }
+    Span<IvManualInput const> manual_inputs() const
+    {
+        auto const inputs = iv_manual_inputs(context_);
+        return {inputs.data, inputs.size};
+    }
+    double frame_time() const { return iv_frame_time(context_); }
     bool edits_pending() const { return iv_edits_pending(context_); }
     bool edit_failed() const { return iv_edit_failed(context_); }
     uint64_t project_revision() const { return iv_project_revision(context_); }
@@ -139,6 +156,22 @@ public:
         auto const input = iv_gesture_inputs(context_);
         return {input.data, input.size};
     }
+    template<class Gesture, class Control, class Editor>
+    void visit_interactions(Gesture gesture, Control control, Editor editor) const
+    {
+        auto const pointer = gestures();
+        auto const settings = control_inputs();
+        auto const actions = editor_inputs();
+        uint32_t g = 0, c = 0, e = 0;
+        while (g < pointer.size || c < settings.size || e < actions.size) {
+            auto const gesture_order = g < pointer.size ? pointer.data[g].sequence : UINT32_MAX;
+            auto const control_order = c < settings.size ? settings.data[c].sequence : UINT32_MAX;
+            auto const action_order = e < actions.size ? actions.data[e].sequence : UINT32_MAX;
+            if (gesture_order < control_order && gesture_order < action_order) gesture(pointer.data[g++]);
+            else if (control_order < action_order) control(settings.data[c++]);
+            else editor(actions.data[e++]);
+        }
+    }
     bool draw_polylines(Span<IvPolyline const> lines) const
     {
         return iv_draw_polylines(context_, {lines.data, lines.size});
@@ -146,6 +179,10 @@ public:
     bool draw_texts(Span<IvText const> texts) const
     {
         return iv_draw_texts(context_, {texts.data, texts.size});
+    }
+    bool draw_shapes(Span<IvShape const> shapes) const
+    {
+        return iv_draw_shapes(context_, {shapes.data, shapes.size});
     }
     IvPolylineBatch reserve_polylines(uint32_t lines, uint32_t points) const
     {
@@ -156,6 +193,8 @@ public:
         return iv_register_drag_targets(context_, {targets.data, targets.size});
     }
     bool set_settings_panel(IvSettingsPanel panel) const { return iv_set_settings_panel(context_, panel); }
+    bool set_context_menu(IvSettingsPanel panel) const { return iv_set_context_menu(context_, panel); }
+    bool set_editor_feedback(IvEditorFeedback feedback) const { return iv_set_editor_feedback(context_, feedback); }
     EditGesture begin_edit() const { return {next_edit_id()}; }
 
     template<class Event>

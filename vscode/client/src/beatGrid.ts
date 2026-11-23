@@ -1,7 +1,6 @@
 import { regularTimelineGridTicks } from "./presentationTimelineGrid";
-import { automationSampleIndex, automationSampleOffset } from "./automationCurveGeometry";
 import type { ObservationWindowResult, ObservedBeatMark, ObservedBeatRun } from "./observations";
-import { firstSignedSample as timelineBegin } from "./timelineSamples";
+import { firstSignedSample as timelineBegin, roundedSampleAtSeconds, sampleOffsetFromSeconds } from "./timelineSamples";
 
 const bpmScale = 1_000_000;
 const maximumBeatSubdivisions = 1024;
@@ -139,10 +138,10 @@ export function beatGridTicks(grid: BeatGrid, window: { spanSeconds: number }
     & ({ beginSeconds: number } | { beginSample: bigint; beginFraction?: number }),
     sampleRate: number, width: number): BeatGridTick[] {
     const origin = "beginSeconds" in window
-        ? automationSampleIndex(window.beginSeconds, sampleRate) : window.beginSample;
+        ? roundedSampleAtSeconds(window.beginSeconds, sampleRate) : window.beginSample;
     if (origin === undefined) return [];
     const fraction = "beginSeconds" in window
-        ? -automationSampleOffset(origin, window.beginSeconds, sampleRate) * sampleRate : window.beginFraction ?? 0;
+        ? -sampleOffsetFromSeconds(origin, window.beginSeconds, sampleRate) * sampleRate : window.beginFraction ?? 0;
     const strides = [1n];
     for (const factor of [...grid.subdivisions].reverse()) strides.unshift(strides[0] * BigInt(factor));
     const beatStride = strides[0];

@@ -3,7 +3,7 @@ import { markRaw, shallowRef, type Component } from "vue";
 import GenericPresentation from "./GenericPresentation.vue";
 import PluginLane from "./PluginLane.vue";
 import { PresentationRegistry } from "./registry";
-import { builtinPresentationPrograms, genericPresentationId, projectProgramsByDefinition } from "../../src/presentationPrograms";
+import { genericPresentationId, projectProgramsByDefinition } from "../../src/presentationPrograms";
 import type { PresentationArtifact } from "../../src/presentationPlugin";
 export { genericPresentationId };
 
@@ -43,12 +43,11 @@ export function shippedPresentation(id: string): PresentationArtifact | undefine
 }
 
 export function selectPresentation(definitionId: string) {
-    const project = projectPrograms.value.get(definitionId);
-    const program = project ?? builtinPresentationPrograms.get(definitionId);
+    const program = projectPrograms.value.get(definitionId);
     if (program) {
         const manifest = program.manifest;
         const configuration = manifest.initialConfiguration;
-        return { component: hosted, program, presentationId: project?.id ?? manifest.id, displayName: manifest.title, usedGeneric: false,
+        return { component: hosted, program, presentationId: program.id, displayName: manifest.title, usedGeneric: false,
             timeline: manifest.timeline, icon: manifest.icon,
             createInitialConfiguration: configuration === undefined ? undefined : () => configuration };
     }

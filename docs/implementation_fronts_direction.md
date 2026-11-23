@@ -7435,6 +7435,15 @@ a serializable reference when one exists, and for a symbolic lane whose
 members disagree. Raw 64-bit integers also need an exact transport
 representation before they are parsed by the JavaScript host.
 
+**Automation Curve WASM port.** The builtin package publishes the editor as
+`builtin/automation_curve`. Its guest reads accepted `Point` records, keeps
+the active draft and selection in its session, and sends typed node edits.
+ABI 9 provides general styled marks, context controls, input ordering,
+snap candidates, and cursor return. The host projects seconds ticks and
+retains waveform observations for the two bounds. The worker and headless
+client load the same artifact. The TypeScript edit model remains in test
+fixtures as a reference during migration of its edge-case coverage.
+
 ### Release package portability
 
 **Policy for future distribution (2026-11-22).** A package release may

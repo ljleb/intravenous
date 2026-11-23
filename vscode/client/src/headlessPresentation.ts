@@ -8,7 +8,8 @@ import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
 import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
-import { builtinPresentationPrograms, projectProgramsByDefinition } from "./presentationPrograms";
+import { renderPresentationSecondsRuler } from "./presentationSecondsRuler";
+import { projectProgramsByDefinition } from "./presentationPrograms";
 import { PresentationArtifactReader } from "./presentationArtifacts";
 import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
@@ -38,11 +39,11 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
     }
     const program = presentationId
         ? catalog.artifacts.find((entry) => entry.id === presentationId && entry.manifest.definitionIds.includes(definitionId))
-        : projectProgramsByDefinition(catalog.artifacts).get(definitionId) ?? builtinPresentationPrograms.get(definitionId);
+        : projectProgramsByDefinition(catalog.artifacts).get(definitionId);
     if (!program) throw new Error(`No presentation program for ${definitionId}`);
-    const worker = "bytes" in program ? createNodePresentationWorker(program.bytes) : undefined;
-    worker?.restore(snapshot.state);
-    const present = "create" in program ? program.create() : worker!.run.bind(worker);
+    const worker = createNodePresentationWorker(program.bytes);
+    worker.restore(snapshot.state);
+    const present = worker.run.bind(worker);
 
     let acceptedRevision = 0;
     let failure: unknown;
@@ -61,7 +62,8 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
                 && prepared && revision >= minimumRevision) {
                 if (target.definitionId !== definitionId) throw new Error("Scenario definition differs from the active node");
                 snapshot = { ...snapshot, revision, editable: allowEdits && snapshot.mode === "editable" && scope.editable,
-                    node: { ...snapshot.node, arguments: target.construction?.arguments ?? [] } };
+                    node: { ...snapshot.node, constructionDefinitionId: target.construction?.definitionId,
+                        arguments: target.construction?.arguments ?? [] } };
                 return;
             }
             if (performance.now() >= deadline) throw new Error(scope.execution?.message || "The presentation node is unavailable");
@@ -101,7 +103,9 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             const { time, width, height } = snapshot.viewport;
             const grid = frame.timelineGrid && time
                 ? renderPresentationTimelineGrid(frame.timelineGrid, time, width, height, snapshot.mode === "editable") : undefined;
-            frames.push(grid ? { ...frame, marks: [...grid.marks, ...frame.marks ?? []] } : frame);
+            const ruler = time && frame.secondsRulerInset !== undefined
+                ? renderPresentationSecondsRuler(time, width, height, snapshot.mode, frame.secondsRulerInset) : undefined;
+            frames.push(grid || ruler ? { ...frame, marks: [...grid?.marks ?? [], ...ruler ?? [], ...frame.marks ?? []] } : frame);
         }
         if (!inputs.length && !wake.pending) return;
         edits.accept(frame, (state) => {
@@ -127,11 +131,11 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             await delay(5);
         }
         if (failure) throw failure;
-        return { presentation: "id" in program ? program.id : program.manifest.id, frames, snapshot, acceptedRevision };
+        return { presentation: program.id, frames, snapshot, acceptedRevision };
     } finally {
         wake.cancel();
         session.dispose();
-        worker?.stop();
+        worker.stop();
         edits.queue.dispose();
         await edits.closeGestures();
         interactions.releaseOwner(owner);

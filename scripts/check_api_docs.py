@@ -51,15 +51,18 @@ def compile_examples(build):
         schemas = ROOT / "vscode/client/bindings"
         for binding, header, namespace in (
             ("beats", builtins / "beats_events.hpp", "presentation_beats_events"),
+            ("automation", builtins / "automation_events.hpp", "automation_events"),
             ("automation", examples / "automation_events.hpp", "automation_events"),
         ):
             generated = scratch / header.name
+            arguments = schemas / f"{binding}.construction.json"
             run(sys.executable, ROOT / "scripts/generate_presentation_events.py",
                 schemas / f"{binding}.node-events.json", schemas / f"{binding}.names.json",
-                generated, "--namespace", namespace)
+                generated, "--namespace", namespace,
+                *(["--arguments", arguments] if arguments.is_file() else []))
             if generated.read_bytes() != header.read_bytes():
                 raise ValueError(f"Stale presentation event binding {header.relative_to(ROOT)}")
-        sources = [c, examples / "marker.cpp", examples / "placement.cpp",
+        sources = [c, examples / "marker.cpp", examples / "placement.cpp", builtins / "automation_curve.cpp",
                    builtins / "click_detector.cpp", builtins / "beats.cpp"]
         for source in sources:
             run(sys.executable, ROOT / "scripts/build_presentation.py", source, scratch / (source.stem + ".wasm"))

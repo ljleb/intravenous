@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, toRaw, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
-    PresentationProgram, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
+    PresentationArtifact, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
+import { renderPresentationSecondsRuler } from "../../src/presentationSecondsRuler";
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
 import { sampleWindow } from "../../src/sampleWaveform";
 import { timelineSamples, timelineVisibleEventSpan } from "../../src/timelineSamples";
@@ -32,7 +33,7 @@ import { usePresentationSize } from "./presentationSize";
 import { usePresentationState } from "./presentationStateContext";
 import { createWebPresentationWorker } from "./presentationPluginWorker";
 
-const props = defineProps<{ mode: NodeDisplayMode; program: PresentationProgram }>();
+const props = defineProps<{ mode: NodeDisplayMode; program: PresentationArtifact }>();
 const node = useNode();
 const editor = useOptionalGraphEditor();
 const time = useTimelineWindow();
@@ -48,9 +49,8 @@ const editError = ref("");
 const replacementError = ref("");
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
     && !!node.value.address && node.value.loadState === "ready");
-const worker = "bytes" in props.program ? new ReloadableWasmPresentation(createWebPresentationWorker,
-    (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); }) : undefined;
-const present = "create" in props.program ? props.program.create() : undefined;
+const worker = new ReloadableWasmPresentation(createWebPresentationWorker,
+    (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); });
 let cancelDrag: (() => void) | undefined;
 const dragging = ref(false);
 const panelOpen = ref(false);
@@ -63,7 +63,7 @@ const save = usePresentationState({
     serialize: () => state.value,
     restore: (saved) => {
         state.value = saved ?? null;
-        worker?.restore(state.value);
+        worker.restore(state.value);
     },
 });
 const needs = props.program.manifest.observations ?? [];
@@ -99,6 +99,7 @@ const wake = new PresentationWake(() => session.input({ type: "wake" }));
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
 let cursorReply: { input: PresentationGestureInput; resolve: (point: PresentationCursor | undefined) => void } | undefined;
+let contextRequest: PresentationInput | undefined;
 
 function settleCursorReply(point?: PresentationCursor) {
     cursorReply?.resolve(point);
@@ -127,7 +128,7 @@ function fail(reason: unknown) {
     edits.dispose();
     cancelDrag?.();
     laneEdits.closeGestures();
-    worker?.dispose();
+    worker.dispose();
 }
 function accept(next: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) {
     if (cursorReply && inputs.includes(cursorReply.input)) {
@@ -137,7 +138,7 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
         settleCursorReply(cursor && (draw || "sample" in cursor) ? cursor : undefined);
     }
     const continuing = inputs.length > 0 || waking.value;
-    const deferredState = !!present && inputs.length > 0
+    const deferredState = inputs.length > 0
         && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
     if (continuing) laneEdits.accept(next, (value) => {
         if (!editor?.scope.value?.editable || !node.value.address) return;
@@ -149,15 +150,14 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
     waking.value = wake.pending;
     if (next.cancelDrag) cancelDrag?.();
     if (dragging.value) editor?.refreshPointerHint();
-    if (draw && menu.key.value !== null && !next.contextMenu) menu.close(true);
-    if (inputs.length && !dragging.value && "bytes" in props.program
-        && worker?.hasReplacement(props.program.bytes) && snapshot.value) session.update(snapshot.value);
+    if (contextRequest && inputs.includes(contextRequest)) contextRequest = undefined;
+    if (draw && !contextRequest && menu.key.value !== null && !next.contextMenu) menu.close(true);
+    if (inputs.length && !dragging.value
+        && worker.hasReplacement(props.program.bytes) && snapshot.value) session.update(snapshot.value);
 }
 const job = usePresentationFrame("update", () => { void session.flush(); });
 const session = new PresentationPluginSession((snapshot, inputs) => {
-    if (present) return present(snapshot, inputs);
     const program = props.program;
-    if (!("bytes" in program) || !worker) throw new Error("Missing presentation program");
     return worker.run(program.bytes, snapshot, inputs, () => !dragging.value && props.program === program);
 }, job.schedule, accept, fail);
 
@@ -166,7 +166,9 @@ const snapshot = computed((): PresentationSnapshot | undefined => {
     const timeline = time?.value;
     const scopedNode = node.value;
     const revision = editor?.scope.value?.sessionRevision ?? 0;
-    return { node: { address: scopedNode.address, definitionId: scopedNode.definitionId, arguments: scopedNode.construction?.arguments ?? [],
+    const construction = scopedNode.construction;
+    return { node: { address: scopedNode.address, definitionId: scopedNode.definitionId,
+        constructionDefinitionId: construction?.definitionId, arguments: construction ? toRaw(construction.arguments) : [],
         ports: scopedNode.ports.map((port) => ({ name: port.name, direction: port.direction, kind: port.kind,
             connected: port.connectivity === "connected", ...(port.kind === "continuous" && port.manualControl ? {
                 manualValue: port.manualControl.liveValue ?? (port.manualControl.participates ? port.manualControl.value : undefined),
@@ -179,14 +181,12 @@ const snapshot = computed((): PresentationSnapshot | undefined => {
 });
 watch([snapshot, () => props.program, dragging], ([snapshot]) => {
     clearTimeout(idleTimer);
-    // In-process programs can project this viewport before Vue draws it.
-    // Deferring that work by another frame leaves their marks in the old view.
-    if (snapshot) session.update(snapshot, present ? "immediate" : "frame");
+    if (snapshot) session.update(snapshot);
     else if (!disposed) {
         // The next viewport replaces this snapshot. Keep the last frame for
         // display and release a worker that repeatedly goes off screen.
         session.suspend();
-        if (worker) idleTimer = setTimeout(() => { if (!active.value && !editsPending.value) worker.suspend(); }, 2000);
+        idleTimer = setTimeout(() => { if (!active.value && !editsPending.value) worker.suspend(); }, 2000);
     }
 }, { immediate: true });
 
@@ -194,8 +194,12 @@ const timelineGrid = computed(() => {
     const grid = frame.value?.timelineGrid, view = time?.value, bounds = size.value;
     if (grid && view && bounds) return renderPresentationTimelineGrid(grid, view, bounds.width, bounds.height, props.mode === "editable");
 });
-const laneMarks = computed(() => timelineGrid.value
-    ? [...timelineGrid.value.marks, ...frame.value?.marks ?? []] : frame.value?.marks);
+const secondsRuler = computed(() => {
+    const view = time?.value, bounds = size.value, inset = frame.value?.secondsRulerInset;
+    if (view && bounds && inset !== undefined) return renderPresentationSecondsRuler(view, bounds.width, bounds.height, props.mode, inset);
+});
+const laneMarks = computed(() => timelineGrid.value || secondsRuler.value
+    ? [...timelineGrid.value?.marks ?? [], ...secondsRuler.value ?? [], ...frame.value?.marks ?? []] : frame.value?.marks);
 const seek = usePlayheadSeek(surface, () => frame.value?.timelineGrid?.seek ? time?.value : undefined,
     () => timelineGrid.value?.samples ?? [], () => {
         const grid = frame.value?.timelineGrid;
@@ -240,17 +244,16 @@ function pointerDown(event: PointerEvent) {
             marks: (timelineMarks?.value ?? []).map(({ index }) => String(index)),
             playhead: playback?.backgroundPlayhead.value?.toString(),
         };
-        if (input.phase === "finish" && worker && target.cursorReturn) {
+        if (input.phase === "finish" && target.cursorReturn) {
             released = new Promise((resolve) => { cursorReply = { input, resolve }; });
         }
-        session.input(input, present && (input.phase === "begin" || input.phase === "finish" || input.phase === "cancel") ? "immediate" : "frame");
+        session.input(input, input.phase === "begin" || input.phase === "finish" || input.phase === "cancel" ? "immediate" : "frame");
         if (input.phase === "finish" || input.phase === "cancel") {
             cancelDrag = undefined;
             dragging.value = false;
             activeTarget.value = undefined;
             hovered.value = undefined;
         }
-        if (input.phase === "begin" && present && (frame.value?.cancelDrag || error.value)) return false;
     }, {
         trace,
         hideCursor: target.hideCursor,
@@ -285,22 +288,27 @@ function openContext(event: MouseEvent) {
         return;
     }
     menu.open(event, target.id, { anchor: surface.value, returnFocus: surface.value, initialFocus: "select" });
-    session.input({ type: "context", id: target.id, point }, present ? "immediate" : "frame");
+    contextRequest = { type: "context", id: target.id, point };
+    session.input(contextRequest, "immediate");
 }
 function contextToggled(open: boolean) {
     menu.toggled(open);
-    if (!open) session.input({ type: "dismissContext" });
+    if (!open) {
+        contextRequest = undefined;
+        session.input({ type: "dismissContext" });
+    }
 }
 function dismissContext() {
-    session.input({ type: "dismissContext", cancelled: true }, present ? "immediate" : "frame");
+    session.input({ type: "dismissContext", cancelled: true });
 }
 const unregisterInterrupt = editor?.registerPresentationInterrupt((reason) => {
+    contextRequest = undefined;
     menu.close();
     settleCursorReply();
     const replies: PresentationInput[] = [];
     for (const { requestId } of edits.discardPending()) if (requestId)
         replies.push({ type: "editResult", requestId, error: "Presentation edit interrupted" });
-    session.interrupt(reason, replies, present ? "immediate" : "frame");
+    session.interrupt(reason, replies);
     cancelDrag?.();
 });
 watch(editable, (enabled) => { if (!enabled) menu.close(); });
@@ -322,13 +330,13 @@ const valueNavigation: LaneValueNavigation = {
         } } : { ...base, mode, pan(delta) {
             if (!delta) return;
             changed = true;
-            session.input({ type: "valueView", action: "pan", delta }, present ? "immediate" : "frame");
+            session.input({ type: "valueView", action: "pan", delta });
         } };
     },
     zoom(factor, cursorY) {
         const rect = surface.value?.getBoundingClientRect();
         if (!rect?.height || !frame.value?.valueNavigation || dragging.value || factor === 1) return false;
-        session.input({ type: "valueView", action: "zoom", factor, y: (cursorY - rect.top) / rect.height }, present ? "immediate" : "frame");
+        session.input({ type: "valueView", action: "zoom", factor, y: (cursorY - rect.top) / rect.height });
         return true;
     },
     reset() {
@@ -351,7 +359,7 @@ onBeforeUnmount(() => {
     session.dispose();
     edits.dispose();
     cancelDrag?.();
-    worker?.dispose();
+    worker.dispose();
     laneEdits.closeGestures();
 });
 </script>

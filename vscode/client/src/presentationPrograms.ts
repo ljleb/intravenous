@@ -1,11 +1,6 @@
-import { automationCurvePresentationManifest, createAutomationCurvePresentation } from "./automationCurvePresentation";
-import type { PresentationArtifact, PresentationProgram } from "./presentationPlugin";
+import type { PresentationArtifact } from "./presentationPlugin";
 
 export const genericPresentationId = "iv.generic";
-
-export const builtinPresentationPrograms = new Map<string, PresentationProgram>([
-    ["builtin.automation.curve", { manifest: automationCurvePresentationManifest, create: createAutomationCurvePresentation }],
-]);
 
 export function projectProgramsByDefinition(plugins: readonly PresentationArtifact[]): Map<string, PresentationArtifact> {
     const selections = new Map<string, PresentationArtifact>();

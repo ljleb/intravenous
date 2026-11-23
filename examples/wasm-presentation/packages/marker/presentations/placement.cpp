@@ -2,14 +2,28 @@
 
 namespace {
 using namespace iv::presentation;
+using automation_events::AcceptedPoints;
 using automation_events::PlacePoint;
+using automation_events::PlacePointPoint;
 using automation_events::PlacePointPointInterpolation;
 using automation_events::PlacePointSegmentsElement;
 using automation_events::PlacePointSegmentsElementInterpolation;
 
 constexpr uint32_t target = 1;
+constexpr uint32_t point_id = 17;
+constexpr char point_sample[] = "9223372036854775805";
 template<size_t Length>
 IvString text(char const (&value)[Length]) { return {value, Length - 1}; }
+
+bool is_placement(PlacePointPoint const& point)
+{
+    if (point.id != point_id || point.sample_index.kind != IV_SCALAR_STRING) return false;
+    auto const sample = point.sample_index.string;
+    if (sample.size != sizeof(point_sample) - 1) return false;
+    for (uint32_t i = 0; i < sample.size; ++i)
+        if (sample.data[i] != point_sample[i]) return false;
+    return true;
+}
 
 class Placement {
     EditGesture gesture_;
@@ -40,12 +54,6 @@ class Placement {
     {
         auto const bounds = frame.content_bounds();
         for (auto const& input : frame.gestures()) {
-            if (input.phase == IV_GESTURE_CANCEL && !input.id) {
-                // History invalidates the host's edit group.
-                pending_ = {};
-                finished_ = true;
-                continue;
-            }
             if (input.id != target || finished_) continue;
             if (input.phase == IV_GESTURE_BEGIN && !started_) {
                 gesture_ = frame.begin_edit();
@@ -62,14 +70,14 @@ class Placement {
 
     EditRequest send_placement(Context& frame, bool insert)
     {
-        uint32_t const ordered[] = {21, 17};
+        uint32_t const ordered[] = {21, point_id};
         PlacePointSegmentsElement const segments[] = {
             {.id = 12, .interpolation = PlacePointSegmentsElementInterpolation::empty, .tension = 1},
         };
         return frame.send(PlacePoint{
-            .point = {.id = 17, .seconds = 0, .value = desired_,
+            .point = {.id = point_id, .seconds = 0, .value = desired_,
                 .interpolation = PlacePointPointInterpolation::hold, .tension = 1,
-                .sample_index = converted_string(text("9223372036854775805")), .order = 1},
+                .sample_index = converted_string(text(point_sample)), .order = 1},
             .insert = insert, .segments = {segments, 1}, .ordered_ids = {ordered, 2},
         }, gesture_);
     }
@@ -88,7 +96,14 @@ class Placement {
         }
     }
 
-    void draw(Context& frame) const
+    PlacePointPoint const* accepted_placement(Span<PlacePointPoint const> points) const
+    {
+        for (auto const& point : points)
+            if (is_placement(point)) return &point;
+        return nullptr;
+    }
+
+    void draw(Context& frame, float value) const
     {
         auto const bounds = frame.content_bounds();
         auto const timeline = frame.timeline_view();
@@ -99,7 +114,7 @@ class Placement {
         for (uint32_t i = 0; i < regions.size; ++i) points += regions.data[i].points.size;
         auto const mark = frame.reserve_polylines(1 + regions.size, points);
         if (!mark.polylines) return;
-        auto const y = bounds.height * (1 - desired_);
+        auto const y = bounds.height * (1 - value);
         mark.points[0] = {0, y};
         mark.points[1] = {bounds.width, y};
         mark.polylines[0] = {1, IV_INK_INPUT, {mark.points, 2}};
@@ -120,19 +135,31 @@ public:
     void present(Context& frame)
     {
         receive(frame);
+        for (auto const& input : frame.editor_inputs()) {
+            if (input.kind != IV_EDITOR_INTERRUPT) continue;
+            pending_ = {};
+            finished_ = true;
+        }
         read_input(frame);
         submit(frame);
 
         auto const bounds = frame.content_bounds();
-        draw(frame);
+        auto const* points = frame.construction_argument<AcceptedPoints>();
+        bool const awaiting_snapshot = !finished_ || frame.project_revision() < accepted_revision_;
+        auto const* accepted = points && !awaiting_snapshot ? accepted_placement(*points) : nullptr;
+        auto displayed = desired_;
+        if (accepted) displayed = accepted->value;
+        else if (!started_ && points && points->size) displayed = points->data[points->size - 1].value;
+        draw(frame, displayed);
         if (frame.can_edit() && !started_ && !finished_) {
             IvDragTarget const hit{target, IV_DRAG_ABSOLUTE, bounds};
             frame.register_drag_targets({&hit, 1});
         }
         if (rejected_) frame.set_status(text("Placement rejected"));
         else if (!started_) frame.set_status(text("Drag to place one point"));
-        else if (!finished_ || frame.project_revision() < accepted_revision_) frame.set_status(text("Placement pending"));
-        else frame.set_status(text("Placement accepted"));
+        else if (awaiting_snapshot) frame.set_status(text("Placement pending"));
+        else if (accepted) frame.set_status(text("Placement accepted"));
+        else frame.set_status(text("Placement missing from accepted arguments"));
     }
 };
 }

@@ -2,19 +2,21 @@ import { observationWindowRequests } from "../src/observationWindows";
 import { ObservationViewportDisplay } from "../src/observationViewportDisplay";
 import { receiveSnapshot } from "./observationFixtures";
 import { automationBoundTracks, automationBoundTracksForSpans,
-    sampleAutomationPreview } from "../src/automationBoundInputs";
+    sampleAutomationPreview } from "./reference/automationBoundInputs";
 import { ObservationValues, type ObservationWindow, type ObservationWindowResult } from "../src/observations";
 import test from "node:test";
+// Reference cases for the previous curve model. automationCurvePresentation.test.ts
+// exercises the packaged WASM editor through the presentation ABI.
 import assert from "node:assert/strict";
-import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "../src/automationCurveEditing";
+import { AutomationCurveEditing, automationCycleSeconds, automationWindow, curvePointAt, readAutomationCurve, type CurveAxes } from "./reference/automationCurveEditing";
 import { automationSampleOffset, automationValueAtFraction, automationValueFraction, automationValueGuides,
-    panAutomationValueAxis, rankAutomationValueGuides, readAutomationCurveView, zoomAutomationValueAxis } from "../src/automationCurveGeometry";
+    panAutomationValueAxis, rankAutomationValueGuides, readAutomationCurveView, zoomAutomationValueAxis } from "./reference/automationCurveGeometry";
 import type { GraphScope, GraphScopeNode, NodeAddress, Point } from "../src/graphScope";
 import { KnobPointerLock } from "../src/knobPointerLock";
 import { knobFraction, valueScaleFraction } from "../src/knobPresentation";
 import { serializeNodeEvent, type NodeEvent } from "../src/nodeEvents";
 import { wrapTimelineCursor } from "../src/timelineViewport";
-import { automationTimelineTicks, timelineTicks } from "../src/timelineGeometry";
+import { timelineTicksWithSampleDivisions, timelineTicks } from "../src/timelineGeometry";
 
 const target: NodeAddress = { instanceId: "curve" };
 const curvedAxes: CurveAxes = { left: 0, top: 0, width: 100, height: 100, begin: 0, end: 10 };
@@ -671,13 +673,13 @@ test("a tension drag updates its draft, clamps at both ends and closes one typed
 test("automation labels share the timeline ticks and sample subdivisions follow the point transform", () => {
     const rate = 48000, width = 400;
     const window = { beginSample: "-10", beginFraction: .4, spanSamples: 19.2, sampleRate: rate };
-    const ticks = automationTimelineTicks(window, width);
+    const ticks = timelineTicksWithSampleDivisions(window, width);
     assert.deepEqual(ticks.filter((tick) => !tick.minor).map(({ x, label }) => ({ x, label })),
         timelineTicks(window, width).map(({ x, label }) => ({ x, label })));
     assert.equal(ticks.find((tick) => tick.label === "0 s")?.sampleLabel, "0 smp");
     const expected = automationSampleOffset(1n, -.0002, rate) * width / .0004;
     assert.ok(ticks.some((tick) => tick.minor && Math.abs(tick.x - expected) < 1e-8));
-    assert.ok(automationTimelineTicks({ ...window, beginSample: "0", beginFraction: 0, spanSamples: 96000 }, width).every((tick) => !tick.minor));
+    assert.ok(timelineTicksWithSampleDivisions({ ...window, beginSample: "0", beginFraction: 0, spanSamples: 96000 }, width).every((tick) => !tick.minor));
 });
 
 test("value panning shifts the center in either display mode", () => {

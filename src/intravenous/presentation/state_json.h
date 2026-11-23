@@ -150,6 +150,37 @@ static inline void iv_json_decimal(IvJsonWriter *writer, const char *key, double
     }
 }
 
+/* Save a finite double as a decimal significand and a base-ten exponent. */
+static inline void iv_json_number(IvJsonWriter *writer, const char *key, double value)
+{
+    iv_json_key(writer, key);
+    if (!iv_json_value(writer)) return;
+    if (!__builtin_isfinite(value)) { writer->failed = true; return; }
+    if (value == 0) { iv_json_byte(writer, '0'); return; }
+    if (value < 0) { iv_json_byte(writer, '-'); value = -value; }
+    int exponent = 0;
+    while (value >= 10) { value /= 10; ++exponent; }
+    while (value < 1) { value *= 10; --exponent; }
+    uint64_t digits = (uint64_t)(value * 10000000000000000. + .5);
+    uint64_t power = 10000000000000000u;
+    if (digits >= 10 * power) { digits /= 10; ++exponent; }
+    iv_json_byte(writer, (char)('0' + digits / power));
+    digits %= power;
+    if (digits) {
+        iv_json_byte(writer, '.');
+        for (power /= 10; digits && power; power /= 10) {
+            iv_json_byte(writer, (char)('0' + digits / power));
+            digits %= power;
+        }
+    }
+    if (!exponent) return;
+    iv_json_byte(writer, 'e');
+    if (exponent < 0) { iv_json_byte(writer, '-'); exponent = -exponent; }
+    if (exponent >= 100) iv_json_byte(writer, (char)('0' + exponent / 100));
+    if (exponent >= 10) iv_json_byte(writer, (char)('0' + exponent / 10 % 10));
+    iv_json_byte(writer, (char)('0' + exponent % 10));
+}
+
 static inline int32_t iv_json_finish(const IvJsonWriter *writer)
 {
     return writer->failed || writer->depth || !writer->length || writer->length > INT32_MAX
@@ -197,7 +228,7 @@ static inline IvJsonReader iv_json_take(IvJsonReader* input)
 
 static inline int iv_json_token_is(IvJsonReader value, char const* literal)
 {
-    if (value.end - value.begin < 2 || *value.begin++ != '"' || *--value.end != '"') return 0;
+    if (!value.begin || value.end - value.begin < 2 || *value.begin++ != '"' || *--value.end != '"') return 0;
     for (; *literal && value.begin < value.end; ++literal, ++value.begin)
         if (*value.begin != *literal) return 0;
     return value.begin == value.end && !*literal;
@@ -237,7 +268,19 @@ static inline double iv_json_read_number(IvJsonReader value, double fallback)
             place *= .1;
         }
     }
-    return value.begin == value.end ? (negative ? -result : result) : fallback;
+    if (value.begin != value.end && (*value.begin == 'e' || *value.begin == 'E')) {
+        ++value.begin;
+        bool decrease = value.begin != value.end && *value.begin == '-';
+        if (value.begin != value.end && (*value.begin == '+' || *value.begin == '-')) ++value.begin;
+        if (value.begin == value.end || *value.begin < '0' || *value.begin > '9') return fallback;
+        int exponent = 0;
+        while (value.begin < value.end && *value.begin >= '0' && *value.begin <= '9') {
+            exponent = exponent * 10 + (*value.begin++ - '0');
+            if (exponent > 324) return fallback;
+        }
+        for (; exponent > 0; --exponent) result = decrease ? result / 10 : result * 10;
+    }
+    return value.begin == value.end && __builtin_isfinite(result) ? (negative ? -result : result) : fallback;
 }
 
 

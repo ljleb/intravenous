@@ -4,9 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 7
+#define IV_PRESENTATION_ABI_VERSION 9
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
+#define IV_PRESENTATION_TIMELINE_SNAPPING 2
 #define IV_PRESENTATION_NO_FLAGS 0
 #define IV_PRESENTATION_STRINGIFY_IMPL(Value) #Value
 #define IV_PRESENTATION_STRINGIFY(Value) IV_PRESENTATION_STRINGIFY_IMPL(Value)
@@ -40,6 +41,13 @@ typedef struct { double x, y, width, height; } IvRectangle;
 IV_TYPEDEF_SPAN(char, IvString);
 IV_TYPEDEF_SPAN(IvString, IvStringSpan);
 IV_TYPEDEF_SPAN(IvPoint, IvPointSpan);
+IV_TYPEDEF_SPAN(int64_t, IvSampleIndexSpan);
+
+typedef struct {
+    IvSampleIndexSpan marks;
+    int64_t playhead;
+    uint32_t has_playhead;
+} IvSnapCandidates;
 
 enum {
     IV_GESTURE_BEGIN, IV_GESTURE_MOVE, IV_GESTURE_MODIFIERS,
@@ -47,9 +55,10 @@ enum {
 };
 enum { IV_SHIFT = 1, IV_ALT = 2, IV_CONTROL = 4, IV_META = 8 };
 typedef struct {
-    uint32_t id, phase, modifiers, reserved;
+    uint32_t id, phase, modifiers, sequence;
     IvPoint point, delta;
     double wheel;
+    const IvSnapCandidates *snapping;
 } IvGestureInput;
 IV_TYPEDEF_SPAN(IvGestureInput, IvGestureInputSpan);
 
@@ -58,11 +67,27 @@ enum {
     IV_INK_OUTPUT, IV_INK_SELECTION, IV_INK_HIGHLIGHT, IV_INK_WARNING,
     IV_INK_BACKGROUND
 };
+enum { IV_STROKE_OPACITY = 1, IV_STROKE_DASHED = 2, IV_STROKE_FILL = 4, IV_STROKE_FADE = 8 };
+typedef struct {
+    uint32_t flags, target;
+    double opacity, width;
+    IvPoint fade_from, fade_to;
+} IvStroke;
 typedef struct {
     uint32_t id, ink;
     IvPointSpan points;
+    IvStroke stroke;
 } IvPolyline;
 IV_TYPEDEF_SPAN(IvPolyline, IvPolylineSpan);
+
+enum { IV_SHAPE_RECTANGLE, IV_SHAPE_CIRCLE };
+typedef struct { IvPoint center; double radius; } IvCircle;
+typedef struct {
+    uint32_t id, kind, ink, border, target;
+    union { IvRectangle rectangle; IvCircle circle; } geometry;
+    double opacity;
+} IvShape;
+IV_TYPEDEF_SPAN(IvShape, IvShapeSpan);
 
 typedef struct {
     uint32_t id, ink;
@@ -102,17 +127,24 @@ IV_TYPEDEF_SPAN(IvObservedWaveform, IvObservedWaveformSpan);
 enum { IV_LANE_EDITABLE, IV_LANE_COMPACT, IV_LANE_MINI, IV_LANE_NANO };
 
 enum { IV_DRAG_RELATIVE, IV_DRAG_ABSOLUTE };
+enum {
+    IV_TARGET_SECONDARY = 1, IV_TARGET_WHEEL = 2, IV_TARGET_CONTEXT = 4,
+    IV_TARGET_CURSOR_RETURN = 8, IV_TARGET_HIDE_CURSOR = 16, IV_TARGET_HORIZONTAL_RESIZE = 32
+};
 typedef struct {
     uint32_t id, drag;
     IvRectangle bounds;
+    uint32_t flags;
+    IvString hint, shortcuts;
 } IvDragTarget;
 IV_TYPEDEF_SPAN(IvDragTarget, IvDragTargetSpan);
 
 typedef struct {
     int64_t begin_sample;
     double begin_fraction, span_samples;
-    uint32_t sample_rate;
+    uint32_t sample_rate, flags;
 } IvTimelineView;
+enum { IV_TIMELINE_CUSTOM_GRID = 1 };
 
 IV_TYPEDEF_SPAN(double, IvNumberSpan);
 enum { IV_NUMERIC_UNAVAILABLE, IV_NUMERIC_SCALAR, IV_NUMERIC_SEQUENCE };
@@ -123,22 +155,58 @@ typedef struct {
 IV_TYPEDEF_SPAN(IvNumericValue, IvNumericValueSpan);
 
 enum { IV_CONTROL_PREVIEW, IV_CONTROL_COMMIT, IV_CONTROL_FINISH };
+enum { IV_CONTROL_NO_VALUE, IV_CONTROL_NUMBER, IV_CONTROL_STRING };
 typedef struct {
     IvString id;
     double value;
-    uint32_t phase, has_value;
+    uint32_t phase, value_kind;
+    IvString string;
+    uint32_t sequence;
 } IvControlInput;
 IV_TYPEDEF_SPAN(IvControlInput, IvControlInputSpan);
 
-enum { IV_SETTING_TEXT, IV_SETTING_KNOB, IV_SETTING_ACTION };
+enum { IV_SETTING_TEXT, IV_SETTING_KNOB, IV_SETTING_ACTION, IV_SETTING_CHOICE };
 enum { IV_SETTING_INTEGER = 1, IV_SETTING_DISABLED = 2 };
+typedef struct { IvString value, label; } IvChoice;
+IV_TYPEDEF_SPAN(IvChoice, IvChoiceSpan);
 typedef struct {
     IvString id, label;
-    uint32_t row, kind, flags;
+    uint32_t row, kind, flags, choice_index;
     double value, min, max, default_value;
+    IvChoiceSpan choices;
+    double step, scrub_speed;
 } IvSetting;
 IV_TYPEDEF_SPAN(IvSetting, IvSettingSpan);
 typedef struct { IvString label; IvSettingSpan settings; } IvSettingsPanel;
+
+enum { IV_EDITOR_CONTEXT, IV_EDITOR_DISMISS_CONTEXT, IV_EDITOR_ITEMS, IV_EDITOR_VALUE_VIEW, IV_EDITOR_INTERRUPT };
+enum { IV_ITEMS_DELETE, IV_ITEMS_SELECT_ALL };
+enum { IV_VALUE_PAN, IV_VALUE_ZOOM, IV_VALUE_RESET };
+enum { IV_INTERRUPT_HISTORY, IV_INTERRUPT_DISCONNECTED };
+typedef struct {
+    uint32_t kind, action, target, sequence;
+    IvPoint point;
+    double value;
+} IvEditorInput;
+IV_TYPEDEF_SPAN(IvEditorInput, IvEditorInputSpan);
+typedef struct { IvString id; double value; } IvManualInput;
+IV_TYPEDEF_SPAN(IvManualInput, IvManualInputSpan);
+
+enum {
+    IV_EDITOR_ITEM_EDITING = 1, IV_EDITOR_VALUE_NAVIGATION = 2, IV_EDITOR_CANCEL_DRAG = 4,
+    IV_EDITOR_WAKE = 8, IV_EDITOR_SECONDS_RULER = 16
+};
+enum { IV_CURSOR_UNCHANGED, IV_CURSOR_POINT, IV_CURSOR_SAMPLE };
+typedef struct {
+    uint32_t flags, cursor;
+    int64_t sample;
+    /* Logical pixels for IV_CURSOR_POINT. For IV_CURSOR_SAMPLE, y is a
+       fraction of the content height and x is unused. */
+    IvPoint position;
+    IvString hint, shortcuts;
+    double wake_after_ms;
+    double ruler_label_inset;
+} IvEditorFeedback;
 
 enum { IV_SCALAR_BOOLEAN, IV_SCALAR_NUMBER, IV_SCALAR_STRING };
 typedef struct { uint32_t kind; double number; IvString string; } IvConvertedScalar;
@@ -177,18 +245,28 @@ IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationCont
 IvObservedWaveformSpan iv_observed_waveforms(const IvPresentationContext *context);
 IvTimelineView iv_timeline_view(const IvPresentationContext *context);
 IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context);
+/* Index into this artifact's construction bindings. The typed value is
+   borrowed for the current call. NULL means omitted or unavailable. */
+const void *iv_construction_argument(const IvPresentationContext *context, uint32_t binding);
+uint32_t iv_construction_snapshot(const IvPresentationContext *context);
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context);
 bool iv_edits_pending(const IvPresentationContext *context);
 bool iv_edit_failed(const IvPresentationContext *context);
 uint64_t iv_project_revision(const IvPresentationContext *context);
 IvEditReplySpan iv_edit_replies(const IvPresentationContext *context);
+IvEditorInputSpan iv_editor_inputs(const IvPresentationContext *context);
+IvManualInputSpan iv_manual_inputs(const IvPresentationContext *context);
+double iv_frame_time(const IvPresentationContext *context);
 
 /* Calls record in memory. The host consumes the recorded batches after the
    presentation returns. Each span can contain all items of that kind. */
 bool iv_draw_polylines(IvPresentationContext *context, IvPolylineSpan polylines);
 bool iv_draw_texts(IvPresentationContext *context, IvTextSpan texts);
+bool iv_draw_shapes(IvPresentationContext *context, IvShapeSpan shapes);
 bool iv_register_drag_targets(IvPresentationContext *context, IvDragTargetSpan targets);
 bool iv_set_settings_panel(IvPresentationContext *context, IvSettingsPanel panel);
+bool iv_set_context_menu(IvPresentationContext *context, IvSettingsPanel panel);
+bool iv_set_editor_feedback(IvPresentationContext *context, IvEditorFeedback feedback);
 /* Copy every span referenced by a generated payload into the output arena.
    The record and its spans are inspected after iv_present returns. */
 void *iv_copy_edit_payload(IvPresentationContext *context, const void *data, uint32_t size);

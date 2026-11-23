@@ -24,7 +24,7 @@ const color = (ink?: PresentationInk) => ink && `var(${inkColor[ink]})`;
 <template>
     <svg class="plugin-scene" aria-hidden="true">
         <template v-for="(mark, i) in marks" :key="mark.id">
-            <template v-if="mark.type === 'polyline'">
+            <template v-if="mark.type === 'polyline' || mark.type === 'packedPolyline'">
                 <defs v-if="mark.fade"><linearGradient :id="`${graphicsId}-fade-${i}`" gradientUnits="userSpaceOnUse"
                     :x1="mark.fade.from.x" :y1="mark.fade.from.y" :x2="mark.fade.to.x" :y2="mark.fade.to.y">
                     <stop offset="0" stop-opacity="0" :stop-color="color(mark.ink)" />
@@ -33,14 +33,12 @@ const color = (ink?: PresentationInk) => ink && `var(${inkColor[ink]})`;
                     <stop offset=".75" stop-opacity=".2" :stop-color="color(mark.ink)" />
                     <stop offset="1" stop-opacity="0" :stop-color="color(mark.ink)" />
                 </linearGradient></defs>
-                <polyline :points="svgPoints(mark.points)" :opacity="mark.opacity"
+                <polyline :points="mark.type === 'polyline' ? svgPoints(mark.points) : packedSvgPoints(mark.coordinates)" :opacity="mark.opacity"
                     :class="{ 'plugin-hover-mark': mark.target && highlightedTarget === mark.target }"
                     :style="{ stroke: mark.fade ? `url(#${graphicsId}-fade-${i})` : (mark.fill ? 'none' : color(mark.ink)),
                         fill: mark.fill ? color(mark.ink) : undefined,
                         strokeWidth: mark.strokeWidth, strokeDasharray: mark.dashed ? '3 3' : undefined }" />
             </template>
-            <polyline v-else-if="mark.type === 'packedPolyline'" :points="packedSvgPoints(mark.coordinates)"
-                :opacity="mark.opacity" :style="{ stroke: color(mark.ink) }" />
             <rect v-else-if="mark.type === 'rect'" :x="mark.x" :y="mark.y" :width="mark.width" :height="mark.height"
                 :opacity="mark.opacity" :style="{ fill: color(mark.ink), stroke: color(mark.border) }" />
             <circle v-else-if="mark.type === 'circle'" :cx="mark.x" :cy="mark.y" :r="mark.radius" :opacity="mark.opacity"

@@ -205,9 +205,14 @@ test("ordered edits separate replaceable previews from each other", async () => 
     assert.deepEqual(sent, commands);
 });
 
-test("a WASM placement draws while its node event is pending and resumes on its matching reply", async () => {
+test("a WASM placement previews while pending and draws from the accepted constructor arguments", async () => {
     const worker = createNodePresentationWorker(wasmFixture("placement").toString("base64"));
-    const curve = { ...snapshot, node: { ...snapshot.node, definitionId: "builtin.automation.curve", arguments: [] } };
+    const definitionId = "builtin.automation.curve";
+    const initialPoint = { id: 21, seconds: 0, value: .25, interpolation: "hold", tension: 1,
+        sample_index: "9223372036854775805", order: 0 };
+    const argumentsBeforeEdit: unknown[] = [[initialPoint]];
+    const curve = { ...snapshot, node: { ...snapshot.node, definitionId, constructionDefinitionId: definitionId,
+        arguments: argumentsBeforeEdit } };
     const replies: PresentationInput[] = [];
     const requests: Array<ReturnType<typeof serializeNodeEvent>> = [];
     let accept!: () => void;
@@ -238,6 +243,9 @@ test("a WASM placement draws while its node event is pending and resumes on its 
     });
     const turn = () => new Promise<void>((resolve) => { setImmediate(resolve); });
     try {
+        const before = (await run()).marks?.[0];
+        assert.equal(before?.type, "packedPolyline");
+        assert.deepEqual(Array.from(before.coordinates), [0, 60, 500, 60]);
         const initial = await run(drag("begin", 40));
         const insert = initial.commands?.[0];
         assert.equal(insert?.type, "edit");
@@ -279,7 +287,21 @@ test("a WASM placement draws while its node event is pending and resumes on its 
         edits.accept(end, () => {});
         await turn();
         assert.equal((await run(...replies.splice(0))).status, "Placement pending");
-        assert.equal(readPresentationFrame(await worker.run({ ...curve, revision }, [])).status, "Placement accepted");
+        assert.equal(readPresentationFrame(await worker.run({ ...curve, revision }, [])).status,
+            "Placement missing from accepted arguments");
+
+        const placed = { id: 17, seconds: 0, value: .625, interpolation: "hold", tension: 1,
+            sample_index: "9223372036854775805", order: 1 };
+        const readBack = { ...curve, revision, node: { ...curve.node, arguments: [[initialPoint, placed]] } };
+        for (let i = 0; i < 2; ++i) {
+            const frame = readPresentationFrame(await worker.run(readBack, []));
+            assert.equal(frame.status, "Placement accepted");
+            const acceptedMark = frame.marks?.[0];
+            assert.equal(acceptedMark?.type, "packedPolyline");
+            assert.deepEqual(Array.from(acceptedMark.coordinates), [0, 30, 500, 30]);
+        }
+        const missing = { ...readBack, node: { ...readBack.node, constructionDefinitionId: undefined } };
+        assert.equal(readPresentationFrame(await worker.run(missing, [])).status, "Placement missing from accepted arguments");
         assert.equal(groups, 1);
         assert.equal(finished, 1);
     } finally {

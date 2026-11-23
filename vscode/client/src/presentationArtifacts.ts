@@ -34,10 +34,6 @@ export class PresentationArtifactReader {
                 || id !== `${provider}/${parsed.id}` || format !== "wasm" || schemaVersion !== parsed.version
                 || typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) continue;
             const identity = id as string;
-            if (parsed.timelineSnapping) {
-                report(`${identity} · This presentation ABI does not support timeline snapping`);
-                continue;
-            }
             if (seen.has(identity)) continue;
             seen.add(identity);
             const binding = JSON.stringify(parsed);
@@ -48,7 +44,8 @@ export class PresentationArtifactReader {
             }
             try {
                 const artifact = await bytes;
-                const program = { id: identity, manifest: { ...parsed, ...artifact.descriptor }, digest, bytes: artifact.bytes };
+                const program = { id: identity, manifest: { ...parsed, ...artifact.descriptor,
+                    timelineSnapping: artifact.descriptor.timelineSnapping }, digest, bytes: artifact.bytes };
                 published.set(identity, { binding, artifact: program });
                 artifacts.push(program);
             }

@@ -218,19 +218,17 @@ file(GLOB _iv_presentation_sdk CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/presentation/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/presentation/*.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/presentation/*.c")
-foreach(_iv_presentation IN ITEMS beats click_detector)
+file(GLOB _iv_builtin_presentation_headers CONFIGURE_DEPENDS
+    "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/presentations/*.hpp")
+foreach(_iv_presentation IN ITEMS automation_curve beats click_detector)
     set(_iv_source "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/presentations/${_iv_presentation}.cpp")
     set(_iv_destination "${IV_BUILTIN_PACKAGE_SEARCH_ROOT}/builtin/presentations/${_iv_presentation}.wasm")
-    set(_iv_binding_dependencies "")
-    if(_iv_presentation STREQUAL "beats")
-        list(APPEND _iv_binding_dependencies "${IV_BUILTIN_PACKAGE_SOURCE_ROOT}/builtin/presentations/beats_events.hpp")
-    endif()
     add_custom_command(
         OUTPUT "${_iv_destination}"
         COMMAND "${Python3_EXECUTABLE}" "${_iv_presentation_builder}"
             "${_iv_source}" "${_iv_destination}" --clang "${IV_PRESENTATION_WASM_COMPILER}"
             --linker "${IV_PRESENTATION_WASM_LINKER}"
-        DEPENDS "${_iv_source}" "${_iv_presentation_builder}" ${_iv_presentation_sdk} ${_iv_binding_dependencies}
+        DEPENDS "${_iv_source}" "${_iv_presentation_builder}" ${_iv_presentation_sdk} ${_iv_builtin_presentation_headers}
         VERBATIM)
     list(APPEND _iv_builtin_presentations "${_iv_destination}")
 endforeach()

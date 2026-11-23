@@ -1,6 +1,6 @@
 # Presentation C ABI
 
-This reference describes the core wasm32 ABI version 7.
+This reference describes the core wasm32 ABI version 9.
 [`abi.h`](../../../src/intravenous/presentation/abi.h) declares the exports
 and wire layout. [`presentation.h`](../../../src/intravenous/presentation/presentation.h)
 declares the C guest API.
@@ -15,15 +15,16 @@ the WebAssembly interface and publishes its drawing records.
 | --- | --- |
 | Container | Core wasm32 module with exported linear memory named `memory` and zero imports |
 | Descriptor | Exactly one custom section named `iv.presentation` |
-| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `7`, flags |
-| Descriptor flags | Bit 0 enables the shared timeline overlays. All other bits are reserved. |
+| Descriptor prefix | Three bytes in order: descriptor version `1`, ABI version `9`, flags |
+| Descriptor flags | Bit 0 enables shared timeline overlays. Bit 1 requests snap candidates for pointer gestures and requires bit 0. |
 | Icon suffix | Optional UTF-8 SVG path data in a 16 × 16 coordinate space. The byte limit is 1,024. |
 | Artifact size | At most 256 KiB for package distribution |
 | Scalar encoding | Little-endian integers and IEEE-754 double values. Pointers in the ABI are 32-bit offsets into the module's memory. |
 | String encoding | A pointer and a 32-bit byte length. UTF-8, with a zero length for an empty string. |
 
 `IV_PRESENTATION_DESCRIPTOR(flags, icon)` emits the custom section.
-`IV_PRESENTATION_TIMELINE` is bit 0. Use `IV_PRESENTATION_NO_FLAGS`
+`IV_PRESENTATION_TIMELINE` is bit 0 and `IV_PRESENTATION_TIMELINE_SNAPPING`
+is bit 1. Use `IV_PRESENTATION_NO_FLAGS`
 for zero and `""` for the default icon. Linkers must preserve the custom
 section.
 
@@ -55,7 +56,7 @@ exports directly. The SDK calls no host functions from WASM.
 ## Host context and borrowed views
 
 All span records are 8 bytes, with their pointer at offset 0 and element
-count at offset 4. The context is 200 bytes on wasm32.
+count at offset 4. The context is 256 bytes on wasm32.
 
 | Context byte offset | Field |
 | --- | --- |
@@ -82,6 +83,13 @@ count at offset 4. The context is 200 bytes on wasm32.
 | 176 | Span of `IvEditReply` |
 | 184 | Number of recorded edits |
 | 188 | Span of `IvObservedWaveform` |
+| 196 | Span of pointers to typed construction arguments |
+| 204 | Span of editor inputs |
+| 212 | Span of active manual input values |
+| 224 | Frame clock in milliseconds |
+| 232 and 236 | Context menu and editor feedback pointers |
+| 240 and 244 | Head and tail of shape batches |
+| 248 | Construction snapshot token |
 
 The host allocates separate frame, gesture, scene-input, and output
 storage. The arena holds up to 1 MiB of output. The scene starts with
@@ -99,7 +107,12 @@ the module's memory maximum to 8 MiB.
 | `iv_observed_waveforms` | Viewport waveform regions from manifest-bound inputs or outputs |
 | `iv_timeline_view` | The viewport start, fraction, span, and project sample rate. Zero rate means unavailable. |
 | `iv_numeric_arguments` | Up to 64 positional constructor arguments, with a distinct kind for unsupported values |
-| `iv_control_inputs` | Ordered numeric and action inputs from the host settings panel |
+| `iv_construction_argument` | Borrow a typed value by binding index. A null pointer indicates an omitted or unavailable argument. An explicit empty sequence has a non-null pointer to an empty span. |
+| `iv_construction_snapshot` | Token that changes when the host replaces accepted argument data. Use equality to skip rebuilding derived storage. |
+| `iv_control_inputs` | Numeric, choice, and action inputs from the settings panel and context menu |
+| `iv_editor_inputs` | Context actions, item shortcuts, vertical navigation, and interruptions |
+| `iv_manual_inputs` | Enabled manual values for unconnected inputs, keyed by port name |
+| `iv_frame_time` | Monotonic clock value for pacing or scheduling work |
 | `iv_project_revision` | Revision associated with this frame's project inputs |
 | `iv_edit_replies` | Completed requests from this session, in delivery order |
 | `iv_edits_pending`, `iv_edit_failed` | Status of host-mediated editing. Keep a preview while pending and restore accepted arguments after a failure. |
@@ -115,20 +128,24 @@ by a 32-bit kind at 8. Unavailable, scalar, and sequence have values
 budget. Absent constructor arguments are omitted. Unsupported and
 over-budget arguments preserve their position with kind unavailable.
 
-`IvControlInput` is 24 bytes. An ID string at offset 0 identifies the
-setting. A numeric value at 8 has meaning only when the flag at 20 is set.
+`IvControlInput` is 40 bytes. An ID string at offset 0 identifies the
+setting. The value kind at 20 selects no value, the double at 8, or the
+string at 24. The sequence index is at 32.
 The phase at 16 is preview, commit, or finish, numbered 0 through 2.
 Action clicks use commit with no value. The combined budget for pointer
-inputs, control inputs, and edit replies is 512 records per frame. Each
-span preserves its own order.
+inputs, control inputs, editor inputs, and edit replies is 512 records per
+frame. Gesture, control, and editor spans preserve their own order and
+share sequence indices for processing events in delivery order.
 
-A gesture record occupies 56 bytes. The first four 32-bit fields are the
-target ID, phase, modifiers, and a reserved field. The point at offset 16
+A gesture record occupies 64 bytes. The first four 32-bit fields are the
+target ID, phase, modifiers, and sequence index. The point at offset 16
 and delta at offset 32 are two doubles each. The wheel value at offset 48
 is a double. The phases are begin, move, modifiers, wheel, finish, and
 cancel in that order. Modifier masks are shift 1, alt 2, control 4, and meta
-8. A cancel with ID zero interrupts the session's current interaction.
-Coordinates use the lane content's top-left origin.
+8. The optional `IvSnapCandidates` pointer at 56 borrows the visible grid
+indices and background playhead position. Coordinates use the lane
+content's top-left origin. `IV_EDITOR_INTERRUPT` supplies a distinct
+history or disconnection notification.
 
 An `IvObservedTriggerColumns` record is 40 bytes. It holds its ID at
 offset 0, a span of unsigned 32-bit display columns at 8, a uint64 count
@@ -166,9 +183,12 @@ bits as the signed project timeline index.
 | `iv_draw_polylines(context, span)` | Copy descriptors and vertices into the arena in one call. |
 | `iv_reserve_polylines(context, lines, points)` | Reserve descriptors and vertices. Fill every descriptor and supply a vertex subspan in the reservation before returning. Failure returns null pointers. |
 | `iv_draw_texts(context, span)` | Copy positions and UTF-8 labels into the arena. Labels are drawn above the line batches. |
-| `iv_register_drag_targets(context, span)` | Copy hit regions for this frame. A target specifies a numeric ID, a rectangle, and relative or absolute drag. |
+| `iv_draw_shapes(context, span)` | Draw rectangle or circle batches with optional borders and hover targets. |
+| `iv_register_drag_targets(context, span)` | Copy hit regions with a numeric ID, bounds, drag mode, button, and optional context or cursor behavior. |
 | `iv_reuse_drawing(context)` | Use the last drawing, including its timeline grid. Leave the drawing batches and grid empty for this call. Submit current hit targets independently. |
 | `iv_set_settings_panel(context, panel)` | Copy one settings panel with its strings and controls. |
+| `iv_set_context_menu(context, panel)` | Copy controls for the active context target with the same layout as settings. |
+| `iv_set_editor_feedback(context, feedback)` | Report item and value navigation, drag cancellation or cursor return, a wake delay, and an optional seconds ruler inset. |
 | `iv_copy_edit_payload(context, data, size)` | Copy bytes into the arena at an 8-byte aligned address. Returns null on failure. |
 | `iv_submit_edit(context, edit)` | Record one command with its payload already retained in the output arena. |
 | `iv_set_timeline_grid(context, grid)` | Copy one regular grid declaration for host projection and optional seeking. |
@@ -176,11 +196,14 @@ bits as the signed project timeline index.
 | `iv_request_save(context)` | Ask the host to serialize after this frame. Use at commit points such as drag finish. |
 
 Each arena batch occupies 12 bytes, with its values span followed by
-the next batch pointer. A polyline descriptor is 16 bytes, with 32-bit
-ID and ink followed by its point span. A point is 16 bytes. Text records
+the next batch pointer. A polyline descriptor is 72 bytes, with 32-bit
+ID and ink, its point span, and an `IvStroke` at 16. The stroke carries
+opacity, width, optional dash or fill style, gradient endpoints, and a
+target for hover feedback. A point is 16 bytes. Text records
 are 32 bytes, with ID and ink followed by an `IvPoint` and `IvString`.
-Drag targets are 40 bytes, with ID and kind followed by the four doubles
-in an `IvRectangle`.
+Drag targets are 64 bytes, with ID and kind, bounds, flags, a hint, and
+shortcuts. Shapes are 64 bytes and store the selected rectangle or circle
+geometry at offset 24.
 
 IDs for marks are nonzero and unique within a frame. Drag target IDs
 are nonzero and unique within their own list. Ink uses the
@@ -193,10 +216,12 @@ Helper failure sets a frame error. The host discards an invalid frame.
 ## Settings, edits, and regular grids
 
 An `IvSettingsPanel` is 16 bytes. Its label string is followed by a span
-of `IvSetting`. A setting occupies 64 bytes. Its ID and label are strings at
+of `IvSetting`. A setting occupies 88 bytes. Its ID and label are strings at
 0 and 8. Its row, kind, and flags are uint32 values at 16, 20, and 24. The
 value, minimum, maximum, and default for numeric knobs are doubles at 32,
-40, 48, and 56. Kinds are text 0, knob 1, and action 2. The integer flag
+40, 48, and 56. Kinds are text 0, knob 1, action 2, and choice 3. For a
+choice, the index at 28 selects an option from the span at 64. Knob step and scrub speed are
+at 72 and 80. Zero requests the host default. The integer flag
 sets the knob's default gesture step. The disabled flag applies to actions.
 Begin with row 0 and send contiguous rows in display order. The frame
 limit is 256 settings, 64 rows, and 12 controls per row. Use unique IDs
@@ -269,16 +294,17 @@ These compile-time assertions verify the layout described above for wasm32.
 ```c
 #include <intravenous/presentation/abi.h>
 
-_Static_assert(IV_PRESENTATION_ABI_VERSION == 7, "ABI version");
-_Static_assert(sizeof(IvPresentationContext) == 200, "context size");
+_Static_assert(IV_PRESENTATION_ABI_VERSION == 9, "ABI version");
+_Static_assert(sizeof(IvPresentationContext) == 256, "context size");
 _Static_assert(offsetof(IvPresentationContext, trigger_columns) == 80, "observation span");
 _Static_assert(sizeof(IvObservedTriggerColumns) == 40, "observation record");
 _Static_assert(offsetof(IvObservedTriggerColumns, count) == 16, "trigger count");
 _Static_assert(offsetof(IvPresentationContext, waveforms) == 188, "waveform span");
+_Static_assert(offsetof(IvPresentationContext, construction_arguments) == 196, "construction argument span");
 _Static_assert(sizeof(IvWaveformPoint) == 24 && sizeof(IvWaveformRegion) == 32, "waveform layouts");
 _Static_assert(sizeof(IvText) == 32, "text record");
 _Static_assert(offsetof(IvPresentationContext, timeline) == 104, "timeline view");
-_Static_assert(sizeof(IvControlInput) == 24 && sizeof(IvSetting) == 64, "controls");
+_Static_assert(sizeof(IvControlInput) == 40 && sizeof(IvSetting) == 88, "controls");
 _Static_assert(sizeof(IvNodeEdit) == 20 && sizeof(IvEditReply) == 24, "node edits");
 _Static_assert(sizeof(IvTimelineGrid) == 56, "grid");
 _Static_assert(IV_LANE_NANO == 3 && IV_OBSERVATION_FAILED == 3, "encoded enums");
