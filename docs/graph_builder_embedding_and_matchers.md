@@ -152,6 +152,12 @@ member, but surviving semantic members must not be arbitrarily reordered.
 
 Builder/configured-graph tests should make this invariant explicit.
 
+The list of symbolic memberships on a bundle also preserves acquisition
+order. Each entry refers to a symbolic record whose own member order is
+independent of the bundle's list. Embedding translates the membership
+handles in place so a later alias retains its priority even when its
+record was created earlier by a different bundle.
+
 ## Tiled child structure is first-class
 
 A tiled node bundle represents separately selectable child nodes. The builder

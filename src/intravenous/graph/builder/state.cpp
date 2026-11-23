@@ -908,10 +908,10 @@ NodeBundleHandle GraphBuilderState::import_contents(
     details::error("invocation snapshot has an invalid local root");
   }
   auto const record_begin = _symbolic_nodes.size();
-  auto const offset = _node_bundles.import_contents(graph.node_bundles);
+  auto const offset = _node_bundles.import_contents(graph.node_bundles, record_begin);
   _connections.import_child(graph.connections, offset);
   (void)_symbolic_nodes.import_child(
-      _node_bundles, graph.symbolic_nodes, offset, qualifier);
+      graph.symbolic_nodes, offset, qualifier);
   index_imported_records(record_begin);
   return local_root + offset;
 }

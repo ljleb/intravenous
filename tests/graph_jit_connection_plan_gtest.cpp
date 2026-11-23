@@ -1,5 +1,6 @@
 #include <intravenous/dsl.h>
 #include <intravenous/graph_jit/background_storage_plan.h>
+#include <intravenous/graph_jit/bundle_migration.h>
 #include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/coverage_manual_control.h>
 #include <intravenous/graph_jit/lowering.h>
@@ -14,6 +15,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <initializer_list>
 #include <iterator>
 #include <memory>
 #include <span>
@@ -23,6 +25,68 @@
 #include <vector>
 
 namespace {
+
+iv::ConfiguredGraph graph_with_ordered_memberships(
+    std::initializer_list<std::initializer_list<std::string_view>> bundles)
+{
+    iv::ConfiguredGraph graph;
+    graph.identity = iv::GraphBuilderIdentity("memberships");
+    for (auto const& memberships : bundles) {
+        auto const bundle = graph.node_bundles.append_concrete({});
+        for (auto const symbol : memberships) {
+            auto const record = graph.symbolic_nodes.create(symbol, graph.node_bundles.bundle(bundle).type_identity());
+            graph.symbolic_nodes.attach_bundle_member(graph.node_bundles, record, bundle, nullptr);
+        }
+    }
+    return graph;
+}
+
+TEST(GraphJitBundleMigration, OldPrimaryMembershipWinsAcrossRegrouping)
+{
+    auto const before = graph_with_ordered_memberships({{"vocal", "fx1"}, {"drums", "fx2"}});
+    auto const after = graph_with_ordered_memberships({{"fx1", "drums"}, {"fx2", "vocal"}});
+    auto const prior = iv::graph_jit::assign_bundle_migration_identities(before, {1, 2});
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(after, {2, 2}, &before, &prior);
+    ASSERT_EQ(next.size(), 2u);
+    EXPECT_EQ(next[0], prior[1]);
+    EXPECT_EQ(next[1], prior[0]);
+}
+
+TEST(GraphJitBundleMigration, NewMembershipPriorityArbitratesCompetingOldBundles)
+{
+    auto const before = graph_with_ordered_memberships({{"b"}, {"a", "fallback"}});
+    auto const after = graph_with_ordered_memberships({{"b", "a"}, {"fallback"}});
+    auto const prior = iv::graph_jit::assign_bundle_migration_identities(before, {1, 2});
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(after, {2, 2}, &before, &prior);
+    EXPECT_EQ(next[0], prior[0]);
+    EXPECT_EQ(next[1], prior[1]);
+}
+
+TEST(GraphJitBundleMigration, ANewBundleRanksTheCounterpartByItsOwnEarliestSharedMembership)
+{
+    auto const before = graph_with_ordered_memberships({{"a", "shared", "fallback"}, {"b"}});
+    auto const after = graph_with_ordered_memberships({{"shared", "b", "a"}, {"fallback"}});
+    auto const prior = iv::graph_jit::assign_bundle_migration_identities(before, {1, 2});
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(after, {2, 2}, &before, &prior);
+    EXPECT_EQ(next[0], prior[0]);
+    ASSERT_TRUE(next[1]);
+    EXPECT_NE(next[1], prior[0]);
+    EXPECT_NE(next[1], prior[1]);
+}
+
+TEST(GraphJitBundleMigration, AReusedMembershipDoesNotDuplicateAnInheritedIdentity)
+{
+    auto const first = graph_with_ordered_memberships({{"primary", "alias"}});
+    auto const second = graph_with_ordered_memberships({{"alias"}});
+    auto const third = graph_with_ordered_memberships({{"primary"}, {"alias"}});
+    auto const initial = iv::graph_jit::assign_bundle_migration_identities(first, {1, 1});
+    auto const inherited = iv::graph_jit::assign_bundle_migration_identities(second, {2, 1}, &first, &initial);
+    auto const next = iv::graph_jit::assign_bundle_migration_identities(third, {3, 2}, &second, &inherited);
+    EXPECT_EQ(inherited[0], initial[0]);
+    EXPECT_EQ(next[1], inherited[0]);
+    ASSERT_TRUE(next[0]);
+    EXPECT_NE(next[0], next[1]);
+}
 
 std::vector<std::byte> sample_value_bytes(iv::Sample value)
 {

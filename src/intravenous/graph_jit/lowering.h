@@ -151,6 +151,7 @@ struct LoweringInput {
     RegionSpecializationProvider* region_specializations = nullptr;
     CompiledObservationPlan const* observations = nullptr;
     ConfiguredBundleInventory configured_bundles{};
+    std::span<std::optional<StableConcreteNodeId> const> bundle_migration_identities{};
     ObservationLayoutReuseInput const* observation_layout_reuse = nullptr;
 };
 

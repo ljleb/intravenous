@@ -975,6 +975,24 @@ This front owns:
 
 This is correctness work, not an optimization pass.
 
+**Accepted symbolic matching policy (2026-11-22).** Each configured bundle
+keeps its symbolic memberships in acquisition order through snapshots and
+imports. Across configurations, old bundles propose to compatible new
+bundles in that order. A new bundle facing competing proposals holds the
+one supported by its earliest shared membership. A displaced old bundle
+can propose through its next membership. A matched bundle inherits one
+migration identity. An unmatched bundle using a symbol whose identity
+migrated elsewhere starts a fresh lifetime. The historical lexical
+policy picked the lowest symbolic record ID independently in each graph,
+so adding an alias could replace the active migration identity.
+
+GraphJit reconciles against the execution predecessor selected for the
+cutover. Recompiles of one configured snapshot reuse its assigned
+identities. The resulting assignments feed Tick State, TockState, and
+port-state migration. Port timing and state-layout compatibility remain
+part of their existing migration checks. Bundles without symbolic or
+authored instance identity keep their configured-snapshot lifetime.
+
 **Dependencies:** current executor infrastructure; consumes front 1's solved
 realization and front 3's final persistence representation as those land.
 

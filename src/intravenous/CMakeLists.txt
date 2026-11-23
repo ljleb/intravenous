@@ -384,6 +384,7 @@ add_library(intravenous_graph_jit OBJECT
     execution/tick_invocation_frame.cpp
     execution/tick_materialization_snapshot.cpp
     graph_jit/connection_plan.cpp
+    graph_jit/bundle_migration.cpp
     graph_jit/connections/port_group_plan.cpp
     graph_jit/connections/realtime_schedule_plan.cpp
     graph_jit/background_storage_plan.cpp

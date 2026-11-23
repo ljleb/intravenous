@@ -156,6 +156,29 @@ TEST(ConfiguredGraphEmbedding, RemapsConnectionsAndNestedScopesThroughExplicitTr
     }
 }
 
+TEST(ConfiguredGraphEmbedding, PreservesEachBundlesMembershipAcquisitionOrder)
+{
+    iv::GraphBuilder child_builder;
+    auto earlier = iv::details::configure_concrete_node<Pass>(child_builder);
+    earlier._annotate_source_info("secondary", "/tmp/child.cpp", 1, 2);
+    auto member = iv::details::configure_concrete_node<Pass>(child_builder);
+    member._annotate_source_info("primary", "/tmp/child.cpp", 3, 4);
+    member._annotate_source_info("secondary", "/tmp/child.cpp", 5, 6);
+    auto const member_handle = member.node_bundle_handle();
+    child_builder.outputs();
+    auto child = std::move(child_builder).finish();
+
+    iv::GraphBuilder parent;
+    auto const first = parent.embed(child, "first");
+    auto const second = parent.embed(child, "second");
+    parent.outputs();
+    auto const configured = std::move(parent).finish();
+    for (auto const* embedding : {&first, &second}) {
+        auto const& memberships = configured.node_bundles.bundle(embedding->node_bundle(member_handle)).symbolic_node_handles();
+        EXPECT_EQ(memberships, (std::vector{embedding->symbolic_node(1), embedding->symbolic_node(0)}));
+    }
+}
+
 TEST(ConfiguredGraphEmbedding, PreservesScopedSymbolicIdentityInsteadOfFlatteningEqualChildren)
 {
     auto child = make_nested_annotated_graph();

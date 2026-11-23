@@ -354,6 +354,7 @@ void ProjectGraph::schedule_control_compile_locked(
                 .observations = ready.graph->observations,
                 .configured_generation = current_generation_->configured_generation,
                 .configured_bundles = current_generation_->configured_bundles,
+                .bundle_migration_identities = ready.graph->bundle_migration_identities,
             },
             .dynamic_inputs = std::move(dynamic_inputs),
             .activate_on_ready = true,
@@ -404,6 +405,9 @@ GraphJitCompileRequest ProjectGraph::capture_compile_inputs_locked(
             *generation.graph, generation.placements, observation_requirements_),
         .configured_generation = generation.configured_generation,
         .configured_bundles = generation.configured_bundles,
+        .bundle_migration_identities = accepted_execution_graph_
+            && accepted_execution_graph_->configured_bundles == generation.configured_bundles
+            ? accepted_execution_graph_->bundle_migration_identities : nullptr,
     };
 }
 

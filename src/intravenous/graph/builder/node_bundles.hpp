@@ -169,7 +169,7 @@ public:
       NodeBundleHandle, size_t) const;
   constexpr NodeBundlePortId output_port_at(
       NodeBundleHandle, size_t) const;
-  constexpr void import_into(size_t node_bundle_offset);
+  constexpr void import_into(size_t node_bundle_offset, size_t symbolic_node_offset);
   // Rewrites every node-bundle handle this bundle stores (tiled members,
   // subgraph boundary and child range) through `map`.
   template<class Map>
@@ -193,6 +193,7 @@ private:
   std::optional<Payload> _payload{};
   std::optional<NodeBundlePortId> _resolved_module_input{};
   std::optional<NodeBundlePortId> _output_gain_source{};
+  // Memberships are kept in acquisition order for graph-revision matching.
   std::vector<size_t> _symbolic_node_handles{};
   NodeSourceAnnotations _source_annotations{};
 
@@ -366,10 +367,10 @@ public:
 
   constexpr size_t size() const { return _bundles.size(); }
   constexpr void apply_ttl(NodeBundleHandle, size_t ttl_samples);
-  constexpr size_t import_child(GraphBuilderNodeBundles const &);
+  constexpr size_t import_child(GraphBuilderNodeBundles const &, size_t symbolic_node_offset);
   // Imports bundles [1, size) of an invocation snapshot whose bundle 0 is an
   // empty boundary. Local handle k becomes k + returned offset.
-  constexpr size_t import_contents(GraphBuilderNodeBundles const &);
+  constexpr size_t import_contents(GraphBuilderNodeBundles const &, size_t symbolic_node_offset);
   // Copies [begin, end). `first_local` is the local handle of `begin`; the
   // copy has `first_local` leading empty boundaries. Symbolic-record inverse
   // handles are rebased by `record_begin`.
@@ -1107,7 +1108,7 @@ constexpr NodeBundlePortId NodeBundle::output_port_at(
   }, *_payload);
 }
 
-constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
+constexpr void NodeBundle::import_into(size_t node_bundle_offset, size_t symbolic_node_offset) {
   if (!_payload) details::error("empty NodeBundle");
   if (_output_gain_source) _output_gain_source->node_bundle_handle += node_bundle_offset;
   std::visit([&](auto &payload) {
@@ -1119,7 +1120,7 @@ constexpr void NodeBundle::import_into(size_t node_bundle_offset) {
       payload.child_begin += node_bundle_offset;
     }
   }, *_payload);
-  _symbolic_node_handles.clear();
+  for (auto& handle : _symbolic_node_handles) handle += symbolic_node_offset;
 }
 
 template<class Map>
@@ -1463,18 +1464,18 @@ constexpr void GraphBuilderNodeBundles::reserve_appended(size_t count) {
 }
 
 constexpr size_t GraphBuilderNodeBundles::import_child(
-    GraphBuilderNodeBundles const &child) {
+    GraphBuilderNodeBundles const &child, size_t symbolic_node_offset) {
   auto const bundle_offset = _bundles.size();
   reserve_appended(child._bundles.size());
   for (auto imported : child._bundles) {
-    imported.import_into(bundle_offset);
+    imported.import_into(bundle_offset, symbolic_node_offset);
     _bundles.push_back(std::move(imported));
   }
   return bundle_offset;
 }
 
 constexpr size_t GraphBuilderNodeBundles::import_contents(
-    GraphBuilderNodeBundles const &child) {
+    GraphBuilderNodeBundles const &child, size_t symbolic_node_offset) {
   if (child._bundles.empty() || !child._bundles.front().is_boundary()) {
     details::error("invocation snapshot has no leading empty boundary");
   }
@@ -1483,7 +1484,7 @@ constexpr size_t GraphBuilderNodeBundles::import_contents(
   for (auto imported = std::next(child._bundles.begin());
        imported != child._bundles.end(); ++imported) {
     auto copy = *imported;
-    copy.import_into(bundle_offset);
+    copy.import_into(bundle_offset, symbolic_node_offset);
     _bundles.push_back(std::move(copy));
   }
   return bundle_offset;

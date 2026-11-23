@@ -194,6 +194,7 @@ struct CompiledGraph {
     GraphJitKernelSpecialization specialization{};
     std::shared_ptr<ConfiguredGraph const> configured_graph{};
     graph_jit::ConfiguredBundleInventory configured_bundles{};
+    std::shared_ptr<graph_jit::BundleMigrationIdentities const> bundle_migration_identities{};
     std::vector<std::pair<NodeBundlePortId, NodeBundlePortId>> resolved_sample_input_views{};
     std::vector<std::shared_ptr<PackageRevision const>> package_revisions{};
     graph_jit::ResolvedPortRealization port_realization{};
@@ -221,6 +222,8 @@ struct GraphJitCompileRequest {
     CompiledObservationPlan observations{};
     std::optional<std::uint64_t> configured_generation{};
     graph_jit::ConfiguredBundleInventory configured_bundles{};
+    // Control recompiles of an accepted configuration reuse its assignments.
+    std::shared_ptr<graph_jit::BundleMigrationIdentities const> bundle_migration_identities{};
 };
 
 // A transition specialization augments an already compiled steady successor.

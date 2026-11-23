@@ -101,7 +101,7 @@ public:
   // appended to each imported introspection ID; it names the placement
   // relative to the enclosing semantic scope, never a session handle.
   constexpr std::vector<SymbolicNodeHandle> import_child(
-      GraphBuilderNodeBundles&, GraphBuilderSymbolicNodes const&,
+      GraphBuilderSymbolicNodes const&,
       size_t node_bundle_offset, std::string_view qualifier);
   // Appends `qualifier` to the IDs of records [begin, size()).
   constexpr void qualify(size_t begin, std::string_view qualifier);
@@ -306,7 +306,7 @@ constexpr void GraphBuilderSymbolicNodes::annotate_input_source_info(
 }
 
 constexpr std::vector<SymbolicNodeHandle> GraphBuilderSymbolicNodes::import_child(
-    GraphBuilderNodeBundles& bundles, GraphBuilderSymbolicNodes const& child,
+    GraphBuilderSymbolicNodes const& child,
     size_t bundle_offset, std::string_view qualifier) {
   std::vector<SymbolicNodeHandle> translation;
   translation.reserve(child._records.size());
@@ -354,10 +354,6 @@ constexpr std::vector<SymbolicNodeHandle> GraphBuilderSymbolicNodes::import_chil
     }
 
     _records.push_back(std::move(child_record));
-    for (auto const bundle : _records.back().node_bundle_handles) {
-      auto& inverse = bundles.bundle(bundle).symbolic_node_handles();
-      if (!std::ranges::contains(inverse, handle)) inverse.push_back(handle);
-    }
   }
   return translation;
 }

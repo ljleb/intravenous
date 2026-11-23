@@ -31,13 +31,13 @@ public:
       std::string_view qualifier)
   {
     auto const expected_bundle_offset = parent_bundles.size();
-    auto const bundle_offset = parent_bundles.import_child(child_bundles);
+    auto const bundle_offset = parent_bundles.import_child(child_bundles, parent_symbolic_nodes.size());
     IV_ASSERT(
         bundle_offset == expected_bundle_offset,
         "embedded child bundle offset changed unexpectedly");
     parent_connections.import_child(child_connections, bundle_offset);
     auto symbolic_nodes = parent_symbolic_nodes.import_child(
-        parent_bundles, child_symbolic_nodes, bundle_offset, qualifier);
+        child_symbolic_nodes, bundle_offset, qualifier);
 
     std::vector<NodeBundleHandle> node_bundles(child_bundles.size());
     std::iota(node_bundles.begin(), node_bundles.end(), bundle_offset);

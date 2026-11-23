@@ -1,6 +1,7 @@
 #include <intravenous/module/dev_runtime.h>
 #include <intravenous/graph_jit/graph_jit.h>
 
+#include <intravenous/graph_jit/bundle_migration.h>
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/output_gain.h>
@@ -2031,6 +2032,25 @@ public:
             result.diagnostics = std::move(missing.diagnostics);
             return result;
         }
+        auto const* predecessor = transition ? transition->active_predecessor.get() : nullptr;
+        auto identities = request.bundle_migration_identities;
+        if (predecessor) {
+            bool const same_configuration = request.configured_bundles.snapshot
+                ? request.configured_bundles == predecessor->configured_bundles
+                : request.graph == predecessor->configured_graph;
+            identities = same_configuration ? predecessor->bundle_migration_identities : nullptr;
+        }
+        if (!identities) {
+            identities = std::make_shared<graph_jit::BundleMigrationIdentities const>(
+                graph_jit::assign_bundle_migration_identities(*request.graph, request.configured_bundles,
+                    predecessor ? predecessor->configured_graph.get() : nullptr,
+                    predecessor ? predecessor->bundle_migration_identities.get() : nullptr));
+        }
+        if (identities->size() != request.graph->node_bundles.size()) {
+            result.diagnostics.push_back(diagnostic(GraphJitDiagnosticStage::input_capture,
+                "bundle migration identities do not match the configured graph"));
+            return result;
+        }
         auto resolved_graph = *request.graph;
         // A symbolic control and a member control can resolve to the same
         // bundle port. Keep one participating control per direction there.
@@ -2446,6 +2466,7 @@ public:
                 specialize_regions_ ? &region_specializations : nullptr,
             .observations = &request.observations,
             .configured_bundles = request.configured_bundles,
+            .bundle_migration_identities = *identities,
             .observation_layout_reuse = observation_layout_reuse ? &*observation_layout_reuse : nullptr,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
@@ -2563,6 +2584,7 @@ public:
                 .specialization = specialization_,
                 .configured_graph = request.graph,
                 .configured_bundles = request.configured_bundles,
+                .bundle_migration_identities = std::move(identities),
                 .resolved_sample_input_views = std::move(resolved_sample_input_views),
                 .package_revisions = std::move(package_revisions),
                 .port_realization = std::move(lowering->port_realization),

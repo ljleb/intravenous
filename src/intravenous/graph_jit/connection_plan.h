@@ -467,7 +467,8 @@ public:
         ResolvedPortRealization const& port_realization,
         std::size_t kernel_block_size,
         std::span<std::size_t const> callback_batch_classes,
-        ConfiguredBundleInventory configured_bundles = {});
+        ConfiguredBundleInventory configured_bundles = {},
+        std::span<std::optional<StableConcreteNodeId> const> identities = {});
 
     BackgroundEvaluationPlan const& background_topology() const noexcept
     {

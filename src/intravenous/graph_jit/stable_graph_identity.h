@@ -5,7 +5,9 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace iv::graph_jit {
 
@@ -31,13 +33,18 @@ struct StableConcreteNodeId {
     std::size_t direct_member = 0;
     std::string project_instance{};
     std::string project_leaf_type{};
-    // A configured bundle coordinate cannot pair across snapshots.
-    // Project addresses and package metadata never use this field.
+    // For an anonymous node this scopes the coordinate to its snapshot. A
+    // fresh symbolic lifetime may also use this field as part of its assigned
+    // identity, which later snapshots can inherit through a membership match.
     std::uint64_t configuration_snapshot = 0;
 
     bool operator==(StableConcreteNodeId const&) const = default;
     auto operator<=>(StableConcreteNodeId const&) const = default;
 };
+
+// One assigned identity per original configured bundle, before lowering adds
+// compiler-owned bundles. Accepted revisions pass this table to their successors.
+using BundleMigrationIdentities = std::vector<std::optional<StableConcreteNodeId>>;
 
 // The concrete node's fields of a migration identity string. Each string is
 // prefixed with its length, so two different nodes never encode alike.

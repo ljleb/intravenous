@@ -1297,6 +1297,52 @@ TEST_F(GraphJitRuntimeFixture,
         336);
 }
 
+TEST_F(GraphJitRuntimeFixture, RecompilingAnAcceptedConfigurationKeepsItsInheritedMigrationIdentity)
+{
+    auto const configured = configured_module_graph(*revision, graph_jit_compensated_sequence_module_id);
+    ASSERT_TRUE(configured);
+    auto before = std::make_shared<iv::ConfiguredGraph>(*configured);
+    auto const& records = before->symbolic_nodes.records();
+    auto const original = std::ranges::find_if(records, [&](auto const& record) {
+        return record.node_bundle_handles.size() == 1
+            && before->node_bundles.bundle(record.node_bundle_handles.front()).is_concrete();
+    });
+    ASSERT_NE(original, records.end());
+    auto const original_index = static_cast<std::size_t>(original - records.begin());
+    auto const bundle = original->node_bundle_handles.front();
+    auto const alias = before->symbolic_nodes.create("persistent-alias", original->type_identity);
+    before->symbolic_nodes.attach_bundle_member(before->node_bundles, alias, bundle, nullptr);
+
+    auto after = std::make_shared<iv::ConfiguredGraph>(*before);
+    // A rename of the first symbolic record leaves the later membership intact.
+    auto renamed = after->symbolic_nodes.records();
+    renamed[original_index].id += "@renamed";
+    after->symbolic_nodes = iv::GraphBuilderSymbolicNodes::from_configured_records(renamed);
+
+    auto old = jit->compile({.project_generation = 1, .graph = before, .definitions = definitions,
+        .configured_bundles = {1, before->node_bundles.size()}});
+    ASSERT_TRUE(old.succeeded());
+    ASSERT_TRUE(old.compiled_graph->bundle_migration_identities);
+    auto request = iv::GraphJitCompileRequest{.project_generation = 2, .graph = after, .definitions = definitions,
+        .configured_bundles = {2, after->node_bundles.size()}};
+    auto next = jit->handle_project_graph_transaction({.successor = request, .predecessor = old.compiled_graph});
+    ASSERT_TRUE(next.succeeded());
+    ASSERT_TRUE(next.compiled_graph->bundle_migration_identities);
+    auto const& identity = next.compiled_graph->bundle_migration_identities->at(bundle);
+    EXPECT_EQ(identity, old.compiled_graph->bundle_migration_identities->at(bundle));
+    ASSERT_TRUE(identity);
+    auto const migration_name = "graphjit.node:" + iv::graph_jit::migration_identity_fields(*identity);
+    EXPECT_TRUE(std::ranges::contains(next.compiled_graph->node_layout.nodes, migration_name,
+        [](auto const& node) { return node.migration_identity; }));
+
+    request.bundle_migration_identities = next.compiled_graph->bundle_migration_identities;
+    auto recompiled = jit->compile(request);
+    ASSERT_TRUE(recompiled.succeeded());
+    EXPECT_EQ(recompiled.compiled_graph->bundle_migration_identities, request.bundle_migration_identities);
+    EXPECT_TRUE(std::ranges::contains(recompiled.compiled_graph->node_layout.nodes, migration_name,
+        [](auto const& node) { return node.migration_identity; }));
+}
+
 // The probe's planar stereo input composes the ramp, delayed by 7 to align it,
 // with the delay node's output. The edit moves the history reader from the
 // delay node to the ramp. The two channels must stay equal at every value.

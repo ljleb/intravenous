@@ -283,7 +283,7 @@ std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
 
     iv::GraphBuilderNodeBundles bundles;
     (void)bundles.append_scope_boundary();
-    auto const offset = bundles.import_child(graph->node_bundles);
+    auto const offset = bundles.import_child(graph->node_bundles, 0);
     if (offset == 0) {
         throw std::runtime_error(
             "playback bundle-shift fixture did not create an offset");
@@ -320,24 +320,6 @@ std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
         }
         for (auto& mapping : node.event_outputs) {
             for (auto& port : mapping.node_bundle_ports) shift_port(port);
-        }
-    }
-    // GraphBuilderNodeBundles::import_child() clears inverse symbolic-node
-    // handles because ordinary child import rebuilds them through
-    // GraphBuilderSymbolicNodes::import_child(). This fixture preserves the
-    // original symbolic-node IDs instead, so restore the inverse relation
-    // explicitly after shifting every record's bundle coordinates.
-    for (std::size_t symbolic_handle = 0;
-         symbolic_handle < symbolic_nodes.size();
-         ++symbolic_handle) {
-        for (auto const bundle :
-             symbolic_nodes[symbolic_handle].node_bundle_handles) {
-            auto& inverse = shifted->node_bundles
-                .bundle(bundle)
-                .symbolic_node_handles();
-            if (!std::ranges::contains(inverse, symbolic_handle)) {
-                inverse.push_back(symbolic_handle);
-            }
         }
     }
     shifted->symbolic_nodes =
