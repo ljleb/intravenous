@@ -1,5 +1,6 @@
-import type { PresentationFrame, PresentationInput, PresentationSavedState, PresentationSnapshot } from "./presentationPlugin";
+import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { wasmPresentationUpdate, type WasmPresentationReply } from "./wasmPresentation";
+import type { SerializedPresentationState } from "./presentationStateJson";
 
 import type { WasmPresentationRequest } from "./wasmPresentationEndpoint";
 import type { WasmConstruction } from "./wasmPresentationArguments";
@@ -10,17 +11,15 @@ let nextSession = 0;
 export class WasmPresentationWorker {
     private worker?: WorkerTransport;
     private session = 0;
-    private state: PresentationSavedState = null;
-    private restoring = true;
+    private pendingRestore?: SerializedPresentationState;
     private construction?: WasmConstruction | null;
     private pending?: { resolve: (value: PresentationFrame | undefined) => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> };
     private readonly closing = new Map<WorkerTransport, () => void>();
 
     constructor(private readonly bytes: string, private readonly start: StartWorker) {}
 
-    restore(state: PresentationSavedState): void {
-        this.state = state;
-        this.restoring = true;
+    restore(state: SerializedPresentationState): void {
+        this.pendingRestore = state;
     }
 
     run(snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]): Promise<PresentationFrame | undefined> {
@@ -41,10 +40,8 @@ export class WasmPresentationWorker {
                 const { resolve, timeout } = this.pending;
                 this.pending = undefined;
                 clearTimeout(timeout);
-                if (reply?.frame && reply.savedState !== undefined && !this.restoring) {
-                    this.state = reply.savedState;
-                    (reply.frame.commands ??= []).push({ type: "state", value: reply.savedState });
-                }
+                // An external state change takes precedence over this frame's save.
+                if (reply?.frame && this.pendingRestore !== undefined) delete reply.frame.saveRequest;
                 resolve(reply?.frame);
             }, (error) => {
                 if (this.worker === worker) this.stop(error);
@@ -62,8 +59,11 @@ export class WasmPresentationWorker {
                     && this.construction?.arguments === construction?.arguments) delete message.update.construction;
                 else this.construction = construction;
                 if (initialize) message.bytes = this.bytes;
-                if (initialize || this.restoring) message.restore = this.state === null ? "" : JSON.stringify(this.state);
-                this.restoring = false;
+                if (initialize || this.pendingRestore !== undefined) {
+                    const state = this.pendingRestore === undefined ? snapshot.state : this.pendingRestore;
+                    message.restore = state ?? "";
+                    this.pendingRestore = undefined;
+                }
                 this.worker!.postMessage(message);
             }
             catch (error) { this.stop(error instanceof Error ? error : new Error(String(error))); }

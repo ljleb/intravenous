@@ -2,6 +2,7 @@ import type { JsonValue, SerializedNodeEvent } from "./nodeEvents";
 import { recordedTriggerBinsOperation, type ObservationWindowResult } from "./observations";
 import type { NodeAddress } from "./graphScope";
 import type { PresentationTime } from "./timelineSamples";
+import { readPresentationSave, type SerializedPresentationState } from "./presentationStateJson";
 
 export const presentationPluginVersion = 2;
 
@@ -29,7 +30,6 @@ export type PresentationObservation = {
     result?: ObservationWindowResult;
     spans: Array<{ begin: string; end: string; windowOffset: string; result: ObservationWindowResult }>;
 };
-export type PresentationSavedState = { [key: string]: JsonValue } | null;
 export type PresentationSnapshot = {
     node: { address?: NodeAddress; definitionId: string; arguments: unknown[]; constructionDefinitionId?: string;
         ports: Array<{ name: string; direction: "input" | "output"; kind: "continuous" | "event";
@@ -42,7 +42,7 @@ export type PresentationSnapshot = {
     editError?: string;
     viewport: { width: number; height: number; time?: PresentationTime };
     observations: Record<string, PresentationObservation | null>;
-    state: PresentationSavedState;
+    state: SerializedPresentationState;
 };
 
 export type PresentationGestureInput = { type: "gesture"; id: string;
@@ -85,8 +85,12 @@ export type PresentationTarget = { id: string; x: number; y: number; width: numb
 
 export type PresentationCommand =
     | { type: "edit"; event: SerializedNodeEvent; gesture?: string; replacePending?: true; requestId?: string }
-    | { type: "finish"; gesture: string; requestId?: string }
-    | { type: "state"; value: PresentationSavedState };
+    | { type: "finish"; gesture: string; requestId?: string };
+
+export function interruptedPresentationEditReplies(commands: readonly PresentationCommand[]): PresentationInput[] {
+    return commands.flatMap((command): PresentationInput[] => command.requestId
+        ? [{ type: "editResult", requestId: command.requestId, error: "Presentation edit interrupted" }] : []);
+}
 
 export type PresentationTimelineGrid = {
     numerator: string; denominator: string; strides: string[];
@@ -109,6 +113,7 @@ export type PresentationFrame = {
     secondsRulerInset?: number;
     timelineGrid?: PresentationTimelineGrid;
     commands?: PresentationCommand[];
+    saveRequest?: SerializedPresentationState;
 };
 export type Present = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame;
 export type PresentationArtifact = { id: string; manifest: PresentationManifest; digest: string; bytes: string };
@@ -203,7 +208,6 @@ function json(value: unknown, budget: { items: number; characters: number }, dep
 function command(value: unknown, budget: { items: number; characters: number }): value is PresentationCommand {
     if (!record(value)) return false;
     if (value.type === "finish") return identifier(value.gesture) && (value.requestId === undefined || identifier(value.requestId));
-    if (value.type === "state") return (value.value === null || record(value.value)) && json(value.value, budget);
     return value.type === "edit" && (value.gesture === undefined || identifier(value.gesture))
         && (value.replacePending === undefined || (value.replacePending === true && identifier(value.gesture)))
         && (value.requestId === undefined || (identifier(value.requestId) && value.replacePending === undefined))
@@ -259,10 +263,11 @@ export function readPresentationFrame(value: unknown): PresentationFrame {
         || !timelineGrid(value.timelineGrid) || (value.reuseDrawing && value.timelineGrid))
         throw new Error("Invalid presentation frame");
     const { status, marks, reuseDrawing, targets, panel: settings, contextMenu, itemEditing, valueNavigation, drag, cancelDrag,
-        wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid } = value as PresentationFrame;
+        wakeAfterMs, secondsRulerInset, commands, saveRequest, timelineGrid: grid } = value as PresentationFrame;
     for (const entries of [marks, targets, settings?.rows.flat(), contextMenu?.rows.flat()]) {
         if (entries && new Set(entries.map(({ id }) => id)).size !== entries.length) throw new Error("Duplicate presentation item ID");
     }
     return { status, marks, ...(reuseDrawing && { reuseDrawing }), targets, panel: settings, contextMenu,
-        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid };
+        itemEditing, valueNavigation, drag, cancelDrag, wakeAfterMs, secondsRulerInset, commands, timelineGrid: grid,
+        saveRequest: saveRequest === undefined ? undefined : readPresentationSave(saveRequest) };
 }

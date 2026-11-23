@@ -1,4 +1,4 @@
-// Scoped BuilderSession semantics (docs/scoped_graph_builder_and_subgraph_closure_direction.md):
+// Scoped BuilderSession semantics (docs-dev/scoped_graph_builder_and_subgraph_closure_direction.md):
 // session-owned ref identity, nested live scopes, non-destructive snapshots,
 // construction failure that fails its session, both SubgraphClosure
 // alternatives, and in-place finalization of a nested view.

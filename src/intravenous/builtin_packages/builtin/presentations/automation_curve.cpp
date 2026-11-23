@@ -98,6 +98,7 @@ class AutomationCurve {
     Label error_{};
 
     bool editing_pointer() const { return operation_ == Operation::drag && !released_ && !stopped_; }
+    bool can_edit_points(Context const& frame) const { return frame.can_edit() && store_.available; }
     ValueAxis const& view_axis() const
     {
         if (operation_ == Operation::drag && !stopped_) return drag_.axis;
@@ -451,7 +452,7 @@ class AutomationCurve {
             if (index >= 0) view_.ruler = static_cast<Ruler>(index);
         }
         if (before != view_) frame.request_save();
-        auto const* point = menu_open_ ? find_point(display_, menu_id_) : nullptr;
+        auto const* point = menu_open_ && store_.available ? find_point(display_, menu_id_) : nullptr;
         if (!point) return;
         if (input.value_kind == IV_CONTROL_STRING && equal(input.id, text("segment"))) {
             if (auto const index = choice_index(segment_choices, input.string); index >= 0)
@@ -504,13 +505,13 @@ class AutomationCurve {
                 break;
             }
             case IV_EDITOR_CONTEXT:
-                if (frame.can_edit()) if (auto const* point = store_.point_for_target(display_, input.target)) {
+                if (can_edit_points(frame)) if (auto const* point = store_.point_for_target(display_, input.target)) {
                     menu_open_ = true;
                     menu_id_ = point->id;
                 }
                 break;
             case IV_EDITOR_ITEMS:
-                if (frame.can_edit()) {
+                if (can_edit_points(frame)) {
                     if (input.action == IV_ITEMS_SELECT_ALL) select_all();
                     else remove_points(frame);
                 }
@@ -524,7 +525,7 @@ class AutomationCurve {
         frame.visit_interactions(
             [&](IvGestureInput const& input) {
                 if (input.phase == IV_GESTURE_BEGIN || (input.id == selection_target && input.phase == IV_GESTURE_FINISH)) refresh_scene();
-                if (frame.can_edit()) gesture(frame, input, feedback);
+                if (can_edit_points(frame)) gesture(frame, input, feedback);
             }, [&](IvControlInput const& input) {
                 if (menu_open_) refresh_scene();
                 if (frame.can_edit()) control(frame, input);
@@ -616,7 +617,7 @@ class AutomationCurve {
         shapes_.clear(); point_targets_.clear(); tension_targets_.clear();
         if (marquee_.active)
             shapes_.push({selection_mark, IV_SHAPE_RECTANGLE, IV_INK_SELECTION, IV_INK_SELECTION, 0, {.rectangle = marquee_.bounds()}, .25});
-        if (!frame.can_edit()) {
+        if (!can_edit_points(frame)) {
             frame.draw_shapes({shapes_.begin(), shapes_.size()});
             return;
         }
@@ -725,7 +726,12 @@ public:
         receive(frame, feedback);
         if (store_.reconcile(frame, time_.rate)) {
             redraw_points_ = true;
-            if (editing_pointer()) {
+            if (!store_.available) {
+                if (editing_pointer() || marquee_.active) feedback.flags |= IV_EDITOR_CANCEL_DRAG;
+                stop(false);
+                marquee_.active = menu_open_ = false;
+                retained_.clear();
+            } else if (editing_pointer()) {
                 bool const exists = find_point(store_.accepted, drag_.desired.id) != nullptr;
                 if (point_in_accepted_ && !exists) { stop(false); feedback.flags |= IV_EDITOR_CANCEL_DRAG; }
                 point_in_accepted_ |= exists;
@@ -742,7 +748,7 @@ public:
         dispatch(frame, feedback);
         refresh_scene();
 
-        if (frame.can_edit()) feedback.flags |= IV_EDITOR_ITEM_EDITING;
+        if (can_edit_points(frame)) feedback.flags |= IV_EDITOR_ITEM_EDITING;
         if (!editing_pointer() && !marquee_.active) feedback.flags |= IV_EDITOR_VALUE_NAVIGATION;
         feedback.flags |= IV_EDITOR_SECONDS_RULER;
 
@@ -765,6 +771,7 @@ public:
         }
         frame.set_editor_feedback(feedback);
         if (error_.size) frame.set_status(error_.view());
+        else if (!store_.available) frame.set_status(text("Waiting for accepted Automation Curve arguments"));
         else if (!frame.can_edit()) frame.set_status(text("Read-only curve"));
     }
 

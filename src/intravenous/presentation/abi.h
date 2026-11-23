@@ -7,7 +7,7 @@
 /* Host ABI for wasm32. Keep the layout in sync with createWasmPresentation. */
 enum { IV_REUSE_DRAWING = 1, IV_SAVE_STATE = 2 };
 
-typedef const void *IvConstructionArgument;
+typedef struct { const void *value; uint32_t state; } IvConstructionArgument;
 IV_TYPEDEF_SPAN(IvConstructionArgument, IvConstructionArgumentSpan);
 
 typedef struct IvRecordedPolylines {
@@ -102,6 +102,7 @@ _Static_assert(offsetof(IvPresentationContext, edit_replies) == 176, "edit repli
 _Static_assert(offsetof(IvPresentationContext, edit_count) == 184, "edit count layout");
 _Static_assert(offsetof(IvPresentationContext, waveforms) == 188, "waveform layout");
 _Static_assert(offsetof(IvPresentationContext, construction_arguments) == 196, "construction argument layout");
+_Static_assert(sizeof(IvConstructionArgument) == 8, "construction argument binding layout");
 _Static_assert(offsetof(IvPresentationContext, editor_inputs) == 204 && sizeof(IvEditorInput) == 40, "editor input layout");
 _Static_assert(offsetof(IvPresentationContext, manual_inputs) == 212 && sizeof(IvManualInput) == 16, "manual input layout");
 _Static_assert(offsetof(IvPresentationContext, frame_time) == 224, "frame clock layout");

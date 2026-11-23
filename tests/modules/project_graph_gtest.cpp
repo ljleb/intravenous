@@ -5071,3 +5071,21 @@ TEST_F(ProjectGraphFixture, ImplicitOutputGainDefaultsToUnityAndItsGestureIsOneU
     ASSERT_EQ(project_graph.manual_controls().size(), 1u);
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.25f});
 }
+
+TEST(ProjectGraphScopeSerialization, PreservesExactConstructionIntegers)
+{
+    iv::ProjectGraphScope scope;
+    auto& node = scope.nodes.emplace_back();
+    node.instance.instance_id = "curve";
+    node.construction_definition_id = "builtin.automation.curve";
+    node.construction_arguments_json = R"([[{"safe":9007199254740991,"signed":-9223372036854775808,"unsigned":18446744073709551615,"float":2.0}]])";
+    iv::SocketRpcGraphScopeResultBuilder builder;
+    builder.succeed(std::move(scope));
+
+    auto const reply = nlohmann::ordered_json::parse(builder.build(1));
+    auto const& values = reply.at("result").at("nodes").at(0).at("construction").at("arguments").at(0).at(0);
+    EXPECT_EQ(values.at("safe"), 9007199254740991);
+    EXPECT_EQ(values.at("signed"), "-9223372036854775808");
+    EXPECT_EQ(values.at("unsigned"), "18446744073709551615");
+    EXPECT_TRUE(values.at("float").is_number_float());
+}

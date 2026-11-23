@@ -61,6 +61,8 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
     | { type: "graphPresentationAccepted"; requestId: number; revision?: number }
+    | { type: "interruptProjectHistory"; requestId: number }
+    | { type: "projectHistoryFinished"; requestId: number }
     | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
@@ -84,6 +86,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "duplicateSelectedLanes"; copies: GraphLaneCopy[]; requestId: string }
     | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
     | { type: "projectHistory"; direction: "undo" | "redo" }
+    | { type: "projectHistoryInterrupted"; requestId: number }
     | { type: "copyNodeDebugDetails"; nodeKey: string }
     | { type: "openSymbolicNodeSource"; nodeKey: string }
     | { type: "flushProjectAutosave" }

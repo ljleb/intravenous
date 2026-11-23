@@ -39,6 +39,7 @@ class PointStore {
 
 public:
     Array<Point> accepted;
+    bool available = false;
 
     uint32_t allocate_handle(uint32_t id)
     {
@@ -73,13 +74,16 @@ public:
         generation_ = generation;
         rate_ = rate;
         accepted.clear();
+        available = frame.construction_argument_state<AcceptedPoints>() == IV_ARGUMENT_OMITTED;
         if (auto const* input = frame.construction_argument<AcceptedPoints>(); input && accepted.reserve(input->size)) {
+            available = true;
             for (auto const& point : *input) {
                 auto const handle = allocate_handle(point.id);
-                if (handle == UINT32_MAX) break;
+                if (handle == UINT32_MAX) { available = false; break; }
                 accepted.push({point_sample(point, rate), point.id, point.order, point.value, point.tension, point.interpolation, handle});
             }
         }
+        if (!available) accepted.clear();
         index_handles();
         accepted.sort(point_less);
         return true;

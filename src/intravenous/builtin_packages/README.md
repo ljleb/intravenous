@@ -24,7 +24,7 @@ subdivision factors. They default to `120`, `4`, and `[2, 2]`. Each factor
 divides the previous interval into equal parts. Use `[2, 2]` for four divisions
 per beat, `[3]` for triplets, or `[]` for beats and bars alone. Bar 1 starts at
 sample zero. The top-right BPM button in the Beats lane opens these settings.
-See the [original origin argument](../../../docs/historical/beats_constructor_origin.md)
+See the [original origin argument](../../../docs-dev/historical/beats_constructor_origin.md)
 for the earlier phase anchor.
 
 Each position has a single `BeatEvent`. Its `depth` is `0` for a bar line,
@@ -39,4 +39,4 @@ Choose **Beats** in the ruler popover to use an editor-managed Beats node as
 the project snap grid. To use an authored Beats node or another compatible
 source, choose **Custom** and connect its output to the ruler's Beats input.
 Seeking and automation point editing snap to the marks visible at the current
-zoom level. [Previous Timeline routing](../../../docs/historical/ruler_grid_before_managed_snap_nodes_2026-11-19.md).
+zoom level. [Previous Timeline routing](../../../docs-dev/historical/ruler_grid_before_managed_snap_nodes_2026-11-19.md).

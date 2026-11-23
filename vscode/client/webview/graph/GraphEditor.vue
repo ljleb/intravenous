@@ -2,6 +2,7 @@
 import { provideObservations } from "../presentation/observationContext";
 import { ClientInteractionRecorder, observationConfiguration } from "../../src/clientInteractionTrace";
 import { PresentationObservations } from "../../src/presentationObservations";
+import { copyPresentationState } from "../../src/presentationStateJson";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, watch } from "vue";
 import type { GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage,
     GraphLaneInsertion, GraphPresentationPatch } from "../../src/graphEditorProtocol";
@@ -688,7 +689,7 @@ function save(laneOrder?: readonly string[], laneParents?: Record<string, string
     if (!laneOrder && !laneParents && !changedPresentationStates.size) return;
     const presentationStates: GraphPresentationPatch["presentationStates"] = {};
     for (const [key, serialize] of changedPresentationStates) {
-        presentationStates[key] = JSON.parse(JSON.stringify(serialize())) as PresentationState | null;
+        presentationStates[key] = copyPresentationState(serialize());
     }
     changedPresentationStates.clear();
     const patch = { presentationStates, laneOrder: laneOrder && [...laneOrder], laneParents };
@@ -712,11 +713,13 @@ function selectNewLanes(lanes: readonly GraphLaneInsertion[]) {
     selectInsertedLanes();
 }
 const presentationInterrupts = new Set<(reason: "history" | "disconnected") => void>();
-provideGraphEditor({ layout, save, profileGraphUi,
+const projectHistoryRequest = ref<number>();
+let finishedProjectHistoryRequest = 0;
+provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() => projectHistoryRequest.value !== undefined),
     readPresentationState: (key) => {
         const pending = changedPresentationStates.get(key);
         const state = pending ? pending() : layout.value.presentationStates[key];
-        return state ? JSON.parse(JSON.stringify(state)) : undefined;
+        return state ? copyPresentationState(state) ?? undefined : undefined;
     },
     presentationStateChanged: (key, serialize) => changedPresentationStates.set(key, serialize),
     finishPointerLock: (release, lockOrigin, follow, error) => cursorReturn.finish(release, lockOrigin, follow, error),
@@ -1186,14 +1189,16 @@ function handleGraphEditorShortcut(event: KeyboardEvent) {
         webviewApi.postMessage({ type: "duplicateSelectedLanes", copies, requestId });
     }
 }
+function interruptProjectHistory() {
+    cancelConnection();
+    for (const interrupt of presentationInterrupts) interrupt("history");
+    beats.edits.abandon();
+}
 function handleProjectHistory(event: KeyboardEvent) {
     const direction = projectHistoryShortcut(event, isTextEditingTarget(event.target));
     if (!direction) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    cancelConnection();
-    for (const interrupt of presentationInterrupts) interrupt("history");
-    beats.edits.abandon();
     save();
     webviewApi.postMessage({ type: "projectHistory", direction });
 }
@@ -1434,6 +1439,22 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type === "projectPresentations") {
         replaceProjectPresentations(event.data.plugins);
+        return;
+    }
+    if (event.data?.type === "interruptProjectHistory") {
+        const { requestId } = event.data;
+        if (requestId <= finishedProjectHistoryRequest || requestId < (projectHistoryRequest.value ?? 0)) return;
+        if (projectHistoryRequest.value !== requestId) {
+            projectHistoryRequest.value = requestId;
+            interruptProjectHistory();
+        }
+        webviewApi.postMessage({ type: "projectHistoryInterrupted", requestId } satisfies GraphEditorWebviewMessage);
+        return;
+    }
+    if (event.data?.type === "projectHistoryFinished") {
+        finishedProjectHistoryRequest = Math.max(finishedProjectHistoryRequest, event.data.requestId);
+        if (projectHistoryRequest.value !== undefined && projectHistoryRequest.value <= event.data.requestId)
+            projectHistoryRequest.value = undefined;
         return;
     }
     if (event.data?.type !== "graphState") return;

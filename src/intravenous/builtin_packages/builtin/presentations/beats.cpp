@@ -271,10 +271,7 @@ public:
     void present(iv::presentation::Context& frame)
     {
         BeatGrid accepted;
-        if (!read_grid(frame.numeric_arguments(), accepted)) {
-            frame.set_status(string("Waiting for accepted Beats arguments"));
-            return;
-        }
+        bool const readable = read_grid(frame.numeric_arguments(), accepted);
         if (frame.edit_failed() || !frame.edits_pending()) has_draft_ = false;
         for (auto const& reply : frame.edit_replies()) {
             if (reply.status != IV_EDIT_REJECTED) continue;
@@ -282,18 +279,12 @@ public:
             edit_error_ = {};
             edit_error_.append(reply.error);
         }
-        for (auto const& gesture : frame.gestures()) {
-            if (gesture.id || gesture.phase != IV_GESTURE_CANCEL) continue;
-            has_draft_ = false;
-            edit_error_ = {};
-            for (auto& edit : gestures_) edit = {};
-        }
         auto grid = has_draft_ ? draft_ : accepted;
         auto const sample_rate = frame.timeline_view().sample_rate;
         GridEdit edits[edit_capacity];
         uint32_t count = 0;
-        for (auto const& input : frame.control_inputs()) {
-            if (count == edit_capacity) break; // The SDK rejects an over-limit frame in full.
+        auto control = [&](IvControlInput const& input) {
+            if (count == edit_capacity) return;
             auto const knob = knob_index(input.id);
             auto* gesture = knob < max_levels + 2 ? &gestures_[knob] : nullptr;
             if (input.phase == IV_CONTROL_FINISH) {
@@ -301,11 +292,11 @@ public:
                     edits[count++] = {.gesture = *gesture, .flags = IV_EDIT_FINISH};
                     *gesture = {};
                 }
-                continue;
+                return;
             }
-            if (!frame.can_edit()) continue;
+            if (!readable || !frame.can_edit()) return;
             auto next = grid;
-            if (!apply_control(next, input, sample_rate) || next.same(grid)) continue;
+            if (!apply_control(next, input, sample_rate) || next.same(grid)) return;
             bool const preview = input.phase == IV_CONTROL_PREVIEW && gesture;
             if (preview && !gesture->id) *gesture = frame.begin_edit();
             auto const flags = preview ? uint32_t{IV_EDIT_REPLACE_PENDING} : 0;
@@ -316,8 +307,25 @@ public:
             grid = draft_ = next;
             edit_error_ = {};
             has_draft_ = true;
-        }
+        };
+        auto interrupt = [&](IvEditorInput const& input) {
+            if (input.kind != IV_EDITOR_INTERRUPT) return;
+            count = 0;
+            for (auto& gesture : gestures_) {
+                if (gesture.id && input.action == IV_INTERRUPT_HISTORY)
+                    edits[count++] = {.gesture = gesture, .flags = IV_EDIT_FINISH};
+                gesture = {};
+            }
+            grid = accepted;
+            has_draft_ = false;
+            edit_error_ = {};
+        };
+        frame.visit_interactions([](IvGestureInput const&) {}, control, interrupt);
         if (count) record_edits(frame, edits, count);
+        if (!readable) {
+            frame.set_status(string("Waiting for accepted Beats arguments"));
+            return;
+        }
 
         Text tempo;
         tempo.append_tempo(grid.tempo);

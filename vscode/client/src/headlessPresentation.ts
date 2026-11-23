@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Timed } from "./clientInteractionTrace";
-import { addressKey, graphScopeWithChildren, type NodeAddress } from "./graphScope";
+import { addressKey, graphScopeWithChildren, type NodeAddress, type PresentationState } from "./graphScope";
 import { NodeEventMessaging, answerNodeEventRequest } from "./nodeEventMessaging";
 import type { NodeEventInteractions } from "./nodeEventInteractions";
 import { PresentationLaneEdits } from "./presentationLaneEdits";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "./presentationPluginSession";
+import { parsePresentationState, serializePresentationState } from "./presentationStateJson";
 import { renderPresentationTimelineGrid } from "./presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "./presentationSecondsRuler";
 import { projectProgramsByDefinition } from "./presentationPrograms";
@@ -15,14 +16,15 @@ import { createNodePresentationWorker } from "./nodeWasmPresentationWorker";
 import type { WorkspaceRpc } from "./workspaceRpc";
 
 export type PresentationScenario = {
-    snapshot: PresentationSnapshot;
+    snapshot: Omit<PresentationSnapshot, "state"> & { state: PresentationState | null };
     presentationId?: string;
     expanded?: NodeAddress[];
     inputs: Timed<PresentationInput>[];
 };
 
 export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: NodeEventInteractions,
-    owner: string, { snapshot, presentationId, expanded, inputs }: PresentationScenario) {
+    owner: string, { snapshot: initial, presentationId, expanded, inputs }: PresentationScenario) {
+    let snapshot: PresentationSnapshot = { ...initial, state: serializePresentationState(initial.state) };
     const { address, definitionId } = snapshot.node;
     const allowEdits = snapshot.editable;
     if (!address || !Array.isArray(inputs) || inputs.length > 8192
@@ -42,7 +44,6 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
         : projectProgramsByDefinition(catalog.artifacts).get(definitionId);
     if (!program) throw new Error(`No presentation program for ${definitionId}`);
     const worker = createNodePresentationWorker(program.bytes);
-    worker.restore(snapshot.state);
     const present = worker.run.bind(worker);
 
     let acceptedRevision = 0;
@@ -107,14 +108,17 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
                 ? renderPresentationSecondsRuler(time, width, height, snapshot.mode, frame.secondsRulerInset) : undefined;
             frames.push(grid || ruler ? { ...frame, marks: [...grid?.marks ?? [], ...ruler ?? [], ...frame.marks ?? []] } : frame);
         }
-        if (!inputs.length && !wake.pending) return;
-        edits.accept(frame, (state) => {
+        edits.accept(frame.commands, inputs.length > 0 || wake.pending);
+        wake.follow(frame);
+    }, (error) => { failure = error; }, {
+        canSave: (inputs) => inputs.length > 0 || wake.pending,
+        save: (state) => {
             if (snapshot.state === state) return;
             snapshot = { ...snapshot, state };
             notifySnapshot();
-        });
-        if (frame.wakeAfterMs !== undefined) wake.request(frame.wakeAfterMs);
-    }, (error) => { failure = error; });
+        },
+        restore: (state) => worker.restore(state),
+    });
     try {
         await readSnapshot(0, 60_000);
         session.update(snapshot, "immediate");
@@ -123,7 +127,8 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             const remaining = started + atMs - performance.now();
             if (remaining > 0) await delay(remaining);
             if (failure) throw failure;
-            session.input(value);
+            if (value.type === "interrupt") session.interrupt(value.reason, edits.interrupt());
+            else session.input(value);
         }
         const deadline = performance.now() + 15_000;
         while (!failure && (edits.queue.pending || session.pending || readCount || wake.pending)) {
@@ -131,7 +136,7 @@ export async function runPresentationScenario(rpc: WorkspaceRpc, interactions: N
             await delay(5);
         }
         if (failure) throw failure;
-        return { presentation: program.id, frames, snapshot, acceptedRevision };
+        return { presentation: program.id, frames, snapshot: { ...snapshot, state: parsePresentationState(snapshot.state) }, acceptedRevision };
     } finally {
         wake.cancel();
         session.dispose();

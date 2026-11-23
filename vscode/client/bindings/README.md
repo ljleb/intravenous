@@ -76,4 +76,4 @@ The bundled curve presentation reads accepted constructor values from
 `graph.getScope`, independently of desired source text. It borrows the values as
 typed WASM records and uses the same node event route as the example above.
 The earlier status is preserved in
-[historical documentation](../../../docs/historical/stage_3_before_automation_presentation_2026-11-14.md).
+[historical documentation](../../../docs-dev/historical/stage_3_before_automation_presentation_2026-11-14.md).

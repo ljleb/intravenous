@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IV_PRESENTATION_ABI_VERSION 9
+#define IV_PRESENTATION_ABI_VERSION 10
 #define IV_PRESENTATION_DESCRIPTOR_VERSION 1
 #define IV_PRESENTATION_TIMELINE 1
 #define IV_PRESENTATION_TIMELINE_SNAPPING 2
@@ -245,8 +245,11 @@ IvObservedTriggerColumnSpan iv_observed_trigger_columns(const IvPresentationCont
 IvObservedWaveformSpan iv_observed_waveforms(const IvPresentationContext *context);
 IvTimelineView iv_timeline_view(const IvPresentationContext *context);
 IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context);
-/* Index into this artifact's construction bindings. The typed value is
-   borrowed for the current call. NULL means omitted or unavailable. */
+/* An omitted argument belongs to an accepted invocation and uses the node's
+   constructor default. An unavailable argument cannot be read by the guest. */
+enum { IV_ARGUMENT_UNAVAILABLE, IV_ARGUMENT_OMITTED, IV_ARGUMENT_AVAILABLE };
+uint32_t iv_construction_argument_state(const IvPresentationContext *context, uint32_t binding);
+/* The typed value is borrowed for the current call. NULL means omitted or unavailable. */
 const void *iv_construction_argument(const IvPresentationContext *context, uint32_t binding);
 uint32_t iv_construction_snapshot(const IvPresentationContext *context);
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context);

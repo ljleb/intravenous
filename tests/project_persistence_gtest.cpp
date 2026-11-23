@@ -17,15 +17,18 @@
 #include <intravenous/app/bridges/project_graph_graph_connections_bridge.h>
 #include <intravenous/app/bridges/project_graph_node_instances_bridge.h>
 #include <intravenous/project/runtime_project_events.h>
+#include <intravenous/presentation/state_json.h>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <sstream>
@@ -895,4 +898,28 @@ TEST(ProjectPersistenceBuilder, InputAndOutputControlsWithTheSameNameRemainDisti
     EXPECT_EQ(commands[1].args.at("output_name"), "main");
     EXPECT_FALSE(commands[1].args.contains("input_name"));
     EXPECT_EQ(commands[1].args.at("value"), -.5f);
+}
+
+TEST(PresentationStateJson, RoundTripsFiniteBinary64Extremes)
+{
+    constexpr auto max = std::numeric_limits<double>::max();
+    constexpr auto tiny = std::numeric_limits<double>::denorm_min();
+    constexpr auto normal = std::numeric_limits<double>::min();
+    for (auto value : {max, -max, tiny, -tiny, normal, -0.0, 1.0 / 3.0}) {
+        char bytes[1024]{};
+        IvJsonWriter writer{bytes, sizeof(bytes), 0, 0, false, {}};
+        iv_json_object(&writer);
+        iv_json_number(&writer, "value", value);
+        iv_json_end(&writer);
+        int const size = iv_json_finish(&writer);
+        ASSERT_GT(size, 0);
+        auto const restored = iv_json_read_decimal_member({bytes, static_cast<std::uint32_t>(size)}, "value", 123);
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(restored), std::bit_cast<std::uint64_t>(value));
+    }
+
+    // The host parses saved state and may send a shorter decimal on restore.
+    constexpr char max_from_host[] = "1.7976931348623157e308";
+    constexpr char beyond_max[] = "1.7976931348623159e308";
+    EXPECT_EQ(iv_json_read_number({max_from_host, max_from_host + sizeof(max_from_host) - 1}, 123), max);
+    EXPECT_EQ(iv_json_read_number({beyond_max, beyond_max + sizeof(beyond_max) - 1}, 123), 123);
 }

@@ -52,6 +52,7 @@ type GraphEditorContext = {
     takeCursorReturnTrace: () => CursorTrace | undefined;
     startObjectDrag: (event: PointerEvent, drag: ObjectDrag) => (() => void) | undefined;
     refreshPointerHint: () => void;
+    historyPending: Readonly<Ref<boolean>>;
     registerPresentationInterrupt: (interrupt: (reason: "history" | "disconnected") => void) => () => void;
     finishPointerLock: (release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError?: string) => void;
     setTimelineZoomHint: (hint: string | null) => void;

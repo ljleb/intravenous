@@ -37,7 +37,6 @@ const session = new PresentationPluginSession((snapshot, inputs) => {
             void edits.finish(props.target);
             continue;
         }
-        if (command.type !== "edit") continue;
         // The ruler's internal preview uses the same pending grid as its
         // observation overlay and retains the existing shared edit transport.
         const payload = command.event.payload;

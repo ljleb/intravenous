@@ -10,7 +10,7 @@ import tempfile
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ROOT / "docs/api"
+DOCS = ROOT / "docs-dev/api"
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^\s)]+)\)")
 EXAMPLE = re.compile(r"<!-- check-example: ([\w.]+) -->\s*```\w+\n(.*?)\n```", re.S)
 

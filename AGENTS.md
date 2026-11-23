@@ -1,7 +1,7 @@
 # Repository Collaboration Rules
 
 Before changing architecture, implementation, tests, or design documentation, read
-[`docs/development_workflow.md`](docs/development_workflow.md). It is the governing
+[`docs-dev/development_workflow.md`](docs-dev/development_workflow.md). It is the governing
 process for collaborative work in this repository.
 
 In particular:
@@ -17,7 +17,7 @@ In particular:
   stop and report it before encoding a narrow workaround or revising the architecture;
 - never present an implementation compromise as original design intent;
 - documentation changes preserve information: semantic text that is removed or
-  superseded must first be retained under `docs/historical/` with provenance and a link
+  superseded must first be retained under `docs-dev/historical/` with provenance and a link
   to its replacement; and
 - write implementation tests after the feature's actual shape is known, and assess
   the need for a focused refactor before handing the feature to the owner for a build.

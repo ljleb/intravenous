@@ -1,22 +1,20 @@
 import { nodeEventUpdateTimers, type NodeEventUpdateTimers } from "./nodeEventUpdates";
 import type { PresentationCommand } from "./presentationPlugin";
 
-export type PresentationEdit = Exclude<PresentationCommand, { type: "state" }>;
-
 /** Pace full-state previews and preserve the order of all other edits. */
 export class PresentationEdits {
-    private readonly queued: PresentationEdit[] = [];
+    private readonly queued: PresentationCommand[] = [];
     private timer?: unknown;
     private sending = false;
     private closed = false;
 
-    constructor(private readonly send: (command: PresentationEdit) => Promise<void>,
+    constructor(private readonly send: (command: PresentationCommand) => Promise<void>,
         private readonly changed: () => void, private readonly fail: (error: unknown) => void,
         private readonly timers: NodeEventUpdateTimers = nodeEventUpdateTimers) {}
 
     get pending(): boolean { return this.sending || this.queued.length > 0; }
 
-    enqueue(command: PresentationEdit): void {
+    enqueue(command: PresentationCommand): void {
         if (this.closed) return;
         const previous = this.queued.at(-1);
         if (previous?.type === "edit" && previous.replacePending && command.type === "edit" && command.replacePending
@@ -65,7 +63,7 @@ export class PresentationEdits {
         this.timer = undefined;
     }
 
-    discardPending(): PresentationEdit[] {
+    discardPending(): PresentationCommand[] {
         this.clearTimer();
         const discarded = this.queued.splice(0);
         this.changed();

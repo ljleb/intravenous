@@ -18,7 +18,8 @@ export type Layout = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const align = (size: number, alignment: number) => Math.ceil(size / alignment) * alignment;
-const invalid = (reason: string): never => { throw new Error(`Invalid presentation value: ${reason}`); };
+export class WasmPresentationValueError extends Error {}
+const invalid = (reason: string): never => { throw new WasmPresentationValueError(`Invalid presentation value: ${reason}`); };
 
 export function readWasmBindingSection(module: WebAssembly.Module, name: string): unknown[] {
     const sections = WebAssembly.Module.customSections(module, name);

@@ -93,6 +93,8 @@ public:
     IvTimelineView timeline_view() const { return iv_timeline_view(context_); }
     uint32_t construction_snapshot() const { return iv_construction_snapshot(context_); }
     template<class Binding>
+    uint32_t construction_argument_state() const { return iv_construction_argument_state(context_, Binding::index); }
+    template<class Binding>
     typename Binding::Value const* construction_argument() const
     {
         return static_cast<typename Binding::Value const*>(iv_construction_argument(context_, Binding::index));

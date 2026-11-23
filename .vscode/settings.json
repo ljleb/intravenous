@@ -1,7 +1,7 @@
 {
   "cmake.useVsDeveloperEnvironment": "always",
   "cmake.generator": "Ninja",
-  "c-docc.docsDir": "real-docs",
+  "c-docc.docsDir": "docs",
   "c-docc.buildDir": "build-release",
   "files.watcherExclude": {
     "**/build/**": true,

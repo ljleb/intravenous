@@ -14,13 +14,14 @@ import { isInteractionSend, type ClientInput, type ClientInteractionTrace, type 
 import type { GraphEditorAction, GraphEditorHostMessage, GraphEditorState, GraphEditorWebviewMessage, TraceDetails } from "./graphEditorProtocol";
 import type { WorkspaceSession } from "./workspaceSession";
 import { formatStatusHint, isStatusHint, playbackShortcut, rightClickHint, type StatusHint } from "./statusBarText";
-import { answerNodeEventRequest, isNodeEventRequest, isNodeEventGestureRequest } from "./nodeEventMessaging";
+import { answerNodeEventRequest, isNodeEventRequest, isNodeEventGestureRequest, type NodeEventHostRequest } from "./nodeEventMessaging";
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase, type PlaybackOutputProfileResult,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 import { PlaybackProfile } from "./playbackProfile";
 import type { NativeClientHelper } from "./nativeClientHelper";
 import { PresentationArtifactReader } from "./presentationArtifacts";
 import type { PresentationArtifact } from "./presentationPlugin";
+import { GraphEditorHistory } from "./graphEditorHistory";
 
 export class GraphEditorProvider implements vscode.Disposable {
     private readonly panels = new Set<vscode.WebviewPanel>();
@@ -42,6 +43,8 @@ export class GraphEditorProvider implements vscode.Disposable {
     };
     private nextObservationSequence = 0;
     private readonly ready = new Set<vscode.WebviewPanel>();
+    private readonly history = new GraphEditorHistory(this.ready);
+    private readonly nodeEventRequests = new Set<Promise<unknown>>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly graphUiProfiles = new Map<vscode.WebviewPanel, { id: string; waits: GraphUiTimings }>();
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
@@ -55,7 +58,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         sessionStatus: "starting", scope: null, definitions: null, definitionUsage: {}, error: "",
     };
     private dirty = false;
-    private reading = false;
+    private refreshing?: Promise<void>;
     private disposed = false;
     private playbackReading = false;
     private pendingSeek: (PlaybackSeek & { releasedFrom?: vscode.WebviewPanel }) | null = null;
@@ -416,6 +419,36 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
     }
 
+    private applyProjectHistory(direction: "undo" | "redo"): Promise<void> {
+        return this.history.run(async () => {
+            // Drain sends admitted before this request, including sends still
+            // waiting on the node-event protocol read.
+            await Promise.all([...this.nodeEventRequests]);
+            await Promise.all([...this.controlOwners.values()].map((owner) => this.session.nodeEvents.releaseOwner(owner)));
+            if (this.disposed) return;
+            await this.session.projectHistory(direction);
+            await this.refresh();
+        });
+    }
+
+    private async handleNodeEvent(panel: vscode.WebviewPanel, message: NodeEventHostRequest): Promise<void> {
+        const owner = this.controlOwners.get(panel);
+        if (!owner) return;
+        if (!this.history.allowsNodeEdits(panel) && (message.type === "sendNodeEvent" || message.begin)) {
+            void panel.webview.postMessage({ type: "nodeEventResult", requestId: message.requestId,
+                error: "Project history interrupted the node edit" } satisfies GraphEditorHostMessage);
+            return;
+        }
+        this.recordClientView(panel, { type: "nodeEvent", request: message });
+        const dispatch = answerNodeEventRequest(this.session.nodeEvents, owner, message);
+        this.nodeEventRequests.add(dispatch);
+        try {
+            const response = await dispatch;
+            if (this.panels.has(panel)) void panel.webview.postMessage(response);
+            if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
+        } finally { this.nodeEventRequests.delete(dispatch); }
+    }
+
     async runAction(action: GraphEditorAction, target?: vscode.WebviewPanel): Promise<void> {
         const panel = target ?? (this.lastActivePanel && this.panels.has(this.lastActivePanel)
             ? this.lastActivePanel : [...this.panels].find((entry) => entry.active) ?? [...this.panels][0] ?? this.open());
@@ -425,8 +458,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         if (action === "undo" || action === "redo") {
-            await this.session.projectHistory(action);
-            await this.refresh();
+            await this.applyProjectHistory(action);
             return;
         }
         const [scope, definitions] = await Promise.all([
@@ -492,7 +524,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.panels.add(panel);
         this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
+        let wasVisible = panel.visible;
         const viewState = panel.onDidChangeViewState(() => {
+            const becameVisible = panel.visible && !wasVisible;
+            wasVisible = panel.visible;
             this.recordClientView(panel, { type: "view", visible: panel.visible, active: panel.active });
             void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
             if (!panel.visible) {
@@ -500,7 +535,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.finishPlaybackDrag(panel);
                 const owner = this.controlOwners.get(panel);
                 if (owner) void this.session.reconcileObservations(owner, []).catch(() => {});
-            } else if (!this.panelObservations.has(panel)) this.postObservationSnapshot(panel);
+            } else {
+                if (becameVisible && this.history.hasStarted) this.post(panel);
+                if (!this.panelObservations.has(panel)) this.postObservationSnapshot(panel);
+            }
+            this.history.panelVisibilityChanged(panel);
             if (panel.active) this.lastActivePanel = panel;
             else this.interactionHints.delete(panel);
             this.updateInteractionStatus();
@@ -547,12 +586,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                 for (const line of observationInterestReport(s)) this.outputChannel.appendLine(line);
                 this.notifyProfileFinished("observation profile");
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
-                const owner = this.controlOwners.get(panel);
-                if (!owner) return;
-                this.recordClientView(panel, { type: "nodeEvent", request: message });
-                const response = await answerNodeEventRequest(this.session.nodeEvents, owner, message);
-                if (this.panels.has(panel)) void panel.webview.postMessage(response);
-                if (response.error) void vscode.window.showErrorMessage(`Cannot send node event: ${response.error}`);
+                await this.handleNodeEvent(panel, message);
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
                 this.outputChannel.appendLine(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "returnCursor") {
@@ -594,6 +628,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (owner) { this.session.manualControls.releaseOwner(owner); this.session.nodeEvents.releaseOwner(owner); }
                 }
                 this.ready.add(panel);
+                this.history.panelReady(panel);
                 void this.postProjectPresentations(panel);
                 this.panelObservations.delete(panel);
                 void panel.webview.postMessage({ type: "observationVisibility", visible: panel.visible });
@@ -648,9 +683,10 @@ export class GraphEditorProvider implements vscode.Disposable {
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change knob: ${error.message}`); }
             } else if (message?.type === "projectHistory") {
                 try {
-                    await this.session.projectHistory(message.direction);
-                    await this.refresh();
+                    await this.applyProjectHistory(message.direction);
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot ${message.direction} project edit: ${error.message}`); }
+            } else if (message?.type === "projectHistoryInterrupted") {
+                this.history.acknowledge(panel, message.requestId);
             } else if (message?.type === "knobClipboard") {
                 const { requestId, text } = message;
                 const active = panel.active && vscode.window.state.focused;
@@ -748,6 +784,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
         });
         panel.onDidDispose(() => {
+            this.history.panelClosed(panel);
             this.finishPlaybackDrag(panel);
             const owner = this.controlOwners.get(panel);
             if (owner) {
@@ -825,11 +862,13 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
     }
 
-    private async refresh(): Promise<void> {
-        if (!this.panels.size || this.disposed) return;
+    private refresh(): Promise<void> {
+        if (!this.panels.size || this.disposed) return Promise.resolve();
         this.dirty = true;
-        if (this.reading) return;
-        this.reading = true;
+        return this.refreshing ??= Promise.resolve().then(() => this.readGraphState());
+    }
+
+    private async readGraphState(): Promise<void> {
         try {
             while (this.dirty && !this.disposed) {
                 this.dirty = false;
@@ -858,12 +897,13 @@ export class GraphEditorProvider implements vscode.Disposable {
                 }
                 for (const panel of this.panels) this.post(panel);
             }
-        } finally { this.reading = false; }
+        } finally { this.refreshing = undefined; }
     }
 
     dispose(): void {
         this.stopClientTrace();
         this.disposed = true;
+        this.history.dispose();
         this.presentationChanges.dispose();
         clearInterval(this.playbackTimer);
         if (this.playbackProfile) clearTimeout(this.playbackProfile.timer);

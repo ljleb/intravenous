@@ -125,7 +125,12 @@ IvNumericValueSpan iv_numeric_arguments(const IvPresentationContext *context) { 
 const void *iv_construction_argument(const IvPresentationContext *context, uint32_t binding)
 {
     IvConstructionArgumentSpan const arguments = context->construction_arguments;
-    return binding < arguments.size ? arguments.data[binding] : NULL;
+    return binding < arguments.size ? arguments.data[binding].value : NULL;
+}
+uint32_t iv_construction_argument_state(const IvPresentationContext *context, uint32_t binding)
+{
+    IvConstructionArgumentSpan const arguments = context->construction_arguments;
+    return binding < arguments.size ? arguments.data[binding].state : IV_ARGUMENT_UNAVAILABLE;
 }
 uint32_t iv_construction_snapshot(const IvPresentationContext *context) { return context->construction_snapshot; }
 IvControlInputSpan iv_control_inputs(const IvPresentationContext *context) { return context->controls; }

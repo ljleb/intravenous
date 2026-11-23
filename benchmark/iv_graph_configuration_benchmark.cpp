@@ -1,7 +1,7 @@
 // Graph-configuration baseline benchmark.
 //
 // Measures the host-side builder/configuration/cache path that the scoped
-// BuilderSession migration (docs/scoped_graph_builder_and_subgraph_closure_direction.md,
+// BuilderSession migration (docs-dev/scoped_graph_builder_and_subgraph_closure_direction.md,
 // implementation Front 12) reshapes. Package definitions are host function
 // pointers, so no package compilation or ORC loading is measured: every
 // microsecond reported here is GraphBuilder, BuilderSession, NodeInstances
@@ -9,7 +9,7 @@
 //
 // Each scenario names the configuration behavior it exercises. The baseline
 // taken before the scoped-builder migration, and the mechanisms it measured,
-// are recorded under Front 12 in docs/implementation_fronts_direction.md.
+// are recorded under Front 12 in docs-dev/implementation_fronts_direction.md.
 //
 //   builder_direct        GraphBuilder + configure_concrete_node with no package
 //                         table: graph-table cost per node and connection.

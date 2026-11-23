@@ -9,6 +9,7 @@ import { provideLane } from "./laneContext";
 import { useNodeEventMessaging } from "./nodeEventContext";
 import type { NodeEvent } from "../../src/nodeEvents";
 import { presentationStateKey } from "../../src/graphScope";
+import { stringifyPresentationState } from "../../src/presentationStateJson";
 import { useOptionalGraphEditor } from "../graph/context";
 import { providePresentationState } from "./presentationStateContext";
 import { provideObservationTier } from "./observationContext";
@@ -51,8 +52,8 @@ providePresentationState(({ serialize, restore }) => {
     const key = stateKey.value;
     restore(editor && key !== null ? editor.readPresentationState(key) : undefined);
     if (!editor || key === null) return () => {};
-    watch(() => JSON.stringify(editor.readPresentationState(key) ?? null), (serialized) => {
-        if (serialized !== JSON.stringify(serialize())) restore(JSON.parse(serialized) ?? undefined);
+    watch(() => stringifyPresentationState(editor.readPresentationState(key) ?? null), (serialized) => {
+        if (serialized !== stringifyPresentationState(serialize())) restore(JSON.parse(serialized) ?? undefined);
     });
     return (saveNow = true) => {
         editor.presentationStateChanged(key, serialize);

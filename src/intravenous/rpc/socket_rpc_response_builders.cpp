@@ -499,6 +499,29 @@ std::string_view graph_scope_node_state_json(ProjectGraphScopeNodeState state)
     }
     throw std::logic_error("unknown graph scope node state");
 }
+
+void preserve_construction_integers(Json& value)
+{
+    constexpr std::int64_t max_exact_integer = 9007199254740991;
+    if (value.is_structured()) {
+        for (auto& member : value) preserve_construction_integers(member);
+    } else if (value.is_number_unsigned()) {
+        auto const integer = value.get<std::uint64_t>();
+        if (integer > static_cast<std::uint64_t>(max_exact_integer)) value = std::to_string(integer);
+    } else if (value.is_number_integer()) {
+        auto const integer = value.get<std::int64_t>();
+        if (integer < -max_exact_integer || integer > max_exact_integer) value = std::to_string(integer);
+    }
+}
+
+Json graph_scope_construction_json(ProjectGraphScopeNode const& node)
+{
+    if (!node.construction_arguments_json) return nullptr;
+    auto arguments = Json::parse(*node.construction_arguments_json);
+    preserve_construction_integers(arguments);
+    return {{"definitionId", node.construction_definition_id}, {"arguments", std::move(arguments)}};
+}
+
 Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
 {
     auto nodes = Json::array();
@@ -516,10 +539,7 @@ Json graph_scope_nodes_json(std::span<ProjectGraphScopeNode const> entries)
             {"isModule", node.interface.is_module},
             {"errorMessage", node.error_message},
             {"loadState", graph_scope_node_state_json(node.load_state)},
-            {"construction", node.construction_arguments_json ? Json{
-                {"definitionId", node.construction_definition_id},
-                {"arguments", Json::parse(*node.construction_arguments_json)},
-            } : Json(nullptr)},
+            {"construction", graph_scope_construction_json(node)},
             {"constructionError", node.construction_error},
         };
         if (node.membership_address)

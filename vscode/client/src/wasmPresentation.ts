@@ -1,10 +1,11 @@
-import type { PresentationCommand, PresentationFrame, PresentationInput, PresentationSnapshot, PresentationSavedState } from "./presentationPlugin";
+import type { PresentationCommand, PresentationFrame, PresentationInput, PresentationSnapshot } from "./presentationPlugin";
+import { maxPresentationStateBytes } from "./presentationStateJson";
 import { readWasmEventBindings, wasmEventReader } from "./wasmPresentationEvents";
 import { packWasmArguments, readWasmArgumentBindings, type WasmConstruction } from "./wasmPresentationArguments";
 import { presentationTriggerColumns, triggerColumnLimit, type TriggerColumns } from "./presentationTriggerColumns";
 import { presentationWaveforms, waveformPointBytes, type PresentationWaveform } from "./presentationWaveforms";
 
-export const wasmPresentationAbiVersion = 9;
+export const wasmPresentationAbiVersion = 10;
 
 type WasmDescriptor = { timeline?: true; timelineSnapping?: true; icon?: string };
 export function readWasmPresentationDescriptor(bytes: Uint8Array): WasmDescriptor {
@@ -70,7 +71,7 @@ export type WasmPresentationUpdate = {
     session: number; revision: number; editReplies: WasmEditReply[];
 };
 export type WasmPresentationReply = {
-    frame?: PresentationFrame; storage?: ArrayBuffer; savedState?: PresentationSavedState; error?: string; closed?: true;
+    frame?: PresentationFrame; storage?: ArrayBuffer; error?: string; closed?: true;
 };
 
 const gesturePhases = ["begin", "move", "modifiers", "wheel", "finish", "cancel"];
@@ -146,6 +147,51 @@ export function wasmPresentationUpdate(snapshot: PresentationSnapshot, inputs: r
 
 const inks = [undefined, "foreground", "muted", "input", "output", "selection", "highlight", "warning", "background"] as const;
 
+const layout = { context: 256, gesture: 64, batch: 12, polyline: 72, point: 16, target: 64,
+    text: 32, shape: 64, observation: 40, string: 8, argument: 12, control: 40, editorInput: 40,
+    manualInput: 16, waveform: 32, waveformRegion: 32, editReply: 24, snapCandidates: 24 };
+
+function sceneInputSize(update: WasmPresentationUpdate): number {
+    let size = 0;
+    // Each allocation starts at an 8-byte boundary. A UTF-16 code unit can
+    // contribute at most three UTF-8 bytes, including lone surrogates.
+    const add = (bytes: number) => { size += Math.ceil(bytes / 8) * 8; };
+    const string = (value: string | undefined, limit = Infinity) => add(Math.min((value?.length ?? 0) * 3, limit));
+    add(update.triggerColumns.length * layout.observation);
+    for (const observation of update.triggerColumns) {
+        add(observation.columns.length * 4);
+        string(observation.id);
+        string(observation.error, 512);
+    }
+    add(update.connectedInputs.length * layout.string);
+    for (const name of update.connectedInputs) string(name);
+    add(update.arguments.length * layout.argument);
+    for (const argument of update.arguments) add((Array.isArray(argument) ? argument.length : +(argument !== undefined)) * 8);
+    add(update.controls.length * layout.control);
+    for (const control of update.controls) {
+        string(control.id, 160);
+        if (typeof control.value === "string") string(control.value, 160);
+    }
+    add(update.editReplies.length * layout.editReply);
+    for (const reply of update.editReplies) string(reply.error, 512);
+    add(update.waveforms.length * layout.waveform);
+    for (const waveform of update.waveforms) {
+        add(waveform.regions.length * layout.waveformRegion);
+        string(waveform.id);
+        string(waveform.error, 512);
+        for (const region of waveform.regions) add(region.points.byteLength);
+    }
+    add(update.editorInputs.length * layout.editorInput);
+    add(update.manualInputs.length * layout.manualInput);
+    for (const port of update.manualInputs) string(port.id, 160);
+    for (const { snapping } of update.gestures) {
+        if (!snapping) continue;
+        add(layout.snapCandidates);
+        add(snapping.marks.length * 8);
+    }
+    return size;
+}
+
 type WasmOutput = {
     uint(at: number): number;
     number(at: number): number;
@@ -205,16 +251,13 @@ export function createWasmPresentation(bytes: string) {
         throw new Error("Missing presentation ABI exports");
 
     const capacity = 1024 * 1024;
-    const maxState = 128 * 1024;
     const maxGestures = 512;
     const basicInputCapacity = 128 * 1024;
-    const layout = { context: 256, gesture: 64, batch: 12, polyline: 72, point: 16, target: 64,
-        text: 32, shape: 64, observation: 40, string: 8, argument: 12, control: 40, editorInput: 40,
-        manualInput: 16, waveform: 32, waveformRegion: 32 };
-    const allocate = (size: number) => {
+    const allocate = (size: number, optional = false) => {
         if (!Number.isInteger(size) || size < 1 || size > capacity)
             throw new Error("Invalid presentation allocation size");
         const offset = iv_alloc(size);
+        if (optional && offset === 0) return 0;
         if (!Number.isInteger(offset) || offset <= 0 || offset % 8 !== 0 || offset + size > memory.buffer.byteLength)
             throw new Error("Presentation allocation lies outside module memory");
         return offset;
@@ -243,23 +286,31 @@ export function createWasmPresentation(bytes: string) {
     const writeConstruction = (construction: WasmConstruction | null) => {
         constructionSnapshot = (constructionSnapshot + 1) >>> 0;
         const packed = construction && argumentBindings.length && packWasmArguments(argumentBindings, construction, capacity);
-        hasConstruction = !!packed;
+        hasConstruction = false;
         if (!packed) return;
         if (packed.size > constructionCapacity) {
+            let nextCapacity = Math.min(capacity, Math.max(4096, constructionCapacity * 2, packed.size));
             if (constructionStorage) iv_free(constructionStorage);
-            const nextCapacity = Math.min(capacity, Math.max(4096, constructionCapacity * 2, packed.size));
-            const next = allocate(nextCapacity);
+            constructionStorage = 0;
+            constructionCapacity = 0;
+            let next = allocate(nextCapacity, true);
+            if (!next && nextCapacity !== packed.size) {
+                nextCapacity = packed.size;
+                next = allocate(nextCapacity, true);
+            }
+            if (!next) return;
             if (overlaps([...fixedBlocks, [session, 1], [input, inputCapacity], [next, nextCapacity]]))
                 throw new Error("Presentation allocations overlap");
             constructionStorage = next;
             constructionCapacity = nextCapacity;
         }
         packed.copyTo(memory, constructionStorage);
+        hasConstruction = true;
     };
 
     const restore = (serialized: string) => {
         const data = encoder.encode(serialized);
-        if (data.length > maxState) throw new Error("Saved presentation state exceeds the byte limit");
+        if (data.length > maxPresentationStateBytes) throw new Error("Saved presentation state exceeds the byte limit");
         new Uint8Array(memory.buffer, output, data.length).set(data);
         if (iv_restore_state(session, output, data.length) !== 0) throw new Error("Presentation could not restore state");
         hasDrawing = false;
@@ -278,11 +329,11 @@ export function createWasmPresentation(bytes: string) {
             view.setUint32(at + 4, count, true);
         };
         const string = (at: number, value: string, maximum?: number) => {
-            let bytes = encoder.encode(value);
-            if (maximum !== undefined && bytes.length > maximum) {
+            let bytes: Uint8Array;
+            if (maximum !== undefined && value.length * 3 > maximum) {
                 const clipped = new Uint8Array(maximum);
                 bytes = clipped.subarray(0, encoder.encodeInto(value, clipped).written);
-            }
+            } else bytes = encoder.encode(value);
             const start = reserve(bytes.length);
             new Uint8Array(memory.buffer, start, bytes.length).set(bytes);
             span(at, start, bytes.length);
@@ -339,9 +390,9 @@ export function createWasmPresentation(bytes: string) {
         }
         span(context + 144, controlsStart, update.controls.length);
         view.setBigUint64(context + 168, BigInt(update.revision), true);
-        const replies = reserve(update.editReplies.length * 24);
+        const replies = reserve(update.editReplies.length * layout.editReply);
         for (const [index, reply] of update.editReplies.entries()) {
-            const at = replies + index * 24;
+            const at = replies + index * layout.editReply;
             view.setUint32(at, reply.id, true);
             view.setUint32(at + 4, +(reply.error !== undefined), true);
             view.setBigUint64(at + 8, BigInt(reply.revision ?? 0), true);
@@ -394,7 +445,7 @@ export function createWasmPresentation(bytes: string) {
             const at = gestures + i * layout.gesture + 56;
             view.setUint32(at, 0, true);
             if (!snapping) continue;
-            const candidates = reserve(24);
+            const candidates = reserve(layout.snapCandidates);
             const marks = reserve(snapping.marks.length * 8);
             snapping.marks.forEach((mark, index) => view.setBigInt64(marks + index * 8, BigInt(mark), true));
             span(candidates, marks, snapping.marks.length);
@@ -410,12 +461,9 @@ export function createWasmPresentation(bytes: string) {
             || inputs.length + update.controls.length + update.editorInputs.length + update.editReplies.length > maxGestures
             || !Number.isSafeInteger(update.revision) || update.revision < 0)
             throw new Error("Invalid presentation viewport or gesture count");
-        // Grow the scene arena only for a presentation with waveform data.
-        const waveformBytes = update.waveforms.reduce((size, waveform) => size + layout.waveform
-            + waveform.regions.reduce((bytes, region) => bytes + layout.waveformRegion + region.points.byteLength, 0), 0);
-        const snapBytes = inputs.reduce((size, input) => size + (input.snapping ? 24 + 8 * input.snapping.marks.length : 0), 0);
-        if (basicInputCapacity + waveformBytes + snapBytes > inputCapacity) {
-            const nextCapacity = Math.ceil((basicInputCapacity + waveformBytes + snapBytes) / 65536) * 65536;
+        const required = sceneInputSize(update);
+        if (required > inputCapacity && inputCapacity < capacity) {
+            const nextCapacity = Math.min(capacity, Math.ceil(required / 65536) * 65536);
             iv_free(input);
             const next = allocate(nextCapacity);
             const otherBlocks = constructionStorage ? [[constructionStorage, constructionCapacity]] : [];
@@ -512,12 +560,13 @@ export function createWasmPresentation(bytes: string) {
                     throw new Error("Invalid polyline descriptor");
                 check(start, count * layout.point, 8);
                 remainingVertices -= count;
+                const strokeWidth = number(at + 32);
                 marks.push({ type: "packedPolyline", id: String(id), ink: inks[ink],
-                    target: target ? String(target) : undefined, opacity: style & 1 ? number(at + 24) : undefined,
-                    strokeWidth: number(at + 32) || undefined, dashed: style & 2 ? true : undefined,
-                    fill: style & 4 ? true : undefined, fade: style & 8 ? {
+                    ...(target ? { target: String(target) } : {}), ...(style & 1 ? { opacity: number(at + 24) } : {}),
+                    ...(strokeWidth ? { strokeWidth } : {}), ...(style & 2 ? { dashed: true } : {}),
+                    ...(style & 4 ? { fill: true } : {}), ...(style & 8 ? { fade: {
                         from: { x: number(at + 40), y: number(at + 48) }, to: { x: number(at + 56), y: number(at + 64) },
-                    } : undefined,
+                    } } : {}),
                     coordinates: new Float64Array(storage!, start - output, count * 2) });
             });
             batches(shapes, layout.shape, 1024, (at) => {
@@ -596,13 +645,13 @@ export function createWasmPresentation(bytes: string) {
             frame.commands = commands;
         } else if (uint(context + 184)) throw new Error("Invalid presentation edit count");
         frame.timelineGrid = readWasmTimelineGrid(outputReader, uint(context + 164), (at) => view.getBigUint64(at, true).toString());
-        const reply: WasmPresentationReply = { frame, storage };
         if (flags & 2) {
-            const count = iv_save_state(session, output, maxState);
-            if (!Number.isInteger(count) || count <= 0 || count > maxState) throw new Error("Invalid serialized presentation state");
-            reply.savedState = JSON.parse(decoder.decode(new Uint8Array(memory.buffer, output, count)));
+            const count = iv_save_state(session, output, maxPresentationStateBytes);
+            if (!Number.isInteger(count) || count <= 0 || count > maxPresentationStateBytes)
+                throw new Error("Invalid serialized presentation state");
+            frame.saveRequest = decoder.decode(new Uint8Array(memory.buffer, output, count));
         }
-        return reply;
+        return { frame, storage };
     };
     return {
         restore,

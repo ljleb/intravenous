@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createWasmPresentation, readWasmPresentationDescriptor, wasmPresentationUpdate } from "../src/wasmPresentation";
 import { renderPresentationSecondsRuler } from "../src/presentationSecondsRuler";
+import { PresentationLaneEdits } from "../src/presentationLaneEdits";
+import { parsePresentationState } from "../src/presentationStateJson";
 import type { ObservationWindowResult } from "../src/observations";
 import { readPresentationFrame, type PresentationCommand, type PresentationFrame, type PresentationGestureInput,
     type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
@@ -30,7 +32,7 @@ const tracks = { authored: 1001, output: 1301, min: 1601, max: 1901 };
 
 function harness(t: TestContext, initial = snapshot) {
     const present = createWasmPresentation(artifact.toString("base64"));
-    present.restore(initial.state ? JSON.stringify(initial.state) : "");
+    present.restore(initial.state ?? "");
     t.after(() => present.dispose());
     let argumentsInGuest: readonly unknown[] | undefined;
     return (inputs: PresentationInput[] = [], update?: Partial<PresentationSnapshot>) => {
@@ -38,7 +40,6 @@ function harness(t: TestContext, initial = snapshot) {
         if (input.construction?.arguments === argumentsInGuest) delete input.construction;
         else argumentsInGuest = input.construction?.arguments;
         const reply = present.present(input);
-        if (reply.savedState !== undefined) (reply.frame!.commands ??= []).push({ type: "state", value: reply.savedState });
         const frame = readPresentationFrame(reply.frame);
         return { ...frame, commands: frame.commands ?? [] };
     };
@@ -110,6 +111,54 @@ test("the curve flushes a new point immediately and history discards an unsent m
     assert.deepEqual(closing.commands?.map(({ type }) => type), ["finish"]);
 });
 
+test("history settles the curve's finish request while new edits are blocked", async (t) => {
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node, arguments: [[]] } });
+    let editable = true;
+    let sends = 0;
+    let finishes = 0;
+    let completeSend!: () => void;
+    const pendingSend = new Promise<void>((resolve) => { completeSend = resolve; });
+    const replies: PresentationInput[] = [];
+    const edits = new PresentationLaneEdits({
+        editable: () => editable,
+        gesture: () => ({
+            send: async () => { ++sends; await pendingSend; },
+            finish: async () => { ++finishes; },
+            acceptedRevision: () => 2,
+        }),
+        accepted: () => {}, input: (reply) => replies.push(reply), setError: () => {}, changed: () => {},
+        fail: (error) => assert.fail(String(error)),
+    });
+    t.after(() => { completeSend(); edits.queue.dispose(); return edits.closeGestures(); });
+    const added = present([gesture(addTarget, "begin", 20, 50)]);
+    const insert = added.commands?.[0];
+    assert.equal(insert?.type, "edit");
+    edits.accept(added.commands);
+    assert.equal(sends, 1);
+
+    editable = false;
+    const closing = present([{ type: "interrupt", reason: "history" }, ...edits.interrupt()], { editable });
+    const finish = closing.commands?.[0];
+    assert.equal(finish?.type, "finish");
+    assert.ok(finish.requestId);
+    assert.equal(finishes, 1);
+    edits.accept(closing.commands, false);
+    edits.accept([{ ...insert, requestId: "blocked-edit" }], false);
+    assert.deepEqual(replies.splice(0), [{ type: "editResult", requestId: "blocked-edit", error: "This frame cannot submit node edits" }]);
+    completeSend();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(sends, 1);
+    assert.deepEqual(replies, [{ type: "editResult", requestId: finish.requestId, acceptedRevision: undefined }]);
+    present(replies.splice(0), { editable });
+
+    editable = true;
+    const resumed = present([gesture(addTarget, "begin", 40, 50)], { editable, revision: 3 });
+    assert.equal(resumed.commands?.[0]?.type, "edit");
+    assert.equal(resumed.cancelDrag, undefined);
+    edits.accept(resumed.commands);
+    assert.equal(sends, 2);
+});
+
 test("rectangle selection and contextual controls use the same frame as the curve", (t) => {
     const present = harness(t);
     const first = present();
@@ -135,16 +184,15 @@ test("scale commands save the curve view and a reloaded lane draws it over a man
     const present = harness(t);
     const scale = present([{ type: "control", id: "display", phase: "commit", value: "cropped" },
         { type: "valueView", action: "zoom", factor: 2, y: .5 }]);
-    const command = scale.commands?.[0];
-    assert.equal(command?.type, "state");
-    assert.equal(command.value?.display, "cropped");
-    const restored = harness(t, { ...snapshot, state: command.value, node: { ...snapshot.node,
+    assert.ok(scale.saveRequest);
+    assert.equal(parsePresentationState(scale.saveRequest)?.display, "cropped");
+    const restored = harness(t, { ...snapshot, state: scale.saveRequest, node: { ...snapshot.node,
         ports: [{ name: "min", kind: "continuous", direction: "input", manualValue: .8 }] } });
     const frame = restored();
     assert.ok(trace(frame, tracks.min).length);
     assert.ok(trace(frame, tracks.output).length);
-    assert.deepEqual(restored([{ type: "valueView", action: "reset" }]).commands,
-        [{ type: "state", value: { display: "cropped" } }]);
+    const reset = restored([{ type: "valueView", action: "reset" }]);
+    assert.deepEqual(parsePresentationState(reset.saveRequest!), { display: "cropped" });
 });
 
 test("a connected bound uses the retained spans while its replacement is pending", (t) => {
@@ -278,4 +326,25 @@ test("holding Shift preserves the point type and releasing Shift applies the tra
     assert.deepEqual(edit.event.payload, { insert: false, ordered_ids: [],
         point: { id: 2, seconds: 0, sample_index: "360000", value: 1, interpolation: "bezier", tension: .5, order: 0 },
         segments: [{ id: 1, interpolation: "empty", tension: 1 }] });
+});
+
+test("point edits require an accepted invocation, including a valid default constructor", (t) => {
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node, constructionDefinitionId: undefined, arguments: [] } });
+    const staleAdd = gesture(addTarget, "begin", 20, 50);
+    const missing = present([staleAdd]);
+    assert.equal(missing.itemEditing, undefined);
+    assert.equal(missing.targets?.some(({ id }) => id === addTarget), false);
+    assert.deepEqual(missing.commands, []);
+
+    const oversized = Array.from({ length: 17000 }, (_, id) => ({ ...points[0], id, seconds: id }));
+    const pending = present([staleAdd], { node: { ...snapshot.node, arguments: [oversized] } });
+    assert.equal(pending.status, "Waiting for accepted Automation Curve arguments");
+    assert.equal(pending.itemEditing, undefined);
+    assert.deepEqual(pending.commands, []);
+
+    const editable = present([staleAdd], { node: { ...snapshot.node, arguments: [] } });
+    assert.equal(editable.itemEditing, true);
+    const command = editable.commands[0];
+    assert.equal(command?.type, "edit");
+    assert.equal(command.event.payload["insert"], true);
 });

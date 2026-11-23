@@ -4,8 +4,9 @@ import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
 import type { PresentationCursor, PresentationFrame, PresentationGestureInput, PresentationInput, PresentationObservation, PresentationPoint,
-    PresentationArtifact, PresentationSavedState, PresentationSnapshot } from "../../src/presentationPlugin";
+    PresentationArtifact, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
+import { parsePresentationState, serializePresentationState, type SerializedPresentationState } from "../../src/presentationStateJson";
 import { openPresentationTimelineReader, renderPresentationTimelineGrid } from "../../src/presentationTimelineGrid";
 import { renderPresentationSecondsRuler } from "../../src/presentationSecondsRuler";
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
@@ -43,12 +44,12 @@ const navigation = useTimelineNavigation();
 const surface = ref<HTMLElement | null>(null);
 const size = usePresentationSize(surface);
 const frame = shallowRef<PresentationFrame>();
-const state = shallowRef<PresentationSavedState>(null);
+const state = shallowRef<SerializedPresentationState>(null);
 const error = ref("");
 const editError = ref("");
 const replacementError = ref("");
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
-    && !!node.value.address && node.value.loadState === "ready");
+    && !editor.historyPending.value && !!node.value.address && node.value.loadState === "ready");
 const worker = new ReloadableWasmPresentation(createWebPresentationWorker,
     (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); });
 let cancelDrag: (() => void) | undefined;
@@ -60,9 +61,9 @@ const editsPending = ref(false);
 const waking = ref(false);
 const active = usePresentationActive(() => dragging.value || panelOpen.value || menu.key.value !== null || editsPending.value || waking.value);
 const save = usePresentationState({
-    serialize: () => state.value,
+    serialize: () => parsePresentationState(state.value),
     restore: (saved) => {
-        state.value = saved ?? null;
+        state.value = serializePresentationState(saved ?? null);
         worker.restore(state.value);
     },
 });
@@ -130,6 +131,9 @@ function fail(reason: unknown) {
     laneEdits.closeGestures();
     worker.dispose();
 }
+function allowsFrameChanges(inputs: readonly PresentationInput[]): boolean {
+    return (inputs.length > 0 || waking.value) && !editor?.historyPending.value;
+}
 function accept(next: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) {
     if (cursorReply && inputs.includes(cursorReply.input)) {
         const cursor = next.drag?.cursor;
@@ -137,16 +141,9 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
         // even when the frame's drawing was superseded during the release.
         settleCursorReply(cursor && (draw || "sample" in cursor) ? cursor : undefined);
     }
-    const continuing = inputs.length > 0 || waking.value;
-    const deferredState = inputs.length > 0
-        && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
-    if (continuing) laneEdits.accept(next, (value) => {
-        if (!editor?.scope.value?.editable || !node.value.address) return;
-        state.value = value;
-        save(!deferredState);
-    });
+    laneEdits.accept(next.commands, allowsFrameChanges(inputs));
     if (active.value && draw) frame.value = next;
-    if (continuing && next.wakeAfterMs !== undefined) wake.request(next.wakeAfterMs);
+    wake.follow(next);
     waking.value = wake.pending;
     if (next.cancelDrag) cancelDrag?.();
     if (dragging.value) editor?.refreshPointerHint();
@@ -159,7 +156,15 @@ const job = usePresentationFrame("update", () => { void session.flush(); });
 const session = new PresentationPluginSession((snapshot, inputs) => {
     const program = props.program;
     return worker.run(program.bytes, snapshot, inputs, () => !dragging.value && props.program === program);
-}, job.schedule, accept, fail);
+}, job.schedule, accept, fail, {
+    canSave: (inputs) => allowsFrameChanges(inputs) && !!editor?.scope.value?.editable && !!node.value.address,
+    save: (accepted, inputs) => {
+        state.value = accepted;
+        const deferred = inputs.length > 0 && inputs.every((input) => input.type === "valueView" && input.action !== "reset");
+        save(!deferred);
+    },
+    restore: (accepted) => worker.restore(accepted),
+});
 
 const snapshot = computed((): PresentationSnapshot | undefined => {
     if (error.value || !active.value || !size.value?.width || !size.value.height) return;
@@ -305,10 +310,7 @@ const unregisterInterrupt = editor?.registerPresentationInterrupt((reason) => {
     contextRequest = undefined;
     menu.close();
     settleCursorReply();
-    const replies: PresentationInput[] = [];
-    for (const { requestId } of edits.discardPending()) if (requestId)
-        replies.push({ type: "editResult", requestId, error: "Presentation edit interrupted" });
-    session.interrupt(reason, replies);
+    session.interrupt(reason, laneEdits.interrupt());
     cancelDrag?.();
 });
 watch(editable, (enabled) => { if (!enabled) menu.close(); });

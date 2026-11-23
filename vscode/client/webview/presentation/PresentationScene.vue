@@ -40,6 +40,7 @@ const color = (ink?: PresentationInk) => ink && `var(${inkColor[ink]})`;
                         strokeWidth: mark.strokeWidth, strokeDasharray: mark.dashed ? '3 3' : undefined }" />
             </template>
             <rect v-else-if="mark.type === 'rect'" :x="mark.x" :y="mark.y" :width="mark.width" :height="mark.height"
+                :class="{ 'plugin-hover-mark': mark.target && highlightedTarget === mark.target }"
                 :opacity="mark.opacity" :style="{ fill: color(mark.ink), stroke: color(mark.border) }" />
             <circle v-else-if="mark.type === 'circle'" :cx="mark.x" :cy="mark.y" :r="mark.radius" :opacity="mark.opacity"
                 :class="{ 'plugin-hover-mark': mark.target && highlightedTarget === mark.target }"

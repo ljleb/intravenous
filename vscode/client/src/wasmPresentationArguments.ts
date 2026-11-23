@@ -1,5 +1,5 @@
 import type { NodeEventValueSchema } from "./nodeEvents";
-import { align, compileLayout, readWasmBindingSection, type Layout } from "./wasmPresentationValues";
+import { align, compileLayout, readWasmBindingSection, WasmPresentationValueError, type Layout } from "./wasmPresentationValues";
 
 export type WasmConstruction = { definitionId: string; arguments: readonly unknown[] };
 type Binding = { definitionId: string; index: number; layout: Layout };
@@ -20,14 +20,17 @@ export function readWasmArgumentBindings(module: WebAssembly.Module): readonly B
 export function packWasmArguments(bindings: readonly Binding[], construction: WasmConstruction, capacity: number) {
     let bytes = new Uint8Array(4096);
     let view = new DataView(bytes.buffer);
-    let used = bindings.length * 4;
+    const stride = 8;
+    let used = bindings.length * stride;
+    let readable = false;
     const pointers: number[] = [];
     const writer = {
         get view() { return view; },
         reserve(size: number, alignment: number) {
             const offset = align(used, alignment);
-            used = offset + size;
-            if (used > capacity) throw new Error("Presentation construction arguments exceed their byte limit");
+            const end = offset + size;
+            if (end > capacity) throw new WasmPresentationValueError("Presentation construction arguments exceed their byte limit");
+            used = end;
             if (used > bytes.length) {
                 const grown = new Uint8Array(Math.min(capacity, Math.max(bytes.length * 2, used)));
                 grown.set(bytes);
@@ -43,13 +46,33 @@ export function packWasmArguments(bindings: readonly Binding[], construction: Wa
     };
     const budget = { items: 128 * 1024, bytes: capacity };
     for (const [slot, { definitionId, index, layout }] of bindings.entries()) {
+        if (construction.definitionId !== definitionId) continue;
+        const record = slot * stride;
+        if (index >= construction.arguments.length) {
+            view.setUint32(record + 4, 1, true); // IV_ARGUMENT_OMITTED
+            readable = true;
+            continue;
+        }
         const value = construction.arguments[index];
-        if (construction.definitionId !== definitionId || value === undefined || value === null) continue;
-        const offset = writer.reserve(layout.size, layout.alignment);
-        layout.write(writer, offset, value, budget);
-        writer.pointer(slot * 4, offset);
+        if (value === undefined || value === null) continue;
+        const begin = used, pointerCount = pointers.length;
+        const availableBudget = { ...budget };
+        try {
+            const offset = writer.reserve(layout.size, layout.alignment);
+            layout.write(writer, offset, value, budget);
+            writer.pointer(record, offset);
+            view.setUint32(record + 4, 2, true); // IV_ARGUMENT_AVAILABLE
+            readable = true;
+        } catch (error) {
+            if (!(error instanceof WasmPresentationValueError)) throw error;
+            bytes.fill(0, begin, used);
+            used = begin;
+            pointers.length = pointerCount;
+            budget.items = availableBudget.items;
+            budget.bytes = availableBudget.bytes;
+        }
     }
-    if (!pointers.length) return;
+    if (!readable) return;
     return {
         size: used,
         copyTo(memory: WebAssembly.Memory, address: number) {

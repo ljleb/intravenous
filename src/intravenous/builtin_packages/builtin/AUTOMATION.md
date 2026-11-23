@@ -4,7 +4,7 @@ The builtin package provides `builtin.automation.curve`, an editable module.
 Its `PointSource` and `Curve` leaves are internal to its implementation.
 Both run as Tock nodes. The point source publishes buffered event data. The
 interpreter computes Sample Coverage data only for requested windows.
-[Previous public definitions](../../../../docs/historical/automation_before_private_leaves_2026-11-19.md).
+[Previous public definitions](../../../../docs-dev/historical/automation_before_private_leaves_2026-11-19.md).
 
 ```cpp
 #include <intravenous/basic_nodes/automation.h>
@@ -78,13 +78,13 @@ A new point in a gap connects to the nearer edge and leaves the other side
 empty. The first point on a blank curve is empty. An existing endpoint stays
 attached as it moves in a gap. It joins another curve when it crosses that
 curve's edge. The old neighbor becomes the end of the first curve.
-[Previous placement gestures](../../../../docs/historical/automation_point_drag_before_time_detents_2026-11-18.md#previous-builtin-automation-guide).
+[Previous placement gestures](../../../../docs-dev/historical/automation_point_drag_before_time_detents_2026-11-18.md#previous-builtin-automation-guide).
 
 Use the `min` and `max` inputs in the lane header to set or connect bounds.
 Both knobs start disabled and reset to 0 and 1, respectively. Double-click
 to reset the knob value. Use the enable button to change its enabled state.
 Set each knob independently. Enabling a knob uses its stored value.
-[Previous linked knob limits](../../../../docs/historical/automation_knobs_before_independent_bounds_2026-11-19.md).
+[Previous linked knob limits](../../../../docs-dev/historical/automation_knobs_before_independent_bounds_2026-11-19.md).
 
 The sampler first interpolates the authored curve. It then clamps each
 output sample using the bounds at that sample. An uncovered side supplies
@@ -103,5 +103,5 @@ Project persistence and history retain their accepted values. All lane
 heights display the same curve shape and gaps. Zoom to
 `editable` height to display its editing controls.
 
-See the [earlier seconds-only editor](../../../../docs/historical/automation_builtin_before_sample_editing_2026-11-18.md)
-and the [guide before sparse segments](../../../../docs/historical/automation_builtin_before_sparse_segments_2026-11-15.md).
+See the [earlier seconds-only editor](../../../../docs-dev/historical/automation_builtin_before_sample_editing_2026-11-18.md)
+and the [guide before sparse segments](../../../../docs-dev/historical/automation_builtin_before_sparse_segments_2026-11-15.md).

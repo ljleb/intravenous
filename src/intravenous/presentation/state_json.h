@@ -2,6 +2,7 @@
 #define INTRAVENOUS_PRESENTATION_STATE_JSON_H
 
 #include "presentation.h"
+#include "state_json_number.h"
 
 typedef struct IvJsonWriter {
     char *buffer;
@@ -150,28 +151,26 @@ static inline void iv_json_decimal(IvJsonWriter *writer, const char *key, double
     }
 }
 
-/* Save a finite double as a decimal significand and a base-ten exponent. */
+/* Save a finite binary64 number as a decimal with no loss of precision. */
 static inline void iv_json_number(IvJsonWriter *writer, const char *key, double value)
 {
     iv_json_key(writer, key);
     if (!iv_json_value(writer)) return;
     if (!__builtin_isfinite(value)) { writer->failed = true; return; }
-    if (value == 0) { iv_json_byte(writer, '0'); return; }
-    if (value < 0) { iv_json_byte(writer, '-'); value = -value; }
+    uint64_t bits = __builtin_bit_cast(uint64_t, value);
+    uint64_t magnitude = bits & UINT64_C(0x7fffffffffffffff);
+    if (bits >> 63) iv_json_byte(writer, '-');
+    if (!magnitude) { iv_json_byte(writer, '0'); return; }
+
+    char digits[iv_json_significant_digits];
     int exponent = 0;
-    while (value >= 10) { value /= 10; ++exponent; }
-    while (value < 1) { value *= 10; --exponent; }
-    uint64_t digits = (uint64_t)(value * 10000000000000000. + .5);
-    uint64_t power = 10000000000000000u;
-    if (digits >= 10 * power) { digits /= 10; ++exponent; }
-    iv_json_byte(writer, (char)('0' + digits / power));
-    digits %= power;
-    if (digits) {
+    unsigned size = iv_json_binary64_digits(magnitude, digits, &exponent);
+    unsigned first = 0;
+    while (first + 1 < size && digits[first] == '0') ++first;
+    iv_json_byte(writer, digits[--size]);
+    if (size > first) {
         iv_json_byte(writer, '.');
-        for (power /= 10; digits && power; power /= 10) {
-            iv_json_byte(writer, (char)('0' + digits / power));
-            digits %= power;
-        }
+        while (size > first) iv_json_byte(writer, digits[--size]);
     }
     if (!exponent) return;
     iv_json_byte(writer, 'e');
@@ -223,7 +222,8 @@ static inline IvJsonReader iv_json_take(IvJsonReader* input)
             && *input->begin != ']' && *input->begin != '}' && *input->begin != ',')
             ++input->begin;
     }
-    return (IvJsonReader){start, input->begin};
+    IvJsonReader token = {start, input->begin};
+    return token;
 }
 
 static inline int iv_json_token_is(IvJsonReader value, char const* literal)
@@ -236,53 +236,85 @@ static inline int iv_json_token_is(IvJsonReader value, char const* literal)
 
 static inline IvJsonReader iv_json_find_field(IvJsonReader object, char const* name)
 {
+    const IvJsonReader absent = {0, 0};
     iv_json_skip_space(&object);
-    if (object.begin == object.end || *object.begin++ != '{') return (IvJsonReader){0, 0};
+    if (object.begin == object.end || *object.begin++ != '{') return absent;
     for (;;) {
         iv_json_skip_space(&object);
-        if (object.begin == object.end || *object.begin != '"') return (IvJsonReader){0, 0};
+        if (object.begin == object.end || *object.begin != '"') return absent;
         IvJsonReader key = iv_json_take(&object);
         iv_json_skip_space(&object);
-        if (object.begin == object.end || *object.begin++ != ':') return (IvJsonReader){0, 0};
+        if (object.begin == object.end || *object.begin++ != ':') return absent;
         IvJsonReader value = iv_json_take(&object);
         if (iv_json_token_is(key, name)) return value;
         iv_json_skip_space(&object);
-        if (object.begin == object.end || *object.begin++ != ',') return (IvJsonReader){0, 0};
+        if (object.begin == object.end || *object.begin++ != ',') return absent;
     }
+}
+
+typedef struct {
+    IvJsonInteger coefficient;
+    unsigned digits, discarded;
+    bool sticky;
+} IvJsonDecimal;
+
+static inline bool iv_json_read_digit(IvJsonReader *value, IvJsonDecimal *decimal)
+{
+    if (value->begin == value->end || *value->begin < '0' || *value->begin > '9') return false;
+    uint32_t digit = (uint32_t)(*value->begin++ - '0');
+    if (!digit && !decimal->digits) return true;
+    if (decimal->digits < iv_json_significant_digits) {
+        iv_json_integer_append_digit(&decimal->coefficient, 10, digit);
+        ++decimal->digits;
+    } else {
+        ++decimal->discarded;
+        decimal->sticky |= digit != 0;
+    }
+    return true;
 }
 
 static inline double iv_json_read_number(IvJsonReader value, double fallback)
 {
     if (value.begin == value.end) return fallback;
-    int negative = *value.begin == '-';
+    bool negative = *value.begin == '-';
     if (negative) ++value.begin;
-    if (value.begin == value.end || *value.begin < '0' || *value.begin > '9') return fallback;
-    double result = 0;
-    while (value.begin < value.end && *value.begin >= '0' && *value.begin <= '9')
-        result = result * 10 + (*value.begin++ - '0');
-    if (value.begin < value.end && *value.begin == '.') {
+
+    IvJsonDecimal decimal = {{{0}, 0}, 0, 0, false};
+    if (!iv_json_read_digit(&value, &decimal)) return fallback;
+    while (iv_json_read_digit(&value, &decimal)) {}
+    int64_t fractional_digits = 0;
+    if (value.begin != value.end && *value.begin == '.') {
         ++value.begin;
-        double place = .1;
-        while (value.begin < value.end && *value.begin >= '0' && *value.begin <= '9') {
-            result += (*value.begin++ - '0') * place;
-            place *= .1;
-        }
+        if (!iv_json_read_digit(&value, &decimal)) return fallback;
+        ++fractional_digits;
+        while (iv_json_read_digit(&value, &decimal)) ++fractional_digits;
     }
+
+    int64_t exponent = 0;
     if (value.begin != value.end && (*value.begin == 'e' || *value.begin == 'E')) {
         ++value.begin;
         bool decrease = value.begin != value.end && *value.begin == '-';
         if (value.begin != value.end && (*value.begin == '+' || *value.begin == '-')) ++value.begin;
         if (value.begin == value.end || *value.begin < '0' || *value.begin > '9') return fallback;
-        int exponent = 0;
-        while (value.begin < value.end && *value.begin >= '0' && *value.begin <= '9') {
-            exponent = exponent * 10 + (*value.begin++ - '0');
-            if (exponent > 324) return fallback;
+        while (value.begin != value.end && *value.begin >= '0' && *value.begin <= '9') {
+            int digit = *value.begin++ - '0';
+            // No accepted state string can offset an exponent this large.
+            if (exponent <= UINT32_MAX) exponent = exponent * 10 + digit;
         }
-        for (; exponent > 0; --exponent) result = decrease ? result / 10 : result * 10;
+        if (decrease) exponent = -exponent;
     }
-    return value.begin == value.end && __builtin_isfinite(result) ? (negative ? -result : result) : fallback;
-}
+    if (value.begin != value.end) return fallback;
 
+    uint64_t sign = negative ? UINT64_C(1) << 63 : 0;
+    if (!decimal.digits) return __builtin_bit_cast(double, sign);
+    exponent += decimal.discarded - fractional_digits;
+    int64_t magnitude = exponent + decimal.digits - 1;
+    if (magnitude > 308) return fallback;
+    if (magnitude < -324) return __builtin_bit_cast(double, sign);
+    uint64_t bits = iv_json_decimal_binary64(&decimal.coefficient, (int)exponent, decimal.sticky);
+    if (bits == UINT64_C(0x7ff0000000000000)) return fallback;
+    return __builtin_bit_cast(double, bits | sign);
+}
 
 /* Read a decimal member with a simple field name from serialized state. */
 static inline double iv_json_read_decimal_member(IvString json, const char *key, double fallback)

@@ -1,6 +1,6 @@
 // Edit-to-activation latency benchmark: the Front 16 priority target is at most
 // 0.2 s from a project-graph edit to the executor accepting its recompiled
-// generation (docs/implementation_fronts_direction.md, Front 16).
+// generation (docs-dev/implementation_fronts_direction.md, Front 16).
 //
 // Runs the server's project pipeline without a frontend, audio device, or RPC
 // server. The package watcher builds the built-in package, and any package the

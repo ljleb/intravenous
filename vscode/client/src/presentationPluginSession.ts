@@ -1,12 +1,21 @@
-import { readPresentationFrame, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
+import { interruptedPresentationEditReplies, readPresentationFrame, type PresentationFrame, type PresentationInput, type PresentationSnapshot } from "./presentationPlugin";
+import type { SerializedPresentationState } from "./presentationStateJson";
 
 type Run = (snapshot: PresentationSnapshot, inputs: readonly PresentationInput[]) => PresentationFrame | Promise<unknown>;
+type SaveHandling = {
+    canSave(inputs: readonly PresentationInput[]): boolean;
+    save(state: SerializedPresentationState, inputs: readonly PresentationInput[]): void;
+    restore(state: SerializedPresentationState): void;
+};
 
 export class PresentationWake {
     private timer?: ReturnType<typeof setTimeout>;
     private deadline = Infinity;
     constructor(private readonly wake: () => void) {}
     get pending(): boolean { return this.deadline !== Infinity; }
+    follow(frame: Pick<PresentationFrame, "wakeAfterMs">): void {
+        if (frame.wakeAfterMs !== undefined) this.request(frame.wakeAfterMs);
+    }
     request(afterMs: number): void {
         const delay = Math.max(8, afterMs);
         const deadline = performance.now() + delay;
@@ -37,7 +46,7 @@ export class PresentationPluginSession {
 
     constructor(private readonly run: Run, private readonly schedule: () => void,
         private readonly accept: (frame: PresentationFrame, draw: boolean, inputs: readonly PresentationInput[]) => void,
-        private readonly fail: (error: unknown) => void) {}
+        private readonly fail: (error: unknown) => void, private readonly saves?: SaveHandling) {}
 
     get pending(): boolean { return !this.closed && (this.dirty || this.running || this.inputs.length > 0); }
 
@@ -68,7 +77,7 @@ export class PresentationPluginSession {
         pacing: "frame" | "immediate" = "frame"): void {
         if (this.closed) return;
         ++this.interruption;
-        this.inputs = replies;
+        this.inputs = [...this.inputs.filter(({ type }) => type === "editResult"), ...replies];
         this.input({ type: "interrupt", reason }, pacing);
     }
 
@@ -98,24 +107,41 @@ export class PresentationPluginSession {
         try {
             const reply = this.run({ ...snapshot, clockMs: performance.now() }, inputs);
             const result = reply instanceof Promise ? await reply : reply;
-            if (!this.closed) {
-                const frame = readPresentationFrame(result);
-                if (frame.reuseDrawing) {
-                    if (!this.drawing) throw new Error("Presentation has no drawing to reuse");
-                    delete frame.reuseDrawing;
-                    frame.marks = this.drawing;
-                    frame.timelineGrid = this.timelineGrid;
-                } else {
-                    this.drawing = frame.marks;
-                    this.timelineGrid = frame.timelineGrid;
-                }
-                if (interruption === this.interruption) this.accept(frame, viewport === this.viewport, inputs);
-            }
+            if (!this.closed) this.acceptFrame(readPresentationFrame(result), inputs,
+                interruption === this.interruption, viewport === this.viewport);
         } catch (error) { this.stop(error); }
         finally {
             this.running = false;
             this.resolveIdle();
             this.request();
+        }
+    }
+
+    private acceptFrame(frame: PresentationFrame, inputs: readonly PresentationInput[], current: boolean, sameViewport: boolean): void {
+        if (frame.reuseDrawing) {
+            if (!this.drawing) throw new Error("Presentation has no drawing to reuse");
+            delete frame.reuseDrawing;
+            frame.marks = this.drawing;
+            frame.timelineGrid = this.timelineGrid;
+        }
+
+        const { saveRequest } = frame;
+        const discardedSave = saveRequest !== undefined && (!current || !this.saves?.canSave(inputs));
+        if (discardedSave) this.saves?.restore(this.snapshot?.state ?? null);
+        else {
+            this.drawing = frame.marks;
+            this.timelineGrid = frame.timelineGrid;
+        }
+        if (saveRequest !== undefined) delete frame.saveRequest;
+
+        if (!current) {
+            for (const reply of interruptedPresentationEditReplies(frame.commands ?? [])) this.input(reply);
+            return;
+        }
+        this.accept(frame, sameViewport && !discardedSave, inputs);
+        if (saveRequest !== undefined && !discardedSave && this.snapshot) {
+            this.snapshot = { ...this.snapshot, state: saveRequest };
+            this.saves?.save(saveRequest, inputs);
         }
     }
 

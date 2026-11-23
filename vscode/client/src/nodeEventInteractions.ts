@@ -38,10 +38,12 @@ export class NodeEventInteractions {
             if (!open.closed) return this.env.end(open.target, id);
         }).finally(() => this.closing.delete(open));
     }
-    releaseOwner(owner: string): void {
+    async releaseOwner(owner: string): Promise<void> {
+        const closing: Promise<number | void>[] = [];
         for (const [id, open] of this.gestures) {
-            if (open.owner === owner) void this.end(owner, open.target, id).catch((error) => this.env.report(error));
+            if (open.owner === owner) closing.push(this.end(owner, open.target, id).catch((error) => this.env.report(error)));
         }
+        await Promise.all(closing);
     }
     disconnected(): void {
         for (const open of this.gestures.values()) open.closed = true;
