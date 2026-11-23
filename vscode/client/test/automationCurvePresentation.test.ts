@@ -9,7 +9,7 @@ import { PresentationLaneEdits } from "../src/presentationLaneEdits";
 import { parsePresentationState } from "../src/presentationStateJson";
 import type { ObservationWindowResult } from "../src/observations";
 import { readPresentationFrame, type PresentationCommand, type PresentationFrame, type PresentationGestureInput,
-    type PresentationInput, type PresentationSnapshot } from "../src/presentationPlugin";
+    type PresentationInput, type PresentationObservation, type PresentationSnapshot } from "../src/presentationPlugin";
 
 const points = [
     { id: 1, seconds: 1, value: .5, interpolation: "bezier", tension: 1, sample_index: "", order: 0 },
@@ -422,4 +422,32 @@ test("an observed empty bound interval permits the output preview from the other
         spans: [{ begin: "0", end: "480000", windowOffset: "0", result }] } } });
     assert.ok(trace(frame, tracks.output).length);
     assert.deepEqual(trace(frame, tracks.max), []);
+});
+
+test("the output preview follows the authored curve through a gap in both bounds", (t) => {
+    const present = harness(t, { ...snapshot, node: { ...snapshot.node, ports: [
+        { name: "min", direction: "input", kind: "continuous", connected: true },
+        { name: "max", direction: "input", kind: "continuous", connected: true },
+    ] } });
+    const observedBound = (id: string, begin: string, length: string, value: number): PresentationObservation => {
+        const result: ObservationWindowResult = { id, status: "ready", approximate: false,
+            window: { begin: "0", length: "480000", points: 1024 },
+            regions: [{ begin, length, points: [{ index: begin, available: true, value: { value } }] }] };
+        return { operation: "waveform", beginSample: "0", status: "ready", result,
+            spans: [{ begin: "0", end: "480000", windowOffset: "0", result }] };
+    };
+    const min = observedBound("min", "48000", "48000", .8);
+    const max = observedBound("max", "192000", "48000", .7);
+    const frame = present([], { observations: { min, max } });
+    const sampleAt = (frame: PresentationFrame, track: number, x: number) =>
+        trace(frame, track).flat().find((point) => point.x === x);
+    const middle = sampleAt(frame, tracks.authored, 30);
+    assert.ok(middle);
+    assert.deepEqual(sampleAt(frame, tracks.output, 30), middle);
+    assert.ok(sampleAt(frame, tracks.output, 15)!.y < sampleAt(frame, tracks.authored, 15)!.y);
+    assert.ok(sampleAt(frame, tracks.output, 45)!.y > sampleAt(frame, tracks.authored, 45)!.y);
+    assert.equal(sampleAt(frame, tracks.output, 60), undefined);
+
+    const pending = present([], { observations: { min, max: null } });
+    assert.equal(sampleAt(pending, tracks.output, 30), undefined);
 });

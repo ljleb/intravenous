@@ -30,18 +30,24 @@ export function timelineTimeDrag(anchor: bigint, { spanSamples, width }: Timelin
 }
 
 export function playheadTimeDrag(anchor: bigint, scale: TimelineDragScale,
-    visible: readonly bigint[], nearby?: (sample: bigint, forward: boolean) => readonly bigint[] | undefined) {
-    let atTravel = timelineTimeDrag(anchor, scale, visible);
+    visible: () => readonly bigint[], nearby?: (sample: bigint, forward: boolean) => readonly bigint[] | undefined) {
+    const sameTargets = (first: readonly bigint[], second: readonly bigint[]) => first === second
+        || (first.length === second.length && first.every((target, index) => target === second[index]));
+    let displayed = visible();
+    let atTravel = timelineTimeDrag(anchor, scale, displayed);
     let travel = 0;
     let pickup = 0;
     let previous = atTravel(0);
     let loaded: readonly bigint[] = [];
     return (pixels: number) => {
         let next = atTravel(pixels - pickup);
-        const targets = nearby?.(next.sampleIndex, pixels >= travel);
-        if (targets && targets !== loaded && (targets.length !== loaded.length || targets.some((target, i) => target !== loaded[i]))) {
-            loaded = targets;
-            const combined = new Set([...visible, ...loaded]);
+        const nextDisplayed = visible();
+        const nextLoaded = nearby?.(next.sampleIndex, pixels >= travel) ?? loaded;
+        const targetsChanged = !sameTargets(displayed, nextDisplayed) || !sameTargets(loaded, nextLoaded);
+        displayed = nextDisplayed;
+        loaded = nextLoaded;
+        if (targetsChanged) {
+            const combined = new Set([...displayed, ...loaded]);
             // New targets apply from the last pointer position. Keep any
             // travel already spent inside a detent when a window rolls over.
             if (previous.snappedIndex !== undefined) combined.add(previous.snappedIndex);

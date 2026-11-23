@@ -87,6 +87,10 @@ export function observationWindowRequests(visible: ObservationWindow, tier: Obse
 
 export type ObservationSpan = { result: ObservationWindowResult; begin: bigint; end: bigint; windowOffset: bigint };
 
+export function observationWindowDensity(window: ObservationWindow): number {
+    return window.points / Number(window.length);
+}
+
 export function observationSpans(results: readonly ObservationWindowResult[], visible: ObservationTimeSpan, fine: readonly ObservationWindow[] = []) {
     const origin = BigInt(visible.begin), span = BigInt(visible.length);
     const windows = results.flatMap((result) => {
@@ -98,7 +102,7 @@ export function observationSpans(results: readonly ObservationWindowResult[], vi
             const begin = windowOffset > 0n ? windowOffset : 0n, end = finish < span ? finish : span;
             return begin < end ? [{ result, begin, end, windowOffset,
                 fine: fine.some((window) => sameObservationWindow(result.window, window)),
-                density: result.window.points / Number(length) }] : [];
+                density: observationWindowDensity(result.window) }] : [];
         });
     }).sort((a, b) => Number(b.fine) - Number(a.fine) || b.density - a.density
         || compareObservationWindowVersions(b.result, a.result));

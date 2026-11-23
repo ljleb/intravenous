@@ -92,9 +92,20 @@ test("playhead seek windows lead past both viewport edges and overlap as they mo
         { first: last - 25n, length: 200n });
 });
 
+test("visible beats become detents when the grid loads during the first playhead drag", () => {
+    let visible: bigint[] = [];
+    const drag = playheadTimeDrag(0n, { spanSamples: 1, width: 1 }, () => visible);
+    assert.equal(drag(124).sampleIndex, 124n);
+    visible = [110n, 140n];
+    assert.equal(drag(124).sampleIndex, 124n);
+    assert.equal(drag(140).snappedIndex, 140n);
+    assert.equal(drag(164).snappedIndex, 140n);
+    assert.equal(drag(165).sampleIndex, 141n);
+});
+
 test("playhead detents arrive without a jump and retain their remaining travel when a window changes", () => {
     let loaded: bigint[] | undefined;
-    const drag = playheadTimeDrag(0n, { spanSamples: 1, width: 1 }, [], () => loaded);
+    const drag = playheadTimeDrag(0n, { spanSamples: 1, width: 1 }, () => [], () => loaded);
     assert.equal(drag(124).sampleIndex, 124n);
     loaded = [110n, 140n];
     assert.equal(drag(124).sampleIndex, 124n);
@@ -112,7 +123,7 @@ test("playhead detents arrive without a jump and retain their remaining travel w
 
 test("replacing seek targets preserves sub-sample travel", () => {
     let loaded: bigint[] | undefined;
-    const drag = playheadTimeDrag(0n, { spanSamples: .4, width: 1 }, [], () => loaded);
+    const drag = playheadTimeDrag(0n, { spanSamples: .4, width: 1 }, () => [], () => loaded);
     assert.equal(drag(1).sampleIndex, 0n);
     loaded = [100n];
     assert.equal(drag(2).sampleIndex, 1n);
@@ -215,7 +226,7 @@ test("timeline ticks follow the signed sample seam without losing detail at larg
 test("a seek drag of one viewport width returns to the same sample at maximum zoom out", () => {
     const width = 973.5;
     const anchor = firstSignedSample + 11n;
-    const drag = playheadTimeDrag(anchor, { spanSamples: Number(timelineSampleCount), width }, []);
+    const drag = playheadTimeDrag(anchor, { spanSamples: Number(timelineSampleCount), width }, () => []);
     assert.equal(drag(width / 2).sampleIndex, 11n);
     assert.equal(drag(width).sampleIndex, anchor);
     assert.equal(drag(-width).sampleIndex, anchor);

@@ -774,10 +774,10 @@ test("automation bounds use fine coverage within one snapshot and replace the wh
     for (const generation of [8, 9]) {
         publish(String(generation), { ...coarse, dataVersion: "5" }, { ...fine, status: "pending" });
         assert.deepEqual(tracksFor(20, 8, fine.window)
-            .map(({ samples }) => samples[0].value), [2]);
+            .map(({ samples }) => samples[0].value), [6]);
         publish(String(generation), { ...fine, dataVersion: "6", truncated: true, regions: [] });
         assert.deepEqual(tracksFor(20, 8, fine.window)
-            .map(({ samples }) => samples[0].value), [2]);
+            .map(({ samples }) => samples[0].value), [6]);
     }
     publish("9", { ...fine, dataVersion: "6", regions: [] });
     assert.deepEqual(tracksFor(20, 8, fine.window), []);

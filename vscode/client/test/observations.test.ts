@@ -37,16 +37,26 @@ test("viewport observations preserve pending detail and replace it with an empty
         assert.equal(view().status, "pending");
         assert.equal(view().spans[0].result.id, preview);
         assert.deepEqual(view().spans.map(({ begin, end }) => [begin, end]), [[0n, 32n]]);
-        publish(response("ready"));
+        const marks = [{ index: "20", depth: 0 }, { index: "24", depth: 1 }, { index: "28", depth: 2 }];
+        publish({ ...response("ready"), marks });
         assert.equal(view().status, "ready");
         assert.deepEqual(view().spans.map(({ result }) => result.id), [id]);
+        for (const dataVersion of ["1", "2"]) {
+            publish(response("pending"), { id: preview, window: coarse, status: "ready", approximate: true,
+                regions: [], marks: marks.slice(0, 1), dataVersion });
+            assert.equal(view().status, "pending");
+            assert.deepEqual(view().spans[0].result.marks, marks);
+        }
+        publish({ ...response("ready"), dataVersion: "2" });
+        assert.equal(view().status, "ready");
+        assert.equal(view().spans[0].result.marks, undefined);
         publish(response("unavailable"));
         assert.equal(view().status, "unavailable");
         assert.equal(view().spans[0].result.status, "unavailable");
     } finally { scope.dispose(); }
 });
 
-test("combined traces switch atomically and never fill an updated range with detail from an old snapshot", async () => {
+test("combined traces hold their detail and switch together when the new viewport is ready", async () => {
     const { PresentationObservations } = await import("../src/presentationObservations");
     const observations = new PresentationObservations(() => {});
     const display = new ObservationViewportDisplay();
@@ -84,17 +94,33 @@ test("combined traces switch atomically and never fill an updated range with det
         publish("2", result("min", visible, "2", "6"), result("max:tile:0", left, "2", "6"));
         assert.deepEqual(checkpoints(), original);
         publish("2", result("min", visible, "2", "6"), result("max:tile:0", left, "2", "6"),
-            result("max:tile:1", right, "2", "6"), result("max:tile:2", detail, "1", "4"));
-        assert.deepEqual(checkpoints(), [[[0n, 100n, "2", "6"]], [[0n, 50n, "2", "6"], [50n, 100n, "2", "6"]]]);
-        assert.ok(render().every(({ spans }) => spans.every(({ result }) => result.regions.length === 0)));
+            result("max:tile:1", right, "2", "6"), result("max:tile:2", detail, "1", "4", [region]));
+        assert.deepEqual(checkpoints(), original);
 
-        // Fine detail from the selected snapshot can replace coarse data in
-        // the part of the viewport that it actually covers.
         publish("2", result("min", visible, "2", "6"), result("max:tile:2", detail, "2", "6"));
-        assert.deepEqual(checkpoints()[1], [[0n, 25n, "2", "6"], [25n, 75n, "2", "6"], [75n, 100n, "2", "6"]]);
+        assert.deepEqual(checkpoints(), original);
+        publish("2", result("min", visible, "2", "6"), result("max", visible, "2", "6"));
+        assert.deepEqual(checkpoints(), [[[0n, 100n, "2", "6"]], [[0n, 100n, "2", "6"]]]);
+        assert.ok(render().every(({ spans }) => spans.every(({ result }) => result.regions.length === 0)));
         observations.values.clear();
         assert.deepEqual(checkpoints(), [[], []]);
     } finally { observations.dispose(); }
+});
+
+test("a coarse preview can fill a new viewport beyond the retained detail", () => {
+    const display = new ObservationViewportDisplay();
+    const fine = { begin: "0", length: "100", points: 100 };
+    const next = { begin: "25", length: "100", points: 100 };
+    const preview = { ...next, points: 8 };
+    const result = (window: typeof fine, dataVersion: string) => ({
+        id: "wave", window, status: "ready" as const, approximate: true, dataVersion, regions: [],
+    });
+    display.read([{ id: "wave", visible: fine, fine: [fine], ready: [result(fine, "1")],
+        current: [result(fine, "1")], completeOnly: false }], 0);
+    const [view] = display.read([{ id: "wave", visible: next, fine: [next], ready: [result(preview, "2")],
+        current: [undefined], completeOnly: false }], 0);
+    assert.equal(view.status, "pending");
+    assert.deepEqual(view.spans.map(({ begin, end, result }) => [begin, end, result.window.points]), [[0n, 100n, 8]]);
 });
 
 test("a viewport reader reuses nearby interests on promotion and small zooms", async (context) => {

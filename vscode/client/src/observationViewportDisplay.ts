@@ -1,6 +1,6 @@
 import { compareObservationWindowVersions, observationWindowVersion, sameObservationWindow, type ObservationTimeSpan,
     type ObservationWindow, type ObservationWindowResult, type ObservationWindowVersion } from "./observations";
-import { observationSpans, type ObservationSpan } from "./observationWindows";
+import { observationSpans, observationWindowDensity, type ObservationSpan } from "./observationWindows";
 
 export type ObservationViewportRead = {
     id: string;
@@ -32,11 +32,28 @@ function coversViewport(spans: readonly ObservationSpan[], visible: ObservationT
 
 function windowSpans(read: ObservationViewportRead, snapshot?: Snapshot) {
     const unavailable = read.current.flatMap((result) => result?.status === "unavailable" ? [result] : []);
-    return observationSpans([...unavailable, ...(snapshot?.windows.get(read.id) ?? [])], read.visible, read.fine);
+    const ready = snapshot?.windows.get(read.id) ?? [];
+    return observationSpans(unavailable.length
+        ? [...unavailable, ...ready.filter((result) => !unavailable.some(({ window }) => sameObservationWindow(window, result.window)))]
+        : ready, read.visible, read.fine);
+}
+
+function preservesDetail(read: ObservationViewportRead, shown: readonly ObservationSpan[], next: readonly ObservationSpan[]): boolean {
+    let previous = 0;
+    for (const { begin, end, result } of next) {
+        if (result.status === "unavailable" || read.fine.some((window) => sameObservationWindow(window, result.window))) continue;
+        const density = observationWindowDensity(result.window);
+        while (previous < shown.length && shown[previous].end <= begin) ++previous;
+        for (let i = previous; i < shown.length && shown[i].begin < end; ++i) {
+            const old = shown[i].result;
+            if (old.status === "ready" && observationWindowDensity(old.window) > density) return false;
+        }
+    }
+    return true;
 }
 
 // A display has one published snapshot. Candidate windows can arrive in any
-// order, but do not replace it until they answer every visible input range.
+// order. Publish them together when they cover the view and preserve its detail.
 export class ObservationViewportDisplay {
     private shown?: Snapshot;
     private epoch?: number;
@@ -72,9 +89,14 @@ export class ObservationViewportDisplay {
         const newer = [...snapshots.values()].filter(({ version }) =>
             !this.shown || compareObservationWindowVersions(version, this.shown.version) >= 0)
             .sort((a, b) => compareObservationWindowVersions(b.version, a.version));
+        const held = this.shown && snapshots.get(observationWindowVersion(this.shown.version));
+        const heldSpans = reads.map((read) => windowSpans(read, held));
+        const heldCoversViewport = held && heldSpans.every((parts, i) => coversViewport(parts, reads[i].visible));
         for (const snapshot of newer) {
-            const spans = reads.map((read) => windowSpans(read, snapshot));
+            const spans = snapshot === held ? heldSpans : reads.map((read) => windowSpans(read, snapshot));
             if (!spans.every((parts, i) => coversViewport(parts, reads[i].visible))) continue;
+            if (heldCoversViewport && snapshot !== held
+                && !spans.every((parts, i) => preservesDetail(reads[i], heldSpans[i], parts))) continue;
             // Retain only the windows the display used. Newer candidates live
             // in ObservationValues under the ordinary cache limits.
             const { semanticVersion, dataVersion, executionGeneration } = snapshot.version;
@@ -82,11 +104,10 @@ export class ObservationViewportDisplay {
                 [id, [...new Set(spans[i].map(({ result }) => result).filter(({ status }) => status === "ready"))]])) };
             return reads.map((read, i) => viewportPlot(read, spans[i], snapshot !== newer[0]));
         }
-        const held = this.shown && snapshots.get(observationWindowVersion(this.shown.version));
         if (this.shown)
             for (const id of this.shown.windows.keys())
                 if (!reads.some((read) => read.id === id)) this.shown.windows.delete(id);
-        return reads.map((read) => viewportPlot(read, windowSpans(read, held), true));
+        return reads.map((read, i) => viewportPlot(read, heldSpans[i], true));
     }
 }
 

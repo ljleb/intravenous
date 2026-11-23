@@ -231,7 +231,8 @@ function curveMarks(arcs: Arc[], snapshot: PresentationSnapshot, curve: Presenta
             if (!arc) continue;
             const value = arc.valueAt(sample);
             authored.append(x, yAt(value), first);
-            if (knowMinimum && knowMaximum && (low !== undefined || high !== undefined)) {
+            // A known gap supplies no limit. A bound that is still loading leaves the output unknown.
+            if (bounded && knowMinimum && knowMaximum) {
                 const clamped = low !== undefined && high !== undefined && low > high ? .5 * low + .5 * high
                     : clamp(value, low ?? -Infinity, high ?? Infinity);
                 output.append(x, yAt(clamped), first);

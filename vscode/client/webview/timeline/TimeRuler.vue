@@ -20,11 +20,12 @@ const root = ref<HTMLElement | null>(null);
 const size = usePresentationSize(root);
 const width = computed(() => size.value?.width ?? 0);
 const showBeats = computed(() => props.window.gridMode === "beats" || props.window.gridMode === "custom");
+const snapTargets = computed(() => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : []);
 const beatLineStart = ({ depth }: TimelineMark) => depth === 0 ? "33%" : depth === 1 ? "56%" : depth === 2 ? "75%" : "83%";
 const ticks = computed(() => timelineTicks(props.window, width.value));
 const seamX = computed(() => timelineSeamX(props.window, width.value));
 const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : undefined,
-    () => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : [],
+    () => snapTargets.value,
     () => showBeats.value ? props.openBeatReader?.() : undefined);
 const markerPosition = (selected: bigint | null) => selected === null ? -1
     : timelineSampleFraction(selected, props.window) * width.value;

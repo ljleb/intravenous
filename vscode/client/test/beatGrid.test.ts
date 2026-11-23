@@ -137,7 +137,7 @@ test("observed Beats keep ruler and snap order when the viewport pans through th
     const targets = displayed.map(({ index }) => index);
     assert.equal(snapTimelineSample(last - 1n, targets, 1), last);
     assert.equal(snapTimelineSample(first, targets, 1), first + 1n);
-    const drag = playheadTimeDrag(last - 1n, { spanSamples: span, width: 400 }, targets);
+    const drag = playheadTimeDrag(last - 1n, { spanSamples: span, width: 400 }, () => targets);
     assert.equal(drag(50).snappedIndex, last);
     assert.equal(drag(100).sampleIndex, first);
     assert.equal(drag(150 + 2 * detentHalfWidth).snappedIndex, first + 1n);
