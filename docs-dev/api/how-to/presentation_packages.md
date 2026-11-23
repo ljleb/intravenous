@@ -93,5 +93,10 @@ input. Use `inspect` to find the address, and provide `expanded` if
 you need a node inside an expanded module. The headless runner reads
 accepted node arguments from the server and takes viewport and observation
 data from the scenario. Inspect the returned frames and final state.
+
+Set `snapshot.state` to a string that contains the saved JSON, or to `null`.
+To replay the final state, copy the returned `snapshot` into the new scenario.
+Keep `snapshot.state` as a string so that the runner can restore the original bytes.
+
 [Example scenario](../../../examples/wasm-presentation/marker-scenario.json) ·
 [Headless command setup](../../development_run.md#replay-graph-editor-interactions)
