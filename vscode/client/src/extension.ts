@@ -237,9 +237,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor) {
             highlighter.applyToEditor(editor);
-            void session.updateFromEditor(editor).then((nodes) => {
-                session.updatePrimaryHighlight(nodes);
-            }, (error: Error) => {
+            void session.updateFromEditor(editor).catch((error: Error) => {
                 outputChannel.appendLine(`Editor query failed: ${error.message}`);
             });
         }
@@ -290,20 +288,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
         await session.start();
         if (vscode.window.activeTextEditor) {
-            const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
-            session.updatePrimaryHighlight(nodes);
+            await session.updateFromEditor(vscode.window.activeTextEditor);
         }
     } catch (error: any) {
         outputChannel.appendLine(`Startup failed: ${error.message}`);
     }
 
     context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(async (event) => {
-        if (event.textEditor.document.uri.scheme !== "file") {
+        if (event.textEditor !== vscode.window.activeTextEditor || event.textEditor.document.uri.scheme !== "file") {
             return;
         }
         try {
-            const nodes = await session.updateFromEditor(event.textEditor);
-            session.updatePrimaryHighlight(nodes);
+            await session.updateFromEditor(event.textEditor);
         } catch (error: any) {
             const message = `Query failed: ${error.message}`;
             if (message !== session.lastQueryError) {

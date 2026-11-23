@@ -104,6 +104,7 @@ export type ProjectLaneView = {
     presentationId: string;
     version: string;
 };
+export const laneViewReadBatchSize = 8;
 export type ProjectEditReceipt = { sessionRevision: number; laneViews?: ProjectLaneView[] };
 export type ProjectPresentation = {
     laneOrder: NodeAddress[];

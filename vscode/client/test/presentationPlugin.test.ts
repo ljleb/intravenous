@@ -571,7 +571,7 @@ test("a remounted WASM lane restores the original compact JSON and its negative 
     const state = `{"position":-0,"values":[${"1e10,".repeat(19999)}1e10]}`;
     assert.ok(Buffer.byteLength(state) <= maxPresentationStateBytes);
     assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(state))) > maxPresentationStateBytes);
-    const rpc = new WorkspaceRpc({ request: async () => JSON.parse(JSON.stringify({ value: state, sessionRevision: 9 })) } as unknown as JsonRpcSocketClient);
+    const rpc = new WorkspaceRpc({ request: async () => JSON.parse(JSON.stringify({ states: [state], sessionRevision: 9 })) } as unknown as JsonRpcSocketClient);
     const restored = await rpc.getLaneView("1");
     assert.equal(restored, state);
     const worker = createNodePresentationWorker(moduleBytes);

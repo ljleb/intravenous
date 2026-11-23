@@ -149,6 +149,16 @@ events read realized node instances, packages, audio devices, and the
 node-message protocol. The complete reply carries the revision at capture time.
 A later edit can change the live project while the client reads that reply.
 
+`PackageWatcherService` builds packages on its worker thread. The server puts
+the completed package publication on the command queue. Package publication
+updates the catalog and graph together and assigns one revision to its
+notifications. Snapshot capture runs before or after that publication.
+
+`nodeInstances.updated` carries the revision of the change. The client fetches
+the updated records through `nodeInstances.get`, which uses the bounded reply
+transport. `projectPresentation.getLaneViews` returns up to eight saved lane
+views in request order. Each response preserves the exact saved JSON strings.
+
 Large replies use the same framing for every RPC. A `resultChunk` contains text
 from the encoded reply and a `transferId`, `offset`, and `nextOffset`. Pass the
 `transferId` and `nextOffset` as the `transferId` and `offset` parameters of
@@ -157,6 +167,8 @@ from the encoded reply and a `transferId`, `offset`, and `nextOffset`. Pass the
 split a record and stays below the socket queue limit. The server retains up to
 four unfinished replies per connection and releases each after its final chunk.
 Closing the connection releases any replies that remain.
+If all four transfer slots are occupied, the server rejects a mutation before
+it applies any changes.
 [Former command paging](historical/session_snapshot_command_paging_2026-11-23.md)
 
 On Linux, a server without `--rpc-fd` owns the project lock and publishes

@@ -12,7 +12,7 @@ import { ObservationProfile } from "../../src/observationProfile";
 import { GraphUiRecording } from "./graphUiRecording";
 import { usePresentationFrame } from "../presentation/presentationFrames";
 import { ObservationDeliverySequence } from "../../src/observationDelivery";
-import { addressKey, graphScopeNodeLabel, isProjectInstance, newGraphLayout, presentationStateKey, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
+import { addressKey, graphScopeNodeLabel, isProjectInstance, laneViewReadBatchSize, newGraphLayout, presentationStateKey, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
 import { isTimelineSnapNode } from "../../src/timelineSnap";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -663,8 +663,15 @@ const changedPresentationStates = shallowReactive(new Map<string, SerializedPres
 const pendingPresentation = shallowReactive(new Map<number, { patch: GraphPresentationPatch; receipt?: ProjectEditReceipt }>());
 const laneViewVersions = computed(() => new Map((state.value.scope?.presentation?.laneViews ?? []).map(
     ({ address, presentationId, version }) => [presentationStateKey(address, presentationId), version])));
+let requestedLaneViews: Array<{ requestId: number; version: string }> = [];
 const laneViewReads = new LaneViewReads((version, requestId) => {
-    webviewApi.postMessage({ type: "readLaneView", requestId, version } satisfies GraphEditorWebviewMessage);
+    requestedLaneViews.push({ requestId, version });
+    if (requestedLaneViews.length === 1) queueMicrotask(() => {
+        const reads = requestedLaneViews;
+        requestedLaneViews = [];
+        for (let start = 0; start < reads.length; start += laneViewReadBatchSize)
+            webviewApi.postMessage({ type: "readLaneViews", reads: reads.slice(start, start + laneViewReadBatchSize) } satisfies GraphEditorWebviewMessage);
+    });
 }, shallowReactive(new Map()));
 let nextPresentationRequest = 0;
 
@@ -1452,9 +1459,8 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         replaceProjectPresentations(event.data.plugins);
         return;
     }
-    if (event.data?.type === "laneViewState") {
-        const { version, requestId, state } = event.data;
-        laneViewReads.receive(version, requestId, state);
+    if (event.data?.type === "laneViewStates") {
+        for (const { version, requestId, state } of event.data.reads) laneViewReads.receive(version, requestId, state);
         return;
     }
     if (event.data?.type === "interruptProjectHistory") {

@@ -305,9 +305,7 @@ TEST(NodeDefinitions, PublicationReturnsTheProjectRebuildsReadModelChanges)
     // publication returns on the publication request.
     ASSERT_EQ(witness.package_definition_changes.size(), 1u);
     ASSERT_EQ(witness.package_definition_changes.front().module_definitions.created.size(), 1u);
-    ASSERT_TRUE(request.project_publication.instances.has_value());
-    ASSERT_EQ(request.project_publication.instances->size(), 1u);
-    EXPECT_EQ(request.project_publication.instances->front().instance_id, "instance:rebuilt");
+    EXPECT_TRUE(request.project_publication.instances_changed);
 }
 
 TEST(NodeDefinitions, WithinPackageDuplicateDefinitionIdIsRejectedAtNamespaceBoundary)

@@ -42,6 +42,9 @@ Examples:
   replacements. History records the resulting *committed durable state difference*,
   not a fabricated inverse C++ node-message type, and not its provisional previews.
 
+If an existing lane has a newer view save, undo and redo keep that version.
+When undo or redo removes an instance, the same edit removes its lane views.
+
 The initial reversible scope is **project-owned durable state**. Realtime DSP state,
 compiled generations, hover status, temporary interaction state, observation data,
 external device actions, arbitrary node-message side effects, and filesystem or

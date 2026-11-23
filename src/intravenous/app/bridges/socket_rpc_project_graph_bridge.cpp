@@ -26,7 +26,7 @@ IV_SUBSCRIBE_LINKER_EVENT(
     iv_socket_rpc_get_graph_scope_event,
     &ProjectGraph::handle_socket_rpc_get_graph_scope)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
-    iv_socket_rpc_get_project_lane_view_event, &ProjectGraph::handle_socket_rpc_get_project_lane_view)
+    iv_socket_rpc_get_project_lane_views_event, &ProjectGraph::handle_socket_rpc_get_project_lane_views)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_get_node_definitions_event, &ProjectGraph::handle_socket_rpc_get_node_definitions)
 IV_SUBSCRIBE_LINKER_EVENT(

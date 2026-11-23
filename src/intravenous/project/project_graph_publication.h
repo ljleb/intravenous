@@ -1,11 +1,9 @@
 #pragma once
 
-#include <intravenous/project/iv_module_instance_types.h>
 #include <intravenous/project/runtime_project_api_types.h>
 
 #include <cstdint>
 #include <optional>
-#include <vector>
 
 namespace iv {
 struct ExecutionPreparationProgress {
@@ -18,8 +16,7 @@ struct ExecutionPreparationProgress {
 // record returns to the cause's root on the request records the cause already
 // uses, and the root publishes it once (docs-dev/event_flows/README.md).
 struct ProjectGraphPublication {
-    // The published node-instance list, when it changed.
-    std::optional<std::vector<IvModuleInstanceInfo>> instances{};
+    bool instances_changed = false;
     // Source-introspection symbolic-node replacements, when there are any.
     std::optional<ProjectSymbolicNodesNotification> symbolic_nodes{};
     // The build changed what a graph editor scope shows: desired instances or
@@ -34,7 +31,7 @@ struct ProjectGraphPublication {
 
     [[nodiscard]] bool empty() const noexcept
     {
-        return !instances.has_value() && !symbolic_nodes.has_value() && !graph_changed
+        return !instances_changed && !symbolic_nodes.has_value() && !graph_changed
             && !execution_failure.has_value() && !execution_preparation.has_value();
     }
 };

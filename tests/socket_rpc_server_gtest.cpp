@@ -256,7 +256,7 @@ namespace {
             iv::SocketRpcAckResponseBuilder& builder)
         {
             builder.set_publication(iv::ProjectGraphPublication{
-                .instances = std::vector<iv::IvModuleInstanceInfo>{},
+                .instances_changed = true,
             });
             builder.succeed();
         }
@@ -761,7 +761,44 @@ TEST(SocketRpcServer, PublishesAMutationsReadModelChangesAfterItsResponse)
     auto const notification = nlohmann::ordered_json::parse(harness.read_line());
     EXPECT_EQ(notification["method"], "nodeInstances.updated");
     EXPECT_EQ(notification["params"]["revision"], 1);
-    EXPECT_TRUE(notification["params"]["instances"].empty());
+    EXPECT_EQ(notification["params"], (nlohmann::ordered_json{{"revision", 1}}));
+}
+
+TEST(SocketRpcServer, TransferExhaustionRejectsAnEditBeforeItCommits)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.node_instances.large_configurations.store(true);
+    using Json = nlohmann::ordered_json;
+    for (int id = 10; id < 14; ++id) {
+        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "nodeInstances.get"}}.dump() + "\n");
+        auto const reply = Json::parse(harness.read_response(id));
+        ASSERT_TRUE(reply.contains("resultChunk"));
+    }
+    harness.write_request(R"({"jsonrpc":"2.0","id":14,"method":"nodeInstances.delete","params":{"instanceId":"other"}})" "\n");
+    auto const error = Json::parse(harness.read_response(14)).at("error");
+    EXPECT_EQ(error.at("data").at("currentRevision"), 0);
+    EXPECT_EQ(harness.server.revision(), 0u);
+    // A rejected mutation cannot publish nodeInstances.updated.
+    EXPECT_TRUE(harness.read_line(40ms).empty());
+}
+
+TEST(SocketRpcServer, PublishesPackageChangesAtOneRevision)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.server.commit_package_refresh([&] {
+        harness.server.send_iv_package_definitions_updated();
+        harness.server.send_project_graph_publication({.instances_changed = true, .graph_changed = true});
+    });
+    EXPECT_EQ(harness.server.revision(), 1u);
+    for (auto const* method : {"ivPackages.updated", "nodeInstances.updated", "graph.changed"}) {
+        auto const message = nlohmann::ordered_json::parse(harness.read_line());
+        EXPECT_EQ(message.at("method"), method);
+        EXPECT_EQ(message.at("params").at("revision"), 1);
+    }
 }
 
 // A live gesture value takes no revision and no reply. Other clients get it

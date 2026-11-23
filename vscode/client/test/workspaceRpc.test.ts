@@ -97,24 +97,31 @@ test("lane view patches and save on blur do not require a graph revision", async
     ]);
 });
 
-test("large lane view reads share their version and run one at a time per connection", async () => {
+test("cold lane view reads share their version and use bounded serialized batches", async () => {
     const payload = JSON.stringify({ text: "\n".repeat(63_000) });
     assert.ok(Buffer.byteLength(payload) < 128 * 1024);
     assert.ok(Buffer.byteLength(JSON.stringify(Array(7).fill(payload))) > 1024 * 1024);
-    const active: Array<{ version: string; resolve: (reply: { value: string; sessionRevision: number }) => void }> = [];
-    const rpc = new WorkspaceRpc({ request: (method: string, { version }: { version: string }) => {
-        assert.equal(method, "projectPresentation.getLaneView");
-        return new Promise<{ value: string; sessionRevision: number }>((resolve) => { active.push({ version, resolve }); });
+    const active: Array<{ versions: string[]; resolve: (reply: { states: (string | null)[] }) => void }> = [];
+    const rpc = new WorkspaceRpc({ request: (method: string, { versions }: { versions: string[] }) => {
+        assert.equal(method, "projectPresentation.getLaneViews");
+        return new Promise<{ states: (string | null)[] }>((resolve) => { active.push({ versions, resolve }); });
     } } as unknown as JsonRpcSocketClient);
     const versions = Array.from({ length: 7 }, (_, index) => String(index + 1));
     const pending = versions.map((version) => rpc.getLaneView(version));
     assert.equal(rpc.getLaneView("1"), pending[0]);
-    for (const version of versions) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        assert.deepEqual(active.map((read) => read.version), [version]);
-        active.shift()!.resolve({ value: payload, sessionRevision: 23 });
-    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(active.map((read) => read.versions), [versions]);
+    const later = Array.from({ length: 9 }, (_, index) => String(index + 8));
+    const queued = later.map((version) => rpc.getLaneView(version));
+    assert.equal(active.length, 1);
+    active.shift()!.resolve({ states: versions.map(() => payload) });
     assert.deepEqual(await Promise.all(pending), versions.map(() => payload));
+    assert.deepEqual(active.map((read) => read.versions), [later.slice(0, 8)]);
+    active.shift()!.resolve({ states: Array(8).fill(null) });
+    await Promise.all(queued.slice(0, 8));
+    assert.deepEqual(active.map((read) => read.versions), [later.slice(8)]);
+    active.shift()!.resolve({ states: [payload] });
+    assert.equal(await queued[8], payload);
 });
 
 test("a lane read retries a failed reply for the same version and leaves an error after a second failure", () => {

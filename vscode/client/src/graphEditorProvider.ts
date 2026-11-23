@@ -57,7 +57,8 @@ export class GraphEditorProvider implements vscode.Disposable {
     private state: GraphEditorState = {
         sessionStatus: "starting", scope: null, definitions: null, definitionUsage: {}, error: "",
     };
-    private dirty = false;
+    private graphDemand?: { key: string; revision: number; expanded: NodeAddress[] };
+    private graphRead?: { key: string; revision: number };
     private refreshing?: Promise<void>;
     private disposed = false;
     private playbackReading = false;
@@ -769,13 +770,11 @@ export class GraphEditorProvider implements vscode.Disposable {
                 } catch (error) {
                     void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`);
                 }
-            } else if (message?.type === "readLaneView") {
-                const { requestId, version } = message;
-                let state: string | null = null;
-                try { state = await this.session.readLaneView(version); }
-                catch (error) { this.outputChannel.appendLine(`Cannot read lane view: ${String(error)}`); }
-                if (state === null) await this.refresh();
-                const reply: GraphEditorHostMessage = { type: "laneViewState", requestId, version, state };
+            } else if (message?.type === "readLaneViews") {
+                const states = await this.session.readLaneViews(message.reads.map(({ version }) => version));
+                if (states.some((state) => state === null)) await this.refresh();
+                const reply: GraphEditorHostMessage = { type: "laneViewStates",
+                    reads: message.reads.map((read, index) => ({ ...read, state: states[index] })) };
                 if (this.panels.has(panel)) void panel.webview.postMessage(reply);
             } else if (message?.type === "saveGraphPresentation") {
                 const { requestId, presentationStates, laneOrder, laneParents } = message;
@@ -873,38 +872,49 @@ export class GraphEditorProvider implements vscode.Disposable {
 
     private refresh(): Promise<void> {
         if (!this.panels.size || this.disposed) return Promise.resolve();
-        this.dirty = true;
+        const expanded = this.expandedModules();
+        const key = JSON.stringify([this.session.graphSessionStatus, this.session.graphConnectionNumber, this.session.graphDefinitionCatalogVersion,
+            expanded.map(addressKey).sort()]);
+        const revision = this.session.graphRevision ?? 0;
+        if (this.graphRead?.key === key && this.graphRead.revision >= revision && !this.graphDemand)
+            return Promise.resolve();
+        if (this.graphDemand?.key !== key || this.graphDemand.revision < revision)
+            this.graphDemand = { key, revision, expanded };
         return this.refreshing ??= Promise.resolve().then(() => this.readGraphState());
     }
 
     private async readGraphState(): Promise<void> {
         try {
-            while (this.dirty && !this.disposed) {
-                this.dirty = false;
+            while (this.graphDemand && !this.disposed) {
+                const demand = this.graphDemand;
                 this.state.sessionStatus = this.session.graphSessionStatus;
                 if (this.state.sessionStatus !== "running") {
                     this.state.scope = null;
                     this.state.definitions = null;
+                    this.graphRead = demand;
                 } else {
                     try {
                         const [scope, definitions] = await Promise.all([
-                            this.measureGraphRead("Read graph scope", () => this.session.readGraphScope(this.expandedModules())),
+                            this.measureGraphRead("Read graph scope", () => this.session.readGraphScope(demand.expanded)),
                             this.measureGraphRead("Read node definitions", () => this.session.graphDefinitions()),
                         ]);
-                        // A change while reading requires another complete read.
-                        // Do not show a stale response, especially after restart.
-                        if (this.dirty || this.disposed) continue;
+                        const revision = scope.sessionRevision ?? demand.revision;
+                        if (this.disposed || this.graphDemand.key !== demand.key
+                            || (this.graphDemand !== demand && revision < this.graphDemand.revision)) continue;
                         this.session.manualControls.reconcile(graphScopeWithChildren(scope));
                         this.state.scope = scope;
                         this.state.connectionNumber = this.session.graphConnectionNumber;
                         this.playbackProfile?.recorder.recordGraph(scope.execution, performance.now());
                         this.state.definitions = definitions;
                         this.state.error = "";
+                        this.graphRead = { key: demand.key, revision };
                     } catch (error) {
-                        if (this.dirty) continue;
+                        if (this.graphDemand !== demand) continue;
+                        this.graphRead = undefined;
                         this.state.error = `Cannot read graph: ${error.message}`;
                     }
                 }
+                this.graphDemand = undefined;
                 for (const panel of this.panels) this.post(panel);
             }
         } finally { this.refreshing = undefined; }

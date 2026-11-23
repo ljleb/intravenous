@@ -287,10 +287,16 @@ std::string SocketRpcNodeEventProtocolResultBuilder::build(int request_id) const
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
+    return jsonrpc_result(request_id, result_json());
+}
+
+Json SocketRpcNodeEventProtocolResultBuilder::result_json() const
+{
+    if (!error_message.empty()) throw std::runtime_error(error_message);
     if (!result) {
         throw_unbuilt_response("SocketRpcNodeEventProtocolResultBuilder");
     }
-    return jsonrpc_result(request_id, node_event_protocol_json(*result));
+    return node_event_protocol_json(*result);
 }
 
 void SocketRpcNodeMessageResultBuilder::succeed(
@@ -666,8 +672,14 @@ void SocketRpcIvPackageDefinitionsResultBuilder::fail(int code, std::string mess
 
 std::string SocketRpcIvPackageDefinitionsResultBuilder::build(int request_id) const {
     if (!error_message.empty()) return jsonrpc_error(request_id, error_code, error_message);
+    return jsonrpc_result(request_id, result_json());
+}
+
+Json SocketRpcIvPackageDefinitionsResultBuilder::result_json() const
+{
+    if (!error_message.empty()) throw std::runtime_error(error_message);
     if (!result.has_value()) throw_unbuilt_response("SocketRpcIvPackageDefinitionsResultBuilder");
-    return jsonrpc_result(request_id, Json{{"packages", iv_package_definitions_json(*result)}});
+    return Json{{"packages", iv_package_definitions_json(*result)}};
 }
 
 void SocketRpcIvPackageResultBuilder::succeed(IvPackageInfo value) {
@@ -718,10 +730,16 @@ std::string SocketRpcNodeInstancesResultBuilder::build(int request_id) const {
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
+    return jsonrpc_result(request_id, result_json());
+}
+
+Json SocketRpcNodeInstancesResultBuilder::result_json() const
+{
+    if (!error_message.empty()) throw std::runtime_error(error_message);
     if (!result.has_value()) {
         throw_unbuilt_response("SocketRpcNodeInstancesResultBuilder");
     }
-    return jsonrpc_result(request_id, Json{{"instances", iv_module_instances_json(*result)}});
+    return Json{{"instances", iv_module_instances_json(*result)}};
 }
 
 void SocketRpcAudioDevicesResultBuilder::succeed(AudioDevicesSnapshot value)
@@ -746,10 +764,16 @@ std::string SocketRpcAudioDevicesResultBuilder::build(int request_id) const
     if (!error_message.empty()) {
         return jsonrpc_error(request_id, error_code, error_message);
     }
+    return jsonrpc_result(request_id, result_json());
+}
+
+Json SocketRpcAudioDevicesResultBuilder::result_json() const
+{
+    if (!error_message.empty()) throw std::runtime_error(error_message);
     if (!result.has_value()) {
         throw_unbuilt_response("SocketRpcAudioDevicesResultBuilder");
     }
-    return jsonrpc_result(request_id, audio_devices_snapshot_json(*result));
+    return audio_devices_snapshot_json(*result);
 }
 
 } // namespace iv

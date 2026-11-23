@@ -1655,7 +1655,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     ProjectGraphPublication publication;
     if (publish_execution) {
         publication.graph_changed = true;
-        if (request.instances_list_changed) publication.instances = request.instances;
+        publication.instances_changed = request.instances_list_changed;
         if (definitions_change || request.instance_declarations_changed) {
             IvModuleSourceIntrospectionProjectGraphRequest introspection{};
             if (definitions_change) introspection.package_definitions = definitions_change->package_definitions;
@@ -2672,6 +2672,27 @@ bool is_module_lane_parent(ProjectGraphGeneration const& generation, NodeAddress
     return matches.size() == 1 && matches.front().kind == ProjectNodePathMatch::Kind::bundle
         && generation.graph->node_bundles.bundle(matches.front().bundle).is_subgraph();
 }
+
+auto lane_view_history_edits(std::vector<ProjectLaneView> const& current,
+    std::vector<ProjectRecordChange<ProjectLaneView>> const& changes, bool undo)
+{
+    std::vector<ProjectRecordEdit<ProjectLaneView, ProjectLaneViewId>> edits;
+    if (changes.empty()) return edits;
+    std::unordered_map<ProjectLaneViewId, std::uint64_t, ProjectRecordKeyHash> versions;
+    for (auto const& view : current) versions.emplace(view.id, view.version());
+    for (auto const& change : changes) {
+        auto const& expected = undo ? change.after : change.before;
+        auto const& desired = undo ? change.before : change.after;
+        auto const& key = expected ? expected->id : desired->id;
+        auto const found = versions.find(key);
+        bool const matches = expected ? found != versions.end() && found->second == expected->version()
+                                      : found == versions.end();
+        // View saves have their own revisions. The presentation pass still
+        // removes views whose instance is removed by the history operation.
+        if (matches) edits.push_back({key, desired});
+    }
+    return edits;
+}
 } // namespace
 
 ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
@@ -2719,13 +2740,7 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
         if (historical->timeline_snap_memory_json)
             edit.timeline_snap_memory_json = project_history_setting(
                 presentation_.timeline_snap_memory_json, *historical->timeline_snap_memory_json, *history_undo);
-        for (auto const& change : historical->lane_views) {
-            auto const& desired = *history_undo ? change.before : change.after;
-            auto const& other = *history_undo ? change.after : change.before;
-            // Lane navigation can change a view after a duplication. Undo
-            // still removes that lane and its current view.
-            edit.lane_views.push_back({desired ? desired->id : other->id, desired});
-        }
+        edit.lane_views = lane_view_history_edits(presentation_.lane_views, historical->lane_views, *history_undo);
     }
     std::optional<ProjectPresentation> next_presentation;
     auto prepare_presentation = [&](std::unordered_set<std::string> const& remaining_instances) {
@@ -3959,11 +3974,15 @@ void append_source_scope_connections(ProjectGraphScope& scope,
 }
 } // namespace
 
-void ProjectGraph::handle_socket_rpc_get_project_lane_view(GetProjectLaneViewRequest const& request, std::optional<std::string>& state)
+void ProjectGraph::handle_socket_rpc_get_project_lane_views(GetProjectLaneViewsRequest const& request,
+    std::vector<std::optional<std::string>>& states)
 {
     std::scoped_lock lock(mutex_);
-    auto const view = std::ranges::find(presentation_.lane_views, request.version, &ProjectLaneView::version);
-    if (view != presentation_.lane_views.end()) state = view->state_json();
+    states.reserve(request.versions.size());
+    for (auto const version : request.versions) {
+        auto const view = std::ranges::find(presentation_.lane_views, version, &ProjectLaneView::version);
+        states.push_back(view == presentation_.lane_views.end() ? std::nullopt : std::optional(view->state_json()));
+    }
 }
 
 void ProjectGraph::handle_socket_rpc_get_graph_scope(

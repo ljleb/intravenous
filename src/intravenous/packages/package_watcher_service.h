@@ -28,6 +28,7 @@ class PackageDefinitions;
 class PackageWatcherService {
     PackageWatcher* watcher_ = nullptr;
     PackageDefinitions* definitions_ = nullptr;
+    PackageRefreshCommit commit_{};
     std::filesystem::path project_root_;
     std::vector<PackageDiscoveryRoot> package_roots_;
     PackageDiscoveryWatcher discovery_watcher_;
@@ -51,7 +52,8 @@ public:
         PackageWatcher& watcher,
         std::filesystem::path project_root,
         std::vector<PackageDiscoveryRoot> package_roots,
-        PackageDefinitions* definitions = nullptr);
+        PackageDefinitions* definitions = nullptr,
+        PackageRefreshCommit commit = {});
     ~PackageWatcherService();
 
     PackageWatcherService(PackageWatcherService const&) = delete;

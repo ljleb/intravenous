@@ -111,10 +111,6 @@ type IvModuleInstanceInfo = {
     realized?: boolean;
 };
 
-type IvModuleInstancesUpdatedNotification = {
-    instances?: IvModuleInstanceInfo[];
-};
-
 type GraphNodesUpdatedNotification = {
     nodes?: unknown[];
     replaceInstanceIds?: string[];
@@ -149,6 +145,8 @@ export class WorkspaceSession {
     graphSessionStatus: LiveGraphSessionStatus = "starting";
     private connectionNumber = 0;
     get graphConnectionNumber(): number { return this.connectionNumber; }
+    get graphRevision(): number { return this.lastSessionRevision; }
+    graphDefinitionCatalogVersion = 0;
     private readonly manualChanges = new vscode.EventEmitter<void>();
     readonly onDidChangeManualControls = this.manualChanges.event;
     readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
@@ -172,11 +170,14 @@ export class WorkspaceSession {
         return this.rpc.getGraphScope(expanded);
     }
 
-    async readLaneView(version: string): Promise<string | null> {
+    async readLaneViews(versions: string[]): Promise<Array<string | null>> {
         const rpc = this.rpc;
-        if (!rpc || this.graphSessionStatus !== "running") return null;
-        const state = await rpc.getLaneView(version);
-        return this.rpc === rpc ? state : null;
+        if (!rpc || this.graphSessionStatus !== "running") return versions.map(() => null);
+        const states = await Promise.allSettled(versions.map((version) => rpc.getLaneView(version)));
+        if (this.rpc !== rpc) return versions.map(() => null);
+        const failure = states.find((state) => state.status === "rejected");
+        if (failure) this.outputChannel.appendLine(`Cannot read lane views: ${String(failure.reason)}`);
+        return states.map((state) => state.status === "fulfilled" ? state.value : null);
     }
 
     private timelineSnapChange: Promise<void> = Promise.resolve();
@@ -391,6 +392,7 @@ export class WorkspaceSession {
     private rpc: WorkspaceRpc | null = null;
     lastQueryError = "";
     private lastQuery: QueryShape | null = null;
+    private sourceQueryRequest = 0;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
     private serverDiagnosticLogOffset = 0;
@@ -420,9 +422,11 @@ export class WorkspaceSession {
     }> = [];
     private ivModuleInstances: IvModuleInstanceInfo[] = [];
     private projectModuleInstances: IvModuleInstanceInfo[] = [];
+    private instanceListRead?: { rpc: WorkspaceRpc; revision: number; done: Promise<void> };
     private ivPackages: IvPackageInfo[] = [];
     private selectedInstanceId: string | null = null;
     private activeSourceFilePath: string | null = null;
+    private sourceInstanceRead?: { rpc: WorkspaceRpc; filePath: string; done: Promise<void> };
     private activePackageRoot: string | null = null;
     private readonly selectedInstanceIdBySourceFile = new Map<string, string>();
     private clangdRestartTimer: NodeJS.Timeout | null = null;
@@ -496,18 +500,7 @@ export class WorkspaceSession {
             this.resolveServerReadyWaiters();
         });
 
-        this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("nodeInstances.updated", (params) => {
-            this.projectModuleInstances = Array.isArray(params.instances) ? params.instances : [];
-            if (this.activeSourceFilePath && this.rpc) {
-                void this.rpc.getNodeInstances(this.activeSourceFilePath).then((result) => {
-                    this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-                    this.refreshVisibleInstances();
-                });
-                return;
-            }
-            this.ivModuleInstances = this.projectModuleInstances;
-            this.refreshVisibleInstances();
-        });
+        this.notifications.subscribe("nodeInstances.updated", () => this.refreshInstanceList());
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
             const nodes = this.parseSymbolicNodes(params.nodes);
@@ -518,8 +511,7 @@ export class WorkspaceSession {
             // Applying a full-instance delta directly would replace that
             // projection with every port from the instance.
             if (this.lastQuery && this.rpc) {
-                const refreshed = await this.refreshLastQuery();
-                this.updatePrimaryHighlight(refreshed);
+                await this.refreshLastQuery();
                 return;
             }
             this.provider.upsertNodes(nodes, replaceInstanceIds);
@@ -567,6 +559,7 @@ export class WorkspaceSession {
             // A failed build can change node availability without producing a
             // graph generation or graph.changed notification.
             this.definitionCatalog = undefined;
+            ++this.graphDefinitionCatalogVersion;
             this.graphChanges.fire();
             await this.refreshProjectCatalog();
         });
@@ -1014,7 +1007,9 @@ export class WorkspaceSession {
                     this.lastSessionRevision = Math.max(
                         this.lastSessionRevision, params.revision);
                 }
-                void this.notifications.dispatch(method, params);
+                void this.notifications.dispatch(method, params).catch((error) => {
+                    if (this.client === client) this.outputChannel.appendLine(`Cannot process ${method}: ${String(error)}`);
+                });
             },
             (error) => this.handleServerConnectionLost(client, error),
             (revision) => {
@@ -1109,8 +1104,7 @@ export class WorkspaceSession {
         }
         try {
             if (this.rpc && this.lastQuery) {
-                const nodes = await this.refreshLastQuery();
-                this.updatePrimaryHighlight(nodes);
+                await this.refreshLastQuery();
             }
         } catch (error) {
             this.outputChannel.appendLine(
@@ -1144,9 +1138,14 @@ export class WorkspaceSession {
         if (!rpc) throw new Error("Server disconnected before loading the session");
         const result = await rpc.getNodeInstances();
         if (this.rpc !== rpc) throw new Error("Server disconnected before loading the session");
-        this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-        this.projectModuleInstances = this.ivModuleInstances;
-        this.refreshVisibleInstances();
+        this.projectModuleInstances = this.parseIvModuleInstances(result.instances);
+        if (this.activeSourceFilePath) {
+            await this.readSourceInstances(rpc, this.activeSourceFilePath);
+            if (this.rpc !== rpc) throw new Error("Server disconnected before loading the session");
+        } else {
+            this.ivModuleInstances = this.projectModuleInstances;
+            this.refreshVisibleInstances();
+        }
         const realizedCount = this.ivModuleInstances.filter(
             (instance) => instance.realized,
         ).length;
@@ -1203,12 +1202,35 @@ export class WorkspaceSession {
 
     async refreshProjectCatalog(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
-        const [packages, instances] = await Promise.all([
-            this.rpc.getIvPackageDefinitions(),
-            this.rpc.getNodeInstances(),
-        ]);
-        this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
-        this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
+        const rpc = this.rpc;
+        const [packages] = await Promise.all([rpc.getIvPackageDefinitions(), this.refreshInstanceList()]);
+        if (this.rpc === rpc) this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
+    }
+
+    private refreshInstanceList(): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc) return Promise.resolve();
+        const revision = this.lastSessionRevision;
+        const existing = this.instanceListRead;
+        if (existing?.rpc === rpc && existing.revision >= revision) return existing.done;
+        const done = rpc.getNodeInstances().then(async (result) => {
+            const read = this.instanceListRead;
+            if (this.rpc !== rpc || read?.done !== done) return;
+            read.revision = Math.max(read.revision, result.sessionRevision ?? revision);
+            this.projectModuleInstances = this.parseIvModuleInstances(result.instances);
+            if (this.activeSourceFilePath) {
+                await this.readSourceInstances(rpc, this.activeSourceFilePath, true);
+            } else {
+                this.ivModuleInstances = this.projectModuleInstances;
+                this.refreshVisibleInstances();
+            }
+        }).catch((error) => {
+            if (this.instanceListRead?.done !== done || this.rpc !== rpc) return;
+            this.instanceListRead = undefined;
+            throw error;
+        });
+        this.instanceListRead = { rpc, revision, done };
+        return done;
     }
 
     private async revealPackageSource(packageRoot: string): Promise<void> {
@@ -1275,8 +1297,7 @@ export class WorkspaceSession {
         if (!editor) {
             return;
         }
-        const nodes = await this.updateFromEditor(editor);
-        this.updatePrimaryHighlight(nodes);
+        await this.updateFromEditor(editor);
     }
 
     private resolveSelectedInstanceId(
@@ -1372,68 +1393,71 @@ export class WorkspaceSession {
         }));
     }
 
-    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<SymbolicNode[]> {
-        if (!this.rpc || !editor) {
-            return [];
-        }
-        if (editor.document.uri.scheme !== "file") {
-            return [];
-        }
-
-        const nextSourceFilePath = editor.document.uri.fsPath;
-        if (nextSourceFilePath !== this.activeSourceFilePath) {
-            this.activeSourceFilePath = nextSourceFilePath;
-            const packageDirectory = path.dirname(nextSourceFilePath);
-            const hasPackageManifest = fs.existsSync(path.join(packageDirectory, "iv_package.json"));
-            this.activePackageRoot = path.basename(nextSourceFilePath) === "module.cpp"
-                && hasPackageManifest
-                ? packageDirectory
-                : null;
-            const result = await this.rpc.getNodeInstances(nextSourceFilePath);
+    private readSourceInstances(rpc: WorkspaceRpc, filePath: string, force = false): Promise<void> {
+        const current = this.sourceInstanceRead;
+        if (!force && current?.rpc === rpc && current.filePath === filePath) return current.done;
+        const done = rpc.getNodeInstances(filePath).then((result) => {
+            if (this.rpc !== rpc || this.activeSourceFilePath !== filePath) return;
+            if (this.sourceInstanceRead?.done !== done) return this.sourceInstanceRead?.done;
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.provider.setPackageRoot(this.activePackageRoot);
             this.refreshVisibleInstances();
+        }, (error) => {
+            if (this.sourceInstanceRead?.done !== done || this.rpc !== rpc || this.activeSourceFilePath !== filePath) return;
+            this.sourceInstanceRead = undefined;
+            throw error;
+        });
+        this.sourceInstanceRead = { rpc, filePath, done };
+        return done;
+    }
+
+    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc || editor?.document.uri.scheme !== "file") return;
+        const filePath = editor.document.uri.fsPath;
+        const query = { filePath, ranges: this.selectionRanges(editor) };
+        this.lastQuery = query;
+        if (filePath !== this.activeSourceFilePath) {
+            this.activeSourceFilePath = filePath;
+            const packageDirectory = path.dirname(filePath);
+            const hasPackageManifest = fs.existsSync(path.join(packageDirectory, "iv_package.json"));
+            this.activePackageRoot = path.basename(filePath) === "module.cpp"
+                && hasPackageManifest
+                ? packageDirectory
+                : null;
         }
-
-        const ranges = this.selectionRanges(editor);
-        if (ranges.length === 0) {
-            return [];
-        }
-
-        this.lastQuery = {
-            filePath: editor.document.uri.fsPath,
-            ranges,
-        };
-
-        return this.refreshLastQuery();
+        await this.refreshLastQuery();
     }
 
     // Keep the side panel scoped to the most recently selected source spans
     // even when focus moves to a webview. Backend node-change notifications
     // carry instance-wide deltas, so they must be reprojected through this
     // query before updating the panel.
-    private async refreshLastQuery(): Promise<SymbolicNode[]> {
-        if (!this.rpc || !this.lastQuery) {
-            return [];
-        }
+    private async refreshLastQuery(): Promise<void> {
+        const rpc = this.rpc;
         const query = this.lastQuery;
-        const result = await this.rpc.queryNodesBySpans(
+        if (!rpc || !query) return;
+        const request = ++this.sourceQueryRequest;
+        const current = () => this.lastQuery === query && this.rpc === rpc && request === this.sourceQueryRequest;
+        await this.readSourceInstances(rpc, query.filePath);
+        if (!current()) return;
+        if (!query.ranges.length) {
+            this.highlighter.clearPrimary();
+            return;
+        }
+        const [result, activeRegionsResult] = await Promise.all([rpc.queryNodesBySpans(
             query.filePath,
             query.ranges,
             query.ranges.length > 1 ? "union" : "intersection",
             this.selectedInstanceId,
-        );
-        const activeRegionsResult = await this.rpc.queryActiveRegions(query.filePath);
-        // A newer code selection won while this RPC was in flight.
-        if (this.lastQuery !== query) {
-            return [];
-        }
+        ), rpc.queryActiveRegions(query.filePath)]);
+        if (!current()) return;
         this.lastQueryError = "";
         const nodes = sortNodesByRelevance(this.parseSymbolicNodes(result.nodes), query);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);
-        return nodes;
+        this.updatePrimaryHighlight(nodes);
     }
 
     async hasNodesAtPosition(document: vscode.TextDocument, position: vscode.Position): Promise<boolean> {

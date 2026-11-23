@@ -35,7 +35,10 @@ struct GetSymbolicNodeRequest { std::string node_id{}; };
 struct GetSymbolicNodesRequest { std::vector<std::string> node_ids{}; };
 // Return the root and the direct children of each requested expanded node.
 struct GetGraphScopeRequest { std::vector<NodeAddress> expanded{}; };
-struct GetProjectLaneViewRequest { std::uint64_t version; };
+struct GetProjectLaneViewsRequest {
+    static constexpr std::size_t max_versions = 8;
+    std::vector<std::uint64_t> versions;
+};
 struct SearchNodeDefinitionsRequest { std::string source; std::optional<std::size_t> cursor; };
 struct ApplyProjectEditRequest { ProjectEditBatch batch{}; };
 struct UndoProjectEditRequest { std::function<void()> authorize_audio_control{}; };
@@ -158,7 +161,7 @@ using SocketRpcRequestPayload = std::variant<
     GetSymbolicNodeRequest,
     GetSymbolicNodesRequest,
     GetGraphScopeRequest,
-    GetProjectLaneViewRequest,
+    GetProjectLaneViewsRequest,
     SearchNodeDefinitionsRequest,
     ApplyProjectEditRequest,
     UndoProjectEditRequest,

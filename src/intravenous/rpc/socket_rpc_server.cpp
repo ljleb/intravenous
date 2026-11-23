@@ -19,7 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -295,6 +297,7 @@ struct SocketRpcServer::Impl {
         std::string notification_method{};
         Json notification_params{};
         std::uint64_t disconnected_client_key = 0;
+        std::packaged_task<void()> package_refresh{};
 
         [[nodiscard]] bool is_notification() const noexcept
         {
@@ -875,11 +878,7 @@ struct SocketRpcServer::Impl {
     // and published after its response.
     void publish_project_graph(ProjectGraphPublication const& publication)
     {
-        if (publication.instances) {
-            publish(
-                "nodeInstances.updated",
-                Json{{"instances", iv_module_instances_json(*publication.instances)}});
-        }
+        if (publication.instances_changed) publish("nodeInstances.updated", Json::object());
         if (publication.symbolic_nodes) {
             publish(
                 "graph.nodesUpdated",
@@ -1009,7 +1008,7 @@ struct SocketRpcServer::Impl {
         return result;
     }
 
-    Json capture_session_snapshot(SessionSnapshotRequest const& request, SocketRpcRouteContext const& context)
+    Json capture_session_snapshot(SessionSnapshotRequest const& request)
     {
         SocketRpcSessionProjectStateResultBuilder project;
         SocketRpcAutosaveStateResultBuilder autosave;
@@ -1019,19 +1018,30 @@ struct SocketRpcServer::Impl {
         }
         auto const enabled = autosave.enabled();
         if (!enabled) throw std::runtime_error("project autosave service is unavailable");
-        auto read = [&](std::string method, SocketRpcRequestPayload payload) -> Json {
-            // These reads can reach modules already visited by persistence.
-            auto response = Json::parse(dispatch_route({.method = method, .payload = std::move(payload)}, context).response);
-            if (auto result = response.find("result"); result != response.end()) return std::move(*result);
-            throw std::runtime_error(method + ": " + response.at("error").at("message").get<std::string>());
-        };
+        // These reads can reach modules already visited by persistence.
+        SocketRpcNodeInstancesResultBuilder instances;
+        IV_EVENT_SOURCE(SocketRpcServer, "session.snapshot instances") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_instances_event, GetNodeInstancesRequest{}, instances);
+        }
+        SocketRpcIvPackageDefinitionsResultBuilder packages;
+        IV_EVENT_SOURCE(SocketRpcServer, "session.snapshot packages") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_iv_package_definitions_event, GetIvPackageDefinitionsRequest{}, packages);
+        }
+        SocketRpcAudioDevicesResultBuilder audio;
+        IV_EVENT_SOURCE(SocketRpcServer, "session.snapshot audio devices") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_audio_devices_event, GetAudioDevicesRequest{}, audio);
+        }
+        SocketRpcNodeEventProtocolResultBuilder protocol;
+        IV_EVENT_SOURCE(SocketRpcServer, "session.snapshot event protocol") {
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_event_protocol_event, GetNodeEventProtocolRequest{}, protocol);
+        }
         return Json{
             {"project", {{"commands", project.commands_json()}}},
             {"autosave", {{"enabled", *enabled}}},
-            {"nodeInstances", read("nodeInstances.get", GetNodeInstancesRequest{})},
-            {"packages", read("ivPackages.list", GetIvPackageDefinitionsRequest{})},
-            {"audioDevices", read("audioDevices.get", GetAudioDevicesRequest{})},
-            {"nodeEventProtocol", read("nodeMessages.getProtocol", GetNodeEventProtocolRequest{})},
+            {"nodeInstances", instances.result_json()},
+            {"packages", packages.result_json()},
+            {"audioDevices", audio.result_json()},
+            {"nodeEventProtocol", protocol.result_json()},
         };
     }
 
@@ -1068,6 +1078,7 @@ struct SocketRpcServer::Impl {
     void process_command(Command command)
     {
         std::optional<int> request_id;
+        std::optional<Json> snapshot_result;
         std::string response;
         std::vector<std::string> after_response;
         SocketRpcRouteResult route;
@@ -1083,7 +1094,7 @@ struct SocketRpcServer::Impl {
                     std::string const& required) {
                     authorize(client, required);
                 },
-                .before_invoke = [this, &request](bool mutates) {
+                .before_invoke = [this, &request, &command](bool mutates) {
                     if (request.expected_revision && !mutates) {
                         throw std::runtime_error(
                             "expectedRevision is only valid for mutation routes");
@@ -1096,6 +1107,10 @@ struct SocketRpcServer::Impl {
                             + std::to_string(*request.expected_revision)
                             + ", current " + std::to_string(current));
                     }
+                    // Only the command thread allocates transfers. If there
+                    // is room here, the mutation's reply can claim that slot.
+                    if (mutates && command.client->result_transfers.size() >= max_result_transfers)
+                        throw std::runtime_error("finish reading outstanding RPC results before editing the project");
                 },
                 .hello = [this, client = command.client](
                     int id, SessionHelloRequest const& request) {
@@ -1116,7 +1131,7 @@ struct SocketRpcServer::Impl {
             if (auto const* snapshot = std::get_if<SessionSnapshotRequest>(&request.payload)) {
                 context.authorize("project.read");
                 context.before_invoke(false);
-                route.response = jsonrpc_result(request.request_id, capture_session_snapshot(*snapshot, context));
+                snapshot_result = capture_session_snapshot(*snapshot);
             } else if (auto const* result = std::get_if<SessionReadResultRequest>(&request.payload)) {
                 context.authorize("project.read");
                 context.before_invoke(false);
@@ -1150,8 +1165,13 @@ struct SocketRpcServer::Impl {
         if (route_known && route.mutates_session && succeeded) {
             response_revision = advance_revision();
         }
-        if (!reading_result) {
+        if (snapshot_result) {
+            (*snapshot_result)["sessionRevision"] = response_revision;
+            response = jsonrpc_result(*request_id, std::move(*snapshot_result));
+        } else if (!reading_result) {
             response = stamp_response(response, response_revision);
+        }
+        if (!reading_result) {
             if (request_id) response = bound_response(*command.client, *request_id, std::move(response), response_revision);
         }
         if (!enqueue(command.client, std::move(response), route_known && route.shutdown_after_response && succeeded)) {
@@ -1181,6 +1201,31 @@ struct SocketRpcServer::Impl {
         }
     }
 
+    void commit_package_refresh(std::function<void()> publish)
+    {
+        std::packaged_task<void()> task([this, publish = std::move(publish)] {
+            begin_deferred_notifications();
+            std::exception_ptr failure;
+            try { publish(); }
+            catch (...) { failure = std::current_exception(); }
+            auto notifications = finish_deferred_notifications();
+            auto const publication_revision = advance_revision();
+            if (notifications.empty()) publish_at_revision("session.revisionChanged", Json::object(), publication_revision);
+            for (auto& notification : notifications) {
+                publish_at_revision(std::move(notification.method), std::move(notification.params), publication_revision);
+            }
+            if (failure) std::rethrow_exception(failure);
+        });
+        auto done = task.get_future();
+        {
+            std::scoped_lock lock(commands_mutex);
+            if (shutting_down.load()) throw std::runtime_error("project session is shutting down");
+            commands.push_back(Command{.package_refresh = std::move(task)});
+        }
+        commands_ready.notify_one();
+        done.get();
+    }
+
     void command_loop()
     {
         for (;;) {
@@ -1194,7 +1239,9 @@ struct SocketRpcServer::Impl {
                 command = std::move(commands.front());
                 commands.pop_front();
             }
-            if (command.is_client_cleanup()) {
+            if (command.package_refresh.valid()) {
+                command.package_refresh();
+            } else if (command.is_client_cleanup()) {
                 std::shared_ptr<Client> retired;
                 {
                     std::scoped_lock lock(clients_mutex);
@@ -1330,6 +1377,11 @@ void SocketRpcServer::wait()
 
 void SocketRpcServer::request_shutdown() { impl_->request_shutdown(); }
 
+void SocketRpcServer::commit_package_refresh(std::function<void()> publish)
+{
+    impl_->commit_package_refresh(std::move(publish));
+}
+
 std::uint64_t SocketRpcServer::revision() const noexcept
 {
     return impl_->current_revision();
@@ -1374,14 +1426,6 @@ void SocketRpcServer::handle_control_compile_status(std::span<ProjectControlComp
             {"preparationUs", status.preparation_us}, {"stageUs", status.stage_us}, {"message", status.message},
         });
     }
-}
-
-void SocketRpcServer::send_node_instances_updated(
-    std::vector<IvModuleInstanceInfo> const& instances)
-{
-    impl_->publish(
-        "nodeInstances.updated",
-        Json{{"instances", iv_module_instances_json(instances)}});
 }
 
 void SocketRpcServer::send_iv_package_definitions_updated()

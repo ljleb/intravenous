@@ -1,8 +1,7 @@
 import { SymbolicNode } from "./graphModel";
 import { LiveGraphInstance } from "./liveGraphProtocol";
 
-// The node-instance fields the live graph view reads from nodeInstances.get
-// and nodeInstances.updated. Every field is optional on the wire.
+// The live graph view reads these optional fields from nodeInstances.get.
 export type LiveGraphInstanceRecord = {
     instanceId?: string;
     definitionId?: string;

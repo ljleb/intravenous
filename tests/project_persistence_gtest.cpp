@@ -776,10 +776,11 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     EXPECT_EQ(copied[3]["args"]["address"]["instance_id"], "copy");
     EXPECT_EQ(copied[3]["args"]["state"], view.state_json());
 
-    std::optional<std::string> read;
-    project_graph.handle_socket_rpc_get_project_lane_view({view.version()}, read);
-    ASSERT_TRUE(read);
-    EXPECT_EQ(*read, view.state_json());
+    std::vector<std::optional<std::string>> read;
+    project_graph.handle_socket_rpc_get_project_lane_views({{view.version(), 0}}, read);
+    ASSERT_EQ(read.size(), 2u);
+    EXPECT_EQ(read[0], view.state_json());
+    EXPECT_FALSE(read[1]);
 
     // A later pan on the copy does not prevent undo from removing the copy.
     iv::ProjectLaneView const changed{{{.instance_id = "copy"}, "curve"}, R"({"pan":5})"};
@@ -790,9 +791,35 @@ TEST(ProjectPersistence, LanePresentationReplaysAndFollowsNodeHistory)
     ASSERT_EQ(undone.size(), 4u);
     EXPECT_EQ(undone[1]["args"]["order"].size(), 1u);
     EXPECT_EQ(undone[2]["args"]["state"], view.state_json());
-    read.reset();
-    project_graph.handle_socket_rpc_get_project_lane_view({changed.version()}, read);
-    EXPECT_FALSE(read);
+    read.clear();
+    project_graph.handle_socket_rpc_get_project_lane_views({{changed.version()}}, read);
+    ASSERT_EQ(read.size(), 1u);
+    EXPECT_FALSE(read.front());
+
+    auto redo = [&] {
+        iv::ProjectAckBuilder builder;
+        in_event_source([&] { project_graph.handle_project_redo(builder); });
+        builder.build();
+    };
+    iv::ProjectLaneView const after_rename{view.id, R"({"pan":0.5})"};
+    iv::ProjectLaneView const newer{view.id, R"({"pan":0.75})"};
+    iv::ProjectEditBatch rename;
+    rename.instance_updates.push_back({.instance_id = "curve", .display_name = "Renamed"});
+    rename.lane_views.push_back({after_rename.id, after_rename});
+    edit(rename);
+    adjust.lane_views = {{newer.id, newer}};
+    edit(adjust);
+    auto check_view = [&] {
+        std::vector<std::optional<std::string>> views;
+        project_graph.handle_socket_rpc_get_project_lane_views({{newer.version(), after_rename.version()}}, views);
+        ASSERT_EQ(views.size(), 2u);
+        EXPECT_EQ(views[0], newer.state_json());
+        EXPECT_FALSE(views[1]);
+    };
+    undo();
+    check_view();
+    redo();
+    check_view();
 }
 
 TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGraph)

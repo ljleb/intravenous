@@ -299,13 +299,20 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         }
         return parsed(std::move(query));
     }
-    if (method == "projectPresentation.getLaneView") {
-        auto const version_text = parse_string_param(params, "version");
-        std::uint64_t version = 0;
-        auto const end = version_text.data() + version_text.size();
-        auto const [ptr, error] = std::from_chars(version_text.data(), end, version);
-        if (error != std::errc{} || ptr != end || version == 0) throw std::invalid_argument("invalid lane view version");
-        return parsed(GetProjectLaneViewRequest{version});
+    if (method == "projectPresentation.getLaneViews") {
+        auto const& versions = params.at("versions");
+        if (!versions.is_array() || versions.empty() || versions.size() > GetProjectLaneViewsRequest::max_versions)
+            throw std::invalid_argument("lane view reads require between one and eight versions");
+        GetProjectLaneViewsRequest query;
+        for (auto const& item : versions) {
+            auto const& text = item.get_ref<std::string const&>();
+            std::uint64_t version = 0;
+            auto const end = text.data() + text.size();
+            auto const [ptr, error] = std::from_chars(text.data(), end, version);
+            if (error != std::errc{} || ptr != end || version == 0) throw std::invalid_argument("invalid lane view version");
+            query.versions.push_back(version);
+        }
+        return parsed(std::move(query));
     }
     if (method == "nodeDefinitions.search") {
         auto const& params = parse_request_params(request);

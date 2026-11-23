@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -39,7 +40,7 @@ namespace iv {
         void (*)(GetSymbolicNodesRequest const &, SocketRpcSymbolicNodesResultBuilder &);
     using SocketRpcGetGraphScopeEvent =
         void (*)(GetGraphScopeRequest const &, SocketRpcGraphScopeResultBuilder &);
-    using SocketRpcGetProjectLaneViewEvent = void (*)(GetProjectLaneViewRequest const&, std::optional<std::string>&);
+    using SocketRpcGetProjectLaneViewsEvent = void (*)(GetProjectLaneViewsRequest const&, std::vector<std::optional<std::string>>&);
     using SocketRpcGetNodeDefinitionsEvent = void (*)(std::shared_ptr<NodeDefinitionsSnapshot const>&);
     using SocketRpcCreateNodeInstanceEvent =
         void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
@@ -108,7 +109,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodeEvent, iv_socket_rpc_get_symbolic_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodesEvent, iv_socket_rpc_get_symbolic_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetGraphScopeEvent, iv_socket_rpc_get_graph_scope_event);
-    IV_DECLARE_LINKER_EVENT(SocketRpcGetProjectLaneViewEvent, iv_socket_rpc_get_project_lane_view_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetProjectLaneViewsEvent, iv_socket_rpc_get_project_lane_views_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
@@ -164,6 +165,7 @@ namespace iv {
         bool wait_until_ready(std::chrono::milliseconds timeout) const;
         void wait();
         void request_shutdown();
+        void commit_package_refresh(std::function<void()> publish);
 
         [[nodiscard]] std::uint64_t revision() const noexcept;
         [[nodiscard]] std::size_t client_count() const;
@@ -172,13 +174,11 @@ namespace iv {
         void send_server_message(SocketRpcServerMessage const &notification);
         void send_server_status(SocketRpcServerStatus const &notification);
         void handle_control_compile_status(std::span<ProjectControlCompileStatus const> statuses);
-        void send_node_instances_updated(
-            std::vector<IvModuleInstanceInfo> const &instances);
         void send_iv_package_definitions_updated();
         void send_symbolic_nodes_updated(
             ProjectSymbolicNodesNotification const &notification);
         // The read-model changes a project-graph change committed: the
-        // instance list and the symbolic-node replacements.
+        // instance-list invalidation and the symbolic-node replacements.
         void send_project_graph_publication(
             ProjectGraphPublication const &publication);
         void handle_project_notification(ProjectNotification const &notification);

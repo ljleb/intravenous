@@ -698,38 +698,47 @@ bool PackageWatcher::refresh_pending_packages(
     transaction.successful_revisions = std::move(jit_request.result.revisions);
     transaction.failed_builds = std::move(jit_request.result.failed);
     request.failed_builds = transaction.failed_builds;
-    IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_event, transaction);
+    auto publish = [&] {
+        IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_event, transaction);
 
-    {
-        std::scoped_lock lock(mutex_);
-        if (auto const& progress = transaction.project_publication.execution_preparation)
-            note_execution_preparation_locked(*progress);
-        published_declarations_by_id_ = std::move(prepared->next_published);
-    }
+        {
+            std::scoped_lock lock(mutex_);
+            if (auto const& progress = transaction.project_publication.execution_preparation)
+                note_execution_preparation_locked(*progress);
+            published_declarations_by_id_ = std::move(prepared->next_published);
+        }
 
-    // The refresh's one report, after its whole propagation has returned.
-    PackageRefreshPublication publication{
-        .package_catalog_changed = true,
-        .project = std::move(transaction.project_publication),
+        // The refresh's one report, after its whole propagation has returned.
+        PackageRefreshPublication publication{
+            .package_catalog_changed = true,
+            .project = std::move(transaction.project_publication),
+        };
+        if (!transaction.failed_builds.empty()) {
+            auto const& failure = transaction.failed_builds.front();
+            publication.build_status = ProjectStatusNotification{
+                .level = "error",
+                .code = "rebuildFailed",
+                .message = "Module build failed after " + build_duration + ": "
+                    + failure.message,
+                .package_root = failure.package_root,
+            };
+        } else if (built.build_count > 0) {
+            publication.build_status = ProjectStatusNotification{
+                .level = "info",
+                .code = "rebuildFinished",
+                .message = "Package build ready to apply in " + build_duration,
+                .package_root = built.single_package_root,
+            };
+        }
+        IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event, publication);
     };
-    if (!transaction.failed_builds.empty()) {
-        auto const& failure = transaction.failed_builds.front();
-        publication.build_status = ProjectStatusNotification{
-            .level = "error",
-            .code = "rebuildFailed",
-            .message = "Module build failed after " + build_duration + ": "
-                + failure.message,
-            .package_root = failure.package_root,
-        };
-    } else if (built.build_count > 0) {
-        publication.build_status = ProjectStatusNotification{
-            .level = "info",
-            .code = "rebuildFinished",
-            .message = "Package build ready to apply in " + build_duration,
-            .package_root = built.single_package_root,
-        };
+    if (request.commit) {
+        request.commit([&] {
+            IV_EVENT_SOURCE(PackageWatcher, "package refresh publication") { publish(); }
+        });
+    } else {
+        publish();
     }
-    IV_INVOKE_LINKER_EVENT(iv_runtime_package_refresh_published_event, publication);
     return true;
 }
 

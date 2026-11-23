@@ -261,22 +261,7 @@ TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
                 },
                 .package_catalog_changed = true,
                 .project = ProjectGraphPublication{
-                    .instances = std::vector<IvModuleInstanceInfo>{
-                        IvModuleInstanceInfo{
-                            .instance_id = "instance:1",
-                            .definition_id = "/tmp/module-a",
-                            .package_root = "/tmp/module-a",
-                            .configuration_source = "{.gain = 0.5}",
-                            .realized = true,
-                            .module_id = "module.a",
-                        },
-                        IvModuleInstanceInfo{
-                            .instance_id = "instance:2",
-                            .definition_id = "/tmp/module-b",
-                            .package_root = "/tmp/module-b",
-                            .realized = false,
-                        },
-                    },
+                    .instances_changed = true,
                     .symbolic_nodes = ProjectSymbolicNodesNotification{
                         .replace_instance_ids = {"instance:1"},
                     },
@@ -293,13 +278,8 @@ TEST(SocketRpcNotificationBridge, BoundServerPublishesOnePackageRefreshReport)
 
     auto const instances = parse_json_line(harness.read_line());
     EXPECT_EQ(instances["method"], "nodeInstances.updated");
-    ASSERT_EQ(instances["params"]["instances"].size(), 2u);
-    EXPECT_EQ(instances["params"]["instances"][0]["instanceId"], "instance:1");
-    EXPECT_EQ(instances["params"]["instances"][0]["moduleId"], "module.a");
-    EXPECT_EQ(
-        instances["params"]["instances"][0]["configurationSource"],
-        "{.gain = 0.5}");
-    EXPECT_EQ(instances["params"]["instances"][1]["realized"], false);
+    EXPECT_TRUE(instances["params"]["revision"].is_number_unsigned());
+    EXPECT_FALSE(instances["params"].contains("instances"));
 
     auto const nodes = parse_json_line(harness.read_line());
     EXPECT_EQ(nodes["method"], "graph.nodesUpdated");

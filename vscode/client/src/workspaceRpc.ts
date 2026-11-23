@@ -2,7 +2,7 @@ import { recordedEventTimestampsOperation, type ObservationInterest, type Observ
 import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { SymbolicNode, SourceSpan } from "./graphModel";
-import type { GraphScope, ProjectEditReceipt } from "./graphScope";
+import { laneViewReadBatchSize, type GraphScope, type ProjectEditReceipt } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type NodeEventProtocol, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
@@ -133,23 +133,46 @@ export class WorkspaceRpc {
         } : {});
     }
 
-    private laneViewRead = Promise.resolve();
-    private readonly pendingLaneViewReads = new Map<string, Promise<string | null>>();
+    private readingLaneViews = false;
+    private readonly pendingLaneViewReads = new Map<string, {
+        result: Promise<string | null>; resolve: (state: string | null) => void; reject: (error: unknown) => void;
+    }>();
 
     getLaneView(version: string): Promise<string | null> {
         const existing = this.pendingLaneViewReads.get(version);
-        if (existing) return existing;
-        // Keep one payload response in flight on this connection.
-        const read = this.laneViewRead.then(async () => {
-            const reply = await this.client.request<{ value: unknown }>("projectPresentation.getLaneView", { version });
-            if (reply?.value === null) return null;
-            if (typeof reply?.value === "string") return reply.value;
-            throw new Error("Invalid lane view response");
-        })
-            .finally(() => this.pendingLaneViewReads.delete(version));
-        this.pendingLaneViewReads.set(version, read);
-        this.laneViewRead = read.then(() => {}, () => {});
-        return read;
+        if (existing) return existing.result;
+        let resolve: (state: string | null) => void;
+        let reject: (error: unknown) => void;
+        const result = new Promise<string | null>((accept, fail) => { resolve = accept; reject = fail; });
+        this.pendingLaneViewReads.set(version, { result, resolve: resolve!, reject: reject! });
+        // Let a newly mounted group of lanes enqueue reads before the first RPC.
+        if (!this.readingLaneViews) {
+            this.readingLaneViews = true;
+            queueMicrotask(() => void this.readLaneViewBatches());
+        }
+        return result;
+    }
+
+    private async readLaneViewBatches(): Promise<void> {
+        while (this.pendingLaneViewReads.size) {
+            const reads = [];
+            for (const read of this.pendingLaneViewReads) {
+                reads.push(read);
+                if (reads.length === laneViewReadBatchSize) break;
+            }
+            const versions = reads.map(([version]) => version);
+            try {
+                const { states } = await this.client.request<{ states?: Array<string | null> }>("projectPresentation.getLaneViews", { versions });
+                if (!Array.isArray(states) || states.length !== reads.length || states.some((state) => state !== null && typeof state !== "string"))
+                    throw new Error("Invalid lane view response");
+                reads.forEach(([, read], index) => read.resolve(states[index]));
+            } catch (error) {
+                for (const [, read] of reads) read.reject(error);
+            } finally {
+                for (const version of versions) this.pendingLaneViewReads.delete(version);
+            }
+        }
+        this.readingLaneViews = false;
     }
 
     getNodeEventProtocol(): Promise<NodeEventProtocol> {
@@ -175,7 +198,7 @@ export class WorkspaceRpc {
         return this.client.request("audioDevices.get", {});
     }
 
-    getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>> }> {
+    getNodeInstances(sourceFilePath: string | null = null): Promise<{ instances?: Array<Record<string, unknown>>; sessionRevision?: number }> {
         return this.client.request("nodeInstances.get", sourceFilePath ? { sourceFilePath } : {});
     }
 

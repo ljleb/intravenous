@@ -66,7 +66,7 @@ struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
 struct GetGraphScopeRequest;
-struct GetProjectLaneViewRequest;
+struct GetProjectLaneViewsRequest;
 struct ApplyProjectEditRequest;
 struct UndoProjectEditRequest;
 struct RedoProjectEditRequest;
@@ -527,6 +527,7 @@ public:
     void handle_socket_rpc_get_graph_scope(
         GetGraphScopeRequest const& request,
         SocketRpcGraphScopeResultBuilder& builder);
-    void handle_socket_rpc_get_project_lane_view(GetProjectLaneViewRequest const& request, std::optional<std::string>& state);
+    void handle_socket_rpc_get_project_lane_views(GetProjectLaneViewsRequest const& request,
+        std::vector<std::optional<std::string>>& states);
 };
 } // namespace iv

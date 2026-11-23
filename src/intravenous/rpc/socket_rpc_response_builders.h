@@ -62,6 +62,7 @@ namespace iv {
             return result.has_value() || !error_message.empty();
         }
 
+        [[nodiscard]] nlohmann::ordered_json result_json() const;
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -258,6 +259,7 @@ namespace iv {
             return result.has_value() || !error_message.empty();
         }
 
+        [[nodiscard]] nlohmann::ordered_json result_json() const;
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -294,6 +296,7 @@ namespace iv {
             return result.has_value() || !error_message.empty();
         }
 
+        [[nodiscard]] nlohmann::ordered_json result_json() const;
         [[nodiscard]] std::string build(int request_id) const;
     };
 
@@ -312,6 +315,7 @@ namespace iv {
             return result.has_value() || !error_message.empty();
         }
 
+        [[nodiscard]] nlohmann::ordered_json result_json() const;
         [[nodiscard]] std::string build(int request_id) const;
     };
 

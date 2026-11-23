@@ -77,9 +77,11 @@ PackageWatcherService::PackageWatcherService(
     PackageWatcher& watcher,
     std::filesystem::path project_root,
     std::vector<PackageDiscoveryRoot> package_roots,
-    PackageDefinitions* definitions)
+    PackageDefinitions* definitions,
+    PackageRefreshCommit commit)
     : watcher_(&watcher)
     , definitions_(definitions)
+    , commit_(std::move(commit))
     , project_root_(std::move(project_root))
     , package_roots_(std::move(package_roots))
     , discovery_watcher_(discovery_roots(project_root_, package_roots_),
@@ -162,7 +164,7 @@ bool PackageWatcherService::process_pending_refresh(std::stop_token stop)
         if (!plan) break;
         if (plan->build_count > 0) publish_build_started(*plan);
 
-        PackageWatcherRefreshRequest request;
+        PackageWatcherRefreshRequest request{.commit = commit_};
         IV_EVENT_SOURCE(PackageWatcherService, "package refresh") {
             IV_INVOKE_LINKER_EVENT(
                 iv_runtime_package_watcher_refresh_requested_event,

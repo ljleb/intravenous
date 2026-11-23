@@ -374,7 +374,8 @@ int run_server_mode(int argc, char** argv)
         package_watcher,
         startup.workspace_root,
         startup.package_roots,
-        &package_definitions);
+        &package_definitions,
+        [&server](auto publish) { server.commit_package_refresh(std::move(publish)); });
 
     std::function<void()> shutdown = [&] {
         package_watcher_service.stop();

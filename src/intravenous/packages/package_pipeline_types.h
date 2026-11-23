@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -100,12 +101,16 @@ struct PackageWatcherRefreshPlan {
     std::filesystem::path single_package_root{};
 };
 
+// Run a prepared publication on the project session's command queue and wait for it.
+using PackageRefreshCommit = std::function<void(std::function<void()>)>;
+
 struct PackageWatcherRefreshRequest {
     bool changed = false;
     // The service that owns the refresh request retains these diagnostics so
     // non-frontend callers can fail instead of waiting for definitions that a
     // failed build cannot publish.
     std::vector<PackageJitFailure> failed_builds{};
+    PackageRefreshCommit commit{};
 };
 
 struct PackageJitBatchRequest {

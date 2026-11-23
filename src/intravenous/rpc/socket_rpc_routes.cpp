@@ -269,12 +269,16 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             if (!builder.has_response()) builder.fail("project graph service is unavailable");
             return builder.build(id);
         });
-    impl_->add<GetProjectLaneViewRequest>(
-        "projectPresentation.getLaneView", "project.read", false, false,
+    impl_->add<GetProjectLaneViewsRequest>(
+        "projectPresentation.getLaneViews", "project.read", false, false,
         [](auto const& request, int id, Context const&) {
-            std::optional<std::string> state;
-            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_project_lane_view_event, request, state);
-            return jsonrpc_result(id, state ? Json(std::move(*state)) : Json(nullptr));
+            std::vector<std::optional<std::string>> states;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_project_lane_views_event, request, states);
+            if (states.size() != request.versions.size()) throw std::runtime_error("project graph service is unavailable");
+            auto values = Json::array();
+            for (auto& state : states)
+                values.push_back(state ? Json(std::move(*state)) : Json(nullptr));
+            return jsonrpc_result(id, Json{{"states", std::move(values)}});
         });
     impl_->add<SearchNodeDefinitionsRequest>("nodeDefinitions.search", "project.read", false, false,
         [](auto const& request, int id, Context const&) {
