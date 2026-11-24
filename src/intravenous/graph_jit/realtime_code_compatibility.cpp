@@ -171,7 +171,6 @@ bool compatible_steady_realtime_layout(
             || lhs.raw_initialize_fn != rhs.raw_initialize_fn
             || lhs.element_type != rhs.element_type
             || lhs.assign_span_fn != rhs.assign_span_fn
-            || lhs.nested_node_indices != rhs.nested_node_indices
             || lhs_manual != rhs_manual
             || (!lhs_manual
                 && lhs.raw_initialize_data != rhs.raw_initialize_data)) {

@@ -1318,8 +1318,8 @@ This is a hint, not a hard constraint. Use your own good judgement if ever in do
     inherited-state horizon expires, switches at a safe root boundary to the already
     compiled steady realization. This correctness stage is mandatory before storage or
     code optimization work.
-21. **Finish remaining authored-node semantics** (nested declarations, compiler-
-    owned regions, activity/TTL, detach, events and skip scheduling).
+21. **Finish remaining authored-node semantics** (compiler-owned regions,
+    activity/TTL, detach, events and skip scheduling).
 22. **Add first-class primitive callback batching.** Add the typed batch ranges and
     trait-normalized scalar/batch helper pairs for Tick, skip, Tock and forward/reverse
     propagation; retain both compiler anchors; classify compatible resolved
@@ -2105,6 +2105,12 @@ and unfolding. Reuse a prepared gain snapshot where background consumers
 require it. See the [builder and connection status](./output_gain_implementation.md#named-node-ref-occurrences-2026-11-23).
 
 ## Lowering boundary
+
+Each graph primitive supplies one `NodeLayout` record and one `TockStateLayout`
+record in primitive order. A declaration can allocate local arrays and bind
+shared arrays. The former [nested declaration API](historical/nested_node_declarations_2026-11-24.md)
+was removed on 2026-11-24. Configure separately scheduled nodes through
+`GraphBuilder` and keep a node's private data in its typed `State` or local arrays.
 
 The lowering result should carry immutable metadata sufficient for runtime work
 without rediscovering project topology. In addition to ordinary Tick schedule

@@ -285,60 +285,6 @@ namespace iv {
             builder._regions.push_back(region);
         }
 
-        size_t declare_nested_node_states(
-            NodeLayoutBuilder& builder,
-            size_t node_index,
-            ptrdiff_t state_field_offset)
-        {
-            NodeLayout::Region region;
-            region.kind = NodeLayout::Region::Kind::nested_node_states;
-            region.owner_node = node_index;
-            region.state_field_offset = state_field_offset;
-            region.size = 0;
-            region.alignment = alignof(std::span<std::byte>);
-            region.element_count = 0;
-            region.element_type = node_layout_type_token<std::span<std::byte>>();
-            region.element_type_name = typeid(std::span<std::byte>).name();
-            region.assign_span_fn = [](
-                void* state_base,
-                ptrdiff_t field_offset,
-                void* data,
-                size_t count) {
-                auto& span_ref =
-                    *reinterpret_cast<std::span<std::span<std::byte>>*>(
-                        static_cast<std::byte*>(state_base) + field_offset);
-                span_ref = {
-                    static_cast<std::span<std::byte>*>(data),
-                    count,
-                };
-            };
-
-            builder._storage_alignment = std::max(
-                builder._storage_alignment,
-                size_t(alignof(std::span<std::byte>)));
-            builder._regions.push_back(std::move(region));
-            return builder._regions.size() - 1;
-        }
-
-        void finalize_nested_node_states(
-            NodeLayoutBuilder& builder,
-            size_t region_index,
-            std::vector<size_t> nested_node_indices)
-        {
-            IV_ASSERT(
-                region_index < builder._regions.size(),
-                "nested nodes region index out of bounds");
-            auto& region = builder._regions[region_index];
-            IV_ASSERT(
-                region.kind == NodeLayout::Region::Kind::nested_node_states,
-                "region must be a nested node-state region");
-
-            region.size =
-                sizeof(std::span<std::byte>) * nested_node_indices.size();
-            region.element_count = nested_node_indices.size();
-            region.nested_node_indices = std::move(nested_node_indices);
-        }
-
         void declare_export_array(
             NodeLayoutBuilder& builder,
             std::string id,
@@ -694,23 +640,15 @@ namespace iv {
             for (size_t index = 0; index < owned.size(); ++index) {
                 auto const& region = storage.layout->regions[owned[index]];
                 auto const& previous_region = previous_storage.layout->regions[previous_owned[index]];
-                if ((region.kind != NodeLayout::Region::Kind::local_array
-                        && region.kind
-                            != NodeLayout::Region::Kind::nested_node_states)
+                if (region.kind != NodeLayout::Region::Kind::local_array
                     || !region.assign_span_fn) {
                     continue;
                 }
                 auto* data = storage.storage.get() + region.storage_offset;
-                // Nested-node regions hold spans to this storage's nested
-                // States, which patching already set; only local arrays carry
-                // values of their own.
-                if (region.kind == NodeLayout::Region::Kind::local_array) {
-                    std::memcpy(
-                        data,
-                        previous_storage.storage.get()
-                            + previous_region.storage_offset,
-                        region.size);
-                }
+                std::memcpy(
+                    data,
+                    previous_storage.storage.get() + previous_region.storage_offset,
+                    region.size);
                 region.assign_span_fn(
                     storage.state_ptr(node_index),
                     region.state_field_offset,
@@ -978,8 +916,7 @@ namespace iv {
         OwnerIsConstructed&& owner_is_constructed)
     {
         for (auto const& region : storage.layout->regions) {
-            if ((region.kind != NodeLayout::Region::Kind::local_array &&
-                 region.kind != NodeLayout::Region::Kind::nested_node_states) ||
+            if (region.kind != NodeLayout::Region::Kind::local_array ||
                 region.owner_node == NodeLayout::no_owner_node ||
                 !owner_is_constructed(region.owner_node) ||
                 !region.assign_span_fn) {
@@ -989,37 +926,6 @@ namespace iv {
             void* data = storage.storage.get() + region.storage_offset;
             region.assign_span_fn(
                 state, region.state_field_offset, data, region.element_count);
-            if (region.kind != NodeLayout::Region::Kind::nested_node_states) {
-                continue;
-            }
-            auto const& assigned_span =
-                *reinterpret_cast<std::span<std::span<std::byte>> const*>(
-                    static_cast<std::byte*>(state) + region.state_field_offset);
-            if (assigned_span.size() != region.element_count) {
-                throw std::logic_error(
-                    "nested node span assignment failed for owner node " +
-                    std::to_string(region.owner_node) + " (expected count=" +
-                    std::to_string(region.element_count) + ", actual count=" +
-                    std::to_string(assigned_span.size()) + ")");
-            }
-            auto* nested_node_states = static_cast<std::span<std::byte>*>(data);
-            for (size_t i = 0; i < region.nested_node_indices.size(); ++i) {
-                auto const nested_node = region.nested_node_indices[i];
-                auto* nested_state =
-                    static_cast<std::byte*>(storage.state_ptr(nested_node));
-                IV_ASSERT(
-                    nested_state != nullptr,
-                    "nested child state pointer must resolve during storage initialization");
-                auto* steady_end = storage.storage.get()
-                    + storage.layout->steady_storage_size;
-                IV_ASSERT(
-                    nested_state <= steady_end,
-                    "nested child state lies outside steady node storage");
-                nested_node_states[i] = {
-                    nested_state,
-                    static_cast<size_t>(steady_end - nested_state),
-                };
-            }
         }
     }
 

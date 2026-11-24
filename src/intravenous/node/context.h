@@ -17,7 +17,6 @@
 #include <type_traits>
 #include <typeinfo>
 #include <utility>
-#include <vector>
 
 namespace iv {
     struct NodeLayoutBuilder;
@@ -121,11 +120,6 @@ namespace iv {
             NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
         void declare_local_array(
             NodeLayoutBuilder&, NodeLayoutArrayDeclaration const&);
-        size_t declare_nested_node_states(
-            NodeLayoutBuilder&, size_t node_index, ptrdiff_t state_field_offset);
-        void finalize_nested_node_states(
-            NodeLayoutBuilder&, size_t region_index,
-            std::vector<size_t> nested_node_indices);
         void declare_export_array(
             NodeLayoutBuilder&, std::string id,
             NodeLayoutArrayDeclaration const&);
@@ -149,7 +143,7 @@ namespace iv {
         // Completes an implicit move after the node's State was move-
         // constructed from its predecessor's: copies each local_array region
         // of the predecessor into the node's own, and points the State's
-        // local_array and nested-node spans back at the node's own regions.
+        // local_array spans back at the node's own regions.
         void move_node_storage_regions(
             NodeStorage& storage,
             size_t node_index,
@@ -309,9 +303,6 @@ namespace iv {
     template<typename Node>
     struct DeclarationContext
     {
-        template<typename>
-        friend struct DeclarationContext;
-
         using State = typename NodeRealtimeState<Node>::Type;
         using BackgroundState = typename NodeBackgroundState<Node>::Type;
 
@@ -324,8 +315,6 @@ namespace iv {
         size_t _node_index = 0;
         State const* _state_marker = nullptr;
         ReflectedNodePortRealization _ports {};
-        mutable std::vector<size_t> _direct_nested_node_indices;
-        mutable std::optional<size_t> _nested_nodes_region_index;
 
         FieldLocation field_location(void const* field) const
         {
@@ -452,26 +441,6 @@ namespace iv {
                     sizeof(BackgroundState),
                     alignof(BackgroundState));
             }
-        }
-
-        ~DeclarationContext()
-        {
-            if (_nested_nodes_region_index) {
-                details::finalize_nested_node_states(
-                    *_builder,
-                    *_nested_nodes_region_index,
-                    _direct_nested_node_indices);
-            }
-        }
-
-        template<typename Node2>
-        DeclarationContext(
-            DeclarationContext<Node2> const& ctx,
-            Node const& node,
-            ReflectedNodePortRealization ports)
-            : DeclarationContext<Node>(*ctx._builder, node, ports)
-        {
-            ctx._direct_nested_node_indices.push_back(_node_index);
         }
 
         template<std::size_t Index>
@@ -642,47 +611,6 @@ namespace iv {
                 *_builder, id, details::node_layout_type_token<A>());
         }
 
-        template<auto Member>
-        void nested_node_states() const
-        {
-            using Pointer = decltype(Member);
-            static_assert(std::is_member_object_pointer_v<Pointer>,
-                "nested_node_states requires a pointer to a State data member");
-            using MemberInfo = details::NodeStateMemberPointer<Pointer>;
-            static_assert(std::same_as<typename MemberInfo::owner_type, State>,
-                "nested_node_states member must belong directly to Node::State");
-            static_assert(std::same_as<
-                std::remove_cv_t<typename MemberInfo::member_type>,
-                std::span<std::span<std::byte>>>,
-                "nested_node_states requires a std::span<std::span<std::byte>> State member");
-            IV_ASSERT(
-                !_nested_nodes_region_index.has_value(),
-                "nested_node_states must only be declared once per node");
-            _nested_nodes_region_index = details::declare_nested_node_states(
-                *_builder,
-                _node_index,
-                details::node_layout_field_offset(
-                    _state_marker,
-                    std::addressof(_state_marker->*Member)));
-        }
-
-        void declare_reflected_child(
-            void const* node_data,
-            NodeStateStructures const* state_structures,
-            size_t (*declare)(
-                void const*,
-                NodeStateStructures const*,
-                NodeLayoutBuilder&,
-                ReflectedNodePortRealization const&),
-            ReflectedNodePortRealization const& ports) const
-        {
-            IV_ASSERT(node_data, "reflected child node data cannot be null");
-            IV_ASSERT(
-                declare, "reflected child declaration callback cannot be null");
-            _direct_nested_node_indices.push_back(
-                declare(node_data, state_structures, *_builder, ports));
-        }
-
         size_t max_block_size() const
             requires (!details::has_tock_family_v<Node>)
         {
@@ -698,11 +626,6 @@ namespace iv {
         size_t node_index() const
         {
             return _node_index;
-        }
-
-        size_t pending_direct_nested_node_count() const
-        {
-            return _direct_nested_node_indices.size();
         }
     };
 

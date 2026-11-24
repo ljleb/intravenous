@@ -1528,7 +1528,6 @@ lowering guards or incomplete runtime scheduling semantics.
 
 This front owns, among other remaining gaps:
 
-- nested declarations;
 - declared arrays/auxiliary/compiler-owned regions;
 - remaining external-storage layout forms;
 - activity/TTL semantics;
@@ -1538,6 +1537,10 @@ This front owns, among other remaining gaps:
 - moving background-only `TockState` out of canonical realtime `NodeStorage`;
 - normalized block replayability based on semantic requirements rather than whether
   the source author happened to write `tick()`.
+
+The owner removed the [nested declaration API](historical/nested_node_declarations_2026-11-24.md)
+on 2026-11-24. GraphJit now consumes a single layout record per primitive.
+The dated entries below retain the earlier implementation history.
 
 Replayability should eventually be decided from the normalized `do_tick_block()` plus
 resolved state/history/latency/pace facts. A native `tick_block()` or batch-only node

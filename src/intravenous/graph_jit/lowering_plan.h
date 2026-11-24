@@ -77,15 +77,9 @@ struct LiveTickCoverageHistoryPlan {
 };
 
 struct DeclarationPlan {
+    // Both layouts and the storage plan are indexed in primitive order.
     NodeLayout node_layout{};
     TockStateLayout tock_state_layout{};
-    // Top-level graph primitive index -> canonical layout node index. Nested
-    // declarations occupy their own layout records and deliberately do not
-    // enter graph execution/configuration namespaces.
-    std::vector<std::size_t> primitive_layout_nodes{};
-    // Realtime primitive storage remains indexed independently from the
-    // sidecar so later lowering can add synthetic/layout-only nodes without
-    // coupling execution-step identity to canonical layout record order.
     std::vector<PrimitiveStoragePlan> primitive_storage{};
     // Entry positions match the primitive namespace. A missing entry means
     // TTL is disabled and the realtime root pays no activity cost.

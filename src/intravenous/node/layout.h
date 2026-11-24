@@ -39,7 +39,6 @@ namespace iv {
             enum class Kind {
                 state,
                 local_array,
-                nested_node_states,
                 raw,
             };
 
@@ -52,7 +51,7 @@ namespace iv {
             size_t element_count = 0;
             // Transition-only regions are a contiguous suffix of NodeStorage.
             // They are addressed by prepared transition roots, never treated as
-            // authored/nested steady state, and never migrated by raw identity.
+            // authored steady state, and never migrated by raw identity.
             bool transition_only = false;
             // Optional stable identity for compiler-owned raw regions whose
             // bytes are semantic persistent state rather than scratch. Exact-
@@ -71,7 +70,6 @@ namespace iv {
             void (*assign_span_fn)(
                 void* state_base, ptrdiff_t field_offset, void* data,
                 size_t count) = nullptr;
-            std::vector<size_t> nested_node_indices;
         };
 
         struct ArrayBinding {
@@ -239,10 +237,6 @@ namespace iv {
             NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::declare_local_array(
             NodeLayoutBuilder&, details::NodeLayoutArrayDeclaration const&);
-        friend size_t details::declare_nested_node_states(
-            NodeLayoutBuilder&, size_t, ptrdiff_t);
-        friend void details::finalize_nested_node_states(
-            NodeLayoutBuilder&, size_t, std::vector<size_t>);
         friend void details::declare_export_array(
             NodeLayoutBuilder&, std::string,
             details::NodeLayoutArrayDeclaration const&);

@@ -209,13 +209,6 @@ namespace {
         }
     };
 
-    struct NestedLeaf {
-        struct State {
-            int marker = 17;
-        };
-
-    };
-
     struct StatelessMover {
         static inline int moves = 0;
 
@@ -301,21 +294,6 @@ namespace {
         void release(iv::ReleaseContext<DifferentTypeSameIdentity> const& ctx) const
         {
             ctx.state().released += 1;
-        }
-    };
-
-    struct NestedParent {
-        struct State {
-            std::span<std::span<std::byte>> nested;
-        };
-
-        void declare(iv::DeclarationContext<NestedParent> const& ctx) const
-        {
-            NestedLeaf a;
-            NestedLeaf b;
-            do_declare(a, ctx, {});
-            do_declare(b, ctx, {});
-            ctx.nested_node_states<&State::nested>();
         }
     };
 
@@ -1105,7 +1083,7 @@ int main(int, char** argv)
 
     {
         iv::NodeLayoutBuilder steady_builder(4);
-        NestedParent node;
+        LocalOnly node;
         iv::do_declare(node, steady_builder, {});
         auto steady_layout = std::move(steady_builder).build();
         auto const steady_size = steady_layout.storage_size;
@@ -1141,9 +1119,8 @@ int main(int, char** argv)
 
     {
         iv::NodeLayoutBuilder builder(4);
-        NestedParent node;
+        LocalOnly node;
         iv::do_declare(node, builder, {});
-        auto tock_layout = builder.build_tock_state_layout();
         auto initialize_transition = +[](
             std::span<std::byte> storage,
             std::span<std::byte const>) {
@@ -1178,34 +1155,11 @@ int main(int, char** argv)
             steady_storage.region_bytes(transition).empty(),
             "steady-only storage must not expose transition-only region bytes");
         steady_storage.initialize();
-        auto tock_states = tock_layout.create_storage(resources);
-        tock_states.initialize();
-
-        auto& state = *static_cast<NestedParent::State*>(storage.state_ptr(0));
-        iv::test::require(state.nested.size() == 2, "nested_node_states should record directly declared child nodes");
-        iv::test::require(state.nested[0].data() != nullptr, "first nested node state pointer should be patched");
-        iv::test::require(state.nested[1].data() != nullptr, "second nested node state pointer should be patched");
-        auto* steady_end = storage.buffer().data() + layout.steady_storage_size;
-        iv::test::require(
-            state.nested[0].data() + state.nested[0].size() == steady_end,
-            "first nested node state should stop at the steady-storage boundary");
-        iv::test::require(
-            state.nested[1].data() + state.nested[1].size() == steady_end,
-            "second nested node state should stop at the steady-storage boundary");
-        auto& steady_state = *static_cast<NestedParent::State*>(
+        auto& steady_state = *static_cast<LocalOnly::State*>(
             steady_storage.state_ptr(0));
-        auto* steady_allocation_end = steady_storage.buffer().data()
-            + steady_storage.buffer().size();
         iv::test::require(
-            steady_state.nested[0].data() + steady_state.nested[0].size()
-                == steady_allocation_end,
-            "nested node state should fit exactly inside steady-only storage");
-        auto& first = *reinterpret_cast<NestedLeaf::State*>(state.nested[0].data());
-        auto& second = *reinterpret_cast<NestedLeaf::State*>(state.nested[1].data());
-        iv::test::require(first.marker == 17, "first nested node state should be addressable");
-        iv::test::require(second.marker == 17, "second nested node state should be addressable");
-        iv::test::require(tock_states.state_ptr(1) == nullptr && tock_states.state_ptr(2) == nullptr,
-            "declaration-only nested state must not allocate a background duplicate");
+            steady_state.scratch.size() == 3 && steady_state.scratch[2] == 20,
+            "steady-only storage should initialize its local arrays");
     }
 
     return 0;

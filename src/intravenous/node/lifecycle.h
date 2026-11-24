@@ -4,13 +4,13 @@
 #include <intravenous/node/tick.h>
 
 namespace iv {
-    template<typename Node, typename Ctx>
+    template<typename Node>
     constexpr void do_declare(
         Node const& node,
-        Ctx& ctx,
+        NodeLayoutBuilder& builder,
         ReflectedNodePortRealization ports)
     {
-        DeclarationContext<Node> node_ctx(ctx, node, ports);
+        DeclarationContext<Node> node_ctx(builder, node, ports);
         if constexpr (details::has_declare<Node>)
         {
             node.declare(node_ctx);

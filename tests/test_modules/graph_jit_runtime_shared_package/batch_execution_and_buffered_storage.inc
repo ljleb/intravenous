@@ -483,35 +483,22 @@ void event_activity_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
-struct DeclarationLayoutLeaf {
-    struct State {
-        std::uint64_t marker = 17;
-    };
-};
-
-struct DeclarationLayoutParent {
+struct DeclarationLayoutLocal {
     struct State {
         std::span<std::uint64_t> local;
-        std::span<std::span<std::byte>> nested;
         std::uint64_t calls = 0;
         std::uint64_t local_sum = 0;
-        std::uint64_t nested_sum = 0;
     };
 
     static constexpr auto inputs() { return std::tuple{}; }
     static constexpr auto outputs() { return std::tuple{}; }
 
-    void declare(iv::DeclarationContext<DeclarationLayoutParent> const& ctx) const
+    void declare(iv::DeclarationContext<DeclarationLayoutLocal> const& ctx) const
     {
         ctx.local_array<&State::local>(3);
-        DeclarationLayoutLeaf first;
-        DeclarationLayoutLeaf second;
-        do_declare(first, ctx, {});
-        do_declare(second, ctx, {});
-        ctx.nested_node_states<&State::nested>();
     }
 
-    void initialize(iv::InitializationContext<DeclarationLayoutParent> const& ctx) const
+    void initialize(iv::InitializationContext<DeclarationLayoutLocal> const& ctx) const
     {
         auto& state = ctx.state();
         state.local[0] = 2;
@@ -519,17 +506,11 @@ struct DeclarationLayoutParent {
         state.local[2] = 5;
     }
 
-    void tick_block(iv::TickBlockContext<DeclarationLayoutParent> const& ctx) const
+    void tick_block(iv::TickBlockContext<DeclarationLayoutLocal> const& ctx) const
     {
         auto& state = ctx.state();
         ++state.calls;
         state.local_sum = state.local[0] + state.local[1] + state.local[2];
-        state.nested_sum = 0;
-        for (auto const child : state.nested) {
-            state.nested_sum +=
-                reinterpret_cast<DeclarationLayoutLeaf::State const*>(
-                    child.data())->marker;
-        }
     }
 };
 
@@ -824,7 +805,7 @@ struct PersistedNonProjectRateSampleProducer {
 
 void declaration_layout_module(iv::GraphBuilder& graph)
 {
-    (void)graph.node<"iv.test.graph_jit.state_context.declaration_layout_parent">();
+    (void)graph.node<"iv.test.graph_jit.state_context.declaration_layout_local">();
     (void)graph.node<"iv.test.graph_jit.state_context.declaration_layout_producer">();
     (void)graph.node<"iv.test.graph_jit.state_context.declaration_layout_consumer">();
     graph.outputs();

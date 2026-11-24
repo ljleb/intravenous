@@ -262,12 +262,10 @@ The governing performance invariant is:
    allocate Tock state; those notes remain above as provenance for the transition and
    lifecycle decisions.
 
-   **Front 7 declaration-layout follow-up implemented in source (2026-10-21; human
-   verification pending):** nested declarations and authored local/shared arrays now
-   use the existing packed `NodeLayout` storage path. A top-level primitive map keeps
-   nested records separate from graph primitives. Lowering resolves the map and emits
-   final state offsets. No callback performs a map lookup. Shared-array dependency
-   ordering and span patching remain cold initialization work.
+   **Declaration layout (2026-11-24).** Each primitive gets one record in the
+   packed `NodeLayout`. Lowering emits its final state offset directly. Local
+   and shared arrays retain their declaration and initialization paths.
+   See the [earlier nested declaration layout](historical/nested_node_declarations_2026-11-24.md).
 
    **Front 7 activity follow-up implemented in source (2026-10-21; human verification
    pending):** TTL is disabled unless a node instance or node type enables it. Disabled

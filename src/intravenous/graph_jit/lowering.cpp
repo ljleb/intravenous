@@ -2685,8 +2685,7 @@ std::expected<LoweringOutput, std::string> emit_lowering_plan(
     for (std::size_t primitive = 0; primitive < plan.imports.primitive_callbacks.size(); ++primitive) {
         auto const& callback = plan.imports.primitive_callbacks[primitive];
         if (callback.tick_block.empty()) continue;
-        auto const& node =
-            plan.declarations.node_layout.nodes[plan.declarations.primitive_layout_nodes[primitive]];
+        auto const& node = plan.declarations.node_layout.nodes[primitive];
         if (node.state_size != 0)
             observable_tick_states.push_back({callback.bundle,
                 static_cast<std::size_t>(node.state_offset), node.state_size});

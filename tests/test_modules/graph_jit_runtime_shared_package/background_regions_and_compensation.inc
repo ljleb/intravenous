@@ -640,7 +640,7 @@ IV_NODE("iv.test.graph_jit.state_context.activity_probe", ActivityProbe, "Activi
 IV_NODE("iv.test.graph_jit.state_context.activity_type_default_probe", ActivityTypeDefaultProbe, "Activity type default probe");
 IV_NODE("iv.test.graph_jit.state_context.event_activity_step_source", EventActivityStepSource, "Event activity step source");
 IV_NODE("iv.test.graph_jit.state_context.event_activity_probe", EventActivityProbe, "Event activity probe");
-IV_NODE("iv.test.graph_jit.state_context.declaration_layout_parent", DeclarationLayoutParent, "Declaration layout parent");
+IV_NODE("iv.test.graph_jit.state_context.declaration_layout_local", DeclarationLayoutLocal, "Declaration layout local");
 IV_NODE("iv.test.graph_jit.state_context.declaration_layout_producer", DeclarationLayoutProducer, "Declaration layout producer");
 IV_NODE("iv.test.graph_jit.state_context.declaration_layout_consumer", DeclarationLayoutConsumer, "Declaration layout consumer");
 IV_NODE("iv.test.graph_jit.state_context.fft_value_producer", FFTValueProducer, "FFT value producer");

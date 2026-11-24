@@ -385,8 +385,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         };
     }
 
-    std::vector<std::size_t> declared_node_indices;
-    declared_node_indices.reserve(analysis.primitives.size());
     for (auto const& primitive : analysis.primitives) {
         auto const& implementation = *primitive.implementation;
         auto const bundle = primitive.bundle.node_bundle;
@@ -430,16 +428,17 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             .inputs = inputs,
             .outputs = outputs,
         };
-        auto const first_declared_node = layout_builder.node_count();
+        auto const expected_node_index = layout_builder.node_count();
         auto const node_index = implementation.declare_node(
             implementation.node_data,
             implementation.state_structures,
             layout_builder,
             reflected_ports);
-        declared_node_indices.push_back(node_index);
+        if (node_index != expected_node_index
+            || layout_builder.node_count() != expected_node_index + 1) {
+            return std::unexpected("GraphJit declaration must register one layout node per primitive");
+        }
 
-        // Authored identity can span configurations. A configured bundle
-        // coordinate, including its owned declarations, is snapshot-local.
         auto const planned = std::ranges::find(
             connections.nodes, bundle, &PlannedGraphNode::bundle);
         if (planned == connections.nodes.end()) {
@@ -450,14 +449,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             auto const identity = "graphjit.node:" + migration_identity_fields(*planned->stable_identity);
             layout_builder.set_node_migration_identity(
                 node_index, identity);
-            if (input.configured_bundles.snapshot) {
-                for (auto child = first_declared_node; child < layout_builder.node_count(); ++child) {
-                    if (child == node_index) continue;
-                    layout_builder.set_node_migration_identity(child, identity
-                        + ":snapshot=" + std::to_string(input.configured_bundles.snapshot)
-                        + ":declaration=" + std::to_string(child - first_declared_node));
-                }
-            }
         }
     }
 
@@ -976,18 +967,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
 
     auto tock_state_layout = layout_builder.build_tock_state_layout();
     auto node_layout = std::move(layout_builder).build();
-    if (declared_node_indices.size() != analysis.primitives.size()
+    if (node_layout.nodes.size() != analysis.primitives.size()
         || tock_state_layout.nodes.size() != node_layout.nodes.size()) {
         return std::unexpected(
-            "GraphJit declaration layout lost its top-level primitive mapping");
-    }
-    std::vector<bool> mapped_layout_nodes(node_layout.nodes.size(), false);
-    for (auto const node : declared_node_indices) {
-        if (node >= node_layout.nodes.size() || mapped_layout_nodes[node]) {
-            return std::unexpected(
-                "GraphJit declaration returned an invalid top-level layout node");
-        }
-        mapped_layout_nodes[node] = true;
+            "GraphJit declaration layouts disagree with the primitive inventory");
     }
     auto sample_storage_owns_region =
         [&](std::size_t region_index) {
@@ -1010,8 +993,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
          ++region_index) {
         auto const& region = node_layout.regions[region_index];
         if (region.kind == NodeLayout::Region::Kind::state
-            || region.kind == NodeLayout::Region::Kind::local_array
-            || region.kind == NodeLayout::Region::Kind::nested_node_states) {
+            || region.kind == NodeLayout::Region::Kind::local_array) {
             continue;
         }
         auto const event_storage_owns_region = std::ranges::any_of(
@@ -1162,7 +1144,6 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     DeclarationPlan plan{
         .node_layout = std::move(node_layout),
         .tock_state_layout = std::move(tock_state_layout),
-        .primitive_layout_nodes = std::move(declared_node_indices),
         .primitive_activity = std::move(primitive_activity),
         .activity_frontiers = std::move(activity_frontiers),
         .live_coverage_histories = std::move(live_histories),
@@ -1224,9 +1205,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
     plan.primitive_storage.reserve(analysis.primitives.size());
     for (std::size_t i = 0; i < analysis.primitives.size(); ++i) {
         auto const& implementation = *analysis.primitives[i].implementation;
-        auto const layout_node = plan.primitive_layout_nodes[i];
-        auto const& node_record = plan.node_layout.nodes[layout_node];
-        auto const& tock_record = plan.tock_state_layout.nodes[layout_node];
+        auto const& node_record = plan.node_layout.nodes[i];
+        auto const& tock_record = plan.tock_state_layout.nodes[i];
         if (node_record.state_size != implementation.state_size
             || node_record.state_alignment != implementation.state_alignment
             || tock_record.state_size != implementation.background_state_size
@@ -4218,14 +4198,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
                 node.tock_state_node.reset();
                 continue;
             }
-            auto const primitive_index = static_cast<std::size_t>(
+            node.tock_state_node = static_cast<std::size_t>(
                 std::distance(analysis->primitives.begin(), primitive));
-            if (primitive_index >= declarations->primitive_layout_nodes.size()) {
-                return std::unexpected(
-                    "background Tock node lost its top-level layout mapping");
-            }
-            node.tock_state_node =
-                declarations->primitive_layout_nodes[primitive_index];
         }
 
         auto realtime_port_state_realizations =

@@ -98,18 +98,11 @@ struct NativeBatchActivityProbeStateMirror {
     std::uint64_t skip_lane_total = 0;
 };
 
-struct DeclarationLayoutParentStateMirror {
+struct DeclarationLayoutLocalStateMirror {
     std::span<std::uint64_t> local;
-    std::span<std::span<std::byte>> nested;
     std::uint64_t calls = 0;
     std::uint64_t local_sum = 0;
-    std::uint64_t nested_sum = 0;
 };
-
-struct DeclarationLayoutLeafStateMirror {
-    std::uint64_t marker = 0;
-};
-
 
 struct DeclarationLayoutProducerStateMirror {
     std::span<std::uint64_t> values;
@@ -455,7 +448,7 @@ TEST(GraphJitSharedRuntimeFixture, BuildPackage)
 
 TEST_F(
     GraphJitRuntimeFixture,
-    DeclarationOwnedStorageAndNestedNodesPreservePrimitiveStateMapping)
+    DeclarationOwnedLocalAndSharedStorageIsAvailableToPrimitives)
 {
     auto compiled = compile(graph_jit_declaration_layout_module_id, 105);
     ASSERT_TRUE(compiled.succeeded())
@@ -466,49 +459,37 @@ TEST_F(
 
     auto const& layout = compiled.compiled_graph->node_layout;
     auto const& tock_layout = compiled.compiled_graph->tock_state_layout;
-    ASSERT_EQ(layout.nodes.size(), 5u);
-    ASSERT_EQ(tock_layout.nodes.size(), 5u);
+    ASSERT_EQ(layout.nodes.size(), 3u);
+    ASSERT_EQ(tock_layout.nodes.size(), layout.nodes.size());
 
     auto storage = layout.create_storage(resources);
     storage.initialize();
     auto tock_states = tock_layout.create_storage(resources);
     tock_states.initialize();
 
-    auto* parent = static_cast<DeclarationLayoutParentStateMirror*>(
+    auto* local = static_cast<DeclarationLayoutLocalStateMirror*>(
         storage.state_ptr(0));
     auto* producer = static_cast<DeclarationLayoutProducerStateMirror*>(
-        storage.state_ptr(3));
+        storage.state_ptr(1));
     auto* consumer = static_cast<DeclarationLayoutConsumerStateMirror*>(
-        storage.state_ptr(4));
-    ASSERT_NE(parent, nullptr);
+        storage.state_ptr(2));
+    ASSERT_NE(local, nullptr);
     ASSERT_NE(producer, nullptr);
     ASSERT_NE(consumer, nullptr);
-    ASSERT_EQ(parent->local.size(), 3u);
-    ASSERT_EQ(parent->nested.size(), 2u);
+    ASSERT_EQ(local->local.size(), 3u);
     ASSERT_EQ(producer->values.size(), 3u);
     ASSERT_EQ(consumer->imported.size(), 3u);
     EXPECT_EQ(consumer->imported.data(), producer->values.data());
     EXPECT_EQ(consumer->initialize_sum, 41u);
 
-    auto const* first_leaf =
-        reinterpret_cast<DeclarationLayoutLeafStateMirror const*>(
-            parent->nested[0].data());
-    auto const* second_leaf =
-        reinterpret_cast<DeclarationLayoutLeafStateMirror const*>(
-            parent->nested[1].data());
-    ASSERT_NE(first_leaf, nullptr);
-    ASSERT_NE(second_leaf, nullptr);
-    EXPECT_EQ(first_leaf->marker, 17u);
-    EXPECT_EQ(second_leaf->marker, 17u);
-
+    EXPECT_EQ(tock_states.state_ptr(0), nullptr);
     EXPECT_EQ(tock_states.state_ptr(1), nullptr);
     EXPECT_EQ(tock_states.state_ptr(2), nullptr);
 
     compiled.compiled_graph->root_operations.tick_block(
         storage.buffer().data(), &empty_tick_invocation, index(7), 16);
-    EXPECT_EQ(parent->calls, 1u);
-    EXPECT_EQ(parent->local_sum, 10u);
-    EXPECT_EQ(parent->nested_sum, 34u);
+    EXPECT_EQ(local->calls, 1u);
+    EXPECT_EQ(local->local_sum, 10u);
     EXPECT_EQ(producer->calls, 1u);
     EXPECT_EQ(consumer->calls, 1u);
     EXPECT_EQ(consumer->tick_sum, 41u);
