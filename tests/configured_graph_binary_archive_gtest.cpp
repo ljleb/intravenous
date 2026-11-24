@@ -88,12 +88,14 @@ struct ArchiveFixture {
         auto const alias = source;
         alias._annotate_source_info("archive-source-alias", "/tmp/archive-module.cpp",
             3, 4, "alias", 2, true, true);
+        auto const projection = alias[std::size_t{0}];
+        projection._annotate_source_info("archive-port", "/tmp/archive-module.cpp", 5, 6);
         auto const source_handle = source.node_bundle_handle();
         auto const pass = iv::details::configure_concrete_node<Pass>(graph);
         pass(gain);
         pass._annotate_input_source_info(
             PortKind::sample, "", "archive-pass", "/tmp/archive-module.cpp", 10, 18);
-        graph.outputs("gain_out"_P = pass, "main"_P = source);
+        graph.outputs("gain_out"_P = pass, "main"_P = projection);
 
         auto configured = std::move(graph).finish();
         configured.node_bundles.set_registered_node_type_identity(
@@ -143,6 +145,16 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     auto const& alias = decoded.symbolic_nodes.record(occurrences[1].symbolic_node_handle);
     EXPECT_EQ(alias.source_identity, "archive-source-alias");
     EXPECT_FALSE(alias.has_lane());
+    auto const& records = decoded.symbolic_nodes.records();
+    auto const projection = std::ranges::find(records, "archive-port", &iv::SymbolicNodeRecord::source_identity);
+    ASSERT_NE(projection, records.end());
+    ASSERT_EQ(projection->sample_output_routes.size(), 1u);
+    ASSERT_EQ(projection->sample_output_routes[0].size(), 1u);
+    auto const route = projection->sample_output_routes[0][0];
+    EXPECT_EQ(route.node_ref_occurrence, 1u);
+    auto const main = decoded.connections.configured_sample_connections().back().source_channels.front();
+    EXPECT_EQ(main.node_ref_occurrence, route.node_ref_occurrence);
+    EXPECT_EQ(main.channel, route.channel);
 
     auto const symbolic_record = std::ranges::find_if(
         decoded.symbolic_nodes.records(),
@@ -190,7 +202,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     EXPECT_THROW(fixture.decode(corrupt), std::runtime_error);
 
     auto previous_version = fixture.archive.bytes;
-    auto const obsolete_version = std::uint32_t{4};
+    auto const obsolete_version = std::uint32_t{5};
     std::memcpy(previous_version.data() + sizeof(std::uint32_t),
         &obsolete_version, sizeof(obsolete_version));
     EXPECT_THROW(fixture.decode(previous_version), std::runtime_error);

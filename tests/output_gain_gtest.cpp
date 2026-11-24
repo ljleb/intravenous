@@ -1,6 +1,8 @@
 #include <intravenous/graph_jit/output_gain.h>
 #include <intravenous/graph_jit/output_gain_execution.h>
 #include <intravenous/basic_nodes/output_gain.h>
+#include <intravenous/basic_nodes/constant.h>
+#include <intravenous/dsl.h>
 #include <intravenous/project/node_instance_interface.h>
 #include <gtest/gtest.h>
 
@@ -58,10 +60,10 @@ TEST(OutputGain, SymbolicGainNeedsAConsumerOrAnObservation)
     EXPECT_TRUE(expand_output_gains(graph, gain_definitions()).stages.empty());
     EXPECT_TRUE(graph.connections.configured_sample_connections().empty());
 
-    std::array observed{SampleOutputChannelId{0, 0, 0}};
+    std::array observed{SampleOutputRoute{{0, 0, 0}}};
     auto expanded = expand_output_gains(visible, gain_definitions(), observed);
     ASSERT_EQ(expanded.stages.size(), 1u);
-    EXPECT_EQ(expanded.routed_source(visible.node_bundles, observed.front()).bundle, expanded.stages.front().bundle);
+    EXPECT_EQ(expanded.routed_source(visible.node_bundles, observed.front().channel).bundle, expanded.stages.front().bundle);
 }
 
 TEST(OutputGain, OneTransformFeedsAllConsumersAndItsIngressKeepsTheRawSource)
@@ -107,6 +109,75 @@ TEST(OutputGain, InteractiveUnityHasAControlButPreparationFreezesItsValue)
     ASSERT_EQ(expand_output_gains(prepared, gain_definitions()).stages.size(), 1u);
     EXPECT_FALSE(prepared.manual_controls[0].dynamic);
     EXPECT_EQ(prepared.manual_controls[0].settled_value, Sample{.25f});
+}
+
+ConfiguredGraph forwarded_gain_graph(bool tap, bool live, bool repeated = false)
+{
+    GraphBuilder builder;
+    auto const osc = details::configure_concrete_node<Constant>(builder, Sample{1});
+    osc._annotate_source_info("osc", "/tmp/forwarded-gain.cpp", 0, 1);
+    auto const trimmed = osc;
+    trimmed._annotate_source_info("trimmed", "/tmp/forwarded-gain.cpp", 2, 3);
+    if (repeated) {
+        auto const forwarded = trimmed;
+        forwarded._annotate_source_info("osc", "/tmp/forwarded-gain.cpp", 0, 1);
+        builder.outputs("final"_P = forwarded);
+    } else if (tap) builder.outputs("tap"_P = osc, "final"_P = trimmed);
+    else builder.outputs("final"_P = trimmed);
+    auto graph = std::move(builder).finish();
+    auto const source = osc.node_bundle_handle();
+    auto const name = graph.node_bundles.resolve_sample_output({source, PortKind::sample, 0}).config.name;
+    for (auto symbol : {0u, 1u}) {
+        auto const& record = graph.symbolic_nodes.record(symbol);
+        graph.manual_controls.push_back({
+            .id = {.node = {.instance_id = "forwarded", .path = {ProjectSymbolicNodeSelector{.source_identity = record.source_identity}}},
+                .port_name = name, .kind = ManualControlKind::output_gain},
+            .settled_value = symbol == 0 ? Sample{2} : Sample{3},
+            .dynamic = live && symbol == 1,
+            .output = NodeBundlePortId{source, PortKind::sample, 0}, .output_symbolic_node = symbol});
+    }
+    return graph;
+}
+
+TEST(OutputGain, IntermediateTapKeepsBothStagesOnTheSameConcreteOutput)
+{
+    auto graph = forwarded_gain_graph(true, false);
+    auto expanded = expand_output_gains(graph, gain_definitions());
+    ASSERT_EQ(expanded.stages.size(), 2u);
+    auto const& first = expanded.stages[0];
+    auto const& second = expanded.stages[1];
+    EXPECT_EQ(first.source, second.source);
+    EXPECT_EQ(first.configuration->gain, Sample{2});
+    EXPECT_EQ(second.configuration->gain, Sample{3});
+    EXPECT_NE(first.route_identity, second.route_identity);
+    auto const wires = graph.connections.configured_sample_connections();
+    ASSERT_EQ(wires.size(), 4u);
+    EXPECT_EQ(wires[0].source_channels.front().channel.bundle, first.bundle);
+    EXPECT_EQ(wires[1].source_channels.front().channel.bundle, second.bundle);
+    EXPECT_EQ(wires[2].source_channels.front().channel.bundle, first.source.node_bundle_handle);
+    EXPECT_EQ(wires[3].source_channels.front().channel.bundle, first.bundle);
+    EXPECT_EQ(wires[3].target_channels.front().bundle, second.bundle);
+}
+
+TEST(OutputGain, UntappedSettledChainFoldsAndLiveKnobKeepsItsOwnStage)
+{
+    auto settled = forwarded_gain_graph(false, false);
+    auto folded = expand_output_gains(settled, gain_definitions());
+    ASSERT_EQ(folded.stages.size(), 1u);
+    EXPECT_EQ(folded.stages[0].configuration->gain, Sample{6});
+
+    auto live = forwarded_gain_graph(false, true);
+    auto expanded = expand_output_gains(live, gain_definitions());
+    ASSERT_EQ(expanded.stages.size(), 2u);
+    auto const binding = std::ranges::find(live.manual_controls, true, &ConfiguredManualControl::dynamic);
+    ASSERT_NE(binding, live.manual_controls.end());
+    EXPECT_EQ(binding->input.node_bundle_handle, expanded.stages[1].bundle);
+    EXPECT_EQ(binding->settled_value, Sample{3});
+
+    auto repeated = forwarded_gain_graph(false, false, true);
+    auto repeated_gain = expand_output_gains(repeated, gain_definitions());
+    ASSERT_EQ(repeated_gain.stages.size(), 1u);
+    EXPECT_EQ(repeated_gain.stages[0].configuration->gain, Sample{6});
 }
 
 TEST(OutputGain, CoverageGainUsesTickOnlyUntilAnAuthoredConsumerNeedsBackgroundPreparation)

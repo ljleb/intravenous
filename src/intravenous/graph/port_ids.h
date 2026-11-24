@@ -3,6 +3,7 @@
 #include <intravenous/ports.h>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 
 namespace iv {
@@ -45,6 +46,12 @@ struct SampleOutputChannelId {
   size_t port = 0;
   size_t channel = 0;
   bool operator==(SampleOutputChannelId const &) const = default;
+};
+
+struct SampleOutputRoute {
+  SampleOutputChannelId channel{};
+  std::optional<std::size_t> node_ref_occurrence{};
+  bool operator==(SampleOutputRoute const&) const = default;
 };
 
 struct SampleInputChannelId {

@@ -392,9 +392,9 @@ try {
     throw;
 }
 SamplePortRef iv_builder_sample_port_from_output(
-    BuilderSession* value, NodeBundlePortId port)
+    BuilderSession* value, NodeBundlePortId port, std::optional<std::size_t> occurrence)
 try {
-    return session(value).sample_port_from_output(port);
+    return session(value).sample_port_from_output(port, occurrence);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});

@@ -423,7 +423,7 @@ std::expected<void, std::string> inventory_nodes(
                 stable_identity = identity_for_port_node(current, input, PortDirection::input,
                     graph.node_bundles.resolve_sample_input(input).config.name);
             }
-            if (view.output_gain_source) {
+            if (view.output_gain_source && !stable_identity) {
                 auto const source = *view.output_gain_source;
                 if (auto derived = identity_for_port_node(current, source, PortDirection::output,
                         graph.node_bundles.resolve_sample_output(source).config.name))

@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 5;
+inline constexpr std::uint32_t archive_version = 6;
 
 class Writer {
 public:
@@ -816,6 +816,20 @@ inline SymbolicEventPortMapping read_symbolic_event(Reader& r)
         .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
 }
 
+inline void write_sample_output_route(Writer& w, SampleOutputRoute const& route)
+{
+    write_output_channel(w, route.channel);
+    w.flag(route.node_ref_occurrence.has_value());
+    if (route.node_ref_occurrence) w.size(*route.node_ref_occurrence);
+}
+
+inline SampleOutputRoute read_sample_output_route(Reader& r)
+{
+    SampleOutputRoute route{.channel = read_output_channel(r)};
+    if (r.flag()) route.node_ref_occurrence = r.size();
+    return route;
+}
+
 inline void write_symbolic_node(Writer& w, SymbolicNodeRecord const& value)
 {
     w.string(value.id); w.string(value.source_identity); w.string(value.type_identity); write_source_infos(w, value.source_infos);
@@ -824,6 +838,9 @@ inline void write_symbolic_node(Writer& w, SymbolicNodeRecord const& value)
     w.list(value.sample_outputs, [&](auto const& value) { write_symbolic_sample(w, value, write_output_channel); });
     w.list(value.event_inputs, [&](auto const& value) { write_symbolic_event(w, value); });
     w.list(value.event_outputs, [&](auto const& value) { write_symbolic_event(w, value); });
+    w.list(value.sample_output_routes, [&](auto const& expression) {
+        write_values<SampleOutputRoute>(w, expression, write_sample_output_route);
+    });
 }
 
 inline SymbolicNodeRecord read_symbolic_node(Reader& r)
@@ -834,6 +851,9 @@ inline SymbolicNodeRecord read_symbolic_node(Reader& r)
     result.sample_outputs = read_list<SymbolicSampleOutputPortMapping>(r, [&] { return read_symbolic_sample<SampleOutputChannelId>(r, read_output_channel); });
     result.event_inputs = read_list<SymbolicEventPortMapping>(r, [&] { return read_symbolic_event(r); });
     result.event_outputs = read_list<SymbolicEventPortMapping>(r, [&] { return read_symbolic_event(r); });
+    result.sample_output_routes = read_list<std::vector<SampleOutputRoute>>(r, [&] {
+        return read_values<SampleOutputRoute>(r, read_sample_output_route);
+    });
     return result;
 }
 
@@ -971,7 +991,7 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
     writer.list(samples, [&](ConfiguredSampleConnection const& value) {
         write_enum(writer, value.source_type);
         writer.list(value.source_channels, [&](auto const& source) {
-            write_output_channel(writer, source.channel);
+            write_sample_output_route(writer, {source.channel, source.node_ref_occurrence});
             writer.flag(source.detach.has_value());
             if (!source.detach) return;
             writer.size(source.detach->loop_extra_latency);
@@ -1167,8 +1187,9 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         };
         result.source_channels = read_list<ConfiguredSampleConnectionSource>(
             reader, [&] {
+                auto const route = read_sample_output_route(reader);
                 ConfiguredSampleConnectionSource source{
-                    .channel = read_output_channel(reader),
+                    .channel = route.channel, .node_ref_occurrence = route.node_ref_occurrence,
                 };
                 if (!reader.flag()) return source;
                 ConfiguredSampleConnectionDetach detach{
@@ -1225,6 +1246,19 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
                 throw std::runtime_error("configured graph archive has an invalid NodeRef occurrence");
         }
     }
+    auto const validate_occurrence = [&](SampleOutputChannelId channel, std::optional<std::size_t> occurrence) {
+        if (occurrence && (channel.bundle >= bundles.size()
+                || *occurrence >= bundles[channel.bundle].node_ref_occurrences.size())) {
+            throw std::runtime_error("configured graph archive has an invalid sample output occurrence");
+        }
+    };
+    for (auto const& connection : sample_connections)
+        for (auto const& source : connection.source_channels)
+            validate_occurrence(source.channel, source.node_ref_occurrence);
+    for (auto const& record : symbolic_nodes)
+        for (auto const& expression : record.sample_output_routes)
+            for (auto const& route : expression)
+                validate_occurrence(route.channel, route.node_ref_occurrence);
     return {.identity = GraphBuilderIdentity{std::move(identity)},
         .node_bundles = GraphBuilderNodeBundles::from_configured_records(bundles),
         .connections = GraphBuilderConnections::from_configured_connections(sample_connections, event_connections),

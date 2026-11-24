@@ -51,7 +51,7 @@ void iv_builder_connect_event_input(
 [[nodiscard]] NodeBundleHandle iv_builder_tiled_member(
     BuilderSession*, NodeBundleHandle, std::size_t channel);
 [[nodiscard]] SamplePortRef iv_builder_sample_port_from_output(
-    BuilderSession*, NodeBundlePortId);
+    BuilderSession*, NodeBundlePortId, std::optional<std::size_t> occurrence = {});
 [[nodiscard]] EventPortRef iv_builder_event_port_from_output(
     BuilderSession*, NodeBundlePortId);
 [[nodiscard]] SamplePortRef iv_builder_make_sample_port(

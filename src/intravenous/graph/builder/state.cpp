@@ -93,6 +93,8 @@ void for_each_record_bundle(SymbolicNodeRecord& record, Visit&& visit) {
     for (auto& members : mapping.member_channels)
       for (auto& channel : members) visit(channel.bundle);
   }
+  for (auto& expression : record.sample_output_routes)
+    for (auto& route : expression) visit(route.channel.bundle);
   for (auto& mapping : record.event_inputs)
     for (auto& port : mapping.node_bundle_ports) visit(port.node_bundle_handle);
   for (auto& mapping : record.event_outputs)
@@ -1025,8 +1027,7 @@ SamplePortRef GraphBuilderState::make_sample_port(
   _sample_port_expressions.push_back({
       .channel_type = type,
       .channels = {channels.begin(), channels.end()},
-      .detaches = std::vector<
-          std::optional<ConfiguredSampleConnectionDetach>>(channels.size()),
+      .routing = std::vector<SamplePortExpression::Routing>(channels.size()),
   });
   SamplePortRef result;
   result.session = _session;
@@ -1057,16 +1058,16 @@ SamplePortRef GraphBuilderState::make_tiled_sample_port(
   }
 
   std::vector<SampleOutputChannelId> channels;
-  std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches;
+  std::vector<SamplePortExpression::Routing> routing;
   channels.reserve(members.size());
-  detaches.reserve(members.size());
+  routing.reserve(members.size());
   for (auto const& member : members) {
     auto const& expression = scalar_expression(member);
     channels.push_back(expression.channels.front());
-    detaches.push_back(expression.detaches.front());
+    routing.push_back(expression.routing.front());
   }
   auto result = make_sample_port(type, channels);
-  _sample_port_expressions[result.handle].detaches = std::move(detaches);
+  _sample_port_expressions[result.handle].routing = std::move(routing);
   return result;
 }
 
@@ -1077,14 +1078,12 @@ SamplePortRef GraphBuilderState::select_sample_port_channel(
       || ref.handle >= _sample_port_expressions.size())
     details::error("sample port does not belong to this builder session");
   auto const& expression = _sample_port_expressions[ref.handle];
-  if (expression.channels.size() != expression.detaches.size())
-    details::error("sample expression lost its per-channel detach settings");
   if (channel >= expression.channels.size())
     details::error("sample channel index is out of bounds");
   std::array<SampleOutputChannelId, 1> channels{expression.channels[channel]};
-  auto detach = expression.detaches[channel];
+  auto const routing = expression.routing[channel];
   auto result = make_sample_port(ChannelTypeId::mono, channels);
-  _sample_port_expressions[result.handle].detaches = {std::move(detach)};
+  _sample_port_expressions[result.handle].routing.front() = routing;
   return result;
 }
 
@@ -1180,23 +1179,18 @@ SamplePortRef GraphBuilderState::detach_sample_port(
     details::error("cannot detach a sample port from another builder session");
   if (latency < 1)
     details::error("detach loop extra latency must be at least 1");
-  auto const expression = _sample_port_expressions[source.handle];
+  auto expression = _sample_port_expressions[source.handle];
   ConfiguredSampleConnectionDetach const requested{
       .loop_extra_latency = latency,
       .initial_value_override = initial_value,
   };
-  if (std::ranges::any_of(expression.detaches, [](auto const& detach) {
-        return detach.has_value();
+  if (std::ranges::any_of(expression.routing, [](auto const& routing) {
+        return routing.detach.has_value();
       }))
     details::error("cannot detach an already detached sample channel");
-  auto detaches = expression.detaches;
-  std::ranges::fill(detaches, requested);
+  for (auto& routing : expression.routing) routing.detach = requested;
   auto const handle = _sample_port_expressions.size();
-  _sample_port_expressions.push_back({
-      .channel_type = expression.channel_type,
-      .channels = expression.channels,
-      .detaches = std::move(detaches),
-  });
+  _sample_port_expressions.push_back(std::move(expression));
   auto result = source;
   result.handle = handle;
   return result;
@@ -1245,10 +1239,7 @@ void GraphBuilderState::record_configured_sample_connection(
   std::vector<ConfiguredSampleConnectionSource> configured_sources;
   configured_sources.reserve(expression.channels.size());
   for (std::size_t i = 0; i < expression.channels.size(); ++i) {
-    configured_sources.push_back({
-        .channel = expression.channels[i],
-        .detach = expression.detaches[i],
-    });
+    configured_sources.push_back(expression.source(i));
   }
   _connections.record_configured_sample_connection({
       .source_type = source.channel_type,
@@ -1275,10 +1266,7 @@ void GraphBuilderState::record_configured_sample_connection(
   std::vector<ConfiguredSampleConnectionSource> configured_sources;
   configured_sources.reserve(expression.channels.size());
   for (std::size_t i = 0; i < expression.channels.size(); ++i) {
-    configured_sources.push_back({
-        .channel = expression.channels[i],
-        .detach = expression.detaches[i],
-    });
+    configured_sources.push_back(expression.source(i));
   }
   _connections.record_configured_sample_connection({
       .source_type = source.channel_type,
@@ -1328,6 +1316,9 @@ void GraphBuilderState::connect_sample_sources(
 {
   for (auto const& source : sources) {
     auto const channel = source.channel;
+    if (source.node_ref_occurrence
+        && *source.node_ref_occurrence >= _node_bundles.bundle(channel.bundle).node_ref_occurrences().size())
+      details::error("sample connection source occurrence is out of bounds");
     auto const config = _node_bundles.resolve_sample_output(
         {channel.bundle, PortKind::sample, channel.port}).config;
     if (channel.channel >= channel_count(config.channel_layout.channel_type))
@@ -1372,10 +1363,7 @@ void GraphBuilderState::connect_sample_input(
     if (expression.channels.size() != 1)
       details::error(
           "channel-wise sample connection requires scalar sources");
-    configured_sources.push_back({
-        .channel = expression.channels.front(),
-        .detach = expression.detaches.front(),
-    });
+    configured_sources.push_back(expression.source(0));
   }
   _connections.record_configured_sample_connection({
       .source_type = type,
@@ -1455,13 +1443,19 @@ NodePorts const& GraphBuilderState::typed_ports(NodeBundleHandle handle) const {
   return _node_bundles.typed_ports(handle);
 }
 
-SamplePortRef GraphBuilderState::sample_port_from_output(NodeBundlePortId port) {
+SamplePortRef GraphBuilderState::sample_port_from_output(
+    NodeBundlePortId port, std::optional<std::size_t> occurrence) {
   if (port.port_kind != PortKind::sample)
     details::error("attempted to read a sample port from an event output");
   auto descriptor = _node_bundles.resolve_sample_output(port);
-  return make_sample_port(
+  if (occurrence && *occurrence >= _node_bundles.bundle(port.node_bundle_handle).node_ref_occurrences().size())
+    details::error("sample output occurrence is out of bounds");
+  auto result = make_sample_port(
       descriptor.config.channel_layout.channel_type,
       _node_bundles.sample_output_channels(port));
+  for (auto& routing : _sample_port_expressions[result.handle].routing)
+    routing.node_ref_occurrence = occurrence;
+  return result;
 }
 
 EventPortRef GraphBuilderState::event_port_from_output(NodeBundlePortId port) {
@@ -1631,9 +1625,14 @@ void GraphBuilderState::annotate_sample_port_source_info(
   if (id.empty() || ref.session != _session) return;
   auto const channels = sample_port_channels(ref);
   if (channels.empty()) return;
+  auto const& expression = _sample_port_expressions[ref.handle];
+  std::vector<SampleOutputRoute> routes;
+  routes.reserve(channels.size());
+  for (std::size_t index = 0; index < channels.size(); ++index)
+    routes.push_back({channels[index], expression.routing[index].node_ref_occurrence});
   auto const record = symbolic_record(id, "sample-port");
   _symbolic_nodes.attach_sample_output(
-      record, ref.channel_type, channels,
+      record, ref.channel_type, routes,
       make_source_info(id, file, begin, end, declaration_line, no_lane));
 }
 

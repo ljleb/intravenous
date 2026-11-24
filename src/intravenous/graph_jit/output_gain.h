@@ -1,7 +1,5 @@
 #pragma once
 
-#include <set>
-
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph_jit/output_gain_runtime.h>
 #include <intravenous/graph_jit/port_realization.h>
@@ -9,8 +7,10 @@
 #include <intravenous/packages/node_definition_types.h>
 #include <intravenous/packages/package_pipeline_types.h>
 
-#include <map>
 #include <cmath>
+#include <map>
+#include <ranges>
+#include <set>
 
 namespace iv::graph_jit::detail {
 struct OutputGainStage {
@@ -18,6 +18,12 @@ struct OutputGainStage {
     NodeBundlePortId source{};
     bool tick = false;
     std::shared_ptr<OutputGainConfiguration const> configuration{};
+    std::optional<NodeBundlePortId> upstream{};
+    std::string route_identity{};
+};
+struct SymbolicOutputGain {
+    NodeBundlePortId live{};
+    std::optional<NodeBundlePortId> historical{};
 };
 struct OutputGainExpansion {
     std::vector<OutputGainStage> stages{};
@@ -25,15 +31,28 @@ struct OutputGainExpansion {
     // A recording's random-access reads use its retained bytes, not the live
     // Tick gain's current Sequential timeline.
     std::map<NodeBundlePortId, NodeBundlePortId, NodeBundlePortIdLess> background_outputs{};
+    std::map<NodeBundlePortId, std::map<std::size_t, SymbolicOutputGain>, NodeBundlePortIdLess> symbolic_outputs{};
 
     // Keep an aggregate port's gain distinct from a gain on one tiled child.
     // Opening a tiled route only when necessary preserves channel positions
     // while making a selected child's gain visible to aggregate consumers.
     [[nodiscard]] SampleOutputChannelId routed_source(GraphBuilderNodeBundles const& bundles,
         SampleOutputChannelId source, bool random_access = false,
-        std::optional<NodeBundlePortId> raw_ingress = std::nullopt) const
+        std::optional<NodeBundlePortId> raw_ingress = std::nullopt,
+        std::optional<std::size_t> occurrence = std::nullopt) const
     {
         NodeBundlePortId const id{source.bundle, PortKind::sample, source.port};
+        if (occurrence) {
+            auto const output = symbolic_outputs.find(id);
+            if (output != symbolic_outputs.end()) {
+                auto const gain = output->second.find(*occurrence);
+                if (gain != output->second.end()) {
+                    auto const port = random_access
+                        ? gain->second.historical.value_or(gain->second.live) : gain->second.live;
+                    return {port.node_bundle_handle, port.port_index, source.channel};
+                }
+            }
+        }
         auto const& views = random_access ? background_outputs : outputs;
         if (id != raw_ingress) {
             auto found = views.find(id);
@@ -108,7 +127,7 @@ inline ConcreteNode make_tick_output_gain(
 }
 
 inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefinitionsSnapshot const& definitions,
-    std::span<SampleOutputChannelId const> observed_outputs = {})
+    std::span<SampleOutputRoute const> observed_outputs = {})
 {
     OutputGainExpansion result;
     std::vector<ConfiguredManualControl> controls;
@@ -122,9 +141,11 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         return prototype;
     };
     auto const connections = graph.connections.configured_sample_connections();
-    std::vector<ConfiguredSampleConnection> samples(connections.begin(), connections.end());
     std::set<NodeBundlePortId, NodeBundlePortIdLess> used_outputs;
-    if (std::ranges::any_of(graph.manual_controls, [](auto const& control) { return is_symbolic_output_gain(control.id); })) {
+    if (std::ranges::any_of(graph.manual_controls, [](auto const& control) {
+        return control.output && !control.output_symbolic_node && !control.dynamic
+            && control.settled_value != Sample{1} && is_symbolic_output_gain(control.id);
+    })) {
         auto mark_output_used = [&](auto channel) {
             for (;;) {
                 used_outputs.insert({channel.bundle, PortKind::sample, channel.port});
@@ -134,14 +155,11 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         };
         for (auto const& connection : connections) for (auto const& contribution : connection.source_channels)
             mark_output_used(contribution.channel);
-        for (auto channel : observed_outputs) mark_output_used(channel);
+        for (auto const& source : observed_outputs) mark_output_used(source.channel);
     }
-    for (auto const& control : graph.manual_controls) {
-        if (!control.output) { controls.push_back(control); continue; }
-        if (!std::isfinite(control.settled_value.value))
-            throw std::invalid_argument("output gain must be finite");
+    auto emit_gain = [&](ConfiguredManualControl const& control, std::optional<SymbolicOutputGain> upstream,
+                         std::string const& route_identity) -> SymbolicOutputGain {
         auto const source = *control.output;
-        if (is_symbolic_output_gain(control.id) && !control.dynamic && !used_outputs.contains(source)) continue;
         auto output = graph.node_bundles.resolve_sample_output(source).config;
         auto const sequential_source = is_sequential_output(output);
         auto const tick = sequential_source || !control.requires_preparation;
@@ -157,7 +175,6 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         }
         if (!continuous_value_type_info(*type).apply_output_gain)
             throw std::invalid_argument("output value type has no scalar gain operation");
-        if (!control.dynamic && control.settled_value == Sample{1}) continue;
         ContinuousInputConfig input{.name = "signal", .channel_layout = output.channel_layout};
         if (tick) {
             SequentialContinuousInputProperties properties;
@@ -217,9 +234,10 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
         }
         auto const bundle = graph.node_bundles.append_concrete(std::move(stage));
         graph.node_bundles.bundle(bundle).set_output_gain_source(source);
-        if (!result.outputs.emplace(source, NodeBundlePortId{bundle, PortKind::sample, 0}).second)
-            throw std::invalid_argument("two gains resolve to the same concrete output");
-        result.stages.push_back({bundle, source, tick, config});
+        SymbolicOutputGain gain{.live = {bundle, PortKind::sample, 0}};
+        result.stages.push_back({bundle, source, tick, config,
+            upstream ? std::optional{tick ? upstream->live : upstream->historical.value_or(upstream->live)} : std::nullopt,
+            route_identity});
         if (sequential_source && control.requires_preparation
             && is_buffered(graph.node_bundles.resolve_sample_output(source).config.realization)) {
             // Historical reads are Coverage-shaped, regardless of the live
@@ -247,22 +265,120 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             historical.operations.runtime.has_propagate_reverse_coverage = true;
             auto const view = graph.node_bundles.append_concrete(std::move(historical));
             graph.node_bundles.bundle(view).set_output_gain_source(source);
-            result.background_outputs.emplace(source, NodeBundlePortId{view, PortKind::sample, 0});
-            result.stages.push_back({view, source, false, config});
+            gain.historical.emplace(view, PortKind::sample, 0);
+            result.stages.push_back({view, source, false, config,
+                upstream ? std::optional{upstream->historical.value_or(upstream->live)} : std::nullopt,
+                route_identity});
         }
         if (tick) {
             auto lowered = control;
             lowered.output.reset();
+            lowered.output_symbolic_node.reset();
             lowered.input = {bundle, PortKind::sample, 1};
             lowered.dynamic &= !lowered.requires_preparation;
             lowered.override_connections = false;
             controls.push_back(std::move(lowered));
+        }
+        return gain;
+    };
+
+    using ControlBySymbol = std::map<std::size_t, ConfiguredManualControl const*>;
+    std::map<NodeBundlePortId, ControlBySymbol, NodeBundlePortIdLess> symbolic_controls;
+    for (auto const& control : graph.manual_controls) {
+        if (!control.output) { controls.push_back(control); continue; }
+        if (!std::isfinite(control.settled_value.value))
+            throw std::invalid_argument("output gain must be finite");
+        auto const source = *control.output;
+        if (!control.dynamic && control.settled_value == Sample{1}) continue;
+        if (control.output_symbolic_node) {
+            if (!symbolic_controls[source].emplace(*control.output_symbolic_node, &control).second)
+                throw std::invalid_argument("two gains resolve to the same symbolic output");
+            continue;
+        }
+        if (is_symbolic_output_gain(control.id) && !control.dynamic && !used_outputs.contains(source)) continue;
+        auto const gain = emit_gain(control, std::nullopt, {});
+        if (!result.outputs.emplace(source, gain.live).second)
+            throw std::invalid_argument("two gains resolve to the same concrete output");
+        if (gain.historical) result.background_outputs.emplace(source, *gain.historical);
+    }
+
+    std::map<NodeBundlePortId, std::set<std::size_t>, NodeBundlePortIdLess> selected;
+    if (!symbolic_controls.empty()) {
+        auto select = [&](SampleOutputChannelId channel, std::optional<std::size_t> occurrence) {
+            NodeBundlePortId const source{channel.bundle, PortKind::sample, channel.port};
+            if (occurrence && symbolic_controls.contains(source)) selected[source].insert(*occurrence);
+        };
+        for (auto const& connection : connections) for (auto const& contribution : connection.source_channels)
+            select(contribution.channel, contribution.node_ref_occurrence);
+        for (auto const& route : observed_outputs) select(route.channel, route.node_ref_occurrence);
+    }
+    for (auto const& [source, indices] : selected) {
+        auto const occurrences = graph.node_bundles.bundle(source.node_bundle_handle).node_ref_occurrences();
+        auto const& gains = symbolic_controls.at(source);
+        using Path = std::vector<std::size_t>;
+        std::map<std::size_t, Path> paths;
+        std::set<Path> taps;
+        for (auto index : indices) {
+            Path reverse;
+            for (auto current = std::optional{index}; current; current = occurrences[*current].upstream) {
+                if (*current >= occurrences.size()) throw std::invalid_argument("invalid sample output occurrence");
+                auto const symbol = occurrences[*current].symbolic_node_handle;
+                if (gains.contains(symbol)) reverse.push_back(symbol);
+            }
+            Path path;
+            std::set<std::size_t> applied;
+            // A repeated symbol reuses the gain applied at its first occurrence.
+            for (auto symbol : reverse | std::views::reverse)
+                if (applied.insert(symbol).second) path.push_back(symbol);
+            taps.insert(path);
+            paths.emplace(index, std::move(path));
+        }
+
+        std::map<Path, std::optional<SymbolicOutputGain>> realized{{{}, std::nullopt}};
+        auto is_live = [](ConfiguredManualControl const& gain) {
+            return gain.dynamic && !gain.requires_preparation;
+        };
+        auto lower_path = [&](auto&& self, Path const& path) -> std::optional<SymbolicOutputGain> {
+            if (auto found = realized.find(path); found != realized.end()) return found->second;
+            auto combined = *gains.at(path.back());
+            combined.dynamic = is_live(combined);
+            auto first = path.size() - 1;
+            Path prefix(path.begin(), path.end() - 1);
+            // Any direct or observed tap of the prefix needs that signal.
+            while (!combined.dynamic && !prefix.empty() && !taps.contains(prefix)) {
+                auto const& previous = *gains.at(prefix.back());
+                if (is_live(previous)) break;
+                auto const product = previous.settled_value.value * combined.settled_value.value;
+                if (!std::isfinite(product) || (product == 0
+                    && previous.settled_value.value != 0 && combined.settled_value.value != 0)) break;
+                combined.settled_value = Sample{product};
+                combined.requires_preparation |= previous.requires_preparation;
+                prefix.pop_back();
+                --first;
+            }
+            auto output = self(self, prefix);
+            if (combined.dynamic || combined.settled_value != Sample{1}) {
+                std::string identity;
+                // The input history of a live stage belongs to its full route.
+                // Record the stage boundary too, so a merged stage has its own identity.
+                identity += std::to_string(first) + ':';
+                for (auto symbol : path) {
+                    auto const& id = graph.symbolic_nodes.record(symbol).id;
+                    identity += std::to_string(id.size()) + ':' + id;
+                }
+                output = emit_gain(combined, output, identity);
+            }
+            return realized.emplace(path, output).first->second;
+        };
+        for (auto const& [index, path] : paths) {
+            if (auto output = lower_path(lower_path, path)) result.symbolic_outputs[source].emplace(index, *output);
         }
     }
     if (result.stages.empty()) {
         graph.manual_controls = std::move(controls);
         return result;
     }
+    std::vector<ConfiguredSampleConnection> samples(connections.begin(), connections.end());
     std::vector<bool> tick_owners;
     graph.node_bundles.for_each_configured_bundle([&](ConfiguredNodeBundleView const& view) {
         tick_owners.push_back(view.operations && view.operations->runtime.tick_block);
@@ -272,15 +388,20 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             return !is_sequential(graph.node_bundles.resolve_sample_input({target.bundle, PortKind::sample, target.port}).config)
                 || (graph.node_bundles.bundle(target.bundle).is_concrete() && !tick_owners[target.bundle]);
         });
-        source.channel = result.routed_source(graph.node_bundles, source.channel, random_access);
+        source.channel = result.routed_source(graph.node_bundles, source.channel, random_access, std::nullopt,
+            source.node_ref_occurrence);
+        source.node_ref_occurrence.reset();
     }
     for (auto const& stage : result.stages) {
         auto const output = graph.node_bundles.resolve_sample_output(stage.source).config;
         ConfiguredSampleConnection ingress{.source_type = output.channel_layout.channel_type,
             .target_type = output.channel_layout.channel_type};
         for (std::size_t channel = 0; channel < channel_count(output.channel_layout); ++channel) {
-            auto source = result.routed_source(graph.node_bundles,
-                {stage.source.node_bundle_handle, stage.source.port_index, channel}, !stage.tick, stage.source);
+            auto const source = stage.upstream
+                ? SampleOutputChannelId{stage.upstream->node_bundle_handle, stage.upstream->port_index, channel}
+                : result.routed_source(graph.node_bundles,
+                    {stage.source.node_bundle_handle, stage.source.port_index, channel}, !stage.tick,
+                    stage.route_identity.empty() ? std::optional{stage.source} : std::nullopt);
             ingress.source_channels.push_back({.channel = source});
             ingress.target_channels.push_back({stage.bundle, 0, channel});
         }

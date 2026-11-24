@@ -30,7 +30,8 @@ bool port_matches(
 
 struct ResolvedSampleOutput {
     ChannelTypeId type = ChannelTypeId::mono;
-    std::vector<SampleOutputChannelId> channels{};
+    std::vector<SampleOutputRoute> routes{};
+    bool ambiguous_occurrence = false;
     bool operator==(ResolvedSampleOutput const&) const = default;
 };
 
@@ -58,66 +59,71 @@ void append_unique(std::vector<T>& output, T value)
     if (!std::ranges::contains(output, value)) output.push_back(std::move(value));
 }
 
-template<class Mapping>
-auto selected_sample_member_channels(
-    SymbolicNodeRecord const& record,
-    Mapping const& mapping,
-    PathCursor const& cursor)
-{
-    using MemberChannels = typename std::remove_cvref_t<
-        decltype(mapping.member_channels)>::value_type;
-    std::vector<MemberChannels> result;
-    if (record.type_identity == "sample-port") {
-        MemberChannels selected;
-        for (auto const channel : mapping.channels) {
-            auto const member = std::ranges::find(
-                record.node_bundle_handles, channel.bundle);
-            if (member == record.node_bundle_handles.end()) continue;
-            auto const member_index = static_cast<std::size_t>(
-                member - record.node_bundle_handles.begin());
-            if (std::ranges::contains(
-                    cursor.symbolic_member_indices, member_index)) {
-                selected.push_back(channel);
-            }
-        }
-        if (!selected.empty()) result.push_back(std::move(selected));
-        return result;
-    }
-    for (auto const member_index : cursor.symbolic_member_indices) {
-        if (member_index < mapping.member_channels.size())
-            result.push_back(mapping.member_channels[member_index]);
-    }
-    return result;
-}
-
 std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
     ConfiguredGraph const& graph,
     PathCursor const& cursor,
     ProjectPortMatcher const& matcher)
 {
     std::vector<ResolvedSampleOutput> result;
+    auto append = [&](ChannelTypeId type, std::vector<SampleOutputRoute> routes,
+                      bool ambiguous_occurrence = false) {
+        if (matcher.channel) {
+            if (*matcher.channel >= routes.size()) return;
+            routes = {routes[*matcher.channel]};
+            type = ChannelTypeId::mono;
+        }
+        if (routes.size() != channel_count(type)) return;
+        auto const existing = std::ranges::find_if(result, [&](auto const& output) {
+            return output.type == type && std::ranges::equal(output.routes, routes, {},
+                &SampleOutputRoute::channel, &SampleOutputRoute::channel);
+        });
+        if (existing != result.end()) {
+            existing->ambiguous_occurrence |= ambiguous_occurrence || existing->routes != routes;
+        } else {
+            result.push_back({type, std::move(routes), ambiguous_occurrence});
+        }
+    };
     if (cursor.kind == PathCursor::Kind::symbolic_node) {
         auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
+        if (record.type_identity == "sample-port") {
+            if (record.sample_outputs.empty()) return result;
+            auto const& mapping = record.sample_outputs.front();
+            if (!port_matches(matcher, mapping.name, mapping.index)) return result;
+            for (auto const& expression : record.sample_output_routes) {
+                std::vector<SampleOutputRoute> selected;
+                for (auto const& route : expression) {
+                    auto const member = std::ranges::find(record.node_bundle_handles, route.channel.bundle);
+                    if (member != record.node_bundle_handles.end()
+                        && std::ranges::contains(cursor.symbolic_member_indices,
+                            static_cast<std::size_t>(member - record.node_bundle_handles.begin()))) {
+                        selected.push_back(route);
+                    }
+                }
+                append(mapping.channel_layout.channel_type, std::move(selected));
+            }
+            return result;
+        }
         for (auto const& mapping : record.sample_outputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
-            for (auto const& member_channels
-                 : selected_sample_member_channels(record, mapping, cursor)) {
-                if (matcher.channel.has_value()) {
-                    if (*matcher.channel >= member_channels.size()) continue;
-                    append_unique(result, ResolvedSampleOutput{
-                        .type = ChannelTypeId::mono,
-                        .channels = {member_channels[*matcher.channel]},
-                    });
-                } else {
-                    if (member_channels.size() != channel_type_info(
-                            mapping.channel_layout.channel_type).channel_count) {
-                        continue;
+            for (auto const member : cursor.symbolic_member_indices) {
+                if (member >= mapping.member_channels.size()) continue;
+                auto const& channels = mapping.member_channels[member];
+                if (channels.empty()) continue;
+                auto const occurrences = graph.node_bundles.bundle(channels.front().bundle).node_ref_occurrences();
+                std::optional<std::size_t> selected;
+                bool ambiguous = false;
+                for (std::size_t index = 0; index < occurrences.size(); ++index) {
+                    if (occurrences[index].symbolic_node_handle != cursor.symbolic_node) continue;
+                    if (selected) {
+                        ambiguous = true;
+                        break;
                     }
-                    append_unique(result, ResolvedSampleOutput{
-                        .type = mapping.channel_layout.channel_type,
-                        .channels = member_channels,
-                    });
+                    selected = index;
                 }
+                std::vector<SampleOutputRoute> routes;
+                routes.reserve(channels.size());
+                for (auto channel : channels) routes.push_back({channel, selected});
+                append(mapping.channel_layout.channel_type, std::move(routes), ambiguous);
             }
         }
         return result;
@@ -125,23 +131,12 @@ std::vector<ResolvedSampleOutput> sample_outputs_for_cursor(
 
     auto const& bundle = graph.node_bundles.bundle(cursor.bundle);
     for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
-        auto const config = graph.node_bundles.resolve_sample_output(
-            {cursor.bundle, PortKind::sample, index}).config;
+        auto const port = NodeBundlePortId{cursor.bundle, PortKind::sample, index};
+        auto const config = graph.node_bundles.resolve_sample_output(port).config;
         if (!port_matches(matcher, config.name, index)) continue;
-        auto channels = graph.node_bundles.sample_output_channels(
-            {cursor.bundle, PortKind::sample, index});
-        if (matcher.channel.has_value()) {
-            if (*matcher.channel >= channels.size()) continue;
-            append_unique(result, ResolvedSampleOutput{
-                .type = ChannelTypeId::mono,
-                .channels = {channels[*matcher.channel]},
-            });
-        } else {
-            append_unique(result, ResolvedSampleOutput{
-                .type = config.channel_layout.channel_type,
-                .channels = std::move(channels),
-            });
-        }
+        std::vector<SampleOutputRoute> routes;
+        for (auto channel : graph.node_bundles.sample_output_channels(port)) routes.push_back({channel});
+        append(config.channel_layout.channel_type, std::move(routes));
     }
     return result;
 }
@@ -156,8 +151,9 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
         auto const& record = graph.symbolic_nodes.record(cursor.symbolic_node);
         for (auto const& mapping : record.sample_inputs) {
             if (!port_matches(matcher, mapping.name, mapping.index)) continue;
-            for (auto const& member_channels
-                 : selected_sample_member_channels(record, mapping, cursor)) {
+            for (auto member : cursor.symbolic_member_indices) {
+                if (member >= mapping.member_channels.size()) continue;
+                auto const& member_channels = mapping.member_channels[member];
                 if (member_channels.empty()) continue;
                 if (matcher.channel.has_value()) {
                     if (*matcher.channel >= member_channels.size()) continue;
@@ -435,6 +431,11 @@ void apply_sample_connection(
         auto resolved = resolve_matcher<ResolvedSampleOutput>(
             snapshot, placements, connection.outputs[i], sample_outputs_for_cursor);
         if (resolved.empty()) add_unresolved_diagnostic(result, connection.connection_id, "output", i);
+        if (std::ranges::any_of(resolved, &ResolvedSampleOutput::ambiguous_occurrence)) {
+            result.diagnostics.push_back({.connection_id = connection.connection_id,
+                .message = "sample output matches multiple forwarding occurrences"});
+            return;
+        }
         for (auto& value : resolved) append_unique(outputs, std::move(value));
     }
     for (std::size_t i = 0; i < connection.inputs.size(); ++i) {
@@ -469,8 +470,8 @@ void apply_sample_connection(
     std::vector<ConfiguredSampleConnectionSource> sources;
     sources.reserve(outputs.size() * channel_count(connection.source_type));
     for (auto const& output : outputs) {
-        for (auto const channel : output.channels)
-            sources.push_back({.channel = channel});
+        for (auto const& route : output.routes)
+            sources.push_back({.channel = route.channel, .node_ref_occurrence = route.node_ref_occurrence});
     }
     auto& state = details::builder_graph_state(root_builder);
     for (auto const& input : inputs) {
@@ -532,6 +533,23 @@ void apply_event_connection(
 }
 } // namespace
 
+std::vector<SampleOutputRoute> resolve_project_sample_output_routes(
+    ConfiguredGraph const& graph,
+    std::unordered_map<std::string, NodeInstancePlacement> const& placements,
+    NodeAddress const& address, std::string const& port,
+    std::optional<std::size_t> channel)
+{
+    std::vector<SampleOutputRoute> result;
+    ProjectPortMatcher matcher{.name = port, .channel = channel};
+    for (auto const& cursor : resolve_node_address(graph, placements, address)) {
+        for (auto const& output : sample_outputs_for_cursor(graph, cursor, matcher)) {
+            if (output.ambiguous_occurrence) return {};
+            for (auto const source : output.routes) append_unique(result, source);
+        }
+    }
+    return result;
+}
+
 std::vector<SampleOutputChannelId> resolve_project_sample_output(
     ConfiguredGraph const& graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -539,11 +557,8 @@ std::vector<SampleOutputChannelId> resolve_project_sample_output(
     std::optional<std::size_t> channel)
 {
     std::vector<SampleOutputChannelId> result;
-    ProjectPortMatcher matcher{.name = port, .channel = channel};
-    for (auto const& cursor : resolve_node_address(graph, placements, address)) {
-        for (auto const& output : sample_outputs_for_cursor(graph, cursor, matcher))
-            for (auto const source : output.channels) append_unique(result, source);
-    }
+    for (auto const& source : resolve_project_sample_output_routes(graph, placements, address, port, channel))
+        append_unique(result, source.channel);
     return result;
 }
 

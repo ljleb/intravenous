@@ -53,7 +53,7 @@ struct ResolvedObservationProbe {
     NodeBundleHandle bundle = 0;
     std::size_t port = 0;
     std::vector<std::size_t> channels{};
-    std::vector<SampleOutputChannelId> output_sources{};
+    std::vector<SampleOutputRoute> output_sources{};
     std::size_t state_field_offset = 0;
     std::size_t state_field_size = 0;
     bool available = false;

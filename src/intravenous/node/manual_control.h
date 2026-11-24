@@ -85,6 +85,8 @@ struct ConfiguredManualControl {
     // Public output gain before compiler-private transform expansion. The
     // authored input field is unused for this control until that expansion.
     std::optional<NodeBundlePortId> output{};
+    // Symbolic record supplying this output gain, after address resolution.
+    std::optional<std::size_t> output_symbolic_node{};
     // Its value is frozen into a prepared graph, never copied from an atomic
     // live target into an already active background-dependent executable.
     bool requires_preparation = false;

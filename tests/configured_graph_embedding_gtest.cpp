@@ -234,7 +234,7 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     _annotate_source_info_after_statement(&branch, "branch", "/tmp/child.cpp", 7, 8, "c", 4, true, false);
     EXPECT_EQ(first.node_bundle_handle(), repeated.node_bundle_handle());
     EXPECT_EQ(first.node_bundle_handle(), branch.node_bundle_handle());
-    nested.outputs("out"_P = repeated);
+    nested.outputs("out"_P = repeated, "branch"_P = branch);
 
     auto const child = nested.configured_graph();
     ASSERT_TRUE(child.has_value());
@@ -254,6 +254,10 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
         EXPECT_TRUE(std::ranges::equal(node.node_ref_occurrences(), expected));
     };
     check_occurrences(child->node_bundles.bundle(bundle), 0, 1, 2);
+    auto const child_wires = child->connections.configured_sample_connections();
+    ASSERT_EQ(child_wires.size(), 2u);
+    EXPECT_EQ(child_wires[0].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(child_wires[1].source_channels[0].node_ref_occurrence, 3u);
 
     (void)root.subgraph(std::move(nested), "live");
     auto const embedded = root.embed(*child, "frozen");
@@ -261,6 +265,11 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     auto const configured = std::move(root).finish();
     check_occurrences(configured.node_bundles.bundle(embedded.node_bundle(bundle)),
         embedded.symbolic_node(0), embedded.symbolic_node(1), embedded.symbolic_node(2));
+    auto const wires = configured.connections.configured_sample_connections();
+    ASSERT_EQ(wires.size(), 4u);
+    EXPECT_EQ(wires[2].source_channels[0].channel.bundle, embedded.node_bundle(bundle));
+    EXPECT_EQ(wires[2].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(wires[3].source_channels[0].node_ref_occurrence, 3u);
 }
 
 TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)

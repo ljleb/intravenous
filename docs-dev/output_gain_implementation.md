@@ -492,3 +492,26 @@ and the project selector needs a rule for selecting or exposing them. The next
 step is to retain selected occurrences through `SamplePortRef` and configured
 sample connections, including the project-connection selection rule. GraphJit
 gain composition and folding depend on those selected sources.
+
+## Lowering selected output occurrences, 2026-11-24
+
+`ConfiguredSampleConnectionSource::node_ref_occurrence` carries a bundle-local
+index from a `SamplePortRef` or a project connection. Named sample expressions
+retain the selections for each of their channels. A project connection can
+mix two distinct routes to one concrete channel. It counts repeated references
+to the same route once. An address that could select several forwarding
+occurrences of the same declaration on one bundle reports a diagnostic.
+
+`expand_output_gains()` follows the selected occurrence's ancestry. Each
+symbolic control applies at its first occurrence on that route. A connection or
+live symbolic meter at an intermediate stage keeps that stage available.
+Consecutive settled gains can share one multiplier when no consumer reads
+between them. An interactive gain retains its own interpolation binding, and
+background-dependent gains use prepared values. The project still stores
+each authored control separately.
+
+Direct output observations and historical observation windows continue to
+read the underlying output. Named `SamplePortRef` expressions select existing
+routes and have no independent output gain. The multi-declarator limitation
+above still applies. The configured graph archive and native package ABI
+both changed to carry the new source information.

@@ -128,6 +128,8 @@ struct ConfiguredSampleConnectionSource {
   // A value marks this dependency for removal when GraphJit forms the
   // execution DAG. It does not identify or prescribe runtime storage.
   std::optional<ConfiguredSampleConnectionDetach> detach{};
+  // Index in the source bundle's node_ref_occurrences(), when selected.
+  std::optional<std::size_t> node_ref_occurrence{};
   bool operator==(ConfiguredSampleConnectionSource const&) const = default;
 };
 

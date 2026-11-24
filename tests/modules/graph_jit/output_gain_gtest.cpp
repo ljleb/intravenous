@@ -124,6 +124,51 @@ TEST_F(GraphJitRuntimeFixture, RealtimeOutputGainUsesTheExistingSampleBySampleCo
     EXPECT_FLOAT_EQ(state->sum, 4*.625f + 5*.75f + 6*.875f + 7);
 }
 
+TEST_F(GraphJitRuntimeFixture, SymbolicOutputsOfTheSameNodeObserveTheirOwnGainChains)
+{
+    auto module = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");
+    auto output = first_output(*module);
+    GraphBuilder builder;
+    output.node_bundle_handle = builder.embed(*module, "source").node_bundle(output.node_bundle_handle);
+    auto const osc = NodeRef(builder, output.node_bundle_handle);
+    osc._annotate_source_info("osc", "/tmp/symbolic-outputs.cpp", 0, 1);
+    auto const trimmed = osc;
+    trimmed._annotate_source_info("trimmed", "/tmp/symbolic-outputs.cpp", 2, 3);
+    auto graph = std::make_shared<ConfiguredGraph>(std::move(builder).finish());
+
+    auto const occurrences = graph->node_bundles.bundle(output.node_bundle_handle).node_ref_occurrences();
+    ASSERT_GE(occurrences.size(), 2u);
+    auto const osc_occurrence = occurrences.size() - 2;
+    auto const trimmed_occurrence = occurrences.size() - 1;
+    add_gain(*graph, output, 2);
+    add_gain(*graph, output, 3);
+    for (std::size_t index = 0; index < graph->manual_controls.size(); ++index) {
+        auto& control = graph->manual_controls[index];
+        auto const symbol = occurrences[osc_occurrence + index].symbolic_node_handle;
+        control.output_symbolic_node = symbol;
+        control.id.node.path = {ProjectSymbolicNodeSelector{.source_identity =
+            graph->symbolic_nodes.record(symbol).source_identity}};
+    }
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    auto probe = [&](std::uint64_t id, std::size_t occurrence) {
+        return ResolvedObservationProbe{.id = id, .operation = &operation,
+            .kind = ObservationSourceKind::output, .channels = {0},
+            .output_sources = {{{output.node_bundle_handle, output.port_index, 0}, occurrence}}, .available = true};
+    };
+    auto compiled = jit->compile({.project_generation = 819, .graph = graph, .definitions = definitions,
+        .observations = {.revision = 1, .probes = {probe(1, osc_occurrence), probe(2, trimmed_occurrence)}}});
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(activate(executor, index(3)));
+    executor.tick_block(index(3), 8);
+    auto const* frame = executor.collect_observations();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_EQ(frame->count, 2u);
+    EXPECT_DOUBLE_EQ(frame->values[0].value.load<observation_details::SampleLevelState>().peak, 20);
+    EXPECT_DOUBLE_EQ(frame->values[1].value.load<observation_details::SampleLevelState>().peak, 60);
+}
+
 TEST_F(GraphJitRuntimeFixture, RegionOutputGainRampsInTickAndKeepsDownstreamFallbacks)
 {
     auto configured = std::make_shared<ConfiguredGraph>(*configured_module_graph(*revision, "iv.test.replay.live_union_fallback"));

@@ -1,4 +1,5 @@
 #include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/basic_nodes/constant.h>
 #include "../event_source_test_support.h"
 #include <intravenous/dsl.h>
 #include <intravenous/graph/configured_graph.hpp>
@@ -345,6 +346,50 @@ TEST(GraphConnections, SetValuedSymbolicMatcherKeepsAllMembersInOneConnection)
     ASSERT_EQ(record.source_channels.size(), 2u);
     EXPECT_NE(record.source_channels[0].channel, record.source_channels[1].channel);
     EXPECT_EQ(record.target_channels.size(), 1u);
+}
+
+TEST(GraphConnections, SymbolicWiresKeepDistinctRoutesFromOneConcreteChannel)
+{
+    using namespace iv;
+    GraphBuilder source_builder;
+    auto const osc = details::configure_concrete_node<Constant>(source_builder, Sample{1});
+    osc._annotate_source_info("osc", "/tmp/forwarded-wire.cpp", 0, 1);
+    auto const trimmed = osc;
+    trimmed._annotate_source_info("trimmed", "/tmp/forwarded-wire.cpp", 2, 3);
+    auto const projection = trimmed[std::size_t{0}];
+    projection._annotate_source_info("projection", "/tmp/forwarded-wire.cpp", 4, 5);
+    source_builder.outputs();
+    auto source_graph = std::move(source_builder).finish();
+
+    GraphBuilder root;
+    std::unordered_map<std::string, NodeInstancePlacement> placements;
+    placements.emplace("source", embed_as_instance(root, source_graph, "source"));
+    placements.emplace("sink", embed_as_instance(root, make_sample_sink(), "sink"));
+    auto select = [](std::string identity) {
+        auto matcher = named_matcher("source", "");
+        matcher.port.name.reset();
+        matcher.port.index = 0;
+        matcher.path = {ProjectSymbolicNodeSelector{.source_identity = std::move(identity)}};
+        return matcher;
+    };
+    GraphConnections connections;
+    auto result = apply(connections, root, placements, GraphConnectionUpsertMutation{
+        .connection = ProjectSampleConnection{
+            .connection_id = "sample:forwarded",
+            .outputs = {select("osc"), select("trimmed"), select("projection")},
+            .inputs = {named_matcher("sink", "main")},
+        },
+    });
+    ASSERT_EQ(result.applied_connection_ids, std::vector<std::string>{"sample:forwarded"});
+    EXPECT_TRUE(result.diagnostics.empty());
+    root.outputs();
+    auto configured = std::move(root).finish();
+    auto const wires = configured.connections.configured_sample_connections();
+    auto const& sources = wires.back().source_channels;
+    ASSERT_EQ(sources.size(), 2u);
+    EXPECT_EQ(sources[0].channel, sources[1].channel);
+    EXPECT_EQ(sources[0].node_ref_occurrence, 0u);
+    EXPECT_EQ(sources[1].node_ref_occurrence, 1u);
 }
 
 TEST(GraphConnections, SingleNodeConsumerRejectsASetValuedPathResult)

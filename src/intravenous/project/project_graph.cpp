@@ -1461,8 +1461,10 @@ void configure_manual_controls(
                     address.path = std::move(*path);
                 }
             }
-            auto const interface = match.kind == ProjectNodePathMatch::Kind::symbolic_node
-                ? read_symbolic_node_interface(finished_graph.node_bundles, finished_graph.symbolic_nodes.record(match.symbolic_node), representative)
+            auto const* symbol = match.kind == ProjectNodePathMatch::Kind::symbolic_node
+                ? &finished_graph.symbolic_nodes.record(match.symbolic_node) : nullptr;
+            auto const interface = symbol
+                ? read_symbolic_node_interface(finished_graph.node_bundles, *symbol, representative)
                 : read_node_instance_interface(finished_graph.node_bundles, representative);
             for (auto const& port : interface.sample_inputs) {
                 if (port.name.empty() || !port.manual_defaults) continue;
@@ -1470,7 +1472,8 @@ void configure_manual_controls(
                     match.kind == ProjectNodePathMatch::Kind::bundle && port.manual_defaults->enabled);
             }
             for (auto const& port : interface.sample_outputs) {
-                if (!port.name.empty() && port.index < finished_graph.node_bundles.bundle(representative).sample_output_count()
+                if ((!symbol || symbol->type_identity != "sample-port")
+                        && !port.name.empty() && port.index < finished_graph.node_bundles.bundle(representative).sample_output_count()
                         && supports_gain({representative, PortKind::sample, port.index}))
                     add_control({.node = address, .port_name = port.name, .kind = ManualControlKind::output_gain},
                         Sample{1}, true);
@@ -1500,6 +1503,7 @@ void configure_manual_controls(
             finished_graph, placements, control.id.node);
         bool const output_gain = control.id.kind == ManualControlKind::output_gain;
         std::vector<NodeBundleHandle> bundles;
+        std::unordered_map<NodeBundleHandle, SymbolicNodeHandle> output_symbols;
         if (output_gain) {
             // A public tiled output is one multichannel output. Keep its
             // identity rather than applying several unrelated member gains.
@@ -1509,9 +1513,16 @@ void configure_manual_controls(
             for (auto const& match : matches) {
                 if (match.kind == ProjectNodePathMatch::Kind::bundle) append(match.bundle);
                 else {
-                    auto const& members = finished_graph.symbolic_nodes.record(match.symbolic_node).node_bundle_handles;
-                    for (auto member : match.symbolic_member_indices)
-                        if (member < members.size()) append(members[member]);
+                    auto const& symbol = finished_graph.symbolic_nodes.record(match.symbolic_node);
+                    if (symbol.type_identity == "sample-port") continue;
+                    for (auto member : match.symbolic_member_indices) {
+                        if (member >= symbol.node_bundle_handles.size()) continue;
+                        auto const bundle = symbol.node_bundle_handles[member];
+                        append(bundle);
+                        auto const occurrences = finished_graph.node_bundles.bundle(bundle).node_ref_occurrences();
+                        if (std::ranges::contains(occurrences, match.symbolic_node, &ConfiguredNodeRefOccurrence::symbolic_node_handle))
+                            output_symbols.try_emplace(bundle, match.symbolic_node);
+                    }
                 }
             }
         } else bundles = concrete_node_address_matches(finished_graph, matches);
@@ -1565,9 +1576,11 @@ void configure_manual_controls(
         if (symbolic_selection && resolved_ports.size() != bundles.size()) continue;
         for (auto const& resolved : resolved_ports) {
             if (output_gain) {
+                auto const symbol = output_symbols.find(resolved.port.node_bundle_handle);
                 finished_graph.manual_controls.push_back({.id = control.id,
                     .concrete_selection_index = resolved.selection_index,
-                    .settled_value = control.stored_value, .output = resolved.port});
+                    .settled_value = control.stored_value, .output = resolved.port,
+                    .output_symbolic_node = symbol != output_symbols.end() ? std::optional{symbol->second} : std::nullopt});
             } else {
                 finished_graph.manual_controls.push_back({
                     .id = control.id, .input = resolved.port,

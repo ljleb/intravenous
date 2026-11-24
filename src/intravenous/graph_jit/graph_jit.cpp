@@ -2,6 +2,7 @@
 #include <intravenous/graph_jit/graph_jit.h>
 
 #include <intravenous/graph_jit/bundle_migration.h>
+#include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/lowering.h>
 #include <intravenous/graph_jit/module_input_resolution.h>
 #include <intravenous/graph_jit/output_gain.h>
@@ -2052,10 +2053,11 @@ public:
             return result;
         }
         auto resolved_graph = *request.graph;
-        // A symbolic control and a member control can resolve to the same
-        // bundle port. Keep one participating control per direction there.
+        // An input and a raw concrete output each select one control. Named
+        // output occurrences resolve their own gain chains during expansion.
         using ControlIndices = std::map<NodeBundlePortId, std::size_t, NodeBundlePortIdLess>;
         ControlIndices inputs, outputs;
+        std::map<std::size_t, ControlIndices> symbolic_outputs;
         auto& controls = resolved_graph.manual_controls;
         std::vector<bool> keep(controls.size(), true);
         auto priority = [](ConfiguredManualControl const& control) {
@@ -2074,7 +2076,8 @@ public:
                 keep[index] = false;
                 continue;
             }
-            auto& by_port = control.output ? outputs : inputs;
+            auto& by_port = control.output_symbolic_node ? symbolic_outputs[*control.output_symbolic_node]
+                : control.output ? outputs : inputs;
             auto [entry, inserted] = by_port.try_emplace(control.output.value_or(control.input), index);
             if (inserted) continue;
             auto const previous = entry->second;
@@ -2088,7 +2091,7 @@ public:
         std::erase_if(controls, [&](auto const&) { return !keep[next_control++]; });
         graph_jit::detail::OutputGainExpansion output_gains;
         try {
-            std::vector<SampleOutputChannelId> observed_outputs;
+            std::vector<SampleOutputRoute> observed_outputs;
             for (auto const& probe : request.observations.probes)
                 observed_outputs.insert(observed_outputs.end(), probe.output_sources.begin(), probe.output_sources.end());
             output_gains = graph_jit::detail::expand_output_gains(resolved_graph, *request.definitions, observed_outputs);
@@ -2426,7 +2429,8 @@ public:
             };
             if (grouped) {
                 for (auto source : probe.output_sources)
-                    connection.source_channels.push_back({.channel = output_gains.routed_source(resolved_graph.node_bundles, source)});
+                    connection.source_channels.push_back({.channel = output_gains.routed_source(
+                        resolved_graph.node_bundles, source.channel, false, std::nullopt, source.node_ref_occurrence)});
             } else {
                 for (auto channel : resolved_graph.node_bundles.sample_output_channels({probe.bundle, PortKind::sample, probe.port}))
                     connection.source_channels.push_back({.channel = channel});
@@ -2457,6 +2461,24 @@ public:
                 },
             });
         }
+        std::optional<graph_jit::BundleMigrationIdentities> lowering_identities;
+        for (auto const& stage : output_gains.stages) {
+            if (stage.route_identity.empty() || stage.source.node_bundle_handle >= identities->size()) continue;
+            auto const& owner = (*identities)[stage.source.node_bundle_handle];
+            if (!owner) continue;
+            if (!lowering_identities) {
+                lowering_identities.emplace(*identities);
+                lowering_identities->resize(resolved_graph.node_bundles.size());
+            }
+            auto const name = resolved_graph.node_bundles.resolve_sample_output(stage.source).config.name;
+            auto const port = graph_jit::detail::port_migration_index(
+                resolved_graph, stage.source, graph_jit::PortDirection::output, name);
+            auto const& bundle = resolved_graph.node_bundles.bundle(stage.bundle);
+            (*lowering_identities)[stage.bundle] = graph_jit::StableConcreteNodeId{
+                .graph = std::string(bundle.type_identity()) + ':' + graph_jit::migration_identity_fields(*owner),
+                .symbolic_node = graph_jit::migration_port_identity_fields(name, port) + ':' + stage.route_identity,
+            };
+        }
         graph_jit::LoweringInput lowering_input{
             .graph = resolved_graph,
             .specialization = specialization_,
@@ -2469,7 +2491,7 @@ public:
                 specialize_regions_ ? &region_specializations : nullptr,
             .observations = &request.observations,
             .configured_bundles = request.configured_bundles,
-            .bundle_migration_identities = *identities,
+            .bundle_migration_identities = lowering_identities ? *lowering_identities : *identities,
             .observation_layout_reuse = observation_layout_reuse ? &*observation_layout_reuse : nullptr,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);

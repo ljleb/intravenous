@@ -244,7 +244,7 @@ try {
         details::error("sample output port is out of bounds on " + to_string());
     }
     return details::iv_builder_sample_port_from_output(
-        _session, {_index, PortKind::sample, port});
+        _session, {_index, PortKind::sample, port}, _node_ref_occurrence);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     details::iv_builder_record_failure(_session, std::current_exception(), {});

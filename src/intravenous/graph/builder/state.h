@@ -173,7 +173,7 @@ public:
   EventInputConfig event_input_config(NodeBundleHandle, size_t) const;
   NodeBundleHandle tiled_member(NodeBundleHandle, size_t) const;
   NodePorts const& typed_ports(NodeBundleHandle) const;
-  SamplePortRef sample_port_from_output(NodeBundlePortId);
+  SamplePortRef sample_port_from_output(NodeBundlePortId, std::optional<std::size_t> occurrence = {});
   EventPortRef event_port_from_output(NodeBundlePortId);
   SamplePortRef make_sample_port(ChannelTypeId, std::span<SampleOutputChannelId const>);
   SamplePortRef make_tiled_sample_port(ChannelTypeId, std::span<SamplePortRef const>);
@@ -253,9 +253,17 @@ public:
 
 private:
   struct SamplePortExpression {
+    struct Routing {
+      std::optional<ConfiguredSampleConnectionDetach> detach{};
+      std::optional<std::size_t> node_ref_occurrence{};
+    };
     ChannelTypeId channel_type = ChannelTypeId::mono;
     std::vector<SampleOutputChannelId> channels{};
-    std::vector<std::optional<ConfiguredSampleConnectionDetach>> detaches{};
+    std::vector<Routing> routing{};
+
+    ConfiguredSampleConnectionSource source(std::size_t index) const {
+      return {channels[index], routing[index].detach, routing[index].node_ref_occurrence};
+    }
   };
   struct EventPortExpression {
     EventTypeId type = EventTypeId::empty;

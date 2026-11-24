@@ -479,7 +479,7 @@ namespace iv {
             return TypedSamplePortTileRef<ChannelType>{
                 details::iv_builder_sample_port_from_output(
                     this->_session,
-                    NodeBundlePortId{this->_index, PortKind::sample, I})};
+                    NodeBundlePortId{this->_index, PortKind::sample, I}, this->_node_ref_occurrence)};
         }
 
         operator TypedSamplePortTileRef<ChannelType>() const

@@ -13,6 +13,7 @@ inline void classify_output_gain_consumers(ConfiguredGraph& graph)
     struct Consumer {
         NodeBundleHandle bundle;
         bool random_access;
+        std::optional<std::size_t> occurrence;
     };
     auto const& bundles = graph.node_bundles;
     std::map<NodeBundlePortId, std::vector<Consumer>, NodeBundlePortIdLess> consumers;
@@ -41,14 +42,16 @@ inline void classify_output_gain_consumers(ConfiguredGraph& graph)
             auto const random_access = !is_sequential(config);
             for (auto const& contribution : connection.source_channels) {
                 auto channel = contribution.channel;
+                auto occurrence = contribution.node_ref_occurrence;
                 sources[target.bundle].push_back(channel.bundle);
                 if (random_access) require_preparation(channel.bundle);
                 for (;;) {
-                    consumers[{channel.bundle, PortKind::sample, channel.port}].push_back({target.bundle, random_access});
+                    consumers[{channel.bundle, PortKind::sample, channel.port}].push_back({target.bundle, random_access, occurrence});
                     // Gain on a tiled member also applies to that channel of
                     // a connection authored on the tiled output.
                     if (!bundles.bundle(channel.bundle).is_tiled()) break;
                     channel = {bundles.tiled_member(channel.bundle, channel.channel), channel.port, 0};
+                    occurrence.reset();
                 }
             }
         }
@@ -70,7 +73,12 @@ inline void classify_output_gain_consumers(ConfiguredGraph& graph)
         auto found = consumers.find(*control.output);
         if (found == consumers.end()) continue;
         control.requires_preparation |= std::ranges::any_of(found->second, [&](Consumer const& consumer) {
-            return consumer.random_access || prepares[consumer.bundle];
+            if (!consumer.random_access && !prepares[consumer.bundle]) return false;
+            if (!control.output_symbolic_node) return true;
+            auto const occurrences = bundles.bundle(control.output->node_bundle_handle).node_ref_occurrences();
+            for (auto index = consumer.occurrence; index && *index < occurrences.size(); index = occurrences[*index].upstream)
+                if (occurrences[*index].symbolic_node_handle == control.output_symbolic_node) return true;
+            return false;
         });
     }
 }

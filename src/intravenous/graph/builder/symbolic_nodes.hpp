@@ -46,6 +46,9 @@ struct SymbolicNodeRecord {
   std::vector<SymbolicSampleOutputPortMapping> sample_outputs{};
   std::vector<SymbolicEventPortMapping> event_inputs{};
   std::vector<SymbolicEventPortMapping> event_outputs{};
+  // Complete expressions retain channel order even when two channels share
+  // the same concrete source.
+  std::vector<std::vector<SampleOutputRoute>> sample_output_routes{};
 
   constexpr bool has_lane() const {
     return std::ranges::none_of(source_infos, &SourceInfo::no_lane);
@@ -93,7 +96,7 @@ public:
       GraphBuilderNodeBundles&, SymbolicNodeHandle, NodeBundleHandle,
       SourceInfo const* source_info = nullptr);
   constexpr void attach_sample_output(
-      SymbolicNodeHandle, ChannelTypeId, std::span<SampleOutputChannelId const>,
+      SymbolicNodeHandle, ChannelTypeId, std::span<SampleOutputRoute const>,
       SourceInfo const&);
   constexpr void attach_event_output(
       SymbolicNodeHandle, EventTypeId, std::span<EventOutputPortId const>,
@@ -224,13 +227,16 @@ constexpr void GraphBuilderSymbolicNodes::attach_bundle_member(
 
 constexpr void GraphBuilderSymbolicNodes::attach_sample_output(
     SymbolicNodeHandle handle, ChannelTypeId channel_type,
-    std::span<SampleOutputChannelId const> channels,
+    std::span<SampleOutputRoute const> routes,
     SourceInfo const& source_info) {
-  if (channels.empty()) return;
+  if (routes.empty()) return;
   auto& record = _records[handle];
   if (!std::ranges::contains(record.source_infos, source_info))
     record.source_infos.push_back(source_info);
   if (record.sample_outputs.empty()) {
+    std::vector<SampleOutputChannelId> channels;
+    channels.reserve(routes.size());
+    for (auto const& route : routes) channels.push_back(route.channel);
     record.sample_outputs.push_back({
         .name = "value",
         .index = 0,
@@ -238,11 +244,15 @@ constexpr void GraphBuilderSymbolicNodes::attach_sample_output(
             .channel_type = channel_type,
             .sample_layout = SampleStreamLayout::planar,
         },
-        .channels = {channels.begin(), channels.end()},
-        .member_channels = {{channels.begin(), channels.end()}},
+        .channels = channels,
+        .member_channels = {std::move(channels)},
     });
   }
-  for (auto channel : channels) {
+  if (std::ranges::none_of(record.sample_output_routes, [&](auto const& existing) {
+        return std::ranges::equal(existing, routes);
+      })) record.sample_output_routes.emplace_back(routes.begin(), routes.end());
+  for (auto const& route : routes) {
+    auto const channel = route.channel;
     if (!std::ranges::contains(record.sample_outputs.front().channels, channel))
       record.sample_outputs.front().channels.push_back(channel);
     if (!std::ranges::contains(record.node_bundle_handles, channel.bundle))
@@ -350,6 +360,8 @@ constexpr std::vector<SymbolicNodeHandle> GraphBuilderSymbolicNodes::import_chil
         for (auto& channel : members) remap_sample_channel(channel);
       }
     }
+    for (auto& expression : child_record.sample_output_routes)
+      for (auto& route : expression) remap_sample_channel(route.channel);
     for (auto& mapping : child_record.event_inputs) {
       for (auto& port : mapping.node_bundle_ports) remap_node_bundle_port(port);
     }

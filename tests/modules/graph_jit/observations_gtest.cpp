@@ -70,7 +70,7 @@ TEST_F(GraphJitRuntimeFixture, SummedOutputObservationReducesTheMixedSamplesOnce
         .project_generation = 749, .graph = graph, .definitions = definitions,
         .observations = {.revision = 9, .probes = {{.id = 17, .operation = &operation,
             .kind = ObservationSourceKind::output, .channels = {0},
-            .output_sources = {{left, 0, 0}, {right, 0, 0}}, .available = true}}},
+            .output_sources = {{{left, 0, 0}}, {{right, 0, 0}}}, .available = true}}},
     });
     ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     GraphExecutor executor(resources);
