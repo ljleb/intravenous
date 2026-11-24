@@ -17,6 +17,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace iv::graph_jit::detail {
@@ -25,6 +26,9 @@ enum class PlannedConnectionData {
     sample,
     event,
 };
+
+std::optional<std::size_t> port_migration_index(
+    ConfiguredGraph const&, NodeBundlePortId, PortDirection, std::string_view name);
 
 using ::iv::graph_jit::PlannedDestinationAccess;
 using ::iv::graph_jit::PlannedDeliveryMechanism;

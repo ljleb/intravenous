@@ -343,17 +343,20 @@ std::string activity_migration_identity(
 }
 
 std::string manual_control_migration_identity(
+    ConfiguredGraph const& graph,
     PlannedGraphNode const& planned,
     ConfiguredManualControl const& control)
 {
     if (!planned.stable_identity) return {};
     // The owner and authored control identify the binding across selection reordering.
+    auto const input_name = graph.node_bundles.resolve_sample_input(control.input).config.name;
     std::ostringstream out;
     out << "graphjit.manual_control:"
         << migration_identity_fields(*planned.stable_identity)
         << ":input=" << control.id.port_name.size() << ':'
         << control.id.port_name
-        << ":port=" << control.input.port_index
+        << migration_port_identity_fields(input_name,
+            port_migration_index(graph, control.input, PortDirection::input, input_name))
         << ":source=" << control.id.node.instance_id.size() << ':' << control.id.node.instance_id;
     for (auto const& selector : control.id.node.path) std::visit([&](auto const& entry) {
         using T = std::remove_cvref_t<decltype(entry)>;
@@ -746,7 +749,7 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             for (std::size_t index = 0; index < control.delay_capacity; ++index)
                 std::memcpy(initial_bytes.data() + sizeof(initial) + (channel * control.delay_capacity + index) * sizeof(Sample),
                     &control.delay_initial_values[channel], sizeof(Sample));
-        auto identity = manual_control_migration_identity(*planned, control.configured);
+        auto identity = manual_control_migration_identity(input.graph, *planned, control.configured);
         if (control.boundary_source && !identity.empty()) {
             identity += ":boundary_delay=" + std::to_string(control.delay);
             for (auto coefficient : control.channel_coefficients) identity += ':' + std::to_string(std::bit_cast<std::uint32_t>(coefficient));
@@ -1349,7 +1352,8 @@ plan_sample_realtime_port_state_realizations(
                             .node = *planned->stable_identity,
                             .kind = PortKind::sample,
                             .port_name = outputs[source_port->port_index].name,
-                            .port_index = source_port->port_index,
+                            .port_index = port_migration_index(graph, *source_port, PortDirection::output,
+                                outputs[source_port->port_index].name),
                         };
                         view.producer_channel = representation_channel;
                         for (auto const& connection : connections.sample_connections) {
@@ -2006,7 +2010,9 @@ plan_event_realtime_port_state_realizations(
                             .node = *planned->stable_identity,
                             .kind = PortKind::event,
                             .port_name = outputs[source.source.port].name,
-                            .port_index = source.source.port,
+                            .port_index = port_migration_index(graph,
+                                {source.source.bundle, PortKind::event, source.source.port},
+                                PortDirection::output, outputs[source.source.port].name),
                         };
                     }
                 }

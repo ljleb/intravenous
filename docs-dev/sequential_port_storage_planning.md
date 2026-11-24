@@ -472,14 +472,14 @@ exposed portion according to ordinary fresh-state semantics; do not fabricate ol
 consumer history from unrelated source persistence merely because source data happens
 to exist.
 
-The stable migration identity belongs to the concrete node port, not the
-connection or storage plan: user-instantiated node/module identity, symbolic-node and
-concrete-member path, port direction/index, channel index or event stream, and a
-state-role discriminator. Port incidence classes, connection IDs, allocation
-indices, compact/ring kind, capacity and offsets are generation-local storage facts.
-Any storage plan that aliases/elides one of these conceptual state pieces must retain
-cold metadata capable of reading that semantic window again during a later graph
-transition.
+The stable migration identity belongs to the concrete node port. Once the owner
+has been matched across revisions, the port keeps its state by its unique nonempty
+name within its direction and kind. Include the configured index for unnamed ports
+and duplicate names. Retain the channel index or event stream and state role as
+part of the key. Port incidence, connection IDs, allocation indices, storage kind,
+capacity and offsets describe each realization. A plan that shares or elides a
+state piece retains metadata for reading the semantic window during a later graph
+transition. See the [earlier positional rule](historical/positional_port_migration_identity_2026-11-23.md).
 
 Newly settled (2026-11-09, human co-author): observable state survives an edit exactly
 when its owner is identified in both graphs. New anonymous concrete nodes start

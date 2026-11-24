@@ -31,6 +31,26 @@
 
 namespace iv::graph_jit::detail {
 
+std::optional<std::size_t> port_migration_index(
+    ConfiguredGraph const& graph, NodeBundlePortId port,
+    PortDirection direction, std::string_view name)
+{
+    if (name.empty()) return port.port_index;
+    auto const& bundles = graph.node_bundles;
+    auto const& bundle = bundles.bundle(port.node_bundle_handle);
+    auto const boundary = bundle.subgraph_boundary_handle();
+    auto const& ports = boundary ? bundles.bundle(*boundary).boundary_ports()
+        : bundle.is_boundary() ? bundle.boundary_ports()
+        : bundles.typed_ports(port.node_bundle_handle);
+    auto const same_name_and_kind = [&](auto const& config) {
+        return config.name == name && is_continuous(config) == (port.port_kind == PortKind::sample);
+    };
+    auto const unique = direction == PortDirection::input
+        ? std::ranges::count_if(ports.inputs(), same_name_and_kind) == 1
+        : std::ranges::count_if(ports.outputs(), same_name_and_kind) == 1;
+    return unique ? std::nullopt : std::optional(port.port_index);
+}
+
 bool reads_output_gain_source_indices(ConfiguredGraph const& graph, NodeBundlePortId input)
 {
     auto const& node = graph.node_bundles.bundle(input.node_bundle_handle);
@@ -164,6 +184,7 @@ void append_realtime_port_state(
     NodeBundlePortId configured_port,
     PortDirection direction,
     std::string const& port_name,
+    std::optional<std::size_t> port_index,
     std::optional<std::size_t> channel,
     RealtimePortStateRole role,
     std::size_t extent_samples,
@@ -180,7 +201,7 @@ void append_realtime_port_state(
             .direction = direction,
             .kind = configured_port.port_kind,
             .port_name = port_name,
-            .port_index = configured_port.port_index,
+            .port_index = port_index,
             .channel = channel,
             .role = role,
         };
@@ -197,6 +218,7 @@ void append_realtime_port_state(
 }
 
 void inventory_realtime_port_states(
+    ConfiguredGraph const& graph,
     NodePorts const& ports,
     NodeBundleHandle bundle,
     ResolvedPortRealization const& realization,
@@ -209,12 +231,16 @@ void inventory_realtime_port_states(
                                     ChannelLayout layout,
                                     RealtimePortStateRole role,
                                     std::size_t extent) {
+        if (extent == 0) return;
+        auto const identity_index = stable_node
+            ? port_migration_index(graph, port, direction, name) : std::nullopt;
         for (std::size_t channel = 0; channel < channel_count(layout); ++channel) {
             append_realtime_port_state(
                 requirements,
                 port,
                 direction,
                 name,
+                identity_index,
                 channel,
                 role,
                 extent,
@@ -239,14 +265,18 @@ void inventory_realtime_port_states(
     for (std::size_t index = 0; index < event_inputs.size(); ++index) {
         auto const& input = event_inputs[index];
         if (!is_sequential(input)) continue;
+        auto const extent = realization.event_input(bundle, index).history;
+        if (extent == 0) continue;
+        auto const port = NodeBundlePortId{bundle, PortKind::event, index};
         append_realtime_port_state(
             requirements,
-            NodeBundlePortId{bundle, PortKind::event, index},
+            port,
             PortDirection::input,
             input.name,
+            stable_node ? port_migration_index(graph, port, PortDirection::input, input.name) : std::nullopt,
             std::nullopt,
             RealtimePortStateRole::sequential_input_history,
-            realization.event_input(bundle, index).history,
+            extent,
             stable_node);
     }
 
@@ -277,14 +307,18 @@ void inventory_realtime_port_states(
         auto const& output = event_outputs[index];
         if (!is_sequential_output(output)) continue;
         auto const& resolved = realization.event_output(bundle, index);
+        auto const extent = saturating_add(resolved.history, resolved.latency);
+        if (extent == 0) continue;
+        auto const port = NodeBundlePortId{bundle, PortKind::event, index};
         append_realtime_port_state(
             requirements,
-            NodeBundlePortId{bundle, PortKind::event, index},
+            port,
             PortDirection::output,
             output.name,
+            stable_node ? port_migration_index(graph, port, PortDirection::output, output.name) : std::nullopt,
             std::nullopt,
             RealtimePortStateRole::tick_output_history,
-            saturating_add(resolved.history, resolved.latency),
+            extent,
             stable_node);
     }
 }
@@ -305,14 +339,14 @@ std::expected<void, std::string> inventory_nodes(
         return bundle < identities.size() ? identities[bundle] : std::nullopt;
     };
     auto identity_for_port_node = [&](NodeBundleHandle generated, NodeBundlePortId port,
-                                      std::string_view name) -> std::optional<StableConcreteNodeId> {
+                                      PortDirection direction, std::string_view name) -> std::optional<StableConcreteNodeId> {
         auto const owner = identity_for(port.node_bundle_handle);
         if (!owner) return std::nullopt;
         return StableConcreteNodeId{
             .graph = std::string(graph.node_bundles.bundle(generated).type_identity()) + ':'
                 + migration_identity_fields(*owner),
-            .symbolic_node = std::string(name),
-            .direct_member = port.port_index,
+            .symbolic_node = migration_port_identity_fields(name,
+                port_migration_index(graph, port, direction, name)),
         };
     };
     bool root_boundary_seen = false;
@@ -386,12 +420,12 @@ std::expected<void, std::string> inventory_nodes(
             auto stable_identity = identity_for(current);
             if (auto control = coverage_control_inputs.find(current); control != coverage_control_inputs.end()) {
                 auto const input = control->second;
-                stable_identity = identity_for_port_node(current, input,
+                stable_identity = identity_for_port_node(current, input, PortDirection::input,
                     graph.node_bundles.resolve_sample_input(input).config.name);
             }
             if (view.output_gain_source) {
                 auto const source = *view.output_gain_source;
-                if (auto derived = identity_for_port_node(current, source,
+                if (auto derived = identity_for_port_node(current, source, PortDirection::output,
                         graph.node_bundles.resolve_sample_output(source).config.name))
                     stable_identity = std::move(derived);
             }
@@ -399,17 +433,18 @@ std::expected<void, std::string> inventory_nodes(
             if (view.resolved_module_input) {
                 auto const origin = *view.resolved_module_input;
                 auto owner = identity_for(origin.node_bundle_handle);
+                auto const name = origin.port_kind == PortKind::sample
+                    ? view.ports->sample_input(0).name : view.ports->event_input(0).name;
                 if (owner) module_input = StableInputPortId{
                     .node = std::move(*owner), .kind = origin.port_kind,
-                    .port_name = origin.port_kind == PortKind::sample
-                        ? view.ports->sample_input(0).name : view.ports->event_input(0).name,
-                    .port_index = origin.port_index,
+                    .port_name = name,
+                    .port_index = port_migration_index(graph, origin, PortDirection::input, name),
                 };
                 if (module_input && configured_bundles.snapshot) {
                     stable_identity = StableConcreteNodeId{
                         .graph = "compiler.module_input:" + migration_identity_fields(module_input->node),
-                        .symbolic_node = module_input->kind == PortKind::sample ? "sample" : "event",
-                        .direct_member = module_input->port_index,
+                        .symbolic_node = (module_input->kind == PortKind::sample ? "sample" : "event")
+                            + migration_port_identity_fields(module_input->port_name, module_input->port_index),
                     };
                 }
             }
@@ -430,6 +465,7 @@ std::expected<void, std::string> inventory_nodes(
             });
             auto const first_state = plan.realtime_port_states.states.size();
             inventory_realtime_port_states(
+                graph,
                 *view.ports,
                 current,
                 realization,
@@ -439,8 +475,10 @@ std::expected<void, std::string> inventory_nodes(
                 for (std::size_t state = first_state; state < plan.realtime_port_states.states.size(); ++state) {
                     auto& requirement = plan.realtime_port_states.states[state];
                     requirement.resolved_module_input = module_input;
-                    if (requirement.stable_identity)
+                    if (requirement.stable_identity) {
+                        requirement.stable_identity->port_name = module_input->port_name;
                         requirement.stable_identity->port_index = module_input->port_index;
+                    }
                 }
             }
         });
@@ -3352,7 +3390,7 @@ std::expected<void, std::string> plan_background_connections(
                 .node = *node_plan.stable_identity,
                 .kind = port.port_kind,
                 .port_name = name,
-                .port_index = port.port_index,
+                .port_index = port_migration_index(graph, port, direction, name),
             };
         } else if (direction == PortDirection::input
             && node_plan.stable_identity) {
@@ -3360,7 +3398,7 @@ std::expected<void, std::string> plan_background_connections(
                 .node = *node_plan.stable_identity,
                 .kind = port.port_kind,
                 .port_name = name,
-                .port_index = port.port_index,
+                .port_index = port_migration_index(graph, port, direction, name),
             };
         }
         if (direction == PortDirection::input && node_plan.resolved_module_input)
@@ -4344,6 +4382,7 @@ void record_input_in_flight(
     NodeBundlePortId target,
     std::optional<std::size_t> channel,
     std::string const& port_name,
+    std::optional<std::size_t> port_index,
     std::optional<StableConcreteNodeId> const& stable_node,
     std::size_t in_flight,
     bool realtime_fed)
@@ -4369,6 +4408,7 @@ void record_input_in_flight(
         target,
         PortDirection::input,
         port_name,
+        port_index,
         channel,
         RealtimePortStateRole::sequential_input_history,
         0,
@@ -4487,12 +4527,16 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
             return std::unexpected(
                 "GraphJit in-flight input state lost its planned concrete node");
         }
+        auto const& name = inputs[target.port_index].name;
+        auto const identity_index = planned->stable_identity && realtime_fed
+            ? port_migration_index(graph, target, PortDirection::input, name) : std::nullopt;
         for (std::size_t channel = 0; channel < channels; ++channel) {
             record_input_in_flight(
                 plan.realtime_port_states,
                 target,
                 channel,
-                inputs[target.port_index].name,
+                name,
+                identity_index,
                 planned->stable_identity,
                 in_flight[channel],
                 realtime_fed);
@@ -4550,6 +4594,9 @@ std::expected<void, std::string> inventory_sequential_input_in_flight_values(
                 target,
                 std::nullopt,
                 inputs[target.port_index].name,
+                planned->stable_identity && realtime_fed
+                    ? port_migration_index(graph, target, PortDirection::input, inputs[target.port_index].name)
+                    : std::nullopt,
                 planned->stable_identity,
                 in_flight,
                 realtime_fed);
@@ -5096,8 +5143,9 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
         auto const& identity = *requirement.stable_identity;
         if (identity.direction != PortDirection::input
             || identity.kind != configured_port.port_kind
-            || identity.port_index != (requirement.resolved_module_input
-                ? requirement.resolved_module_input->port_index : configured_port.port_index)
+            || (requirement.resolved_module_input
+                ? identity.port_index != requirement.resolved_module_input->port_index
+                : identity.port_index && *identity.port_index != configured_port.port_index)
             || identity.role
                 != RealtimePortStateRole::sequential_input_history) {
             return std::unexpected(
@@ -5126,9 +5174,7 @@ std::expected<std::string, std::string> input_timeline_migration_identity(
     out << prefix << ':' << migration_identity_fields(identity.node)
         << ":direction=" << static_cast<unsigned>(identity.direction)
         << ":kind=" << static_cast<unsigned>(identity.kind)
-        << ":port_name=" << identity.port_name.size() << ':'
-        << identity.port_name
-        << ":port_index=" << identity.port_index
+        << migration_port_identity_fields(identity.port_name, identity.port_index)
         << ":role=" << static_cast<unsigned>(identity.role);
     return std::move(out).str();
 }
@@ -5144,7 +5190,7 @@ std::optional<std::string> raw_region_node_identity(
         auto const& origin = *node->resolved_module_input;
         return "{module-input:" + migration_identity_fields(origin.node)
             + ":kind=" + std::to_string(static_cast<unsigned>(origin.kind))
-            + ":port=" + std::to_string(origin.port_index) + '}';
+            + migration_port_identity_fields(origin.port_name, origin.port_index) + '}';
     }
     if (!node->stable_identity) return std::nullopt;
     return '{' + migration_identity_fields(*node->stable_identity) + '}';

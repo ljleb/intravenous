@@ -273,6 +273,12 @@ TEST(RealtimePortStateTransition, MatchesStableStateAcrossGenerationLocalPorts)
         },
     };
 
+    for (auto& state : previous.states) state.stable_identity->port_index.reset();
+    for (auto& state : current.states) {
+        state.stable_identity->port_index.reset();
+        ++state.configured_port.port_index;
+    }
+
     auto planned = iv::graph_jit::plan_realtime_port_state_transition(
         previous,
         realizations_for(previous),

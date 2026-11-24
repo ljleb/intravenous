@@ -42,7 +42,8 @@ struct StableRealtimePortStateId {
     PortDirection direction = PortDirection::input;
     PortKind kind = PortKind::sample;
     std::string port_name{};
-    std::size_t port_index = 0;
+    // Used only when the name cannot uniquely identify the configured port.
+    std::optional<std::size_t> port_index = 0;
     std::optional<std::size_t> channel{};
     RealtimePortStateRole role =
         RealtimePortStateRole::sequential_input_history;

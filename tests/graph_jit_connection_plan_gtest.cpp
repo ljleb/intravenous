@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -162,10 +163,11 @@ struct TimedSamplePass {
     void tick_block(iv::TickBlockContext<TimedSamplePass> const&) const {}
 };
 
-struct TimedStereoStateNode {
+template<bool InsertEarlierPorts>
+struct TimedStereoStateNodeWithPorts {
     static constexpr auto inputs()
     {
-        return std::tuple{
+        auto const ports = std::tuple{
             iv::input<iv::Sample>("in", iv::InputAccess::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
@@ -175,11 +177,17 @@ struct TimedStereoStateNode {
                 }),
             iv::event_input("events_in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
+        if constexpr (InsertEarlierPorts) {
+            return std::tuple_cat(std::tuple{
+                iv::input<iv::Sample>("sidechain", iv::InputAccess::sequential),
+                iv::event_input("other_events_in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            }, ports);
+        } else return ports;
     }
 
     static constexpr auto outputs()
     {
-        return std::tuple{
+        auto const ports = std::tuple{
             iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
@@ -189,21 +197,29 @@ struct TimedStereoStateNode {
                 }),
             iv::event_output("events_out", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
+        if constexpr (InsertEarlierPorts) {
+            return std::tuple_cat(std::tuple{
+                iv::output<iv::Sample>("aux", iv::OutputProduction::sequential),
+                iv::event_output("other_events_out", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+            }, ports);
+        } else return ports;
     }
 
     void constrain_ports(
-        iv::ConstrainPortsContext<TimedStereoStateNode>& ctx) const
+        iv::ConstrainPortsContext<TimedStereoStateNodeWithPorts>& ctx) const
     {
-        ctx.input<"in">().history() = 5;
-        ctx.input<"events_in">().history() = 7;
-        ctx.output<"out">().history() = 3;
-        ctx.output<"out">().latency() = 2;
-        ctx.output<"events_out">().history() = 11;
-        ctx.output<"events_out">().latency() = 13;
+        ctx.template input<"in">().history() = 5;
+        ctx.template input<"events_in">().history() = 7;
+        ctx.template output<"out">().history() = 3;
+        ctx.template output<"out">().latency() = 2;
+        ctx.template output<"events_out">().history() = 11;
+        ctx.template output<"events_out">().latency() = 13;
     }
 
-    void tick_block(iv::TickBlockContext<TimedStereoStateNode> const&) const {}
+    void tick_block(iv::TickBlockContext<TimedStereoStateNodeWithPorts> const&) const {}
 };
+
+using TimedStereoStateNode = TimedStereoStateNodeWithPorts<false>;
 
 struct PlainSamplePass {
     static constexpr auto inputs()
@@ -1093,7 +1109,7 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
             graph_jit::PortDirection::input);
         EXPECT_EQ(input->stable_identity->kind, PortKind::sample);
         EXPECT_EQ(input->stable_identity->port_name, "in");
-        EXPECT_EQ(input->stable_identity->port_index, 0u);
+        EXPECT_FALSE(input->stable_identity->port_index.has_value());
         EXPECT_EQ(input->stable_identity->channel, channel);
         EXPECT_EQ(
             input->stable_identity->role,
@@ -1153,6 +1169,66 @@ TEST(GraphJitConnectionPlan, InventoriesStableNodeOwnedRealtimePortState)
                     && state.direction == graph_jit::PortDirection::output;
             }),
         1);
+}
+
+TEST(GraphJitConnectionPlan, NamedPortsKeepTheirMigrationIdentityWhenIndicesMove)
+{
+    using namespace iv;
+    auto const make_plan = []<bool InsertEarlierPorts>()
+        -> std::expected<graph_jit::detail::ConnectionAnalysisPlan, std::string> {
+        GraphBuilder builder;
+        auto const node = details::configure_concrete_node<TimedStereoStateNodeWithPorts<InsertEarlierPorts>>(builder);
+        auto const bundle = node.node_bundle_handle();
+        builder.outputs();
+        auto const graph = std::move(builder).finish();
+        auto const realization = graph_jit::resolve_port_realization(graph);
+        if (!realization) return std::unexpected(realization.error());
+        graph_jit::BundleMigrationIdentities identities(graph.node_bundles.size());
+        identities[bundle] = graph_jit::StableConcreteNodeId{.project_instance = "timed"};
+        auto topology = graph_jit::detail::ConnectionTopology::build(
+            graph, *realization, 64, {}, {}, identities);
+        if (!topology) return std::unexpected(topology.error());
+        return std::move(*topology).build_analysis_plan({}, {});
+    };
+    auto const before = make_plan.operator()<false>();
+    ASSERT_TRUE(before) << before.error();
+    auto const after = make_plan.operator()<true>();
+    ASSERT_TRUE(after) << after.error();
+    auto const& previous = before->realtime_port_states.states;
+    auto const& current = after->realtime_port_states.states;
+    ASSERT_EQ(previous.size(), 6u);
+    ASSERT_EQ(current.size(), previous.size());
+    for (auto const& state : previous) {
+        ASSERT_TRUE(state.stable_identity);
+        auto const match = std::ranges::find(current, state.stable_identity,
+            &graph_jit::RealtimePortStateRequirement::stable_identity);
+        ASSERT_NE(match, current.end());
+        EXPECT_EQ(state.configured_port.port_index, 0u);
+        EXPECT_EQ(match->configured_port.port_index, 1u);
+    }
+    auto const& old_input = previous.front().configured_port;
+    auto const new_input = NodeBundlePortId{old_input.node_bundle_handle, old_input.port_kind, 1};
+    auto const old_timeline = graph_jit::detail::input_timeline_migration_identity(
+        before->realtime_port_states, old_input, "timeline");
+    auto const new_timeline = graph_jit::detail::input_timeline_migration_identity(
+        after->realtime_port_states, new_input, "timeline");
+    ASSERT_TRUE(old_timeline) << old_timeline.error();
+    ASSERT_TRUE(new_timeline) << new_timeline.error();
+    EXPECT_FALSE(old_timeline->empty());
+    EXPECT_EQ(*old_timeline, *new_timeline);
+}
+
+TEST(GraphJitConnectionPlan, AmbiguousAndUnnamedPortsKeepTheirConfiguredIndices)
+{
+    using namespace iv;
+    ConfiguredGraph graph;
+    ConcreteNode node;
+    node.ports.input_configs = {InputConfig{"audio"}, InputConfig{"audio"}, InputConfig{""}};
+    auto const bundle = graph.node_bundles.append_concrete(std::move(node));
+    for (std::size_t index = 0; index < 3; ++index) {
+        EXPECT_EQ(graph_jit::detail::port_migration_index(graph, {bundle, PortKind::sample, index},
+            graph_jit::PortDirection::input, index == 2 ? "" : "audio"), index);
+    }
 }
 
 TEST(GraphJitConnectionPlan, KeepsAnonymousRealtimePortStateGenerationLocal)

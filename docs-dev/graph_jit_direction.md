@@ -1812,13 +1812,13 @@ ring capacity, compact/full representation choice, root block size, fanout count
 connection incidence are not semantic identities.
 
 Compiler-managed port-state identity must therefore be rooted in the stable concrete
-node path already present in configured/project graph metadata: user-instantiated
-leaf/module identity, symbolic-node/direct-member path, port direction and index,
-channel index (or event stream), plus a small state-role discriminator such as
-`input_history`, `output_history`, or `output_latency`. Ordinary connection identity,
-allocation number, incidence-atom index, buffer kind, capacity, and byte offset are
-not part of that identity. A connection may disappear or change while the destination
-input state survives.
+node path already present in configured/project graph metadata. After matching the
+owner, identify the port within its direction and kind by a unique nonempty name.
+For unnamed ports or duplicate names, include the configured port index. Keep the
+channel index or event stream and the state role, such as `input_history`,
+`output_history`, or `output_latency`. Each realization addresses storage using its
+own configured index. Connection edits and allocation changes can preserve the
+destination's state. See the [earlier positional rule](historical/positional_port_migration_identity_2026-11-23.md).
 
 Each compiled realization must carry cold metadata that explains how those semantic
 state pieces are represented in that realization. A state piece may be a contiguous

@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -83,11 +84,20 @@ inline std::string migration_identity_fields(StableConcreteNodeId const& node)
         + ":member=" + std::to_string(node.direct_member);
 }
 
+inline std::string migration_port_identity_fields(
+    std::string_view name, std::optional<std::size_t> index)
+{
+    auto result = ":port_name=" + std::to_string(name.size()) + ':' + std::string(name);
+    if (index) result += ":port_index=" + std::to_string(*index);
+    return result;
+}
+
 struct StableOutputPortId {
     StableConcreteNodeId node{};
     PortKind kind = PortKind::sample;
     std::string port_name{};
-    std::size_t port_index = 0;
+    // A unique, nonempty port name needs no positional discriminator.
+    std::optional<std::size_t> port_index = 0;
 
     bool operator==(StableOutputPortId const&) const = default;
     auto operator<=>(StableOutputPortId const&) const = default;
@@ -97,7 +107,7 @@ struct StableInputPortId {
     StableConcreteNodeId node{};
     PortKind kind = PortKind::sample;
     std::string port_name{};
-    std::size_t port_index = 0;
+    std::optional<std::size_t> port_index = 0;
 
     bool operator==(StableInputPortId const&) const = default;
     auto operator<=>(StableInputPortId const&) const = default;
