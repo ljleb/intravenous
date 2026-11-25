@@ -18,7 +18,7 @@ type Gesture = {
 };
 const displayValue = (value: number) => Number(value.toPrecision(6)).toString();
 export function manualKnobStatus(name: string, value: number, canReset: boolean, port = ""): ManualControlHint {
-    return { text: `${port ? `${port} · ` : ""}${name} ${displayValue(value)}`,
+    return { text: `${name} ${displayValue(value)}${port ? ` · ${port}` : ""}`,
         shortcuts: `↑↓ · ${rightClickHint} value` + (canReset ? " · Dbl-click reset" : "") + " · C/V copy/paste" };
 }
 // Owned by the webview root, never by a presentation widget. Components can
@@ -297,7 +297,7 @@ export class ManualControlGestures {
         if (!active || (control && manualControlKey(control) !== manualControlKey(active.control))) return;
         this.active = null;
         const key = manualControlKey(active.control);
-        if (active.control.inputName !== undefined && this.hovered && manualControlKey(this.hovered) === key)
+        if (this.hovered && manualControlKey(this.hovered) === key)
             this.retainedInteraction = active.interactionId;
         this.ending.set(key, {
             interactionId: active.interactionId, control: active.control, value: active.value, phase: "ending",

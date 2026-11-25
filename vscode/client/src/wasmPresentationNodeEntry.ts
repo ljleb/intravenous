@@ -3,7 +3,7 @@ import { createWasmPresentationEndpoint, wasmPresentationReplyTransfers, type Wa
 
 if (!parentPort) throw new Error("Missing presentation worker port");
 const port = parentPort;
-const receive = createWasmPresentationEndpoint();
+const receive = createWasmPresentationEndpoint((progress) => port.postMessage(progress));
 port.on("message", (request: WasmPresentationRequest) => {
     const reply = receive(request);
     port.postMessage(reply, wasmPresentationReplyTransfers(reply));

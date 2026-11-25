@@ -2652,12 +2652,25 @@ still selects one control per physical input. Retaining several controls in that
 loop alone would still leave project cables in one set of contributions at the
 concrete receiver.
 
-The owner clarified that C++ wiring is fixed. The configured graph records it
-in `ConfiguredSampleConnection::source_owned`. Effective connection analysis
-keeps these wires during a gesture. A Sequential module input now receives its
-wires individually at its resolution stage, preserving their origin for this
-decision. A live knob participates alongside any retained sources. This change
-awaits native runtime tests.
+**C++ wiring and internal defaults (2026-11-24).** The owner changed the
+takeover rule. `configure_manual_controls()` now uses `enabled_by_default`
+only for the outer interface of a project instance. Internal knobs keep their
+declared values and start disabled. `compile_impl()` gives an enabled or live
+concrete knob priority over a symbolic audition using the knob's actual state.
+`SampleInputTakeovers` excludes C++ wiring from port realization and execution
+routing where an enabled knob or project cable claims the physical input.
+An enabled concrete fallback knob also excludes symbolic cables mapped to that
+input. Direct project cables still supply the input wherever they have data.
+Effective structural routing also replaces C++ sources for a live gesture and
+limits symbolic project-wire replacement to the edited symbolic input.
+If takeover opens a feedback loop, detach validation checks the original
+structural return path without adding its port constraints to the effective graph.
+Realtime scheduling keeps a retained Sample delay between execution regions
+and orders its producer before its consumer. Event detach scheduling still
+assumes that the producer and consumers share one execution region.
+The configured C++ routes remain available to graph scope and to a later
+compilation when the project clears the takeover. These changes await native
+runtime tests. See the [former rule and implementation](historical/internal_knob_defaults_and_fixed_cpp_wiring_2026-11-24.md).
 
 `resolve_module_inputs()` provides an independently scheduled Sequential
 input for a package boundary. At the concrete receiver, `SampleConnectionPlan`

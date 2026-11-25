@@ -87,13 +87,14 @@ TEST_F(GraphJitRuntimeFixture, SummedOutputObservationReducesTheMixedSamplesOnce
 
 TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOverride)
 {
-    enum class InputGesture { settled, project_wire, source_owned_wire };
-    for (auto mode : {InputGesture::settled, InputGesture::project_wire, InputGesture::source_owned_wire}) {
+    enum class InputGesture { cpp_wire, project_gesture, cpp_gesture, settled_knob, settled_symbolic_knob };
+    for (auto mode : {InputGesture::cpp_wire, InputGesture::project_gesture,
+             InputGesture::cpp_gesture, InputGesture::settled_knob, InputGesture::settled_symbolic_knob}) {
         auto graph = std::make_shared<ConfiguredGraph>(
             *configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module"));
         auto const bundles = concrete_bundles(*graph);
         ASSERT_GE(bundles.size(), 2u);
-        if (mode == InputGesture::project_wire) {
+        if (mode == InputGesture::project_gesture) {
             auto const wires = graph->connections.configured_sample_connections();
             std::vector samples(wires.begin(), wires.end());
             auto wire = std::ranges::find_if(samples, [&](auto const& connection) {
@@ -101,16 +102,27 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOv
             });
             ASSERT_NE(wire, samples.end());
             wire->source_owned = false;
+            wire->target_symbolic_node.reset();
             graph->connections = GraphBuilderConnections::from_configured_connections(
                 samples, graph->connections.configured_event_connections());
         }
-        if (mode != InputGesture::settled) {
+        if (mode != InputGesture::cpp_wire) {
+            bool const symbolic = mode == InputGesture::settled_symbolic_knob;
+            bool const settled = mode == InputGesture::settled_knob || symbolic;
             graph->manual_controls.push_back({
                 .id = {.node = {.instance_id = "sink"}, .port_name = "in"},
                 .input = {bundles[1], PortKind::sample, 0},
                 .settled_value = .25f,
-                .override_connections = true, .enabled = false,
+                .override_connections = !settled, .enabled = settled,
             });
+            if (symbolic) {
+                auto const target = bundles[1];
+                auto const symbol = graph->symbolic_nodes.create("sink", graph->node_bundles.bundle(target).type_identity());
+                graph->symbolic_nodes.attach_bundle_member(graph->node_bundles, symbol, target);
+                auto& control = graph->manual_controls.back();
+                control.id.node.path.push_back(ProjectSymbolicNodeSelector{.source_identity = "sink"});
+                control.input_symbolic_node = symbol;
+            }
         }
         auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
         auto compiled = jit->compile(GraphJitCompileRequest{
@@ -130,8 +142,7 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOv
         ASSERT_TRUE(frame->values[0].value.captured);
         auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
         EXPECT_EQ(level.samples, 32u);
-        auto const expected = mode == InputGesture::project_wire ? .25
-            : mode == InputGesture::source_owned_wire ? 34.25 : 34.0;
+        auto const expected = mode == InputGesture::cpp_wire ? 34.0 : .25;
         EXPECT_DOUBLE_EQ(level.peak, expected);
     }
 }
@@ -586,17 +597,18 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
     };
     for (auto const& test : {
              Case{"iv.test.replay.coverage_manual_window", "in", "in", 18,
-                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}},
-             // The knob adds its own Region during the gesture. The fixed C++ wire still contributes.
+                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}, false, false, 1, true},
+             Case{"iv.test.replay.coverage_manual_window", "in", "in", 18,
+                 {{range(18, 26), std::vector<float>(8, .25f)}}},
              Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
-                 {{range(18, 26), std::vector<float>(8, .25f)}, {range(20, 24), {4, 5, 6, 7}}}, true},
+                 {{range(18, 26), std::vector<float>(8, .25f)}}},
              // A project wire yields to the gesture. Only the requested endpoints of the manual Region are sampled.
              Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
                  {{range(18, 26), {.25f, .25f}}}, true, false, 7, true},
              Case{"iv.test.replay.coverage_manual_window", "coverage", "coverage", 18,
-                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}, false, true},
+                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}, false, true, 1, true},
              Case{"iv.test.automation.transformed_sparse_curve", "gain", "gain", 0,
-                 {{range(0, 8), {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}}}},
+                 {{range(0, 8), {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}}}, false, false, 1, true},
          }) {
         SCOPED_TRACE(::testing::Message{} << test.module << " control=" << test.control
             << " observed input=" << test.observed_input << " public=" << test.public_input
@@ -615,7 +627,10 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
             });
             ASSERT_NE(wire, samples.end());
             ASSERT_TRUE(wire->source_owned);
+            auto cpp_wire = *wire;
             wire->source_owned = false;
+            wire->target_symbolic_node.reset();
+            samples.push_back(std::move(cpp_wire));
             configured->connections = GraphBuilderConnections::from_configured_connections(
                 samples, configured->connections.configured_event_connections());
         }

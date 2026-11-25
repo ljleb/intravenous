@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ManualControlInteractions, manualControlKey, resolveManualControl, type ManualControlDescriptor, type ManualControlId,
-    type ManualControlTransport } from "../src/manualControls";
+import { ManualControlInteractions, manualControlKey, resolveManualControl, type ManualControlAction,
+    type ManualControlDescriptor, type ManualControlId, type ManualControlTransport } from "../src/manualControls";
 import { ManualControlGestures } from "../src/manualControlGesture";
 import { formatStatusHint, playbackShortcut } from "../src/statusBarText";
 import type { GraphScope } from "../src/graphScope";
@@ -548,10 +548,10 @@ test("interaction hints describe the current gesture and clear with its hover", 
     const gestures = new ManualControlGestures(() => {}, () => "drag", () => {});
     assert.equal(gestures.hint(), null);
     gestures.hover(control, descriptor, { defaultValue: 440 }, "Sequential input");
-    assert.match(formatStatusHint(gestures.hint()!, false), /^Sequential input.*↑↓.*🖱︎R value.*Dbl-click reset/);
-    assert.equal(formatStatusHint(gestures.hint()!, true), "Sequential input · frequency 440");
+    assert.match(formatStatusHint(gestures.hint()!, false), /^frequency 440 · Sequential input.*↑↓.*🖱︎R value.*Dbl-click reset/);
+    assert.equal(formatStatusHint(gestures.hint()!, true), "frequency 440 · Sequential input");
     gestures.refresh(control, { ...descriptor, value: 450 }, { defaultValue: 440 });
-    assert.match(gestures.hint()!.text, /^Sequential input · frequency 450/);
+    assert.equal(gestures.hint()!.text, "frequency 450 · Sequential input");
     gestures.scrub(control, descriptor, 1, 0, 1);
     gestures.changeSensitivity(100);
     assert.match(gestures.hint()!.text, /0.5×/);
@@ -592,6 +592,24 @@ test("a disabled knob distinguishes predictive hover, active drag and held overr
     gestures.receive([{ interactionId: "drag:2", control, value: 440, phase: "failed" }]);
     assert.equal(gestures.activity(control), "hover");
     assert.equal(disabled.enabled, false);
+});
+
+test("a unity output keeps the retained highlight after a click without scrubbing", () => {
+    const gain: ManualControlId = { node: control.node, outputName: "main" };
+    const unity = { ...descriptor, value: 1 };
+    const actions: ManualControlAction[] = [];
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => "gain", () => {});
+    gestures.hover(gain, unity);
+    assert.equal(gestures.activity(gain), "hover");
+    assert.equal(gestures.scrub(gain, unity, 1, 0, 1), true);
+    assert.equal(gestures.activity(gain), "active");
+    gestures.release(1);
+    gestures.receive([{ interactionId: "gain", control: gain, value: 1, phase: "settled" }]);
+    assert.equal(gestures.activity(gain), "retained");
+    assert.deepEqual(actions.map(({ action }) => action), ["hover", "begin", "end"]);
+    assert.equal(gestures.currentValue(gain, unity), 1);
+    gestures.unhover(gain);
+    assert.equal(gestures.activity(gain), "idle");
 });
 
 test("release keeps the final displayed value while older acknowledgements arrive", () => {

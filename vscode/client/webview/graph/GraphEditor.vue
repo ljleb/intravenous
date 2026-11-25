@@ -13,7 +13,7 @@ import { GraphUiRecording } from "./graphUiRecording";
 import { usePresentationFrame } from "../presentation/presentationFrames";
 import { ObservationDeliverySequence } from "../../src/observationDelivery";
 import { addressKey, graphScopeNodeLabel, isProjectInstance, laneViewReadBatchSize, newGraphLayout, presentationStateKey, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
-import { isTimelineSnapNode } from "../../src/timelineSnap";
+import { isTimelineSnapAddress, isTimelineSnapNode } from "../../src/timelineSnap";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
 import type { SemanticNode } from "../presentation/semanticNode";
@@ -471,6 +471,12 @@ const visibleScope = computed(() => {
 });
 const wireConnections = computed(() => visibleScope.value ? resolveLaneConnectionEnds(visibleScope.value) : []);
 const wireConnectionsById = computed(() => new Map(wireConnections.value.map((entry) => [entry.id, entry])));
+const implicitOutputModules = computed(() => {
+    const modules = new Set<string>();
+    for (const { hiddenSampleSources } of wireConnections.value)
+        for (const address of hiddenSampleSources) modules.add(address);
+    return modules;
+});
 let wireLaneLayout: {
     container: HTMLElement;
     lanes: typeof lanes.value;
@@ -610,19 +616,22 @@ let pendingLaneCopies: string | undefined;
 let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
-const sourceWires = computed(() => selectedWires.value.filter((wire) => wire.sourceOwned));
 const wireLayers = computed(() => {
-    const layers: Record<keyof typeof wireOpacity, { wire: SelectedLaneWire; index: number }[]> = { faint: [], emphasized: [] };
+    type Layer = { wire: SelectedLaneWire; index: number }[];
+    const layer = () => ({ source: [] as Layer, faint: [] as Layer, emphasized: [] as Layer });
+    const lanes = layer(), ruler = layer();
     const moving = movingWireId.value;
     selectedWires.value.forEach((wire, index) => {
-        if (wire.sourceOwned) return;
-        const layer = wire.emphasized && (moving === undefined || !wire.connectionIds.includes(moving)) ? "emphasized" : "faint";
-        layers[layer].push({ wire, index });
+        const layers = wire.target.rulerInput ? ruler : lanes;
+        const style = wire.sourceOwned ? "source"
+            : wire.emphasized && (moving === undefined || !wire.connectionIds.includes(moving)) ? "emphasized" : "faint";
+        layers[style].push({ wire, index });
     });
-    return layers;
+    return { lanes, ruler };
 });
 const dragAnchors = shallowRef<PreviewAnchor[]>([]);
-const wireClips = shallowRef<Array<{ x: number; y: number; width: number; height: number }>>([]);
+type WireClip = { x: number; y: number; width: number; height: number };
+const wireClips = shallowRef<{ lanes: WireClip[]; ruler: WireClip[] }>({ lanes: [], ruler: [] });
 const wireOcclusions = shallowRef<WireOcclusions>({ labels: [], knobs: [] });
 let pendingWireUpdate = false;
 let disposed = false;
@@ -738,6 +747,7 @@ let finishedProjectHistoryRequest = 0;
 provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() => projectHistoryRequest.value !== undefined),
     requestPresentationState,
     presentationStateChanged: (key, state) => changedPresentationStates.set(key, state),
+    reportPresentationError: (details) => webviewApi.postMessage({ type: "presentationError", details }),
     finishPointerLock: (release, lockOrigin, follow, error) => cursorReturn.finish(release, lockOrigin, follow, error),
     startObjectDrag, takeCursorReturnTrace,
     refreshPointerHint: publishInteractionHint,
@@ -747,7 +757,7 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     },
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
-    scope: visibleScope, lanes, expandedModules, toggleModule,
+    scope: visibleScope, lanes, expandedModules, implicitOutputModules, toggleModule,
     shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     cancelKnob() {
@@ -853,8 +863,11 @@ function measurePortColorColumns(headers: Map<Element, DOMRect>): PortColorColum
         if (!input || !output || !input.dataset.nodeKey) continue;
         const inputRect = input.getBoundingClientRect();
         const outputRect = output.getBoundingClientRect();
-        const inputHandle = input.querySelector(".port-handle .port-circle, .port-slot")?.getBoundingClientRect() ?? inputRect;
-        const outputHandle = output.querySelector(".port-handle .port-circle, .port-slot")?.getBoundingClientRect() ?? outputRect;
+        const handleFor = (direction: "input" | "output", fallback: DOMRect) => area.querySelector(
+            `.control-row[data-direction="${direction}"] .port-handle .port-circle, .port-group[data-direction="${direction}"] .port-slot`,
+        )?.getBoundingClientRect() ?? fallback;
+        const inputHandle = handleFor("input", inputRect);
+        const outputHandle = handleFor("output", outputRect);
         if (!inputRect.height || !outputRect.height) continue;
         const header = measureLaneHeader(area, headers);
         const socketCenter = (rect: DOMRect) => Math.min(header?.right ?? Infinity,
@@ -907,8 +920,9 @@ function updateWires() {
         } else candidates = inView;
         const roots = new Set(auxiliaryRoots);
         const addresses = new Set<string>();
-        for (const { inputs, outputs } of candidates) {
+        for (const { inputs, outputs, hiddenSampleSources } of candidates) {
             for (const { address } of [...inputs, ...outputs]) addresses.add(address);
+            for (const address of hiddenSampleSources) addresses.add(address);
         }
         for (const address of addresses) for (const row of lanes.byAddress.get(address) ?? []) roots.add(row);
         anchorRoots = [...roots];
@@ -918,35 +932,19 @@ function updateWires() {
     const slots = new Map<string, PreviewAnchor[]>();
     const connectionEnds = new Map<string, PreviewAnchor[]>();
     const laneHeaders = new Map<Element, DOMRect>();
-    const hiddenSourceAnchors = new Map<string, PreviewAnchor[]>();
-    const hiddenSources = new Set<string>();
-    for (const { hiddenSampleSources } of candidates)
-        for (const address of hiddenSampleSources) hiddenSources.add(address);
-    if (hiddenSources.size && container) {
-        const rows = rowsByAddress ?? readWireLaneLayout(container, connections).byAddress;
-        for (const address of hiddenSources) {
-            const anchors: PreviewAnchor[] = [];
-            for (const row of rows.get(address) ?? []) {
-                if (row.querySelector("[data-module-boundary]")) continue;
-                const header = row.querySelector(".lane-label");
-                const bounds = header && measureLaneHeader(header, laneHeaders);
-                if (bounds?.height) anchors.push({ id: JSON.stringify(["hidden-source", row.dataset.laneRow]),
-                    direction: "output", x: bounds.right, y: bounds.top + bounds.height / 2, moduleBoundary: true });
-            }
-            if (anchors.length) hiddenSourceAnchors.set(address, anchors);
-        }
-    }
-    const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement) => {
+    const implicitAnchors = new Map<string, Map<string, PreviewAnchor>>();
+    const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement, rulerInput = false) => {
         const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
         const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), laneHeaders);
         if (!anchor) return;
+        if (rulerInput) anchor.rulerInput = true;
         const existing = anchors.get(key);
         if (existing) existing.push(anchor);
         else anchors.set(key, [anchor]);
     };
     for (const { element, end } of revealedEnds) {
         const key = connectionEndKey(end.connectionId, end.port);
-        addAnchor(connectionEnds, key, "connection", element);
+        addAnchor(connectionEnds, key, "connection", element, end.port.direction === "input" && isTimelineSnapAddress(end.port.address));
     }
     for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-endpoint]")) {
         const port = JSON.parse(element.dataset.portEndpoint!) as GraphPortEndpoint;
@@ -956,6 +954,40 @@ function updateWires() {
     for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-port-slot]")) {
         const key = element.dataset.portSlot!;
         addAnchor(slots, key, "slot", element);
+    }
+    for (const root of anchorRoots) for (const element of root.querySelectorAll<HTMLElement>("[data-implicit-output]")) {
+        const address = element.dataset.implicitOutput!;
+        const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
+        if (row === undefined) continue;
+        const anchors = implicitAnchors.get(address) ?? new Map<string, PreviewAnchor>();
+        // When the continuation exposes the stub, use it in place of its folded socket.
+        if (element.hasAttribute("data-port-slot") && anchors.has(row)) continue;
+        const anchor = measureWireAnchor(element, JSON.stringify(["implicit-output", row]), laneHeaders);
+        if (!anchor) continue;
+        anchors.set(row, anchor);
+        implicitAnchors.set(address, anchors);
+    }
+    const hiddenSourceAnchors = new Map<string, PreviewAnchor[]>();
+    for (const [address, anchors] of implicitAnchors) hiddenSourceAnchors.set(address, [...anchors.values()]);
+    if (container) {
+        const hiddenSources = new Set<string>();
+        for (const { hiddenSampleSources } of candidates)
+            for (const address of hiddenSampleSources) if (!hiddenSourceAnchors.has(address)) hiddenSources.add(address);
+        if (hiddenSources.size) {
+            const rows = rowsByAddress ?? readWireLaneLayout(container, connections).byAddress;
+            for (const address of hiddenSources) {
+                const moduleRows = rows.get(address) ?? [];
+                // Some scopes, such as tiles, have no Module Ports row.
+                if (moduleRows.some((row) => row.querySelector("[data-module-boundary]"))) continue;
+                const anchors: PreviewAnchor[] = [];
+                for (const row of moduleRows) {
+                    const bounds = measureLaneHeader(row.querySelector(".lane-label") ?? row, laneHeaders);
+                    if (bounds?.height) anchors.push({ id: JSON.stringify(["hidden-source", row.dataset.laneRow]),
+                        direction: "output", x: bounds.right, y: bounds.top + bounds.height / 2, moduleBoundary: true });
+                }
+                if (anchors.length) hiddenSourceAnchors.set(address, anchors);
+            }
+        }
     }
     const portAnchors = (port: GraphPortEndpoint) => {
         const direct = exact.get(portEndpointKey(port));
@@ -968,12 +1000,15 @@ function updateWires() {
     if (selectedWires.value.length || drag) {
         wireOcclusions.value = profileGraphUi("Measure wire occlusions", () =>
             measureWireOcclusions(top, viewport.bottom, occlusionRoots, laneHeaders));
-        wireClips.value = [{ x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
-            ...(snapInput ? [{ x: snapInput.x, y: snapInput.y, width: snapInput.width, height: snapInput.height }] : []),
-            ...popovers.map((element) => {
-                const rect = element.getBoundingClientRect();
-                return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
-            })];
+        const laneClip = { x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) };
+        const popupClips = popovers.map((element) => element.getBoundingClientRect());
+        wireClips.value = {
+            lanes: [laneClip, ...popupClips.flatMap(({ left, top: popupTop, width, bottom }) => {
+                const y = Math.max(popupTop, heading?.bottom ?? popupTop);
+                return y < bottom ? [{ x: left, y, width, height: bottom - y }] : [];
+            })],
+            ruler: [laneClip, ...(snapInput ? [snapInput] : []), ...popupClips],
+        };
     }
     const starts = drag && !drag.edit ? portAnchors(drag.port) : null;
     if (starts?.length) {
@@ -1670,8 +1705,8 @@ onBeforeUnmount(() => {
         </Teleport>
         <svg v-if="selectedWires.length || connectionDrag?.moved" class="connection-wire" aria-hidden="true">
             <defs>
-                <clipPath id="selected-wire-clip" clipPathUnits="userSpaceOnUse">
-                    <rect v-for="(clip, index) in wireClips" :key="index" :x="clip.x" :y="clip.y" :width="clip.width" :height="clip.height" />
+                <clipPath v-for="(clips, area) in wireClips" :key="area" :id="`wire-clip-${area}`" clipPathUnits="userSpaceOnUse">
+                    <rect v-for="(clip, index) in clips" :key="index" :x="clip.x" :y="clip.y" :width="clip.width" :height="clip.height" />
                 </clipPath>
                 <mask id="wire-knob-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
                     <rect width="100%" height="100%" fill="white" />
@@ -1689,11 +1724,13 @@ onBeforeUnmount(() => {
                             :x="label.x - 4" :y="label.y - 4" :width="label.width + 8" :height="label.height + 8" />
                     </g>
                 </mask>
-                <linearGradient v-for="{ wire, index } in [...wireLayers.faint, ...wireLayers.emphasized]" :id="`selected-wire-${index}`" :key="wire.key"
-                    gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
-                    <stop offset="0" :style="{ stopColor: wireColor('output') }" />
-                    <stop offset="1" :style="{ stopColor: wireColor('input') }" />
-                </linearGradient>
+                <template v-for="(wire, index) in selectedWires" :key="wire.key">
+                    <linearGradient v-if="!wire.sourceOwned" :id="`selected-wire-${index}`"
+                        gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
+                        <stop offset="0" :style="{ stopColor: wireColor('output') }" />
+                        <stop offset="1" :style="{ stopColor: wireColor('input') }" />
+                    </linearGradient>
+                </template>
                 <linearGradient v-for="(wire, index) in previewWires" :id="`preview-wire-${index}`" :key="wire.anchor.id"
                     gradientUnits="userSpaceOnUse" :x1="wire.anchor.x" :y1="wire.anchor.y" :x2="wire.cursor.x" :y2="wire.cursor.y">
                     <stop offset="0" :style="{ stopColor: wireColor(wire.anchor.direction) }" />
@@ -1706,15 +1743,15 @@ onBeforeUnmount(() => {
                 </linearGradient>
             </defs>
             <g mask="url(#wire-knob-mask)">
-                <g clip-path="url(#selected-wire-clip)">
+                <g v-for="(layers, area) in wireLayers" :key="area" :clip-path="`url(#wire-clip-${area})`">
                     <g mask="url(#wire-label-fade)">
-                        <path v-for="wire in sourceWires" :key="wire.key" class="selected-wire"
+                        <path v-for="{ wire } in layers.source" :key="wire.key" class="selected-wire"
                             :d="selectedLaneWirePath(wire)" stroke="var(--vscode-descriptionForeground)"
                             :stroke-opacity="wire.emphasized ? .82 : .48" />
                     </g>
-                    <g v-for="(wires, layer) in wireLayers" :key="layer"
+                    <g v-for="layer in ['faint', 'emphasized'] as const" :key="layer"
                         :mask="layer === 'emphasized' ? 'url(#wire-label-fade)' : undefined">
-                        <path v-for="{ wire, index } in wires" :key="wire.key" class="selected-wire"
+                        <path v-for="{ wire, index } in layers[layer]" :key="wire.key" class="selected-wire"
                             :class="{ pending: !wire.applied }"
                             :d="selectedLaneWirePath(wire)" :stroke="`url(#selected-wire-${index})`"
                             :stroke-opacity="wireOpacity[layer]" />

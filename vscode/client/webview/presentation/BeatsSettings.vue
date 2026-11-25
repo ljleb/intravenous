@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { beatBpm, readBeatGrid, type BeatGrid } from "../../src/beatGrid";
 import { addressKey, type NodeAddress } from "../../src/graphScope";
+import { presentationErrorDetails } from "../../src/presentationDiagnostics";
 import type { PresentationFrame, PresentationInput, PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession } from "../../src/presentationPluginSession";
 import { ReloadableWasmPresentation } from "../../src/reloadableWasmPresentation";
@@ -23,8 +24,15 @@ const program = computed(() => shippedPresentation("builtin/beats"));
 const panel = shallowRef<PresentationFrame["panel"]>();
 const failure = ref("");
 const error = computed(() => { void version.value; return failure.value || edits.error(props.target); });
+function report(operation: "frame" | "reload", reason: unknown) {
+    failure.value = String(reason).slice(0, 512);
+    if (!editor) return;
+    editor.reportPresentationError(presentationErrorDetails({ surface: "beats-settings", operation,
+        address: props.target, definitionId: "builtin.beats", artifact: program.value }, reason));
+}
 const worker = new ReloadableWasmPresentation(createWebPresentationWorker, (reason) => {
-    failure.value = reason === undefined ? "" : String(reason);
+    if (reason === undefined) failure.value = "";
+    else report("reload", reason);
 });
 const job = usePresentationFrame("update", () => { void session.flush(); });
 const session = new PresentationPluginSession((snapshot, inputs) => {
@@ -44,7 +52,7 @@ const session = new PresentationPluginSession((snapshot, inputs) => {
         const grid = readBeatGrid([payload.bpm, payload.beats_per_bar, payload.subdivisions]);
         if (grid) edits.update(props.target, grid, !!command.gesture);
     }
-}, (reason) => { failure.value = String(reason); });
+}, (reason) => { report("frame", reason); });
 const snapshot = computed<PresentationSnapshot | undefined>(() => {
     void version.value;
     if (!props.open || !program.value) return;

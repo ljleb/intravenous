@@ -261,6 +261,7 @@ TEST_F(GraphJitRuntimeFixture, CoverageManualInputMigratesUntilItsValueChanges)
     auto configured = configured_graph_with_manual_input("iv.test.replay.coverage_manual_window", "coverage", .25f);
     ASSERT_TRUE(configured);
     ASSERT_EQ(configured->manual_controls.size(), 1u);
+    mark_sample_wires_as_project(*configured, configured->manual_controls.front().input);
     auto const bundle_count = configured->node_bundles.size();
     configured->project_invocations.emplace(iv::NodeAddress{.instance_id = "fixture"},
         iv::ConfiguredInvocationBundles{

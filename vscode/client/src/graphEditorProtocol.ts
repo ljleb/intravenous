@@ -77,6 +77,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | ObservationHostRequest
     | { type: "observationResync" }
     | { type: "observationProfile"; summary: ObservationProfileSummary }
+    | { type: "presentationError"; details: string }
     | { type: "clientInteractionTrace"; traceId: string; recording: InteractionRecording }
     | { type: "graphUiProfile"; profileId: string; summary: GraphUiProfileSummary }
     | { type: "playbackProfileClick"; profileId: string }

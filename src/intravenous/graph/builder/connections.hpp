@@ -142,7 +142,7 @@ struct ConfiguredSampleConnection {
   // The selected symbolic member input. An empty handle selects the bundle
   // port directly. All target channels belong to the same member port.
   std::optional<SymbolicNodeHandle> target_symbolic_node{};
-  // Authored by C++ graph construction. An input gesture cannot replace it.
+  // Authored by C++ graph construction. A project cable or knob can replace it.
   bool source_owned = false;
   bool operator==(ConfiguredSampleConnection const&) const = default;
 };

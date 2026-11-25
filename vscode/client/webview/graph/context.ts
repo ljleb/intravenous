@@ -41,10 +41,12 @@ type GraphEditorContext = {
     save: () => void;
     requestPresentationState: (key: string) => PresentationStateRead;
     presentationStateChanged: (key: string, state: SerializedPresentationState) => void;
+    reportPresentationError: (details: string) => void;
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;
     lanes: Readonly<Ref<GraphLane[]>>;
     expandedModules: Readonly<Ref<ReadonlyMap<string, NodeAddress>>>;
+    implicitOutputModules: Readonly<Ref<ReadonlySet<string>>>;
     toggleModule: (address: NodeAddress) => void;
     shiftHeld: Readonly<Ref<boolean>>;
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;

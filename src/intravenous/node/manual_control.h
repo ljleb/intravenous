@@ -79,8 +79,7 @@ struct ConfiguredManualControl {
     ManualControlParticipation participation =
         ManualControlParticipation::disconnected_only;
     bool dynamic = false;
-    // Transient project-wire replacement for a live gesture. Independent of the
-    // durable participation policy; never serialized into the project.
+    // Transient replacement of incoming wires at the knob being edited.
     bool override_connections = false;
     // Public output gain before compiler-private transform expansion. The
     // authored input field is unused for this control until that expansion.
@@ -95,10 +94,6 @@ struct ConfiguredManualControl {
     // The compiler's Coverage fallback producer for this input, if any.
     std::optional<NodeBundleHandle> coverage_source{};
     bool enabled = true;
-    // An implicit member input supplies its declared default when no authored
-    // symbolic control takes its place.
-    bool authored = true;
-
     bool operator==(ConfiguredManualControl const&) const = default;
 };
 

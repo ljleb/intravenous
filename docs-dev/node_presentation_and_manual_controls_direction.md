@@ -691,17 +691,14 @@ A disabled Sequential knob uses the port's declared neutral value. A disabled
 windowed Coverage knob leaves the position uncovered. Region inputs and
 complete-buffer Coverage inputs have no manual knob.
 
-Sequential knobs start enabled at the authored default. Coverage knobs start
-disabled at zero, preserving sparse behavior for projects without an explicit
-saved control. Toggling or connecting a port preserves its stored value. The
-toggle and value belong to the same durable project record. An existing
-explicit participate-with-connections policy still permits additive Sequential
-composition.
-
-The same knob components serve the ports of C++-constructed nodes. Symbolic
-input knobs start disabled. Concrete member input knobs start at the value
-and enable state declared by the port. See the former
-[member input defaults](historical/member_input_knob_defaults_2026-11-20.md).
+An input knob starts with the port's declared value. Only the outer interface
+of a node instance authored in the project inherits the port's
+`enabled_by_default` setting. All internal input knobs start disabled,
+including symbolic inputs and concrete members. Toggling or connecting a port
+preserves its stored value. The toggle and value belong to the same durable
+project record. An explicit participate-with-connections policy still permits
+additive Sequential composition with project cables. See the
+[former defaults](historical/internal_knob_defaults_and_fixed_cpp_wiring_2026-11-24.md#default-enable-state).
 Output gains are editable at all times and start at unity. GraphJit omits an unused symbolic
 output gain when the output has no consumer, no live observation, and no
 active gesture. See the former
@@ -742,9 +739,12 @@ At a concrete input, use the first applicable project source, in this order:
    concrete input, wherever those inputs supply data.
 5. The port's existing no-source behavior.
 
-Cables authored in C++ describe fixed wiring. An input gesture keeps them
-connected. At a concrete input with fixed wiring, combine the auditioned
-knob value with the C++ contributions using the input's normal combination.
+C++ wiring supplies the input until the project takes it over. A project
+cable, an enabled knob selected for the input, or a live gesture on the
+selected knob replaces the C++ wiring. Plugging in a project cable replaces
+the C++ wiring for the whole destination input. The project fallback rules
+apply in gaps in that cable. Unplugging the project cable and clearing the
+knob contribution restores the C++ wiring. See the [former C++ rule](historical/internal_knob_defaults_and_fixed_cpp_wiring_2026-11-24.md#c-wiring).
 
 A covered zero is a value. Unknown cable coverage does not permit fallback.
 A symbolic input gesture changes only the value forwarded by that input.
@@ -778,12 +778,12 @@ _Updated by the repository owner on 2026-11-18. See the
 [previous override rules](historical/input_observation_and_disabled_knobs_before_2026-11-18.md#connected-input-override-and-observation-status)._
 
 Hover prepares code for a temporary override without activating it. A drag uses
-the manual value in place of project wiring at that input, even when its stored
-knob is disabled. C++ wiring continues to contribute. Release saves the value
-and closes the undo gesture. The
-override stays active while that client hovers over the knob. On hover leave, the
-settled code resumes when its generation activates. The authored wiring and the
-stored enable setting survive the entire interaction.
+the manual value in place of incoming wiring at the edited input, even when
+its stored knob is disabled. A symbolic gesture remains subject to the concrete
+input's precedence rules. Release saves the value and closes the undo gesture.
+The override stays active while that client hovers over the knob. On hover
+leave, the settled code resumes when its generation activates. The configured
+wiring and the stored enable setting survive the interaction.
 
 A disabled knob stays dim while the pointer prepares an override. Light the
 knob during the drag. After release, keep a distinct highlight until the
@@ -1205,11 +1205,11 @@ its internal routing and channel conversions. It is not a replacement for the
 values of whichever internal leaf inputs happen to consume it. Internal fanout,
 projection, conversions, and detach operations retain their semantics.
 
-A Sequential input's authored default is an implicit manual value until a user
-changes it. A Coverage input has no implicit manual contribution. Hover and an unchanged gesture do not create persisted overrides or
-undo entries. Undoing the first changed gesture can restore absence of an
-override, allowing the authored default to apply again. Runtime control bindings
-can exist for such implicit defaults without requiring saved project records.
+An enabled outer input knob can supply its declared value without a saved
+record. An internal port's declared value remains available as a knob value
+and for the port's existing disconnected behavior. Hover and an unchanged
+gesture do not create persisted overrides or undo entries. Undoing the first
+changed gesture can restore the implicit knob state.
 
 Release-time preparation clarification (owner decision, 2026-11-14): preparing
 settled code and permitting its activation are separate. A new release with another

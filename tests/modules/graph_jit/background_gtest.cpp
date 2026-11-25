@@ -1798,6 +1798,8 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
             .id = {.node = {.instance_id = "module"}, .port_name = "boundary_gain"},
             .input = {*module, iv::PortKind::sample, 0}, .settled_value = 1.25f,
         });
+        for (auto const& control : configured->manual_controls)
+            mark_sample_wires_as_project(*configured, control.input);
         auto compiled = compile_graph(configured, 3004 + explicit_contribution);
         ASSERT_TRUE(compiled.succeeded())
             << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);

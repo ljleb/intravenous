@@ -834,10 +834,11 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
                 "GraphJit manual controls contain two values for one concrete input");
         }
         auto const connected = has_authored_connection(*primitive, port);
+        auto const replaces_input = configured.override_connections && !configured.input_symbolic_node;
         auto const fallback_only = connected
-            && !configured.override_connections
+            && !replaces_input
             && configured.participation != ManualControlParticipation::participate_with_connections;
-        auto const participates = configured.override_connections || !connected
+        auto const participates = replaces_input || !connected
             || (fallback_only && binding.resolves_coverage)
             || configured.participation
                 == ManualControlParticipation::participate_with_connections;

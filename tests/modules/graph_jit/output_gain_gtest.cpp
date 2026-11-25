@@ -184,6 +184,8 @@ TEST_F(GraphJitRuntimeFixture, RegionOutputGainRampsInTickAndKeepsDownstreamFall
                     .input = id, .settled_value = .25f});
         }
     }
+    for (auto const& control : configured->manual_controls)
+        if (!control.output) mark_sample_wires_as_project(*configured, control.input);
     graph_jit::detail::classify_output_gain_consumers(*configured);
     ASSERT_FALSE(configured->manual_controls.front().requires_preparation);
     auto compiled = compile_graph(configured, 818);

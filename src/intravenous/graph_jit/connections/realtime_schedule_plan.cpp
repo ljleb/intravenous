@@ -139,8 +139,8 @@ std::expected<void, std::string> finalize_schedule(
     // Schedule condensation is a semantically distinct adjacency: background
     // dependencies must not pretend that tick_block produces their values.
     // Reuse the retained SCC partition, then order those SCCs using only
-    // ordinary sequential tick dependencies. Detach binding has already
-    // finalized every cyclic region's scheduling quantum.
+    // ordinary sequential Tick dependencies and retained delays between
+    // regions. Detach binding has finalized each cyclic scheduling quantum.
     std::vector<std::optional<std::size_t>> node_to_region(plan.nodes.size());
     for (std::size_t node = 0; node < plan.nodes.size(); ++node) {
         auto const bundle = plan.nodes[node].bundle;
@@ -309,57 +309,43 @@ std::expected<void, std::string> finalize_schedule(
 }
 
 std::expected<void, std::string> bind_detach_regions(
-    ConnectionAnalysisPlan& plan)
+    ConnectionAnalysisPlan& plan, std::span<std::vector<std::size_t>> tick_order)
 {
-    auto bind = [&](auto& connection, NodeBundleHandle target_bundle)
-        -> std::expected<void, std::string> {
-        if (!connection.detach) return {};
-        if (target_bundle >= plan.schedule.bundle_to_region.size()
-            || !plan.schedule.bundle_to_region[target_bundle]) {
-            return std::unexpected(
-                "GraphJit detach does not map to a concrete execution region");
-        }
-        auto const region_index = *plan.schedule.bundle_to_region[target_bundle];
-        if (region_index >= plan.schedule.regions.size()
-            || !plan.schedule.regions[region_index].cyclic) {
-            return std::unexpected(
-                "GraphJit validated detach did not form an execution SCC");
-        }
-        connection.detach_region = region_index;
-        auto& region = plan.schedule.regions[region_index];
-        region.maximum_block_size = std::min(
-            region.maximum_block_size,
-            floor_power_of_two(connection.detach->loop_extra_latency));
-        return {};
-    };
-
+    auto const& regions_by_bundle = plan.schedule.bundle_to_region;
+    auto const& nodes_by_bundle = plan.background.bundle_to_semantic_node;
     for (auto& connection : plan.sample_connections) {
-        if (auto bound = bind(
-                connection, connection.target_port.node_bundle_handle);
-            !bound) return std::unexpected(std::move(bound.error()));
-        for (auto& contribution : connection.routed_contributions) {
-            if (!contribution.detach) continue;
-            if (connection.target_port.node_bundle_handle
-                    >= plan.schedule.bundle_to_region.size()
-                || !plan.schedule.bundle_to_region[
-                    connection.target_port.node_bundle_handle]) {
-                return std::unexpected(
-                    "GraphJit sample detach does not map to a concrete execution region");
-            }
-            auto const region_index = *plan.schedule.bundle_to_region[
-                connection.target_port.node_bundle_handle];
-            if (region_index >= plan.schedule.regions.size()
-                || !plan.schedule.regions[region_index].cyclic) {
-                return std::unexpected(
-                    "GraphJit validated sample detach did not form an execution SCC");
-            }
-            contribution.detach_region = region_index;
-            auto& region = plan.schedule.regions[region_index];
-            region.maximum_block_size = std::min(
-                region.maximum_block_size,
-                floor_power_of_two(
-                    contribution.detach->loop_extra_latency));
+        if (!has_detached_source(connection)) continue;
+        auto const target = connection.target_port.node_bundle_handle;
+        if (target >= regions_by_bundle.size() || !regions_by_bundle[target]
+            || !nodes_by_bundle[target]) {
+            return std::unexpected("GraphJit sample detach has no concrete consumer");
         }
+        auto const target_region = *regions_by_bundle[target];
+        auto bind = [&](auto& detached, auto includes_source) {
+            bool inside_loop = false;
+            for (std::size_t i = 0; i < connection.source_channel_timings.size(); ++i) {
+                if (!includes_source(i)) continue;
+                auto const source = connection.source_channel_timings[i].source.bundle;
+                if (source >= regions_by_bundle.size() || !regions_by_bundle[source]) continue;
+                if (*regions_by_bundle[source] == target_region) {
+                    inside_loop = true;
+                    continue;
+                }
+                // A takeover can open the loop and leave this delay intact.
+                // Produce the delayed stream before its consumer in that case.
+                tick_order[*nodes_by_bundle[source]].push_back(*nodes_by_bundle[target]);
+            }
+            if (!inside_loop) return;
+            detached.detach_region = target_region;
+            auto& region = plan.schedule.regions[target_region];
+            region.maximum_block_size = std::min(
+                region.maximum_block_size, floor_power_of_two(detached.detach->loop_extra_latency));
+        };
+        if (connection.detach) bind(connection, [](std::size_t) { return true; });
+        for (auto& contribution : connection.routed_contributions)
+            if (contribution.detach) bind(contribution, [&](std::size_t i) {
+                return contribution.source_coefficients[i] != 0.0f;
+            });
     }
     for (auto& connection : plan.event_connections) {
         if (!has_detached_source(connection)) continue;
@@ -680,11 +666,11 @@ std::expected<void, std::string> plan_realtime_schedule(
         callback_elided[bundle] = static_cast<std::uint8_t>(
             has_realtime_consumer && !has_background_consumer);
     }
-    auto const explicit_outgoing = dependency_adjacency(graph, plan, true);
+    auto explicit_outgoing = dependency_adjacency(graph, plan, true);
     auto schedule = build_schedule(graph, plan, explicit_outgoing, callback_elided);
     if (!schedule) return std::unexpected(std::move(schedule.error()));
     plan.schedule = std::move(*schedule);
-    if (auto detach_regions = bind_detach_regions(plan); !detach_regions) {
+    if (auto detach_regions = bind_detach_regions(plan, explicit_outgoing); !detach_regions) {
         return std::unexpected(std::move(detach_regions.error()));
     }
     if (auto finalized = finalize_schedule(

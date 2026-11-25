@@ -249,7 +249,8 @@ function pointMarks(curve: PresentationTimelineCurve, points: ReturnType<typeof 
     const contents = { x: 0, y: 0, width, height, drag: "absolute" } as const;
     const targets: PresentationTarget[] = [
         { ...contents, id: String(curve.selectionTarget), hint: "Drag to select · Right-drag to add" },
-        { ...contents, id: String(curve.additionTarget), button: "secondary", wheel: true, hideCursor: true, cursorReturn: true },
+        { ...contents, id: String(curve.additionTarget), drag: "relative", button: "secondary", wheel: true,
+            hideCursor: true, cursorReturn: true },
     ];
     const handles: PresentationTarget[] = [], dots: PresentationTarget[] = [];
     const visible = points.flatMap(({ offset, point }) => {
@@ -265,7 +266,7 @@ function pointMarks(curve: PresentationTimelineCurve, points: ReturnType<typeof 
     for (const index of sampled) {
         const { x, y, point } = visible[index];
         const target = String(point.target), mark = point.mark;
-        dots.push({ ...box(x, y, 8), id: target, drag: "absolute", context: true, hideCursor: true, wheel: true,
+        dots.push({ ...box(x, y, 8), id: target, drag: "relative", context: true, hideCursor: true, wheel: true,
             cursorReturn: true, hint: `${point.sample} smp · Value ${decimal(point.value, 5)} · Tension ${decimal(point.tension, 2)}`,
             shortcuts: "⇧Drag Keep type · ⇧Click Delete · Right-click Segment" });
         if (point.selected) marks.push({ type: "circle", id: String(mark), x, y, radius: 5.5, ink: "background", border: "selection" });

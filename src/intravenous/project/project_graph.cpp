@@ -448,11 +448,12 @@ bool ProjectGraph::control_configuration_matches_locked(ConfiguredGraph const& c
         auto const& code = staged[index];
         auto const dynamic = std::ranges::contains(inputs, control.id);
         if (code.id != control.id || code.input != control.input || code.output != control.output
+            || code.enabled != control.enabled || code.participation != control.participation
+            || code.input_symbolic_node != control.input_symbolic_node
             || code.dynamic != dynamic
             || code.override_connections != (dynamic && control.id.kind == ManualControlKind::input)) return false;
         if (dynamic && !control.requires_preparation) continue;
         auto const saved = std::ranges::find(manual_controls_, control.id, &ProjectManualControl::id);
-        if (!control.output && !dynamic && code.authored != (saved != manual_controls_.end())) return false;
         auto value = saved != manual_controls_.end()
             ? saved->stored_value : control.settled_value;
         if (control.requires_preparation) {
@@ -614,7 +615,6 @@ std::shared_ptr<ConfiguredGraph> ProjectGraph::graph_for_compile_locked(
         control.dynamic = std::ranges::contains(dynamic_inputs, control.id);
         control.override_connections = control.dynamic && control.id.kind == ManualControlKind::input;
         auto const* saved = find_manual_control_locked(control.id);
-        if (!control.output) control.authored = saved != nullptr;
         if (saved) {
             control.settled_value = saved->stored_value;
             control.participation = saved->participation;
@@ -1415,6 +1415,11 @@ void log_configuration_failure(ProjectGraphConfigurationFailure const& failure) 
 } // namespace
 
 namespace {
+bool input_knob_enabled_by_default(NodeAddress const& address, ManualInputDefaults defaults)
+{
+    return address.path.empty() && defaults.enabled;
+}
+
 void configure_manual_controls(
     ConfiguredGraph& finished_graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
@@ -1469,7 +1474,7 @@ void configure_manual_controls(
             for (auto const& port : interface.sample_inputs) {
                 if (port.name.empty() || !port.manual_defaults) continue;
                 add_control({.node = address, .port_name = port.name}, port.manual_defaults->value,
-                    match.kind == ProjectNodePathMatch::Kind::bundle && port.manual_defaults->enabled);
+                    input_knob_enabled_by_default(address, *port.manual_defaults));
             }
             for (auto const& port : interface.sample_outputs) {
                 if ((!symbol || symbol->type_identity != "sample-port")
@@ -1497,8 +1502,7 @@ void configure_manual_controls(
         bool requires_preparation = false;
     };
     std::vector<ResolvedPort> resolved_ports;
-    for (std::size_t control_index = 0; control_index < effective_controls.size(); ++control_index) {
-        auto const& control = effective_controls[control_index];
+    for (auto const& control : effective_controls) {
         auto const matches = resolve_node_address(
             finished_graph, placements, control.id.node);
         bool const output_gain = control.id.kind == ManualControlKind::output_gain;
@@ -1602,7 +1606,6 @@ void configure_manual_controls(
                     .input_symbolic_node = symbol != input_symbols.end() ? std::optional{symbol->second} : std::nullopt,
                     .requires_preparation = resolved.requires_preparation,
                     .enabled = control.enabled,
-                    .authored = control_index < controls.size(),
                 });
             }
         }
@@ -2609,7 +2612,8 @@ void ProjectGraph::set_interaction_value_locked(ActiveManualControlInteraction& 
             if (found->output) restore_absence = value == Sample{1};
             else if (auto const defaults = manual_input_defaults(
                 current_generation_->graph->node_bundles.resolve_sample_input(found->input).config))
-                restore_absence = value == defaults->value && next.enabled == defaults->enabled;
+                restore_absence = value == defaults->value
+                    && next.enabled == input_knob_enabled_by_default(interaction.control.node, *defaults);
         }
     }
     if (restore_absence) {

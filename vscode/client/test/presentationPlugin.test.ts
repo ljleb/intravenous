@@ -17,6 +17,7 @@ import { presentationPluginVersion, readPresentationFrame, readPresentationManif
 import { PresentationPluginSession, PresentationWake } from "../src/presentationPluginSession";
 import { maxPresentationStateBytes, serializePresentationState } from "../src/presentationStateJson";
 import { PresentationArtifactReader } from "../src/presentationArtifacts";
+import { presentationErrorDetails } from "../src/presentationDiagnostics";
 import { createWasmPresentation, readWasmPresentationDescriptor, wasmPresentationUpdate } from "../src/wasmPresentation";
 import { createNodePresentationWorker } from "../src/nodeWasmPresentationWorker";
 import { WasmPresentationWorker } from "../src/wasmPresentationWorker";
@@ -466,6 +467,34 @@ const marker = wasmFixture("marker");
 const moduleBytes = marker.toString("base64");
 // A custom section makes this a distinct artifact with the same behavior.
 const replacementMarker = Buffer.concat([marker, Buffer.from([0, 2, 1, 120])]).toString("base64");
+
+test("a presentation timeout reports the last worker stage and the frame metadata", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let terminated = false;
+    const worker = new WasmPresentationWorker("guest-artifact-bytes", (receive) => ({
+        postMessage: () => receive({ stage: "restore" }),
+        terminate: () => { terminated = true; },
+    }));
+    const state = '{"value":"private-state 🎹"}';
+    const result = worker.run({ ...snapshot, state }, [{ type: "wake" }]);
+    const rejection = assert.rejects(result, (error: Error) => {
+        const details = presentationErrorDetails({ surface: "lane", operation: "frame", definitionId: "builtin.beats",
+            address: { instanceId: "beats" } }, error);
+        const log = JSON.parse(details);
+        assert.match(log.message, /Presentation worker timed out/);
+        assert.equal(log.address.instanceId, "beats");
+        assert.equal(log.frame.stage, "restore");
+        assert.equal(log.frame.frame, 1);
+        assert.equal(log.frame.revision, snapshot.revision);
+        assert.equal(log.frame.restoreBytes, Buffer.byteLength(state));
+        assert.deepEqual(log.frame.inputs, { wake: 1 });
+        assert.doesNotMatch(details, /private-state|guest-artifact-bytes/);
+        return true;
+    });
+    t.mock.timers.tick(1500);
+    await rejection;
+    assert.equal(terminated, true);
+});
 
 test("a worker frame can save state and submit the full batch of 32 edits", async () => {
     const event = serializeNodeEvent(SetBeatGrid({ bpm: 120, beats_per_bar: 4, subdivisions: [2] }));

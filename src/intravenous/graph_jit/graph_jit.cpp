@@ -2064,8 +2064,8 @@ public:
             auto const& path = control.id.node.path;
             auto const specificity = path.empty() ? 0
                 : std::holds_alternative<ProjectSymbolicNodeSelector>(path.back()) ? 1 : 2;
-            if (specificity == 2 && !control.output && !control.dynamic && !control.authored) return -1;
-            return specificity + (control.dynamic ? 3 : 0);
+            // A local control takes precedence over a symbolic audition.
+            return std::pair{specificity == 2 && !control.output, specificity + (control.dynamic ? 3 : 0)};
         };
         for (std::size_t index = 0; index < controls.size(); ++index) {
             auto const& control = controls[index];

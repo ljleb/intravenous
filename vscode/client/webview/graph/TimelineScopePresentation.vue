@@ -46,7 +46,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModules, finishPointerLock, setTimelineZoomHint,
+const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModules, implicitOutputModules, finishPointerLock, setTimelineZoomHint,
     profileGraphUi, portsChanged, startObjectDrag } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
@@ -60,7 +60,8 @@ const children = computed(() => profileGraphUi("Build lane presentation data", (
         const address = addressKey(child.address);
         const semantic = semanticNodeFromScopeChild(child, scope.value);
         const lane = { child, depth, rowKey, semantic, moduleBoundary: false };
-        if (!expandedModules.value.has(address) || !boundaries.has(address) || !semantic.ports.length) return [lane];
+        if (!expandedModules.value.has(address) || !boundaries.has(address)
+            || (!semantic.ports.length && !implicitOutputModules.value.has(address))) return [lane];
         return [lane, { ...lane, depth: depth + 1, rowKey: `${rowKey}/module-ports`, moduleBoundary: true }];
     });
 }));
@@ -141,7 +142,6 @@ const timelineRuns = computed(() => {
         begin, style: { top: `${begin * height}px`, height: `${(end - begin) * height}px` },
     }));
 });
-const headerHeight = computed(() => gridMode.value === "custom" ? 60 : 36);
 const scrollbarStyle = computed(() => {
     const height = headerHeight.value;
     const contentHeight = height + children.value.length * laneHeight.value;
@@ -156,17 +156,31 @@ const scrollbarStyle = computed(() => {
 });
 const root = ref<HTMLElement | null>(null);
 const timeRegion = ref<HTMLElement | null>(null);
+const nodeColumn = ref<HTMLElement | null>(null);
+const snapPortColumn = ref<HTMLElement | null>(null);
 const playbackReadout = ref<HTMLElement | null>(null);
 const timelineSize = usePresentationSize(root);
 const timeRegionSize = usePresentationSize(timeRegion);
+const nodeColumnSize = usePresentationSize(nodeColumn);
+const snapPortColumnSize = usePresentationSize(snapPortColumn);
+const nodeColumnWidth = shallowRef<number>();
+const snapPortColumnWidth = shallowRef<number>();
+const updateHeaderWidths = usePresentationFrame("update", () => {
+    nodeColumnWidth.value = nodeColumnSize.value?.width;
+    snapPortColumnWidth.value = snapPortColumnSize.value?.width;
+});
+// Wrapping changes the header height. Apply the observed width outside the
+// ResizeObserver delivery that measured the header.
+watch([() => nodeColumnSize.value?.width, () => snapPortColumnSize.value?.width], () => updateHeaderWidths.schedule());
 const playbackReadoutSize = usePresentationSize(playbackReadout);
-const minimumHeaderWidth = 74;
+const minimumHeaderWidth = 76;
+const compactSnapHandleWidth = 20;
+const compactSnapGap = 4;
 const playbackSymbol = computed(() => playback.state.value?.running ? "▷" : "Ⅱ");
 let playbackTextContext: CanvasRenderingContext2D | null = null;
 const measurePlaybackText = computed(() => {
     const element = playbackReadout.value;
-    const width = playbackReadoutSize.value?.width;
-    if (!element || width === undefined) return;
+    if (!element || nodeColumnWidth.value === undefined) return;
     const style = getComputedStyle(element);
     const context = playbackTextContext ??= document.createElement("canvas").getContext("2d");
     if (!context) return;
@@ -174,13 +188,29 @@ const measurePlaybackText = computed(() => {
     const digitWidth = Math.max(...Array.from("0123456789", (digit) => context.measureText(digit).width));
     return (text: string) => {
         const digits = text.match(/\d/g)?.length ?? 0;
-        return context.measureText(text.replace(/\d/g, "")).width + digits * digitWidth <= width;
+        return context.measureText(text.replace(/\d/g, "")).width + digits * digitWidth;
     };
 });
+const fullSecondsLabel = computed(() => backgroundPlayheadSeconds.value?.toFixed(3).replace(/\d/g, "0") ?? null);
+const inlineSnapInput = computed(() => {
+    if (gridMode.value !== "custom" || laneContentHeight.value >= editableHeightPx) return false;
+    const available = nodeColumnWidth.value;
+    const portsWidth = snapPortColumnWidth.value;
+    const measure = measurePlaybackText.value;
+    if (available === undefined || portsWidth === undefined || !measure) return false;
+    // Use the full-precision readout and the outer column's width. A shortened
+    // clock in the inline layout must not affect the decision to wrap.
+    const clockWidth = fullSecondsLabel.value === null ? 0 : measure(`${playbackSymbol.value} ${fullSecondsLabel.value} s`);
+    return Math.ceil(clockWidth) + compactSnapGap + portsWidth <= available;
+});
+const headerHeight = computed(() => gridMode.value === "custom" && !inlineSnapInput.value ? 60 : 36);
 const playbackSecondsLabel = computed(() => {
     const seconds = backgroundPlayheadSeconds.value;
     if (seconds === null) return null;
-    return formatPlaybackSeconds(seconds, (text) => measurePlaybackText.value?.(`${playbackSymbol.value} ${text} s`) ?? true);
+    return formatPlaybackSeconds(seconds, (text) => {
+        const measured = measurePlaybackText.value?.(`${playbackSymbol.value} ${text} s`);
+        return measured === undefined || measured <= (playbackReadoutSize.value?.width ?? Infinity);
+    });
 });
 const maximumHeaderWidth = computed(() => {
     const timelineWidth = timelineSize.value?.width ?? Infinity;
@@ -782,8 +812,10 @@ onBeforeUnmount(() => {
         <header class="timeline-heading">
             <div class="header-width-handle" role="separator" aria-orientation="vertical" aria-label="Lane header width"
                 data-status-hint="Drag to resize lane headers" @pointerdown.stop="resizeTimelineHeaders" />
-            <div class="node-column iv-graph-header" :class="{ 'inline-ports': laneContentHeight < editableHeightPx }"
-                :style="{ '--graph-lane-height': `${laneContentHeight}px` }">
+            <div ref="nodeColumn" class="node-column iv-graph-header"
+                :class="{ 'inline-ports': laneContentHeight < editableHeightPx, 'snap-inline': inlineSnapInput }"
+                :style="{ '--graph-lane-height': `${laneContentHeight}px`,
+                    '--compact-snap-handle-width': `${compactSnapHandleWidth}px`, '--compact-snap-gap': `${compactSnapGap}px` }">
                 <div ref="playbackReadout" class="playback-position" data-status-shortcuts="Space ▶/Ⅱ">
                     <template v-if="playbackSecondsLabel !== null">
                         <span class="playback-seconds">
@@ -793,8 +825,10 @@ onBeforeUnmount(() => {
                     </template>
                 </div>
                 <div v-if="gridMode === 'custom'" class="timeline-snap-input">
-                    <NodePorts v-if="customInput?.ports.length" :node="customInput" :inline="false" />
-                    <span v-else class="iv-graph-header-detail" role="status">Loading Beats input…</span>
+                    <div ref="snapPortColumn" class="timeline-snap-port-column">
+                        <NodePorts v-if="customInput?.ports.length" :node="customInput" :inline="false" />
+                        <span v-else class="iv-graph-header-detail" role="status">Loading Beats input…</span>
+                    </div>
                 </div>
             </div>
             <div ref="timeRegion" class="time-region">
@@ -912,13 +946,31 @@ onBeforeUnmount(() => {
 }
 .node-column { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0;
     border-right: 1px solid var(--vscode-panel-border); padding-inline: var(--iv-graph-header-inset); }
-.timeline-snap-input { min-height: 0; }
+.timeline-snap-input { display: grid; grid-template-rows: minmax(0, 1fr); min-height: 0; }
+.timeline-snap-port-column { min-width: 0; min-height: 0; }
 .timeline-snap-input :deep(.node-ports) { height: 100%; margin: 0; }
+.inline-ports .timeline-snap-input { grid-template-columns: minmax(0, 1fr) var(--inline-port-width); }
+.inline-ports .timeline-snap-port-column { grid-column: 2; }
+.inline-ports .timeline-snap-input :deep(.node-ports) { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.inline-ports .timeline-snap-input :deep(.port-group[data-direction="output"]) { display: none; }
 .inline-ports .timeline-snap-input :deep(.port-group[data-direction="input"]) {
-    /* Center the ruler socket where a single symbol sits in the compact input column. */
-    --port-control-column: calc(100cqw - var(--inline-port-width) + var(--inline-stack-spacing) / 2);
+    --port-control-column: calc(var(--inline-socket-group-width) / 2);
     --port-socket-size: var(--inline-symbol-size);
-    --socket-tuck: 0px;
+    --port-handle-width: var(--compact-snap-handle-width);
+    --socket-tuck: calc(var(--port-socket-size) / 2);
+    justify-content: center;
+}
+.node-column.snap-inline { grid-template-rows: minmax(0, 1fr); }
+.snap-inline .playback-position { grid-area: 1 / 1; align-self: center; height: auto; padding-top: 0;
+    margin-inline-end: calc(var(--inline-port-width) + var(--compact-snap-gap)); }
+.snap-inline .timeline-snap-input {
+    /* Keep the cable's clip region the full header width. */
+    grid-area: 1 / 1; pointer-events: none;
+}
+.snap-inline .timeline-snap-input :deep(.node-ports) { pointer-events: auto; }
+.snap-inline .timeline-snap-input :deep(.direct-port-name) { display: none; }
+.snap-inline .timeline-snap-port-column > [role="status"] {
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
 /* Inner groups paint over outer groups and use the same left edge. */

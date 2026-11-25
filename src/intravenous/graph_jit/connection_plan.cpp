@@ -3,6 +3,7 @@
 
 #include <intravenous/graph_jit/background_storage_plan.h>
 #include <intravenous/graph_jit/connections/port_group_plan.h>
+#include <intravenous/graph_jit/sample_input_takeovers.h>
 
 #include <intravenous/channel_layout.h>
 #include <intravenous/ports.h>
@@ -654,7 +655,7 @@ std::optional<NodeBundleHandle> coverage_manual_source(ConfiguredGraph const& gr
     return control == graph.manual_controls.end() ? std::nullopt : control->coverage_source;
 }
 
-enum class ConnectionView { authored, effective };
+enum class ConnectionView { before_takeover, authored, effective };
 
 bool overrides_connection(ConfiguredManualControl const& control, ConnectionView view)
 {
@@ -666,38 +667,23 @@ struct StructuralSampleRouteIndex {
         ConfiguredSampleConnection const* connection;
         std::size_t target_channel;
     };
+    struct InputControls {
+        std::vector<ConfiguredManualControl const*> gestures;
+        std::vector<ConfiguredManualControl const*> coverage;
+    };
 
-    std::vector<std::optional<NodeBundleHandle>> boundary_owner;
-    std::map<std::pair<NodeBundleHandle, std::size_t>, std::size_t> boundary_controls;
-    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<IncomingSample>> incoming_by_channel;
-    std::vector<std::vector<bool>> connected_module_inputs;
+    SampleInputTakeovers takeovers;
+    std::map<NodeBundlePortId, InputControls, NodeBundlePortIdLess> input_controls{};
+    std::vector<std::optional<NodeBundleHandle>> boundary_owner{};
+    std::map<std::pair<NodeBundleHandle, std::size_t>, std::size_t> boundary_controls{};
+    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<IncomingSample>> incoming_by_channel{};
+    std::vector<std::vector<bool>> connected_module_inputs{};
 };
 
-std::expected<SampleInputChannelId, std::string> resolve_structural_sample_target(
-    ConfiguredGraph const& graph, SampleInputChannelId target)
-{
-    if (target.bundle >= graph.node_bundles.size()) {
-        return std::unexpected(
-            "GraphJit structural sample route references a missing target bundle");
-    }
-    auto const& bundle = graph.node_bundles.bundle(target.bundle);
-    if (!bundle.is_tiled()) return target;
-    auto const members = bundle.tiled_members();
-    if (target.channel >= members.size()) {
-        return std::unexpected(
-            "GraphJit tiled sample target channel is outside its member set");
-    }
-    return resolve_structural_sample_target(graph, SampleInputChannelId{
-        .bundle = members[target.channel],
-        .port = target.port,
-        .channel = 0,
-    });
-}
-
 std::expected<StructuralSampleRouteIndex, std::string> index_structural_sample_routes(
-    ConfiguredGraph const& graph)
+    ConfiguredGraph const& graph, bool include_replaced = false)
 try {
-    StructuralSampleRouteIndex index;
+    StructuralSampleRouteIndex index{.takeovers = SampleInputTakeovers{graph}};
     index.boundary_owner.resize(graph.node_bundles.size());
     for (NodeBundleHandle bundle = 0;
          bundle < graph.node_bundles.size();
@@ -718,6 +704,8 @@ try {
 
     for (std::size_t control_index = 0; control_index < graph.manual_controls.size(); ++control_index) {
         auto const& control = graph.manual_controls[control_index];
+        if (control.override_connections) index.input_controls[control.input].gestures.push_back(&control);
+        if (control.coverage_source) index.input_controls[control.input].coverage.push_back(&control);
         if (control.coverage_source) continue;
         if (!graph.node_bundles.bundle(control.input.node_bundle_handle).is_subgraph()) continue;
         if (!index.boundary_controls.emplace(std::pair{control.input.node_bundle_handle, control.input.port_index}, control_index).second)
@@ -733,6 +721,7 @@ try {
         for (std::size_t target_index = 0; target_index < connection.target_channels.size(); ++target_index) {
             auto channel = resolve_structural_sample_target(graph, connection.target_channels[target_index]);
             if (!channel) return std::unexpected(std::move(channel.error()));
+            if (!include_replaced && index.takeovers.replaces(connection, *channel)) continue;
             if (graph.node_bundles.bundle(channel->bundle).is_concrete()) continue;
             auto& ports = index.connected_module_inputs[channel->bundle];
             if (ports.size() <= channel->port) ports.resize(channel->port + 1);
@@ -761,11 +750,15 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         });
     };
     auto replaces_source = [&](SampleInputChannelId target, ConfiguredSampleConnection const& connection) {
-        if (connection.source_owned) return false;
-        return std::ranges::any_of(graph.manual_controls, [&](auto const& control) {
-            return overrides_connection(control, view)
-                && control.input.node_bundle_handle == target.bundle && control.input.port_index == target.port
-                && !is_coverage_source(connection, control);
+        if (view == ConnectionView::before_takeover) return false;
+        if (routing.takeovers.replaces(connection, target)) return true;
+        if (view != ConnectionView::effective) return false;
+        auto const controls = routing.input_controls.find({target.bundle, PortKind::sample, target.port});
+        if (controls == routing.input_controls.end()) return false;
+        return std::ranges::any_of(controls->second.gestures, [&](auto const* control) {
+            return (connection.source_owned || !control->input_symbolic_node
+                    || control->input_symbolic_node == connection.target_symbolic_node)
+                && !is_coverage_source(connection, *control);
         });
     };
 
@@ -777,7 +770,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         return bundle.is_concrete() || target.bundle == root_boundary;
     };
 
-    auto const& [boundary_owner, boundary_controls, incoming_by_channel, connected_module_inputs] = routing;
+    auto const& boundary_owner = routing.boundary_owner;
+    auto const& boundary_controls = routing.boundary_controls;
+    auto const& incoming_by_channel = routing.incoming_by_channel;
+    auto const& connected_module_inputs = routing.connected_module_inputs;
     auto manual_source = [&](SampleOutputChannelId source) -> std::optional<std::size_t> {
         if (source.bundle >= boundary_owner.size() || !boundary_owner[source.bundle]) return std::nullopt;
         auto found = boundary_controls.find({*boundary_owner[source.bundle], source.port});
@@ -927,24 +923,25 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         for (auto const target : connection.target_channels) {
             auto resolved = resolve_structural_sample_target(graph, target);
             if (!resolved) return std::unexpected(std::move(resolved.error()));
-            std::vector expanded{*resolved};
+            std::vector<SampleInputChannelId> expanded;
+            if (replaces_source(*resolved, connection)) {
+                target_crossed_structure = true;
+                expanded_targets.push_back(std::move(expanded));
+                continue;
+            }
+            expanded.push_back(*resolved);
             // Mirror the connected source route before it reaches the
             // public input. The fallback sees coverage metadata without
             // replacing the original Region views or reading their samples.
-            for (auto const& control : graph.manual_controls) {
-                if (!control.coverage_source || overrides_connection(control, view) || is_coverage_source(connection, control)) continue;
-                auto const match = std::ranges::find_if(expanded, [&](auto channel) {
-                    return channel.bundle == control.input.node_bundle_handle && channel.port == control.input.port_index;
-                });
-                if (match != expanded.end()) expanded.push_back({*control.coverage_source, 0, match->channel});
-                else if (target.bundle == control.input.node_bundle_handle && target.port == control.input.port_index)
-                    expanded.push_back({*control.coverage_source, 0, target.channel});
-            }
-            // A live manual producer replaces project cables at this input.
-            // The configured graph keeps them for the settled specialization.
-            std::erase_if(expanded, [&](SampleInputChannelId channel) {
-                return replaces_source(channel, connection);
-            });
+            auto append_coverage = [&](SampleInputChannelId port) {
+                auto const controls = routing.input_controls.find({port.bundle, PortKind::sample, port.port});
+                if (controls == routing.input_controls.end()) return;
+                for (auto const* control : controls->second.coverage)
+                    if (!is_coverage_source(connection, *control))
+                        expanded.push_back({*control->coverage_source, 0, port.channel});
+            };
+            append_coverage(*resolved);
+            if (*resolved != target) append_coverage(target);
             target_crossed_structure = target_crossed_structure
                 || expanded.size() != 1 || expanded.front() != target
                 || (public_coverage_inputs && !is_terminal_target(target));
@@ -3320,7 +3317,7 @@ std::expected<void, std::string> plan_background_connections(
                         [&](auto const& connection) { return connection.target_port == port; });
                     auto control = std::ranges::find(graph.manual_controls, port, &ConfiguredManualControl::input);
                     if (connected && control != graph.manual_controls.end()
-                        && (overrides_connection(*control, view)
+                        && ((overrides_connection(*control, view) && !control->input_symbolic_node)
                             || control->participation == ManualControlParticipation::participate_with_connections))
                         manual_contribution = control->settled_value;
                     if (control != graph.manual_controls.end() && !manual_contribution)
@@ -4245,13 +4242,29 @@ std::expected<void, std::string> schedule_background_topology(
 
 std::expected<void, std::string> validate_detached_connections(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan)
+    ConnectionAnalysisPlan const& plan,
+    std::span<RoutedSampleConnection const> before_takeover = {})
 {
-    auto const semantic_outgoing = dependency_adjacency(graph, plan, false);
+    auto semantic_outgoing = dependency_adjacency(graph, plan, false);
     std::vector<std::optional<std::size_t>> bundle_to_node(
         graph.node_bundles.size());
     for (std::size_t i = 0; i < plan.nodes.size(); ++i)
         bundle_to_node[plan.nodes[i].bundle] = i;
+
+    for (auto const& route : before_takeover) {
+        for (std::size_t i = 0; i < route.connection.source_channels.size(); ++i) {
+            auto const& source = route.connection.source_channels[i];
+            auto const from = bundle_to_node[source.channel.bundle];
+            if (!from || source.detach) continue;
+            bool const ordinary = route.contributions.empty()
+                || std::ranges::any_of(route.contributions, [&](auto const& contribution) {
+                    return !contribution.detach && contribution.source_coefficients[i] != 0.0f;
+                });
+            if (!ordinary) continue;
+            for (auto const target : route.connection.target_channels)
+                if (auto const to = bundle_to_node[target.bundle]) semantic_outgoing[*from].push_back(*to);
+        }
+    }
 
     auto validate = [&](std::span<NodeBundleHandle const> sources,
                         std::span<NodeBundleHandle const> targets,
@@ -4346,6 +4359,28 @@ std::expected<void, std::string> validate_detached_connections(
         }
     }
     return {};
+}
+
+std::expected<void, std::string> validate_detaches_after_takeover(
+    ConfiguredGraph const& graph, ConnectionAnalysisPlan const& plan, SampleInputTakeovers const& takeovers)
+{
+    auto const effective = validate_detached_connections(graph, plan);
+    if (effective) return effective;
+    auto const samples = graph.connections.configured_sample_connections();
+    if (std::ranges::none_of(samples, [&](auto const& connection) {
+            return std::ranges::any_of(connection.target_channels,
+                [&](auto target) { return takeovers.replaces(connection, target); });
+        })) return effective;
+
+    // A takeover can open a feedback loop. Keep the detach's delay and
+    // validate its original return path using topology alone. The removed
+    // routes must not add constraints to the new port realization.
+    auto const index = index_structural_sample_routes(graph, true);
+    if (!index) return effective;
+    std::vector<ManualSampleRoutePlan> unused;
+    auto const original = build_structural_sample_routes(graph, *index, unused, ConnectionView::before_takeover);
+    if (!original) return effective;
+    return validate_detached_connections(graph, plan, *original);
 }
 
 // A Sequential input of either stream kind owns the values its sources have
@@ -4930,7 +4965,8 @@ std::expected<void, std::string> validate_authored_routes(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan,
-    std::size_t kernel_block_size)
+    std::size_t kernel_block_size,
+    SampleInputTakeovers const& takeovers)
 {
     std::vector<std::size_t> normalized_connection_indices;
     if (auto semantics = plan_connection_semantics(graph, realization, plan,
@@ -4943,7 +4979,7 @@ std::expected<void, std::string> validate_authored_routes(
     }
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic)
         return acyclic;
-    return validate_detached_connections(graph, plan);
+    return validate_detaches_after_takeover(graph, plan, takeovers);
 }
 
 } // namespace
@@ -5019,7 +5055,7 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
         // and keep the dependency order as Sample followed by Event.
         plan.event_connections = authored.event_connections;
         auto const event_dependencies = std::span(authored.dependencies).subspan(first_event_dependency);
-        if (auto valid = validate_authored_routes(graph, port_realization, authored, kernel_block_size);
+        if (auto valid = validate_authored_routes(graph, port_realization, authored, kernel_block_size, routing->takeovers);
             !valid)
             return std::unexpected(std::move(valid.error()));
         if (auto samples = inventory_routed_samples(
@@ -5046,7 +5082,7 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
     if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic)
         return std::unexpected(std::move(acyclic.error()));
     if (!has_manual_override) {
-        if (auto detaches = validate_detached_connections(graph, plan); !detaches)
+        if (auto detaches = validate_detaches_after_takeover(graph, plan, routing->takeovers); !detaches)
             return std::unexpected(std::move(detaches.error()));
     }
     return topology;

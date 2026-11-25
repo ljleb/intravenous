@@ -439,11 +439,16 @@ area extends to the top and right edges and left of the visible button.
   `beats` output to the editor-managed `builtin.timeline`. The popover
   exposes the same BPM, beats per bar, and subdivisions as an authored Beats
   lane.
-- **Custom** uses the editor-managed `builtin.timeline`. Its `beats`
-  input sits below the playback indicator, seconds, and sample count in the
-  ruler's taller left column in a full-height port row. Compatible
-  BeatEvent outputs can connect to it using ordinary graph cables. Multiple
-  sources contribute to the same grid.
+- **Custom** uses the editor-managed `builtin.timeline`. In mini and nano
+  layouts its `beats` input shares the playback row when the header can
+  fit the socket beside the transport indicator and seconds. A narrower
+  header or a taller lane layout places the input on its own row below the
+  playback readout. Compatible BeatEvent outputs connect using ordinary
+  graph cables. Multiple sources contribute to the same grid. The socket
+  uses the same horizontal column as the lane inputs in either placement.
+
+The sticky ruler occludes ordinary graph cables. A cable attached to the
+ruler's input and a cable being dragged can draw over it.
 
 [Previous Custom input placement](./historical/custom_beats_input_before_second_row_2026-11-19.md).
 

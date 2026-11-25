@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lanePortContinuationColumn, lanePortControls, lanePortFoldedSocketHeight, lanePortLayout, lanePortRowHeight } from "../src/lanePortLayout";
+import { lanePortContinuationColumn, lanePortControlColumnWidth, lanePortControls, lanePortFoldedSocketHeight, lanePortLayout, lanePortRowHeight } from "../src/lanePortLayout";
 import { minimumLaneHeight } from "../src/timelineViewport";
 
 test("port controls use narrow knobs before falling back to sockets alone", () => {
@@ -12,6 +12,12 @@ test("port controls use narrow knobs before falling back to sockets alone", () =
     assert.deepEqual(lanePortControls(120, 24), { knobSize: 24, handleWidth: 24 });
     assert.deepEqual(lanePortControls(133, 31), narrow);
     assert.deepEqual(lanePortControls(134, 31), { knobSize: 31, handleWidth: 24 });
+});
+
+test("socket columns reserve room for the largest knob the header width can fit", () => {
+    for (const [width, column] of [[91, 0], [92, 30], [119, 30], [120, 34], [133, 34], [134, 41]]) {
+        assert.equal(lanePortControlColumnWidth(width), column);
+    }
 });
 
 test("a short editable header fits its first row above the folded socket", () => {

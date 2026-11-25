@@ -93,7 +93,7 @@ function finishRename(commit: boolean) {
                         data-status-hint="Copy node debug details"
                         aria-label="Copy node debug details" @click="lane.copyDebugDetails()">⧉</button>
                 </div>
-                <NodePorts v-if="node.address" :inline="inlineHeader" :module-boundary="moduleBoundary" />
+                <NodePorts v-if="node.address" :inline="inlineHeader" :module-boundary="moduleBoundary" share-label-space />
                 <div v-else class="port-summary">
                     <span :aria-label="`${inputs.length} inputs`" :aria-description="inputSummary">→ {{ inputs.length }}</span>
                     <span :aria-label="`${outputs.length} outputs`" :aria-description="outputSummary">{{ outputs.length }} →</span>

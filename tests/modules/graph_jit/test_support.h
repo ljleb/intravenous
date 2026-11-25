@@ -416,6 +416,21 @@ configured_staged_event_fan_in_graph(
 
 std::size_t count_raw_regions(iv::NodeLayout const& layout);
 
+inline void mark_sample_wires_as_project(iv::ConfiguredGraph& graph, iv::NodeBundlePortId input)
+{
+    auto const configured = graph.connections.configured_sample_connections();
+    std::vector samples(configured.begin(), configured.end());
+    for (auto& wire : samples) {
+        if (std::ranges::none_of(wire.target_channels, [&](auto target) {
+                return target.bundle == input.node_bundle_handle && target.port == input.port_index;
+            })) continue;
+        wire.source_owned = false;
+        wire.target_symbolic_node.reset();
+    }
+    graph.connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, graph.connections.configured_event_connections());
+}
+
 class GraphJitRuntimeFixture : public ::testing::Test {
 protected:
     std::shared_ptr<iv::PackageRevision const> revision;
@@ -483,7 +498,10 @@ protected:
         std::string_view module_id, std::uint64_t generation, std::string_view name, iv::Sample value,
         bool override_connections = false)
     {
-        return compile_graph(configured_graph_with_manual_input(module_id, name, value, override_connections), generation);
+        auto graph = configured_graph_with_manual_input(module_id, name, value, override_connections);
+        if (graph && !graph->manual_controls.empty())
+            mark_sample_wires_as_project(*graph, graph->manual_controls.front().input);
+        return compile_graph(graph, generation);
     }
 };
 

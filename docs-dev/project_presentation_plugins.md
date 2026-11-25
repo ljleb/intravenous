@@ -14,6 +14,12 @@ describes class registration and authoring helpers.
 See [Build, reload, and test a presentation package](api/how-to/presentation_packages.md#test-a-presentation-scenario)
 to run the marker through the headless client.
 
+In VS Code, the **Intravenous** Output channel records presentation failures.
+A worker failure includes the lane, artifact digest, frame revision and
+viewport, input counts, and the last worker stage the editor received.
+Constructor arguments, saved state, and observation samples are summarized
+by count or size.
+
 [ABI 3 guide](historical/project_presentation_abi3_guide_2026-11-22.md) ·
 [Prior server-built marker](historical/project_presentation_server_build_2026-11-22.md) ·
 [Earlier JSON frame ABI](historical/project_presentation_json_frame_abi_2026-11-22.md) ·

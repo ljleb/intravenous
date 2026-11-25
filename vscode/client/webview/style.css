@@ -66,6 +66,7 @@ body:is(.vscode-high-contrast, .vscode-high-contrast-light) {
     --inline-stack-spacing: min(7px, calc(var(--inline-port-column-width) / 3));
     --inline-symbol-size: min(12px, calc(var(--graph-lane-height) - 2px),
         calc(var(--inline-port-column-width) - var(--inline-stack-spacing)));
+    --inline-socket-group-width: calc(var(--inline-symbol-size) + var(--inline-stack-spacing));
     container: graph-header / inline-size;
 }
 .iv-graph-header .iv-graph-header-detail {

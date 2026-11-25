@@ -7,6 +7,7 @@ import Knob from "./Knob.vue";
 const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output"; portCutout?: boolean }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor, activity } = control;
+const label = computed(() => control.port.value?.displayName || props.name);
 const inactive = computed(() => !descriptor.value?.participates
     || (props.direction === "output" && value.value === 1 && !control.inverted.value));
 const knob = ref<InstanceType<typeof Knob> | null>(null);
@@ -31,17 +32,18 @@ onBeforeUnmount(() => control.hover(false));
         :data-direction="direction ?? 'input'"
         :data-activity="activity"
         :data-manual-control="control.key.value"
-        :data-status-hint="description" @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
+        :data-status-hint="[label, description].filter(Boolean).join(' · ')"
+        @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <span v-if="showName" class="manual-name">{{ name }}</span>
         <button v-if="control.canToggleEnabled.value" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
             :aria-label="`${name} manual value`"
-            :data-status-hint="descriptor?.enabled ? 'Disable knob' : 'Enable knob'"
+            :data-status-hint="`${label} · ${descriptor?.enabled ? 'Disable knob' : 'Enable knob'}`"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
             <span aria-hidden="true" />
         </button>
-        <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="name" :value="value" :limits="limits"
+        <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="label" :value="value" :limits="limits"
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
             :inactive="inactive" :inverted="control.inverted.value" :description="description"
             :apply="apply" :clipboard="clipboard" :bind-drag="control.scrub" :bind-value-entry="control.numeric"
@@ -49,7 +51,7 @@ onBeforeUnmount(() => control.hover(false));
         <button v-if="direction === 'output'" type="button" tabindex="-1" class="knob-side-toggle"
             :aria-pressed="control.inverted.value"
             :disabled="!available" :aria-label="`${name}: invert output polarity`"
-            :data-status-hint="control.inverted.value ? 'Restore polarity' : 'Invert polarity'"
+            :data-status-hint="`${label} · ${control.inverted.value ? 'Restore polarity' : 'Invert polarity'}`"
             aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">

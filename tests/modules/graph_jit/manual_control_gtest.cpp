@@ -94,17 +94,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
     auto const module_handle = module.node_bundle_handle();
     graph.outputs();
     auto configured = iv::details::take_built_graph(session.get());
-    if (connected) {
-        auto const wires = configured.connections.configured_sample_connections();
-        std::vector samples(wires.begin(), wires.end());
-        auto wire = std::ranges::find_if(samples, [&](auto const& connection) {
-            return connection.target_channels.front().bundle == module_handle;
-        });
-        if (wire == samples.end()) throw std::runtime_error("module fixture has no incoming wire");
-        wire->source_owned = false;
-        configured.connections = iv::GraphBuilderConnections::from_configured_connections(
-            samples, configured.connections.configured_event_connections());
-    }
+    if (convert || connected) mark_sample_wires_as_project(configured, {module_handle, PortKind::sample, 0});
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "module"}, .port_name = "value"},
         .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
@@ -240,7 +230,7 @@ TEST_F(GraphJitRuntimeFixture, ModuleOverrideMigratesConsumedHistoryAndRestoresI
     EXPECT_EQ(probe_index, 3u);
 }
 
-TEST_F(GraphJitRuntimeFixture, ModuleOverrideKeepsCppWiringAndReplacesProjectWiring)
+TEST_F(GraphJitRuntimeFixture, ModuleOverrideReplacesCppAndProjectWiring)
 {
     auto graph = std::make_shared<iv::ConfiguredGraph>(
         *configured_module_manual_fanout(*revision, false, false, true));
@@ -274,10 +264,51 @@ TEST_F(GraphJitRuntimeFixture, ModuleOverrideKeepsCppWiringAndReplacesProjectWir
         ASSERT_NE(probe, nullptr);
         ASSERT_EQ(probe->value_count, 4u);
         for (std::size_t i = 0; i < probe->value_count; ++i)
-            EXPECT_FLOAT_EQ(probe->values[i], probe_index < 2 ? 1.f : .75f);
+            EXPECT_FLOAT_EQ(probe->values[i], probe_index < 2 ? .25f : .75f);
         ++probe_index;
     }
     EXPECT_EQ(probe_index, 3u);
+}
+
+TEST_F(GraphJitRuntimeFixture, SymbolicInputAuditionYieldsToAnEnabledConcreteKnob)
+{
+    auto const base = configured_module_graph(*revision, graph_jit_manual_control_slice_module_id);
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+    std::optional<iv::NodeBundleHandle> target;
+    for (iv::NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        if (graph->node_bundles.bundle(bundle).is_concrete()) {
+            target = bundle;
+            break;
+        }
+    }
+    ASSERT_TRUE(target);
+    auto const type = graph->node_bundles.bundle(*target).type_identity();
+    auto const symbol = graph->symbolic_nodes.create("probe", type);
+    graph->symbolic_nodes.attach_bundle_member(graph->node_bundles, symbol, *target);
+    iv::ManualControlId const symbolic{
+        .node = {.instance_id = "module", .path = {iv::ProjectSymbolicNodeSelector{.source_identity = "probe"}}},
+        .port_name = "value",
+    };
+    auto concrete = symbolic;
+    concrete.node.path.push_back(iv::ProjectSymbolicMemberSelector{.index = 0});
+    auto const input = iv::NodeBundlePortId{*target, iv::PortKind::sample, 0};
+    graph->manual_controls.push_back({.id = symbolic, .input = input, .settled_value = .75f,
+        .dynamic = true, .override_connections = true, .input_symbolic_node = symbol,
+        .enabled = false});
+    graph->manual_controls.push_back({.id = concrete, .input = input, .settled_value = .25f});
+
+    auto const enabled = compile_graph(graph, 397);
+    ASSERT_TRUE(enabled.succeeded()) << (enabled.diagnostics.empty() ? "" : enabled.diagnostics.front().message);
+    ASSERT_EQ(enabled.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_EQ(enabled.compiled_graph->manual_controls.front().configured.id, concrete);
+
+    auto disabled_graph = std::make_shared<iv::ConfiguredGraph>(*graph);
+    disabled_graph->manual_controls.back().enabled = false;
+    auto const disabled = compile_graph(disabled_graph, 398);
+    ASSERT_TRUE(disabled.succeeded()) << (disabled.diagnostics.empty() ? "" : disabled.diagnostics.front().message);
+    ASSERT_EQ(disabled.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_EQ(disabled.compiled_graph->manual_controls.front().configured.id, symbolic);
 }
 
 TEST_F(GraphJitRuntimeFixture,
@@ -447,6 +478,8 @@ TEST_F(GraphJitRuntimeFixture,
         .participation =
             iv::ManualControlParticipation::disconnected_only,
     });
+    for (auto const& control : connected_graph->manual_controls)
+        mark_sample_wires_as_project(*connected_graph, control.input);
     auto connected = compile_graph(std::move(connected_graph), 271);
     ASSERT_TRUE(connected.succeeded())
         << (connected.diagnostics.empty()
@@ -532,6 +565,35 @@ TEST_F(GraphJitRuntimeFixture, ManualControlStateFollowsTheMatchedNodeWhenSelect
         }));
     }
     migration.commit();
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleKnobTakeoverKeepsDelayAfterOpeningFeedback)
+{
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*configured_module_manual_fanout(*revision, false));
+    auto const input = graph->manual_controls.front().input;
+    auto const configured = graph->connections.configured_sample_connections();
+    std::vector wires(configured.begin(), configured.end());
+    auto const feedback = std::ranges::find_if(wires, [&](auto const& wire) {
+        return std::ranges::any_of(wire.target_channels, [&](auto target) {
+            return target.bundle == input.node_bundle_handle && target.port == input.port_index;
+        });
+    });
+    ASSERT_NE(feedback, wires.end());
+    feedback->source_owned = true;
+    graph->connections = iv::GraphBuilderConnections::from_configured_connections(wires,
+        graph->connections.configured_event_connections());
+
+    auto const compiled = compile_graph(graph, 390);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& executable = *compiled.compiled_graph;
+    auto storage = executable.node_layout.create_storage(resources);
+    storage.initialize();
+    executable.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto const* delayed = static_cast<ManualControlSliceProbeStateMirror const*>(storage.state_ptr(1));
+    ASSERT_NE(delayed, nullptr);
+    ASSERT_EQ(delayed->value_count, 4u);
+    EXPECT_EQ((std::array{delayed->values[0], delayed->values[1], delayed->values[2], delayed->values[3]}),
+        (std::array{-1.f, -1.f, .25f, .25f}));
 }
 
 TEST_F(GraphJitRuntimeFixture, ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation)

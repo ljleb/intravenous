@@ -70,10 +70,9 @@ inline ConfiguredGraph resolve_module_inputs(ConfiguredGraph const& authored)
                     {bundle, PortKind::event, port}));
         }
     }
-    // Each wire enters the resolution stage separately. This preserves the
-    // wire's origin through conversion and lets the stage's input gesture
-    // keep C++ wires while replacing project wires. Internal consumers read
-    // the resolved stream.
+    // Each wire enters the resolution stage separately so takeover can use
+    // its original destination and ownership. Internal consumers read the
+    // resolved stream.
     auto sample_input_stage = [&](auto&& self, SampleInputChannelId target)
         -> std::optional<SampleInputChannelId> {
         auto const& bundle = authored.node_bundles.bundle(target.bundle);

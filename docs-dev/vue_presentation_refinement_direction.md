@@ -147,6 +147,13 @@ rounded-square shape. Applied cables use solid strokes for either port kind.
 The input name must remain readable when cables cross the lane area; cable
 layout/opacity must not obscure it.
 
+In an editable lane header, the input and output names on each row share
+the space between their fixed controls. A short name uses only its own
+width and leaves the remainder for the opposite name. A single name can
+use the full space. If both names need more than half, divide the space
+equally and truncate each name with an ellipsis. Hovering a port shows its
+full name in the status bar.
+
 ### Input-wide connection drop targets (owner follow-up, deferred)
 
 When dragging a port connection over an input, treat that input's related
@@ -193,11 +200,11 @@ value. A later ordinary drag starts at ×1 again. Keyboard steps also use the
 declared speed rather than recalculating sensitivity from the current value.
 Keep the modifier and the Ctrl-click shortcut discoverable in status information.
 
-Sample Sequential and Coverage inputs can declare `enabled_by_default`.
-Sequential knobs start enabled by default. Coverage knobs start disabled by
-default. An instance's saved setting takes precedence. `default_value` sets
+Sample Sequential and Coverage inputs can declare `enabled_by_default` for
+an instance's outer input knobs. A module's internal input knobs start
+disabled. An instance's saved setting takes precedence. `default_value` sets
 the initial number and the double-click reset value. Double-click changes the
-number and preserves the enabled state.
+number and preserves the enabled state. See the [input knob rules](node_presentation_and_manual_controls_direction.md#input-override-rule).
 
 ### Folded inputs extend the existing lane header
 

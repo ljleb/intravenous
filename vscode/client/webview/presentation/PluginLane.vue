@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, toRaw, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
+import { presentationErrorDetails } from "../../src/presentationDiagnostics";
 import { samePresentationLayout, type PresentationCursor, type PresentationFrame, type PresentationGestureInput, type PresentationInput,
     type PresentationObservation, type PresentationPoint, type PresentationArtifact, type PresentationSnapshot } from "../../src/presentationPlugin";
 import { PresentationPluginSession, PresentationWake } from "../../src/presentationPluginSession";
@@ -50,10 +51,19 @@ const state = shallowRef<SerializedPresentationState>(null);
 const error = ref("");
 const editError = ref("");
 const replacementError = ref("");
+function report(operation: "frame" | "reload" | "restore" | "edit", reason: unknown) {
+    if (!editor) return;
+    const { address, definitionId } = node.value;
+    editor.reportPresentationError(presentationErrorDetails({ surface: "lane", operation, address,
+        definitionId, artifact: props.program }, reason));
+}
 const editable = computed(() => props.mode === "editable" && !!editor?.scope.value?.editable
     && stateReady.value && !editor.historyPending.value && !!node.value.address && node.value.loadState === "ready");
 const worker = new ReloadableWasmPresentation(createWebPresentationWorker,
-    (reason) => { replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512); });
+    (reason) => {
+        replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512);
+        if (reason !== undefined) report("reload", reason);
+    });
 let cancelDrag: (() => void) | undefined;
 const dragging = ref(false);
 const panelOpen = ref(false);
@@ -69,6 +79,7 @@ const { ready: stateReady, error: stateLoadError, save } = usePresentationState(
         worker.restore(state.value);
     },
 });
+watch(stateLoadError, (reason) => { if (reason) report("restore", reason); });
 const needs = props.program.manifest.observations ?? [];
 const observationGroups = new Map<string, typeof needs>();
 for (const need of needs) {
@@ -118,6 +129,7 @@ const laneEdits = new PresentationLaneEdits({
     changed: () => { editsPending.value = laneEdits.queue.pending; },
     fail: (reason) => {
         editError.value = String(reason).slice(0, 512);
+        report("edit", reason);
         cancelDrag?.();
     },
 });
@@ -126,6 +138,7 @@ const edits = laneEdits.queue;
 function fail(reason: unknown) {
     if (disposed) return;
     error.value = String(reason).slice(0, 512);
+    report("frame", reason);
     settleCursorReply();
     session.dispose();
     edits.dispose();

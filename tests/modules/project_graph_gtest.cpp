@@ -2512,6 +2512,9 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_EQ(child_input.at("name"), "in");
     ASSERT_TRUE(child_input.contains("manualControl")) << child_input.dump();
     EXPECT_FALSE(child_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_EQ(child_input.at("manualControl").at("value"), 0.25f);
+    auto const& public_input = scope_node(scope, "module").at("sampleInputs").at(0);
+    EXPECT_TRUE(public_input.at("manualControl").at("enabled").get<bool>());
     EXPECT_EQ(child.at("sampleOutputs").at(0).at("name"), "out");
     EXPECT_TRUE(child.at("sampleOutputs").at(0).at("manualControl").at("enabled").get<bool>());
     auto const second = parse_address(children.at(1));
@@ -2534,7 +2537,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_EQ(alias_member.at("sampleInputs"), member.at("sampleInputs"));
     auto const& member_input = member.at("sampleInputs").at(0);
     ASSERT_TRUE(member_input.contains("manualControl")) << member_input.dump();
-    EXPECT_TRUE(member_input.at("manualControl").at("enabled").get<bool>());
+    EXPECT_FALSE(member_input.at("manualControl").at("enabled").get<bool>());
     EXPECT_EQ(member_input.at("manualControl").at("value"), 0.25f);
     auto const& member_gain = member.at("sampleOutputs").at(0).at("manualControl");
     EXPECT_TRUE(member_gain.at("enabled").get<bool>());
@@ -2835,12 +2838,12 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
 
     auto const expanded_gain = read_graph_scope(project_graph, {address(symbolic_gain)});
     auto const& tiled_gain = expanded_gain.at("childScopes").at(0).at("nodes").at(0);
-    expect_knobs(tiled_gain, true);
+    expect_knobs(tiled_gain, false);
 
     auto const expanded_tile = read_graph_scope(project_graph, {address(tiled_gain)});
     auto const& channels = expanded_tile.at("childScopes").at(0).at("nodes");
     ASSERT_EQ(channels.size(), 2u);
-    for (auto const& channel : channels) expect_knobs(channel, true);
+    for (auto const& channel : channels) expect_knobs(channel, false);
 }
 
 TEST_F(ProjectGraphFixture, SymbolicDeclarationsKeepSeparateLanesAndInputsForEachType)

@@ -82,19 +82,21 @@ test("visible C++ cable segments stay on screen regardless of selection", () => 
     }
 });
 
-test("a hidden sample source draws from the enclosing module edge", () => {
-    const hidden = connection("hidden", "a", 0, "b", 0);
-    hidden.connection.outputs = [];
-    hidden.sourceOwned = true;
-    hidden.hiddenSampleSourceModules = [{ instanceId: "a" }];
-    const endpoints = resolveLaneConnectionEnds(scope([hidden]));
-    const viewport = new LaneConnectionViewport(endpoints, ["a", "b"].map((instanceId) => addressKey({ instanceId })));
-    const moduleEdge = { id: "module-edge", x: 40, y: 20, moduleBoundary: true };
-    const wires = selectedLaneConnections(viewport.inRows(0, 1), selected, anchors([]), [],
-        { top: 0, bottom: 100, hiddenSourceAnchors: new Map([[addressKey({ instanceId: "a" }), [moduleEdge]]]) });
-    assert.equal(wires.length, 1);
-    assert.equal(wires[0].source, moduleEdge);
-    assert.equal(wires[0].emphasized, true);
+test("hidden sample sources share one implicit output on their module", () => {
+    const hidden = ["b", "c"].map((target) => {
+        const wire = connection(`hidden to ${target}`, "a", 0, target, 0);
+        wire.connection.outputs = [];
+        wire.sourceOwned = true;
+        wire.hiddenSampleSourceModules = [{ instanceId: "a" }];
+        return wire;
+    });
+    const endpoints = resolveLaneConnectionEnds(scope(hidden));
+    const viewport = new LaneConnectionViewport(endpoints, ["a", "b", "c"].map((instanceId) => addressKey({ instanceId })));
+    const implicitOutput = { id: "implicit-output", x: 40, y: 20, moduleBoundary: true };
+    const wires = selectedLaneConnections(viewport.inRows(0, 2), selected, anchors([]), [],
+        { top: 0, bottom: 100, hiddenSourceAnchors: new Map([[addressKey({ instanceId: "a" }), [implicitOutput]]]) });
+    assert.deepEqual(wires.map(({ connectionIds }) => connectionIds), [["hidden to b"], ["hidden to c"]]);
+    assert.ok(wires.every(({ source, sourceOwned, emphasized }) => source === implicitOutput && sourceOwned && emphasized));
 });
 
 test("the ruler input draws cables from visible and lower ports and hides ports above the viewport", () => {

@@ -23,6 +23,12 @@ export function lanePortControls(width: number | undefined, knobSize: number):
     return fits(compactPortControls.knobSize, compactPortControls.handleWidth) ? compactPortControls : null;
 }
 
+export function lanePortControlColumnWidth(width: number | undefined): number {
+    const full = lanePortControls(width, fullLanePortRowHeight);
+    const controls = full?.knobSize === fullLanePortRowHeight ? full : lanePortControls(width, compactLanePortRowHeight);
+    return controls ? controls.knobSize + lanePortColumns.polarityWidth - lanePortColumns.polarityInset : 0;
+}
+
 const minimumContinuationColumnWidth = 144;
 const continuationViewportInset = 4;
 

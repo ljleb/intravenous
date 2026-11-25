@@ -74,7 +74,7 @@ export type WasmPresentationUpdate = {
     session: number; revision: number; editReplies: WasmEditReply[];
 };
 export type WasmPresentationReply = {
-    frame?: PresentationFrame; storage?: ArrayBuffer; reuseCurvePoints?: true; error?: string; closed?: true;
+    frame?: PresentationFrame; storage?: ArrayBuffer; reuseCurvePoints?: true; error?: string; errorStack?: string; closed?: true;
 };
 
 const gesturePhases = ["begin", "move", "modifiers", "wheel", "finish", "cancel"];

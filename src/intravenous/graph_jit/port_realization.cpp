@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/port_realization.h>
+#include <intravenous/graph_jit/sample_input_takeovers.h>
 
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/global_index.h>
@@ -318,6 +319,7 @@ struct BundleVariables {
 
 class PortRealizationSolver {
     ConfiguredGraph const& graph_;
+    SampleInputTakeovers takeovers_;
     std::vector<TypeVariable> type_variables_ {};
     ScalarEquivalenceSolver<std::size_t> sizes_ {};
     ScalarEquivalenceSolver<PortPace> paces_ {};
@@ -763,6 +765,8 @@ class PortRealizationSolver {
     [[nodiscard]] std::expected<void, std::string> apply_connection_constraints()
     {
         for (auto const& connection : graph_.connections.configured_sample_connections()) {
+            if (!connection.target_channels.empty() && std::ranges::all_of(connection.target_channels,
+                    [&](auto target) { return takeovers_.replaces(connection, target); })) continue;
             std::optional<PortVariables const*> representative;
             std::optional<std::size_t> ordering_representative;
             auto connect = [&](PortVariables const& candidate) -> std::expected<void, std::string> {
@@ -791,6 +795,7 @@ class PortRealizationSolver {
                 if (!result) return result;
             }
             for (auto const& target : connection.target_channels) {
+                if (takeovers_.replaces(connection, target)) continue;
                 auto result = connect(bundles_.at(target.bundle).inputs.at(target.port));
                 if (!result) return result;
             }
@@ -848,6 +853,7 @@ class PortRealizationSolver {
                     bundles_.at(source.channel.bundle)
                         .outputs.at(source.channel.port));
                 for (auto const& target : connection.target_channels) {
+                    if (takeovers_.replaces(connection, target)) continue;
                     auto const target_pace = resolved_local_pace(
                         bundles_.at(target.bundle).inputs.at(target.port));
                     auto difference = subtract_exponents(source_pace, target_pace);
@@ -965,7 +971,7 @@ class PortRealizationSolver {
     }
 
 public:
-    explicit PortRealizationSolver(ConfiguredGraph const& graph) : graph_(graph) {}
+    explicit PortRealizationSolver(ConfiguredGraph const& graph) : graph_(graph), takeovers_(graph) {}
 
     [[nodiscard]] std::expected<ResolvedPortRealization, std::string> solve()
     {

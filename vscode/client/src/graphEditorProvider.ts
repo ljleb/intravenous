@@ -562,6 +562,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                 await this.saveClientTrace(panel, message.traceId, message.recording);
             } else if (message?.type === "observationResync") {
                 this.postObservationSnapshot(panel);
+            } else if (message?.type === "presentationError" && typeof message.details === "string") {
+                this.outputChannel.appendLine(`Presentation error · ${message.details.slice(0, 8192)}`);
             } else if (message?.type === "cursorReturnTrace") {
                 this.logCursorReturnTrace(message.traceId, message.step, message.details);
             } else if (message?.type === "playbackProfileClick") {

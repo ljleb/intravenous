@@ -41,11 +41,11 @@ const emit = defineEmits<{
 .control-row[data-direction="output"] { grid-template-columns: minmax(0, 1fr) var(--port-handle-width) var(--port-control-column);
     --port-color: var(--iv-port-output); }
 .control-row.unavailable { --port-color: var(--vscode-disabledForeground); color: var(--vscode-disabledForeground); }
-.port-knob { grid-column: 1; grid-row: 1; padding: 0; gap: 2px; }
+.port-knob { grid-column: 1; grid-row: 1; justify-self: end; padding: 0; gap: 2px; }
 .port-handle { position: relative; left: var(--handle-shift); grid-column: 2; grid-row: 1; display: grid;
     align-items: center; width: var(--port-handle-width); height: min(22px, var(--port-row-height)); overflow: visible;
     padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--port-color); cursor: crosshair; touch-action: none; }
-[data-direction="output"] .port-knob { grid-column: 3; }
+[data-direction="output"] .port-knob { grid-column: 3; justify-self: start; }
 .port-circle {
     --port-circle-fill: color-mix(in srgb, currentColor var(--iv-disconnected-port-strength), var(--vscode-editor-background));
     width: var(--port-socket-size); height: var(--port-socket-size); border-radius: 50%; box-sizing: border-box;

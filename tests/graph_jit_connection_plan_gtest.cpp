@@ -27,6 +27,19 @@
 
 namespace {
 
+void mark_sample_wires_as_project(iv::ConfiguredGraph& graph, iv::NodeBundleHandle bundle)
+{
+    auto const configured = graph.connections.configured_sample_connections();
+    std::vector samples(configured.begin(), configured.end());
+    for (auto& wire : samples) {
+        if (!std::ranges::contains(wire.target_channels, bundle, &iv::SampleInputChannelId::bundle)) continue;
+        wire.source_owned = false;
+        wire.target_symbolic_node.reset();
+    }
+    graph.connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, graph.connections.configured_event_connections());
+}
+
 iv::ConfiguredGraph graph_with_ordered_memberships(
     std::initializer_list<std::initializer_list<std::string_view>> bundles)
 {
@@ -1567,6 +1580,7 @@ TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualContro
     module(stereo_source);
     graph.outputs();
     auto configured = std::move(graph).finish();
+    mark_sample_wires_as_project(configured, module.node_bundle_handle());
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "module"}, .port_name = "in"},
         .input = {module.node_bundle_handle(), PortKind::sample, 0},
@@ -1595,7 +1609,7 @@ TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualContro
     configured.manual_controls[0].override_connections = true;
     auto overridden = build_connection_analysis_plan(configured, 64);
     ASSERT_TRUE(overridden) << overridden.error();
-    EXPECT_EQ(overridden->sample_connections.size(), combined->sample_connections.size());
+    EXPECT_TRUE(overridden->sample_connections.empty());
     EXPECT_EQ(overridden->manual_sample_routes.size(), 2u);
 }
 
@@ -5015,7 +5029,7 @@ TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
     }
 }
 
-TEST(GraphJitConnectionPlan, ManualOverrideKeepsSourceOwnedWiresAndReplacesProjectWires)
+TEST(GraphJitConnectionPlan, ProjectInputTakesOverCppWiring)
 {
     using namespace iv;
     GraphBuilder graph;
@@ -5031,34 +5045,123 @@ TEST(GraphJitConnectionPlan, ManualOverrideKeepsSourceOwnedWiresAndReplacesProje
     std::vector samples(configured.connections.configured_sample_connections().begin(),
         configured.connections.configured_sample_connections().end());
     samples.front().source_owned = false;
-    configured.connections = GraphBuilderConnections::from_configured_connections(
-        samples, configured.connections.configured_event_connections());
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "selected"}, .port_name = "in"},
         .input = {selected.node_bundle_handle(), PortKind::sample, 0},
         .settled_value = .25f,
-        .dynamic = true,
-        .override_connections = true,
     });
-    auto overridden = build_connection_analysis_plan(configured, 64);
-    ASSERT_TRUE(overridden) << overridden.error();
-    ASSERT_EQ(overridden->sample_connections.size(), 2u);
     auto wire_to_selected = [&](auto const& wire) {
         return wire.target_port.node_bundle_handle == selected.node_bundle_handle();
     };
-    auto const retained = std::ranges::find_if(overridden->sample_connections, wire_to_selected);
-    ASSERT_NE(retained, overridden->sample_connections.end());
-    ASSERT_EQ(retained->source_channels.size(), 1u);
-    EXPECT_EQ(retained->source_channels.front().bundle, source_owned.node_bundle_handle());
-    EXPECT_EQ(configured.connections.configured_sample_connections().size(), 3u);
-    configured.manual_controls[0].override_connections = false;
-    configured.manual_controls[0].dynamic = false;
-    auto restored = build_connection_analysis_plan(configured, 64);
-    ASSERT_TRUE(restored) << restored.error();
-    EXPECT_EQ(restored->sample_connections.size(), 2u);
-    auto const restored_input = std::ranges::find_if(restored->sample_connections, wire_to_selected);
-    ASSERT_NE(restored_input, restored->sample_connections.end());
-    EXPECT_EQ(restored_input->source_channels.size(), 2u);
+    struct Case {
+        bool project_cable, enabled, editing;
+        std::optional<NodeBundleHandle> expected_source;
+    };
+    for (auto const test : {Case{false, false, false, source_owned.node_bundle_handle()},
+             Case{false, true, false, {}}, Case{false, false, true, {}},
+             Case{true, false, false, source.node_bundle_handle()},
+             Case{true, true, false, source.node_bundle_handle()}, Case{true, true, true, {}}}) {
+        auto graph = configured;
+        graph.connections = GraphBuilderConnections::from_configured_connections(
+            std::span{samples}.subspan(test.project_cable ? 0 : 1), configured.connections.configured_event_connections());
+        auto& control = graph.manual_controls.front();
+        control.enabled = test.enabled;
+        control.dynamic = control.override_connections = test.editing;
+        auto const plan = build_connection_analysis_plan(graph, 64);
+        ASSERT_TRUE(plan) << plan.error();
+        EXPECT_EQ(plan->sample_connections.size(), test.expected_source ? 2u : 1u);
+        auto const selected_input = std::ranges::find_if(plan->sample_connections, wire_to_selected);
+        if (test.expected_source) {
+            ASSERT_NE(selected_input, plan->sample_connections.end());
+            ASSERT_EQ(selected_input->source_channels.size(), 1u);
+            EXPECT_EQ(selected_input->source_channels.front().bundle, *test.expected_source);
+        } else EXPECT_EQ(selected_input, plan->sample_connections.end());
+    }
+}
+
+TEST(GraphJitConnectionPlan, SymbolicGestureAndConcreteFallbackKeepTheDirectProjectCable)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto direct = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto staged = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto target = details::configure_concrete_node<PlainSamplePass>(graph);
+    target(direct);
+    target(staged);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto const target_bundle = target.node_bundle_handle();
+    auto const symbol = configured.symbolic_nodes.create("target", configured.node_bundles.bundle(target_bundle).type_identity());
+    configured.symbolic_nodes.attach_bundle_member(configured.node_bundles, symbol, target_bundle);
+    auto const wires = configured.connections.configured_sample_connections();
+    ASSERT_EQ(wires.size(), 2u);
+    std::vector samples(wires.begin(), wires.end());
+    for (auto& wire : samples) {
+        wire.source_owned = false;
+        if (wire.source_channels.front().channel.bundle == staged.node_bundle_handle())
+            wire.target_symbolic_node = symbol;
+    }
+    configured.connections = GraphBuilderConnections::from_configured_connections(
+        samples, configured.connections.configured_event_connections());
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module", .path = {ProjectSymbolicNodeSelector{.source_identity = "target"}}},
+            .port_name = "in"},
+        .input = {target_bundle, PortKind::sample, 0},
+        .settled_value = .25f,
+        .dynamic = true,
+        .override_connections = true,
+        .input_symbolic_node = symbol,
+        .enabled = false,
+    });
+    auto const plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan) << plan.error();
+    ASSERT_EQ(plan->sample_connections.size(), 1u);
+    auto const& sources = plan->sample_connections.front().source_channels;
+    ASSERT_EQ(sources.size(), 1u);
+    EXPECT_EQ(sources.front().bundle, direct.node_bundle_handle());
+
+    auto& knob = configured.manual_controls.front();
+    knob.id.node.path.push_back(ProjectSymbolicMemberSelector{.index = 0});
+    knob.input_symbolic_node.reset();
+    knob.dynamic = knob.override_connections = false;
+    knob.enabled = true;
+    auto const settled = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(settled) << settled.error();
+    ASSERT_EQ(settled->sample_connections.size(), 1u);
+    auto const& settled_sources = settled->sample_connections.front().source_channels;
+    ASSERT_EQ(settled_sources.size(), 1u);
+    EXPECT_EQ(settled_sources.front().bundle, direct.node_bundle_handle());
+}
+
+TEST(GraphJitConnectionPlan, KnobTakeoverPreservesADetachWhenItOpensACppFeedbackLoop)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto first = details::configure_concrete_node<PlainSamplePass>(graph);
+    auto second = details::configure_concrete_node<PlainSamplePass>(graph);
+    first(static_cast<SamplePortRef>(second).detach(3));
+    second(first);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    auto const before = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(before) << before.error();
+    ASSERT_EQ(before->sample_connections.size(), 2u);
+
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "second"}, .port_name = "in"},
+        .input = {second.node_bundle_handle(), PortKind::sample, 0},
+        .settled_value = .25f,
+    });
+    auto const after = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(after) << after.error();
+    ASSERT_EQ(after->sample_connections.size(), 1u);
+    auto const& retained = after->sample_connections.front();
+    ASSERT_TRUE(retained.detach);
+    EXPECT_EQ(retained.detach->loop_extra_latency, 3u);
+    EXPECT_EQ(retained.target_port.node_bundle_handle, first.node_bundle_handle());
+    EXPECT_FALSE(retained.detach_region);
+    EXPECT_LT(after->schedule.bundle_execution_position[second.node_bundle_handle()],
+        after->schedule.bundle_execution_position[first.node_bundle_handle()]);
 }
 
 TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidationSeparate)
@@ -5116,13 +5219,12 @@ TEST(GraphJitConnectionPlan, ReusingCoverageOverrideTopologyKeepsAuthoredValidat
     cpp_wires.front().source_owned = true;
     configured.connections = GraphBuilderConnections::from_configured_connections(
         cpp_wires, configured.connections.configured_event_connections());
-    auto retained = build_connection_analysis_plan(configured, 64);
-    ASSERT_TRUE(retained) << retained.error();
-    ASSERT_EQ(retained->sample_connections.size(), 1u);
-    auto const& sources = retained->sample_connections.front().source_channels;
-    EXPECT_EQ(sources.size(), 2u);
-    EXPECT_TRUE(std::ranges::contains(sources, source.node_bundle_handle(), &SampleOutputChannelId::bundle));
-    EXPECT_TRUE(std::ranges::contains(sources, manual.front().bundle, &SampleOutputChannelId::bundle));
+    auto override_cpp = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(override_cpp) << override_cpp.error();
+    ASSERT_EQ(override_cpp->sample_connections.size(), 1u);
+    auto const& sources = override_cpp->sample_connections.front().source_channels;
+    ASSERT_EQ(sources.size(), 1u);
+    EXPECT_EQ(sources.front().bundle, manual.front().bundle);
 }
 
 TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourcePolicy)
@@ -5144,6 +5246,7 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
     source(module); // The detached route closes delayed -> source -> module -> delayed.
     graph.outputs();
     auto configured = std::move(graph).finish();
+    mark_sample_wires_as_project(configured, module.node_bundle_handle());
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "module"}, .port_name = "gain"},
         .input = {module.node_bundle_handle(), PortKind::sample, 0}, .settled_value = .5f,
@@ -5172,7 +5275,8 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
         [&](auto const& route) { return route.target.node_bundle_handle == delayed_handle; });
     ASSERT_NE(overridden_delay, overridden->manual_sample_routes.end());
     EXPECT_EQ(overridden_delay->delay, 3u);
-    EXPECT_FLOAT_EQ(overridden_delay->initial_coefficient, 0.f);
+    // With the project source replaced, the manual route owns the initial value.
+    EXPECT_FLOAT_EQ(overridden_delay->initial_coefficient, 1.f);
 }
 
 TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
@@ -5259,6 +5363,7 @@ TEST(GraphJitConnectionPlan, ModuleBoundaryFeedsCoverageWithOrWithoutAnUpstreamW
         auto authored = std::move(graph).finish();
 
         NodeBundlePortId const public_input{module.node_bundle_handle(), PortKind::sample, 0};
+        if (connected) mark_sample_wires_as_project(authored, public_input.node_bundle_handle);
         auto const boundary = authored.node_bundles.bundle(public_input.node_bundle_handle)
             .subgraph_boundary_handle();
         ASSERT_TRUE(boundary);

@@ -402,6 +402,16 @@ test("a queued add-point press uses its captured viewport and scale after both h
     assert.equal(parsePresentationState(frame.saveRequest!)?.pan, Math.PI / 4);
 });
 
+test("automation drags that request cursor return also request pointer lock", (t) => {
+    const frame = harness(t)();
+    const target = (id: string) => frame.targets?.find((item) => item.id === id);
+    for (const id of [firstPoint, addTarget]) {
+        assert.equal(target(id)?.cursorReturn, true);
+        assert.equal(target(id)?.drag, "relative");
+    }
+    assert.equal(target(selectionTarget)?.drag, "absolute");
+});
+
 test("a missing connected bound leaves the authored curve and omits the output preview", (t) => {
     const present = harness(t, { ...snapshot, node: { ...snapshot.node,
         ports: [{ name: "max", direction: "input", kind: "continuous", connected: true, manualValue: 0 }] } });
