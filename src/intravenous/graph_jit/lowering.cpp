@@ -1336,7 +1336,8 @@ struct TransitionLoweringPlan {
 std::expected<std::optional<TransitionLoweringPlan>, std::string>
 specialize_transition_plan(
     detail::LoweringPlan& steady_plan,
-    LoweringTransitionInput const* input)
+    LoweringTransitionInput const* input,
+    std::size_t maximum_project_block_size)
 {
     if (input == nullptr) return std::optional<TransitionLoweringPlan>{};
 
@@ -1383,7 +1384,8 @@ specialize_transition_plan(
         std::move(*state_transition),
         input->predecessor_realizations,
         steady_plan.connections.realtime_port_states,
-        steady_plan.realtime_port_state_realizations);
+        steady_plan.realtime_port_state_realizations,
+        maximum_project_block_size);
     if (!realized) return std::unexpected(std::move(realized.error()));
 
     // A shared steady event sequence is deliberately not the destination of
@@ -1605,9 +1607,8 @@ specialize_transition_plan(
                 return std::unexpected(
                     "GraphJit transition input state lost its steady binding");
             }
-            source_representation = steady_inputs[
-                requirement.configured_port.port_index]
-                .channels[*requirement.channel].storage;
+            source_representation = sample_input_state_channels(steady_inputs[
+                requirement.configured_port.port_index])[*requirement.channel].storage;
         } else {
             auto const& steady_ports = steady_plan.sample_ports
                 .primitives[*target_primitive];
@@ -1724,18 +1725,18 @@ specialize_transition_plan(
             auto const& steady_binding = steady_plan.sample_ports
                 .primitives[*target_primitive]
                 .inputs[requirement.configured_port.port_index];
-            if (*requirement.channel >= steady_binding.channels.size()
-                || steady_binding.channels[*requirement.channel].storage
+            auto const& state_channels = sample_input_state_channels(steady_binding);
+            if (*requirement.channel >= state_channels.size()
+                || state_channels[*requirement.channel].storage
                     != *source_representation
-                || steady_binding.channels[*requirement.channel]
+                || state_channels[*requirement.channel]
                         .representation_channel
-                    != current_realization.authored_storage
+                    != current_realization.state_storage()
                         .representation_channel) {
                 return std::unexpected(
                     "GraphJit transition sample state disagrees with its authored input binding");
             }
-            auto const frame_delay =
-                steady_binding.channels[*requirement.channel].frame_delay;
+            auto const frame_delay = state_channels[*requirement.channel].frame_delay;
             if (frame_delay
                 > std::numeric_limits<std::size_t>::max()
                     - steady_binding.read_latency) {
@@ -1960,8 +1961,8 @@ specialize_transition_plan(
             }
         }
         if (input_history) {
-            target_ports.inputs[requirement.configured_port.port_index]
-                .channels[*requirement.channel].storage =
+            sample_input_state_channels(target_ports.inputs[requirement.configured_port.port_index])
+                [*requirement.channel].storage =
                     *suffix_representation;
         } else {
             target_ports.outputs[requirement.configured_port.port_index]
@@ -1970,7 +1971,7 @@ specialize_transition_plan(
 
         auto& transition_realization = transition_realizations.sample_states[
             transition.current_realization_index];
-        transition_realization.authored_storage = transfer->target_storage;
+        transition_realization.state_storage() = transfer->target_storage;
         transition_realization.retained_access =
             SampleRealtimePortStateAccess::direct;
         transition_realization.retained_sources = {transfer->target_storage};
@@ -2027,9 +2028,8 @@ specialize_transition_plan(
             return std::unexpected(
                 "GraphJit transition source suffix lost its input binding");
         }
-        auto const composed_representation = steady_inputs[
-            requirement.configured_port.port_index]
-            .channels[*requirement.channel].storage;
+        auto const composed_representation = sample_input_state_channels(steady_inputs[
+            requirement.configured_port.port_index])[*requirement.channel].storage;
 
         auto& sample_storage = transition_plan.sample_ports.storage;
         // The NodeStorage offset holding a representation across callbacks:
@@ -2845,7 +2845,7 @@ std::expected<LoweringOutput, std::string> lower_configured_graph_to_llvm(
     }
 
     auto const transition_begin = Clock::now();
-    auto transition = specialize_transition_plan(*plan, transition_input);
+    auto transition = specialize_transition_plan(*plan, transition_input, input.specialization.block_size);
     if (!transition) return std::unexpected(std::move(transition.error()));
 
     auto const emit_begin = Clock::now();

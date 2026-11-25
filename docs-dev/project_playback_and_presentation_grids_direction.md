@@ -246,6 +246,39 @@ An explicit foreground-relocation command can align those coordinates with
 the held playhead before recording; this relocates **all** Tick nodes. Multiple
 recorders share this coordinate, even when recording separate streams.
 
+### Sampler recording files
+
+_First implementation, pending build and runtime verification._
+
+The built-in `Sampler` takes stereo `audio` and a `record` gate. At the start
+of each callback block, a gate of at least `0.5` selects recording. The Tick
+callback copies into its project-rate `Sequential/buffered` `recorded` port.
+An unarmed callback leaves the recording untouched and delivers silence to
+live consumers. Waveform observations and Random Access consumers use the
+published recording from that port.
+
+For a project-authored Sampler, its Settings popover edits the project-relative
+recording directory through the constructor argument.
+
+`DeclarationContext::record_output_to()` declares the output and its
+project-relative directory. `GraphExecutor` resolves a recording binding from
+`ResourceContext` for the output's producer route. After the background
+transaction commits, it gives the disk worker the finalized interleaved frames
+at their project positions. The worker writes batches about every 100 ms and
+updates the float32 WAV header. Files live in a uniquely named take directory
+under the configured path, which defaults to `recordings`. Each part's name
+contains the signed project sample index of its first frame.
+
+A contiguous write extends its part, a position inside a part overwrites those
+frames, and a gap starts another part. Adjacent parts produced by filling a gap
+keep their filenames in this implementation. A WAV size limit or the signed
+sample seam also starts a part. Reading or replaying the buffered output issues
+no file writes. Closing the host writer drains its committed batches. Reopening
+the project keeps the WAV assets on disk. Loading them into the buffered port
+of a new session remains future work.
+
+### Finalized recording positions
+
 Recording semantics are based on **actually authored eligible positions** and
 on the physical Sequential output-history finalization rule. Every position
 actually executed and eligible for recording is eventually represented by its

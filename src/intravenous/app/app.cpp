@@ -7,6 +7,7 @@
 #include <intravenous/juce/vst_runtime.h>
 #include <intravenous/project/graph_connections.h>
 #include <intravenous/execution/graph_executor.h>
+#include <intravenous/execution/storage/project_audio_recording.h>
 #include <intravenous/graph_jit/graph_jit.h>
 #include <intravenous/app/handlers.h>
 #include <intravenous/packages/node_definitions.h>
@@ -353,6 +354,8 @@ int run_server_mode(int argc, char** argv)
         startup.output_device_id,
         startup.input_device_id);
     auto execution_resources = system_audio_devices.resources();
+    ProjectAudioRecording audio_recording(startup.workspace_root);
+    execution_resources.sample_recording = audio_recording.resources();
 #if IV_ENABLE_JUCE_VST
     JuceVstRuntimeSupport vst_runtime_support(
         vst_runtime_manager,

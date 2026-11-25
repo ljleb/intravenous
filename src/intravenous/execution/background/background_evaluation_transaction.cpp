@@ -1988,6 +1988,11 @@ class BackgroundEvaluationTransaction::Impl {
 
         auto result = propagation_->commit(*coverage_, std::move(*prepared_));
         prepared_.reset();
+        for (auto& record : *decoded) {
+            auto const& recording = record.route.recording;
+            if (recording.submit_fn && record.header.payload_kind == RealtimeProducedPayloadKind::continuous_values)
+                recording.submit_fn(recording.target, record.header.begin, std::move(record.payload));
+        }
         return BackgroundEvaluationResult{
             .status = BackgroundEvaluationStatus::committed,
             .coverage = std::move(result),

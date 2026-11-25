@@ -1,13 +1,17 @@
 #include <intravenous/execution/background/background_evaluation_transaction.h>
 #include <intravenous/execution/storage/persisted_data_store.h>
+#include <intravenous/execution/storage/project_audio_recording.h>
 #include <intravenous/execution/storage/realtime_produced_record.h>
 #include <intravenous/execution/storage/realtime_persisted_state.h>
 #include <intravenous/execution/tick_invocation_frame.h>
+#include <intravenous/wav.h>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <atomic>
+#include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -2889,10 +2893,23 @@ TEST(BackgroundEvaluationTransaction,
 
     auto const output = data.resolve_output(
         local_output(iv::PortKind::sample, 0));
+    struct RecordedPrefixes {
+        std::array<iv::GlobalIndex, 2> positions{};
+        std::array<std::size_t, 2> sizes{};
+        std::size_t count = 0;
+    } recorded;
     std::array routes{iv::BackgroundProducedInputRoute{
         .output = output,
         .port = 0,
         .kind = iv::PortKind::sample,
+        .recording = {&recorded, +[](void* target, iv::GlobalIndex begin, std::vector<std::byte>&& bytes) noexcept {
+            auto& prefixes = *static_cast<RecordedPrefixes*>(target);
+            if (prefixes.count < prefixes.positions.size()) {
+                prefixes.positions[prefixes.count] = begin;
+                prefixes.sizes[prefixes.count] = bytes.size();
+            }
+            ++prefixes.count;
+        }},
     }};
     std::array selections{pending.pin()};
     iv::BackgroundEvaluationTransaction transaction{
@@ -2910,6 +2927,9 @@ TEST(BackgroundEvaluationTransaction,
     ASSERT_TRUE(result.has_value()) << result.error();
     ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
     ASSERT_TRUE(result->published_data.has_value());
+    EXPECT_EQ(recorded.count, 2u);
+    EXPECT_EQ(recorded.positions, (std::array{index(2), index(3)}));
+    EXPECT_EQ(recorded.sizes, (std::array{sizeof(first), sizeof(second)}));
 
     auto published = reader.pin();
     EXPECT_EQ(published->sample_region_count(), 1u);
@@ -2921,6 +2941,51 @@ TEST(BackgroundEvaluationTransaction,
         ASSERT_NE(region, nullptr);
         EXPECT_FLOAT_EQ(region->at(position, 0).value, expected[offset]);
     }
+}
+
+TEST(ProjectAudioRecording, AppendsAcrossBlocksAndOverwritesBySamplePosition)
+{
+    namespace fs = std::filesystem;
+    auto const root = fs::temp_directory_path() / ("iv-recording-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    ASSERT_TRUE(fs::create_directory(root));
+    struct RemoveDirectory {
+        fs::path path;
+        ~RemoveDirectory() { std::error_code ignored; fs::remove_all(path, ignored); }
+    } cleanup{root};
+
+    {
+        iv::ProjectAudioRecording recording(root);
+        auto resource = recording.resources();
+        EXPECT_THROW(resource.bind_fn(resource.owner, "../elsewhere", 1, 48000, 1), std::invalid_argument);
+        auto binding = resource.bind_fn(resource.owner, "recordings", 1, 48000, 1);
+        auto submit = [&](std::int64_t begin, std::initializer_list<float> samples) {
+            auto const bytes = std::as_bytes(std::span{samples.begin(), samples.size()});
+            binding.submit_fn(binding.target, index(begin), std::vector<std::byte>(bytes.begin(), bytes.end()));
+        };
+        submit(-2, {1.0f, 2.0f});
+        submit(0, {3.0f, 4.0f});
+        submit(8, {5.0f, 6.0f});
+        submit(-1, {10.0f, 11.0f});
+    }
+
+    std::vector<fs::path> takes;
+    for (auto const& take : fs::directory_iterator(root / "recordings")) takes.push_back(take.path());
+    ASSERT_EQ(takes.size(), 1u);
+    auto check_part = [&](char const* name, std::initializer_list<float> expected) {
+        std::ifstream file(takes.front() / name, std::ios::binary);
+        ASSERT_TRUE(file);
+        file.seekg(52); // Float WAV data chunk length, immediately before its samples.
+        EXPECT_EQ(iv::details::read_u32_le(file), expected.size() * sizeof(float));
+        for (float value : expected) {
+            auto const bits = iv::details::read_u32_le(file);
+            ASSERT_TRUE(bits);
+            EXPECT_FLOAT_EQ(std::bit_cast<float>(*bits), value);
+        }
+        EXPECT_EQ(file.peek(), std::char_traits<char>::eof());
+    };
+    check_part("region--2.wav", {1.0f, 10.0f, 11.0f, 4.0f});
+    check_part("region-8.wav", {5.0f, 6.0f});
 }
 
 TEST(BackgroundEvaluationTransaction,

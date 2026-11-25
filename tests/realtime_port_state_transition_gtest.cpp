@@ -489,7 +489,7 @@ TEST(RealtimePortStateTransition,
             std::move(*planned),
             previous_realizations,
             current,
-            current_realizations);
+            current_realizations, 8);
     ASSERT_TRUE(realized.has_value())
         << (realized ? std::string{} : realized.error());
     ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
@@ -504,6 +504,77 @@ TEST(RealtimePortStateTransition,
     iv::Sample fresh{};
     std::memcpy(&fresh, transfer.fresh_value.data(), sizeof(fresh));
     EXPECT_FLOAT_EQ(fresh.value, 0.0f);
+}
+
+TEST(RealtimePortStateTransition, SizesPrivateSampleRingForInFlightValuesAndTheNextBlock)
+{
+    using namespace iv::graph_jit;
+    constexpr std::size_t in_flight = 25;
+    constexpr std::size_t block = 8;
+    constexpr std::uint64_t cursor = 64;
+    constexpr auto cursor_size = sizeof(cursor);
+    RealtimePortStateRequirements requirements{
+        .states = {requirement(1, 0, iv::PortKind::sample, PortDirection::input,
+            RealtimePortStateRole::sequential_input_history, "reader", "in", 0)},
+    };
+    requirements.states.front().in_flight_samples = in_flight;
+
+    auto source = direct_sample(0, cursor_size);
+    auto& source_ring = source.retained_sources.front();
+    source_ring.channel_layout = iv::mono_planar_channel_layout;
+    source_ring.timeline_offset_frames = -static_cast<std::int64_t>(in_flight);
+    source_ring.working_frame_capacity = source_ring.storage_frame_count = 32;
+    source_ring.storage_size_bytes = 32 * sizeof(iv::Sample);
+    source.authored_storage = source_ring;
+    auto const previous = RealtimePortStateRealizations{.sample_states = {source}};
+
+    auto callback = source_ring;
+    callback.storage = SampleRealtimePortStateStorage::callback_transient;
+    callback.timeline_offset_frames = 0;
+    callback.working_frame_capacity = callback.storage_frame_count = block;
+    callback.storage_size_bytes = block * sizeof(iv::Sample);
+    callback.node_storage_offset.reset();
+    callback.callback_arena_offset = 0;
+    auto const current = RealtimePortStateRealizations{.sample_states = {{
+        .requirement_index = 0,
+        .authored_storage = callback,
+        .retained_access = SampleRealtimePortStateAccess::composed,
+        .composition_sources = {{.storage = source_ring, .coefficient = 1.0f}},
+    }}};
+
+    auto planned = plan_realtime_port_state_transition(requirements, previous, requirements, current);
+    ASSERT_TRUE(planned.has_value()) << (planned ? "" : planned.error());
+    iv::NodeLayoutBuilder layout_builder(block);
+    (void)layout_builder.declare_raw_region(cursor_size);
+    (void)layout_builder.declare_raw_region(source_ring.storage_size_bytes, alignof(iv::Sample));
+    auto realized = realize_realtime_port_state_transition_storage(
+        std::move(layout_builder).build(), std::move(*planned), previous, requirements, current, block);
+    ASSERT_TRUE(realized.has_value()) << (realized ? "" : realized.error());
+    ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
+    auto const& transfer = realized->plan.sample_transfers.front();
+    EXPECT_TRUE(transfer.target_transition_only);
+    EXPECT_EQ(transfer.target_end, static_cast<std::int64_t>(in_flight));
+    EXPECT_EQ(transfer.target_storage.working_frame_capacity, 64u);
+    ASSERT_TRUE(transfer.target_storage.node_storage_offset);
+    auto const target_offset = *transfer.target_storage.node_storage_offset;
+
+    std::vector<std::byte> predecessor(cursor_size + source_ring.storage_size_bytes);
+    std::vector<std::byte> successor(realized->node_layout.storage_size);
+    write_sequential_cursor(predecessor, 0, cursor);
+    write_sequential_cursor(successor, 0, cursor);
+    for (std::size_t frame = 0; frame < in_flight; ++frame) {
+        auto const sample = iv::Sample{frame + 1};
+        auto const slot = (cursor - in_flight + frame) % source_ring.working_frame_capacity;
+        std::memcpy(predecessor.data() + cursor_size + slot * sizeof(sample), &sample, sizeof(sample));
+    }
+    auto prepared = prepare_realtime_port_state_transfers(std::move(realized->plan), predecessor, successor);
+    ASSERT_TRUE(prepared.has_value()) << (prepared ? "" : prepared.error());
+    execute_realtime_port_state_transfers(*prepared, predecessor, successor, global_index(cursor));
+    for (std::size_t frame = 0; frame < in_flight; ++frame) {
+        iv::Sample sample{};
+        std::memcpy(&sample, successor.data() + target_offset + frame * sizeof(sample), sizeof(sample));
+        EXPECT_FLOAT_EQ(sample.value, static_cast<float>(frame + 1));
+    }
 }
 
 // A state the predecessor does not have owns a fresh window too. When it shares
@@ -586,7 +657,7 @@ TEST(RealtimePortStateTransition, NewStateSharingSampleTargetMovesItselfToTransi
             std::move(*planned),
             previous_realizations,
             current,
-            current_realizations);
+            current_realizations, 8);
     ASSERT_TRUE(realized.has_value())
         << (realized ? std::string{} : realized.error());
     EXPECT_EQ(realized->node_layout.steady_storage_size, 1024u);
@@ -745,7 +816,7 @@ TEST(RealtimePortStateTransition, MaterializesInheritedSampleStateIntoSteadyStor
             std::move(*planned),
             previous_realizations,
             current,
-            current_realizations);
+            current_realizations, 8);
     ASSERT_TRUE(realized.has_value())
         << (realized ? std::string{} : realized.error());
     ASSERT_EQ(realized->plan.sample_transfers.size(), 1u);
@@ -997,7 +1068,7 @@ TEST(
             std::move(*planned),
             previous_realizations,
             current,
-            current_realizations);
+            current_realizations, 8);
     ASSERT_TRUE(realized.has_value())
         << (realized ? std::string{} : realized.error());
     EXPECT_EQ(realized->node_layout.steady_storage_size, 64u);

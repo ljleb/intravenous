@@ -1951,6 +1951,56 @@ TEST_F(GraphJitRuntimeFixture, RoutedSampleDetachFeedbackUnaffectedByRecompile)
         *jit, definitions, resources, graph, 360);
 }
 
+TEST_F(GraphJitRuntimeFixture, SparseInputCutoverRetainsInFlightFeedback)
+{
+    auto const graph = configured_module_graph(*revision, "iv.test.replay.sparse_input_with_feedback");
+    auto predecessor = compile_graph(graph, 361);
+    ASSERT_TRUE(predecessor.succeeded())
+        << (predecessor.diagnostics.empty() ? "" : predecessor.diagnostics.front().message);
+
+    auto const& requirements = predecessor.compiled_graph->realtime_port_state_requirements.states;
+    auto const input = std::ranges::find_if(requirements, [](auto const& requirement) {
+        return requirement.role == iv::graph_jit::RealtimePortStateRole::sequential_input_history
+            && requirement.configured_port.port_kind == iv::PortKind::sample
+            && requirement.extent_samples == 0 && requirement.in_flight_samples == 1;
+    });
+    ASSERT_NE(input, requirements.end());
+    auto const input_index = static_cast<std::size_t>(input - requirements.begin());
+    auto const& states = predecessor.compiled_graph->realtime_port_state_realizations.sample_states;
+    auto const state = std::ranges::find(states, input_index, &iv::graph_jit::SampleRealtimePortStateRealization::requirement_index);
+    ASSERT_NE(state, states.end());
+    EXPECT_EQ(state->authored_storage.storage, iv::graph_jit::SampleRealtimePortStateStorage::callback_transient);
+    ASSERT_TRUE(state->connection_operand_storage);
+    EXPECT_EQ(state->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::composed);
+    EXPECT_TRUE(std::ranges::any_of(state->composition_sources, [](auto const& source) {
+        return source.owns_samples && source.storage.feedback_timeline && source.storage.node_storage_offset.has_value();
+    }));
+
+    iv::GraphJitCompileRequest request{.project_generation = 362, .graph = graph, .definitions = definitions};
+    auto steady = jit->compile(request);
+    ASSERT_TRUE(steady.succeeded()) << (steady.diagnostics.empty() ? "" : steady.diagnostics.front().message);
+    auto successor = jit->compile_transition({
+        .successor = request,
+        .steady_successor = steady.compiled_graph,
+        .active_predecessor = predecessor.compiled_graph,
+        .active_predecessor_phase = iv::CompiledGraphRealtimePhase::steady,
+    });
+    ASSERT_TRUE(successor.succeeded())
+        << (successor.diagnostics.empty() ? "" : successor.diagnostics.front().message);
+    ASSERT_TRUE(successor.compiled_graph->cutover);
+
+    auto previous_storage = predecessor.compiled_graph->node_layout.create_storage(resources);
+    auto successor_storage = successor.compiled_graph->node_layout.create_storage(resources);
+    auto const& transition = successor.compiled_graph->cutover->state_transition;
+    EXPECT_TRUE(std::ranges::any_of(transition.sample_transfers, [](auto const& transfer) {
+        return transfer.inherited_begin == 0 && transfer.inherited_end == 1
+            && transfer.target_storage.feedback_timeline;
+    }));
+    auto prepared = iv::graph_jit::prepare_realtime_port_state_transfers(
+        transition, previous_storage.buffer(), successor_storage.buffer());
+    EXPECT_TRUE(prepared.has_value()) << (prepared ? "" : prepared.error());
+}
+
 // The edit lengthens the counter's detach() from 5 to 7. Its input reads its 5
 // in-flight values, then 2 positions that nothing filled, which read its neutral
 // value 100 like the loop's first positions, then the longer loop continues.

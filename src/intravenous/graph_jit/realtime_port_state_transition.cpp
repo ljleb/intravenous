@@ -182,8 +182,8 @@ bool sample_materialization_sources_pair(
         || !previous.materialization || !current.materialization
         || previous.materialization->source_layout != current.materialization->source_layout
         || previous.materialization->target_layout != current.materialization->target_layout
-        || previous.authored_storage.representation_channel
-            != current.authored_storage.representation_channel
+        || previous.state_storage().representation_channel
+            != current.state_storage().representation_channel
         || previous.retained_sources.size() != current.retained_sources.size()
         || current.retained_sources.empty()) {
         return false;
@@ -210,7 +210,7 @@ select_sample_inherited_state_realization(
     switch (previous.retained_access) {
     case SampleRealtimePortStateAccess::immutable_constant:
         predecessor_recoverable =
-            previous.authored_storage.constant_value.has_value();
+            previous.state_storage().constant_value.has_value();
         break;
     case SampleRealtimePortStateAccess::direct:
         predecessor_recoverable = previous.retained_sources.size() == 1
@@ -242,8 +242,8 @@ select_sample_inherited_state_realization(
             predecessor_state_unavailable;
     }
 
-    auto const& previous_geometry = previous.authored_storage.geometry;
-    auto const& current_geometry = current.authored_storage.geometry;
+    auto const& previous_geometry = previous.state_storage().geometry;
+    auto const& current_geometry = current.state_storage().geometry;
     if (previous_geometry.value_type != current_geometry.value_type) {
         return InheritedRealtimePortStateRealization::fresh_state;
     }
@@ -261,18 +261,18 @@ select_sample_inherited_state_realization(
 
     if (current.retained_access
         == SampleRealtimePortStateAccess::immutable_constant) {
-        if (!current.authored_storage.constant_value) {
+        if (!current.state_storage().constant_value) {
             return std::unexpected(
                 "successor immutable sample state has no constant value");
         }
         if (previous.retained_access
             == SampleRealtimePortStateAccess::immutable_constant) {
-            if (previous.authored_storage.geometry
-                    == current.authored_storage.geometry
-                && previous.authored_storage.absolute_pace_exponent
-                    == current.authored_storage.absolute_pace_exponent
-                && previous.authored_storage.constant_value
-                    == current.authored_storage.constant_value) {
+            if (previous.state_storage().geometry
+                    == current.state_storage().geometry
+                && previous.state_storage().absolute_pace_exponent
+                    == current.state_storage().absolute_pace_exponent
+                && previous.state_storage().constant_value
+                    == current.state_storage().constant_value) {
                 return InheritedRealtimePortStateRealization::
                     already_represented;
             }
@@ -634,7 +634,7 @@ std::vector<StreamSourceTiming> sample_input_sources(
         }
         break;
     case SampleRealtimePortStateAccess::callback_only:
-        sources.push_back(sample_source_timing(realization.authored_storage));
+        sources.push_back(sample_source_timing(realization.state_storage()));
         break;
     case SampleRealtimePortStateAccess::materialized:
     case SampleRealtimePortStateAccess::composed:
@@ -1268,7 +1268,7 @@ std::expected<void, std::string> build_steady_storage_transfers(
             .source_access = source.retained_access,
             .source_materialization = source.materialization,
             .source_materialization_channel =
-                source.authored_storage.representation_channel,
+                source.state_storage().representation_channel,
             .target_storage = target.retained_sources.front(),
             .fresh_value = sample_fresh_value(
                 target.retained_sources.front(), target),
@@ -1279,11 +1279,11 @@ std::expected<void, std::string> build_steady_storage_transfers(
         };
         if (source.retained_access
             == SampleRealtimePortStateAccess::immutable_constant) {
-            if (!source.authored_storage.constant_value) {
+            if (!source.state_storage().constant_value) {
                 return std::unexpected(
                     "sample state transfer lost its predecessor constant");
             }
-            transfer.source_storage.push_back(source.authored_storage);
+            transfer.source_storage.push_back(source.state_storage());
         } else if (source.retained_access
                    == SampleRealtimePortStateAccess::composed) {
             auto composition = retain_sample_composition(
@@ -1769,9 +1769,23 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
     using Claim = StorageClaim;
     std::unordered_map<SampleTargetKey, std::vector<Claim>, SampleTargetKeyHash>
         targets;
+    std::vector<bool> moved(plan.sample_states.size(), false);
+    // Check the whole state's destination before it makes any storage claims.
+    // Copying a larger interval into a steady ring would alias two positions.
+    for (auto const& transfer : plan.sample_transfers) {
+        auto const& target = transfer.target_storage;
+        auto const extent = static_cast<std::uint64_t>(transfer.target_end)
+            - static_cast<std::uint64_t>(transfer.target_begin);
+        if (!transfer.target_transition_only
+            && target.storage == SampleRealtimePortStateStorage::ring
+            && extent > target.working_frame_capacity) {
+            moved[transfer.transition_index] = true;
+        }
+    }
     for (std::size_t index = 0; index < plan.sample_transfers.size(); ++index) {
         auto const& transfer = plan.sample_transfers[index];
         if (transfer.target_transition_only
+            || moved[transfer.transition_index]
             || !transfer.target_storage.node_storage_offset) {
             continue;
         }
@@ -1817,7 +1831,6 @@ std::expected<void, std::string> resolve_sample_transfer_conflicts(
         }].push_back(claim);
     }
 
-    std::vector<bool> moved(plan.sample_states.size(), false);
     for (auto& [_, claims] : targets) {
         settle_storage_claims(claims, [&](Claim const& claim) {
             moved[plan.sample_transfers[claim.transfer].transition_index] = true;
@@ -1996,7 +2009,10 @@ std::expected<void, std::string> validate_sample_interval(
     if (view.storage == SampleRealtimePortStateStorage::ring
         && extent > view.working_frame_capacity) {
         return std::unexpected(
-            std::string{role} + " exceeds its ring capacity");
+            std::string{role} + " interval [" + std::to_string(begin) + ", "
+            + std::to_string(end) + ") requires " + std::to_string(extent)
+            + " frames in a " + std::to_string(view.working_frame_capacity)
+            + "-frame ring (timeline offset " + std::to_string(view.timeline_offset_frames) + ")");
     }
     if (view.storage != SampleRealtimePortStateStorage::compact_carry) {
         return {};
@@ -2254,7 +2270,7 @@ std::expected<void, std::string> validate_prepared_transitions(
             transfer.target_storage,
             transfer.target_begin,
             transfer.target_end,
-            "sample transition target");
+            transfer.target_transition_only ? "transition-only sample target" : "steady sample target");
         if (!validated) return validated;
     }
     for (std::size_t index = 0; index < plan.sample_states.size(); ++index) {
@@ -2786,7 +2802,8 @@ realize_realtime_port_state_transition_storage(
     RealtimePortStateTransitionPlan plan,
     RealtimePortStateRealizations const& previous_realizations,
     RealtimePortStateRequirements const& current_requirements,
-    RealtimePortStateRealizations const& current_realizations)
+    RealtimePortStateRealizations const& current_realizations,
+    std::size_t maximum_project_block_size)
 {
     if (!plan.sample_expiry_cursors.empty()
         || !plan.sample_cutover_indices.empty()
@@ -2795,6 +2812,36 @@ realize_realtime_port_state_transition_storage(
             "transition storage already has an expiry horizon");
     }
     NodeLayoutTransitionBuilder layout_builder(std::move(steady_layout));
+    auto size_suffix_ring = [&](SampleRealtimePortStateStorageView& target, std::uint64_t extent)
+        -> std::expected<void, std::string> {
+        // The mirror can write one callback of successor values before the
+        // consumer has read the pending window. These positions must not alias.
+        auto const frames = FractionalGlobalIndexRange::maximum_projection_count(
+            maximum_project_block_size, target.absolute_pace_exponent);
+        constexpr auto maximum_capacity = std::bit_floor(std::numeric_limits<std::size_t>::max());
+        if (!frames || *frames == 0 || *frames > maximum_capacity
+            || extent > maximum_capacity - *frames) {
+            return std::unexpected("transition suffix sample window exceeds representable ring capacity");
+        }
+        auto const capacity = std::max(target.working_frame_capacity,
+            std::bit_ceil(static_cast<std::size_t>(extent) + *frames));
+        auto const channels = channel_count(target.channel_layout);
+        if (!std::has_single_bit(capacity) || channels == 0
+            || target.geometry.value_size_bytes == 0
+            || channels > std::numeric_limits<std::size_t>::max() / capacity
+            || channels * capacity > std::numeric_limits<std::size_t>::max() / target.geometry.value_size_bytes) {
+            return std::unexpected("transition suffix sample ring size is not representable");
+        }
+        target.storage = SampleRealtimePortStateStorage::ring;
+        target.working_frame_capacity = capacity;
+        target.storage_frame_count = capacity;
+        target.storage_size_bytes = channels * capacity * target.geometry.value_size_bytes;
+        target.carry_future_frames = 0;
+        target.constant_value.reset();
+        target.node_storage_offset.reset();
+        target.callback_arena_offset.reset();
+        return {};
+    };
     std::vector<std::pair<std::size_t, NodeLayout::RegionHandle>>
         suffix_targets;
     std::vector<std::pair<std::size_t, NodeLayout::RegionHandle>>
@@ -2910,8 +2957,8 @@ realize_realtime_port_state_transition_storage(
         auto const immutable_successor = current.retained_access
             == SampleRealtimePortStateAccess::immutable_constant;
         if (immutable_successor
-            && (!current.authored_storage.constant_value
-                || current.authored_storage.storage
+            && (!current.state_storage().constant_value
+                || current.state_storage().storage
                     != SampleRealtimePortStateStorage::immutable_constant)) {
             return std::unexpected(
                 "transition suffix immutable successor lost its constant value");
@@ -2920,7 +2967,7 @@ realize_realtime_port_state_transition_storage(
         auto source_views = source.retained_access
                 == SampleRealtimePortStateAccess::immutable_constant
             ? std::vector<SampleRealtimePortStateStorageView>{
-                source.authored_storage}
+                source.state_storage()}
             : source.retained_sources;
         std::vector<SampleRealtimePortStateTransfer::CompositionTerm> source_composition;
         if (fresh_only) {
@@ -2940,9 +2987,9 @@ realize_realtime_port_state_transition_storage(
         auto fresh_value = sample_fresh_value(
             current.retained_access == SampleRealtimePortStateAccess::direct
                 ? current.retained_sources.front()
-                : current.authored_storage,
+                : current.state_storage(),
             current);
-        auto target = current.authored_storage;
+        auto target = current.state_storage();
         if (transition.inherited_extent_samples
             > std::numeric_limits<std::size_t>::max()
                 - transition.newly_exposed_extent_samples) {
@@ -2956,93 +3003,15 @@ realize_realtime_port_state_transition_storage(
                 "transition suffix sample extent is not representable");
         }
 
-        if (immutable_successor) {
-            // The steady representation needs only its current callback
-            // window. The transition root additionally retains this suffix,
-            // so its private ring must hold both at once.
-            auto const channels = channel_count(target.channel_layout);
-            if (target.working_frame_capacity == 0
-                || channels == 0
-                || target.geometry.value_size_bytes == 0
-                || target_extent > std::numeric_limits<std::size_t>::max()
-                        - target.working_frame_capacity) {
-                return std::unexpected(
-                    "transition suffix cannot expand the successor's immutable input");
-            }
-            auto const minimum_capacity =
-                target.working_frame_capacity + target_extent;
-            auto const maximum_power_of_two = std::bit_floor(
-                std::numeric_limits<std::size_t>::max());
-            if (minimum_capacity > maximum_power_of_two) {
-                return std::unexpected(
-                    "transition suffix cannot expand the successor's immutable input");
-            }
-            auto const capacity = std::bit_ceil(
-                std::max<std::size_t>(1, minimum_capacity));
-            if (channels > std::numeric_limits<std::size_t>::max()
-                    / capacity
-                || channels * capacity
-                        > std::numeric_limits<std::size_t>::max()
-                            / target.geometry.value_size_bytes) {
-                return std::unexpected(
-                    "transition suffix cannot expand the successor's immutable input");
-            }
-            target.storage = SampleRealtimePortStateStorage::ring;
-            target.working_frame_capacity = capacity;
-            target.storage_frame_count = capacity;
-            target.storage_size_bytes = channels
-                * target.storage_frame_count
-                * target.geometry.value_size_bytes;
-            target.constant_value.reset();
-            target.initial_value.reset();
-            target.node_storage_offset.reset();
-            target.callback_arena_offset.reset();
+        if (current.retained_access == SampleRealtimePortStateAccess::direct) {
+            target = current.retained_sources.front();
+            steady_target_offset = target.node_storage_offset;
         }
-        if (current.retained_access
-            == SampleRealtimePortStateAccess::direct) {
-            auto const& steady_target = current.retained_sources.front();
-            steady_target_offset = steady_target.node_storage_offset;
-            target = steady_target;
-        }
-        auto const retained_timeline_offset = target.timeline_offset_frames;
-        if (target.storage
-                == SampleRealtimePortStateStorage::compact_carry
-            || target.storage
-                == SampleRealtimePortStateStorage::callback_transient) {
-            // Expansion needs the authored working-ring geometry, but the
-            // transfer still addresses the retained semantic timeline.
-            target = current.authored_storage;
-            target.timeline_offset_frames = retained_timeline_offset;
-            auto const channels = channel_count(target.channel_layout);
-            if (target.storage
-                    != SampleRealtimePortStateStorage::callback_transient
-                || target.working_frame_capacity == 0
-                || channels == 0
-                || target.geometry.value_size_bytes == 0
-                || channels > std::numeric_limits<std::size_t>::max()
-                        / target.working_frame_capacity
-                || channels * target.working_frame_capacity
-                        > std::numeric_limits<std::size_t>::max()
-                            / target.geometry.value_size_bytes) {
-                return std::unexpected(
-                    "transition suffix cannot expand the successor compact carry");
-            }
-            target.storage = SampleRealtimePortStateStorage::ring;
-            target.storage_frame_count = target.working_frame_capacity;
-            target.storage_size_bytes = channels
-                * target.storage_frame_count
-                * target.geometry.value_size_bytes;
-            target.node_storage_offset.reset();
-            target.callback_arena_offset.reset();
-        }
+        auto sized = size_suffix_ring(target, target_extent);
+        if (!sized) return std::unexpected(std::move(sized.error()));
         if (!std::ranges::all_of(
                 source_views,
                 sample_storage_source_is_recoverable)
-            || target.storage != SampleRealtimePortStateStorage::ring
-            || target.callback_arena_offset
-            || target.constant_value
-            || target.storage_size_bytes == 0
-            || target.geometry.value_size_bytes == 0
             || !std::ranges::all_of(
                 source_views,
                 [&](auto const& view) {
@@ -3148,7 +3117,7 @@ realize_realtime_port_state_transition_storage(
                 ? std::nullopt
                 : source.materialization,
             .source_materialization_channel =
-                source.authored_storage.representation_channel,
+                source.state_storage().representation_channel,
             .source_composition = std::move(source_composition),
             .target_storage = std::move(target),
             .fresh_value = std::move(fresh_value),
@@ -3167,33 +3136,15 @@ realize_realtime_port_state_transition_storage(
         auto& transfer = plan.sample_transfers[index];
         if (!transfer.composition_source) continue;
         auto target = transfer.target_storage;
-        auto const channels = channel_count(target.channel_layout);
-        if (target.storage == SampleRealtimePortStateStorage::compact_carry) {
-            if (target.working_frame_capacity == 0 || channels == 0
-                || target.geometry.value_size_bytes == 0
-                || channels > std::numeric_limits<std::size_t>::max()
-                        / target.working_frame_capacity
-                || channels * target.working_frame_capacity
-                        > std::numeric_limits<std::size_t>::max()
-                            / target.geometry.value_size_bytes) {
-                return std::unexpected(
-                    "transition source suffix cannot expand its compact carry");
-            }
-            target.storage = SampleRealtimePortStateStorage::ring;
-            target.storage_frame_count = target.working_frame_capacity;
-            target.storage_size_bytes = channels
-                * target.storage_frame_count
-                * target.geometry.value_size_bytes;
-        }
         auto const cursor = target.sequential_cursor_node_storage_offset;
-        if (target.storage != SampleRealtimePortStateStorage::ring
-            || target.storage_size_bytes == 0 || !cursor) {
-            return std::unexpected(
-                "transition source suffix has no ring geometry");
+        if ((target.storage != SampleRealtimePortStateStorage::ring
+                && target.storage != SampleRealtimePortStateStorage::compact_carry) || !cursor) {
+            return std::unexpected("transition source suffix has no retained sample view");
         }
-        target.node_storage_offset.reset();
-        target.callback_arena_offset.reset();
-        target.carry_future_frames = 0;
+        auto const extent = static_cast<std::uint64_t>(transfer.target_end)
+            - static_cast<std::uint64_t>(transfer.target_begin);
+        auto sized = size_suffix_ring(target, extent);
+        if (!sized) return std::unexpected(std::move(sized.error()));
         transfer.target_storage = target;
         suffix_targets.emplace_back(
             index,

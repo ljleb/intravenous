@@ -59,7 +59,7 @@ type WireOcclusions = { labels: DOMRect[]; knobs: DOMRect[] };
 const wireOpacity = { faint: .19, emphasized: .72 };
 
 const state = shallowRef<GraphEditorState>({ sessionStatus: "starting", scope: null,
-    definitions: null, definitionUsage: {}, error: "" });
+    definitions: null, definitionUsage: {} });
 const playback = providePlayback();
 const beats = useBeatGridEditing();
 const elementStatus = useElementStatusHint();
@@ -180,11 +180,18 @@ let knobDrag: (KnobDrag & { pointerId: number }) | null = null;
 const valueEntryAnchor = shallowRef<HTMLElement>();
 const knobClipboards = new WeakMap<Element, KnobClipboard>();
 const pendingKnobPastes = new Map<number, (text: string) => string | undefined>();
-let nextConnectionEditRequest = 0;
-const pendingConnectionEdits = new Map<number, (accepted: boolean) => void>();
-function settleConnectionEdits() {
-    for (const finish of pendingConnectionEdits.values()) finish(false);
-    pendingConnectionEdits.clear();
+let nextGraphEditRequest = 0;
+const pendingGraphEdits = new Map<number, (accepted: boolean) => void>();
+function requestGraphEdit(send: (requestId: number) => void): Promise<boolean> {
+    const requestId = ++nextGraphEditRequest;
+    return new Promise((finish) => {
+        pendingGraphEdits.set(requestId, finish);
+        send(requestId);
+    });
+}
+function settleGraphEdits() {
+    for (const finish of pendingGraphEdits.values()) finish(false);
+    pendingGraphEdits.clear();
 }
 let knobClipboardRequest = 0;
 let knobClipboardStatus: StatusHint | null = null;
@@ -505,14 +512,6 @@ const visibleScope = computed(() => {
 });
 const wireConnections = computed(() => visibleScope.value ? resolveLaneConnectionEnds(visibleScope.value) : []);
 const connectionFeedback = computed(() => laneConnectionFeedback(wireConnections.value));
-const compilationError = computed(() => {
-    const scope = visibleScope.value;
-    if (!scope?.execution) return null;
-    const feedback = scope.connections.some((connection) => connection.feedback);
-    if (!feedback && scope.execution.phase !== "failed") return null;
-    return { message: feedback ? "A feedback loop prevents graph compilation." : scope.execution.message,
-        detail: scope.execution.message };
-});
 const wireConnectionsById = computed(() => new Map(wireConnections.value.map((entry) => [entry.id, entry])));
 const implicitOutputModules = computed(() => {
     const modules = new Set<string>();
@@ -814,13 +813,11 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     toggleConnectionDetach: (end) => webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: { end, toggleDetach: true } }),
-    setConnectionDelay: (end, loopExtraLatency) => {
-        const requestId = ++nextConnectionEditRequest;
-        return new Promise<boolean>((finish) => {
-            pendingConnectionEdits.set(requestId, finish);
-            webviewApi.postMessage({ type: "editGraphConnectionEnd", requestId, edit: { end, loopExtraLatency } });
-        });
-    },
+    setConnectionDelay: (end, loopExtraLatency) => requestGraphEdit((requestId) =>
+        webviewApi.postMessage({ type: "editGraphConnectionEnd", requestId, edit: { end, loopExtraLatency } })),
+    setNodeConfiguration: (instanceId, displayName, previousConfigurationSource, configurationSource) =>
+        requestGraphEdit((requestId) => webviewApi.postMessage({ type: "updateGraphNode", requestId, instanceId,
+            displayName, previousDisplayName: displayName, configurationSource, previousConfigurationSource })),
     cancelKnob() {
         if (!knobDrag) return false;
         knobClicks.cancel();
@@ -1438,10 +1435,10 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
 }
 
 function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
-    if (event.data?.type === "graphConnectionEditFinished") {
+    if (event.data?.type === "graphEditFinished") {
         const { requestId, accepted } = event.data;
-        const finish = pendingConnectionEdits.get(requestId);
-        pendingConnectionEdits.delete(requestId);
+        const finish = pendingGraphEdits.get(requestId);
+        pendingGraphEdits.delete(requestId);
         finish?.(accepted);
         return;
     }
@@ -1609,7 +1606,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     if (state.value.connectionNumber !== event.data.state.connectionNumber) {
-        settleConnectionEdits();
+        settleGraphEdits();
         laneViewReads.clear();
         pendingPresentation.clear();
         changedPresentationStates.clear();
@@ -1631,7 +1628,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     } else {
         configuredObservations = undefined;
         observations.disconnect();
-        settleConnectionEdits();
+        settleGraphEdits();
         for (const interrupt of presentationInterrupts) interrupt("disconnected");
     }
     const entry = manualGestures.numericEntry();
@@ -1698,7 +1695,7 @@ onMounted(() => {
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
-    settleConnectionEdits();
+    settleGraphEdits();
     clearTimeout(knobClipboardStatusTimer);
     pendingKnobPastes.clear();
     clearTimeout(cursorReturnTraceTimer);
@@ -1758,10 +1755,6 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="state.sessionStatus !== 'running'" class="status" role="status">
             {{ state.sessionStatus === 'starting' ? 'Starting Intravenous…' : 'Restarting Intravenous…' }}
-        </div>
-        <div v-if="state.error" class="error" role="alert">{{ state.error }}</div>
-        <div v-if="compilationError" class="error compilation-error" role="alert" :title="compilationError.detail">
-            {{ compilationError.message }}
         </div>
         <PresentationHost v-if="state.scope" :node="root" view-choice="editable" />
         <ManualValuePopover :entry="manualValueEntry"
@@ -1856,9 +1849,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .graph-editor { height: 100vh; display: flex; flex-direction: column; background: var(--vscode-editor-background); }
 .graph-editor :deep(> .presentation-host) { flex: 1; min-height: 0; }
-.status, .error { padding: 8px; }
-.error { color: var(--vscode-errorForeground); }
-.compilation-error { border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent); }
+.status { padding: 8px; }
 .connection-wire { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
 .preview-wire { fill: none; stroke-width: 2; }
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }

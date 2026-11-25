@@ -14,6 +14,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <typeinfo>
 #include <utility>
@@ -114,6 +115,8 @@ namespace iv {
 
         size_t register_node(
             NodeLayoutBuilder&, NodeLayoutNodeRegistration const&);
+        void declare_recording_output(NodeLayoutBuilder&, size_t node_index,
+            size_t sample_port, std::string_view directory);
         void allocate_node_state(
             NodeLayoutBuilder&, size_t node_index, size_t size, size_t alignment);
         void allocate_node_background_state(
@@ -485,6 +488,16 @@ namespace iv {
         requires details::has_constexpr_port_configs<Node>
         {
             return output<details::static_output_declaration_index<Node, Name>()>();
+        }
+
+        template<fixed_string Name>
+        void record_output_to(std::string_view directory) const
+        requires details::has_constexpr_port_configs<Node>
+        {
+            constexpr auto index = details::static_output_declaration_index<Node, Name>();
+            static_assert(details::static_output_port_kind_at<Node, index>() == PortKind::sample);
+            constexpr auto port = details::static_sample_output_port_index_at<Node, index>();
+            details::declare_recording_output(*_builder, _node_index, port, directory);
         }
 
         template<auto Member>

@@ -1321,6 +1321,17 @@ namespace iv::details {
         : private StaticOutputDispositionObserver<Recording> {
         ContinuousOutputPort<Value> port_{};
 
+        constexpr void clear_block_values() const noexcept
+        {
+            auto const channels = channel_count(port_.channel_layout());
+            for (std::size_t channel = 0; channel < channels; ++channel) {
+                auto values = port_.block(channel);
+                for (std::size_t index = 0; index < values.size(); ++index) {
+                    ContinuousValueType<Value>::clear_value(values[index]);
+                }
+            }
+        }
+
         class Axis {
             StaticContinuousOutputAccess const* output_ = nullptr;
             std::size_t outer_ = 0;
@@ -1523,13 +1534,14 @@ namespace iv::details {
         requires (Access == TickPortAccessKind::block)
         {
             author_write();
-            auto const channels = channel_count(port_.channel_layout());
-            for (std::size_t channel = 0; channel < channels; ++channel) {
-                auto values = port_.block(channel);
-                for (std::size_t index = 0; index < values.size(); ++index) {
-                    ContinuousValueType<Value>::clear_value(values[index]);
-                }
-            }
+            clear_block_values();
+        }
+
+        // Supply zeros to live consumers while retaining the recording disposition.
+        constexpr void clear_live_block() const noexcept
+        requires (Access == TickPortAccessKind::block && Recording)
+        {
+            clear_block_values();
         }
 
         constexpr void write_void() const noexcept requires Recording

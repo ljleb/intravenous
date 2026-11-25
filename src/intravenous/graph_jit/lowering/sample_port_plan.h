@@ -81,6 +81,18 @@ struct PrimitiveSampleInputBindingPlan {
     std::vector<PrimitiveSampleInputChannelBindingPlan> coverage_operand_channels{};
 };
 
+// Coverage and manual value staging write the current block. With no
+// callback history, in-flight frames still belong to the connection.
+template<class Binding>
+auto& sample_input_state_channels(Binding& input)
+{
+    if (!input.invocation_supplied && input.history == 0) {
+        if (!input.manual_operand_channels.empty()) return input.manual_operand_channels;
+        if (!input.coverage_operand_channels.empty()) return input.coverage_operand_channels;
+    }
+    return input.channels;
+}
+
 struct ManualControlPlan {
     ConfiguredManualControl configured{};
     std::size_t primitive_index = 0;

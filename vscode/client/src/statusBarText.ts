@@ -16,3 +16,8 @@ export function formatStatusHint(hint: StatusHint, hideShortcuts: boolean): stri
 export function statusBarText(text: string): string {
     return text.replace(/\s+/g, " ").trim().replace(/\$\(/g, "＄(");
 }
+
+export function statusDiagnostic(detail: string): string {
+    return detail.split("\n", 2).join("\n")
+        + "\n\nSee Intravenous in the Output panel for the full diagnostic.";
+}

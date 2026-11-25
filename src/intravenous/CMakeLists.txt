@@ -379,6 +379,7 @@ add_library(intravenous_graph_jit OBJECT
     execution/graph_executor.cpp
     graph_jit/graph_jit.cpp
     execution/storage/persisted_data_store.cpp
+    execution/storage/project_audio_recording.cpp
     execution/storage/buffered_storage.cpp
     execution/storage/realtime_persisted_state.cpp
     execution/tick_invocation_frame.cpp

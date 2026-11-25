@@ -203,6 +203,7 @@ struct BackgroundPortPlan {
     bool persisted_tick_output = false;
     bool replayed_tick_output = false;
     bool full_live_tick_coverage = false;
+    std::string recording_directory{};
 
     // Sample-input neutral values are retained for uncovered-position playback at the
     // Tick invocation boundary. Event inputs use absence-of-events as neutral.

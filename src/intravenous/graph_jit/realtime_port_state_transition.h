@@ -283,7 +283,8 @@ realize_realtime_port_state_transition_storage(
     RealtimePortStateTransitionPlan plan,
     RealtimePortStateRealizations const& previous_realizations,
     RealtimePortStateRequirements const& current_requirements,
-    RealtimePortStateRealizations const& current_realizations);
+    RealtimePortStateRealizations const& current_realizations,
+    std::size_t maximum_project_block_size);
 
 // Validates and owns the complete bounded cutover program before activation.
 // A transition-only state is accepted only after suffix realization has added

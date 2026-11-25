@@ -69,6 +69,7 @@ type GraphEditorContext = {
     startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd, altClick?: () => void) => void;
     toggleConnectionDetach: (end: GraphConnectionEnd) => void;
     setConnectionDelay: (end: GraphConnectionEnd, samples: number) => Promise<boolean>;
+    setNodeConfiguration: (instanceId: string, displayName: string, previous: string, source: string) => Promise<boolean>;
     cancelConnection: () => void;
     activeKnob: Readonly<Ref<string | null>>;
     startKnob: (event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) => void;

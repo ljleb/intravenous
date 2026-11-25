@@ -265,6 +265,17 @@ namespace iv {
             state.state_alignment = alignment;
         }
 
+        void declare_recording_output(NodeLayoutBuilder& builder, size_t node_index,
+            size_t sample_port, std::string_view directory)
+        {
+            auto& outputs = builder._nodes.at(node_index).recording_outputs;
+            if (directory.empty() || std::ranges::contains(outputs, sample_port,
+                    &NodeLayout::NodeRecord::RecordingOutput::port)) {
+                throw std::invalid_argument("A recording output requires one nonempty project directory");
+            }
+            outputs.push_back({sample_port, std::string(directory)});
+        }
+
         void declare_local_array(
             NodeLayoutBuilder& builder,
             NodeLayoutArrayDeclaration const& declaration)

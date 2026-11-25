@@ -1620,9 +1620,27 @@ plan_sample_realtime_port_state_realizations(
                 iv::details::SequentialInputInitialization::neutral);
             if (!neutral) return std::unexpected(std::move(neutral.error()));
             realization.neutral_value = std::move(*neutral);
+            auto const& binding = primitive_ports.inputs[port];
+            auto const& state_channels = sample_input_state_channels(binding);
+            if (&state_channels != &binding.channels) {
+                if (*requirement.channel >= state_channels.size()) {
+                    return std::unexpected("GraphJit input state lost its connection operand channel");
+                }
+                auto const& operand = state_channels[*requirement.channel];
+                if (!std::in_range<std::int64_t>(operand.frame_delay)) {
+                    return std::unexpected("GraphJit sample input operand delay is not representable");
+                }
+                representation_index = operand.storage;
+                representation_channel = operand.representation_channel;
+                timeline_offset = -static_cast<std::int64_t>(operand.frame_delay);
+                auto view = storage_view(representation_index, representation_channel, timeline_offset, false);
+                if (!view) return std::unexpected(std::move(view.error()));
+                if (!*view) return std::unexpected("GraphJit input state lost its connection operand view");
+                realization.connection_operand_storage = std::move(**view);
+            }
         }
 
-        if (realization.authored_storage.storage
+        if (realization.state_storage().storage
             == SampleRealtimePortStateStorage::immutable_constant) {
             realization.retained_access =
                 SampleRealtimePortStateAccess::immutable_constant;
@@ -1653,7 +1671,7 @@ plan_sample_realtime_port_state_realizations(
             if (*materialization) {
                 auto const& operation = **materialization;
                 if (operation.target_layout
-                        != realization.authored_storage.channel_layout
+                        != realization.state_storage().channel_layout
                     || operation.source_representation
                         >= sample_ports.storage.representations.size()) {
                     return std::unexpected(
@@ -4098,6 +4116,23 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             realtime_ports->sample_ports,
             realtime_ports->event_ports);
         if (!declarations) return std::unexpected(std::move(declarations.error()));
+
+        for (std::size_t node = 0; node < declarations->node_layout.nodes.size(); ++node) {
+            auto const bundle = analysis->primitives[node].bundle.node_bundle;
+            for (auto const& recording : declarations->node_layout.nodes[node].recording_outputs) {
+                NodeBundlePortId const address{bundle, PortKind::sample, recording.port};
+                auto port = std::ranges::find_if(connections->background.ports, [&](auto const& candidate) {
+                    return candidate.direction == PortDirection::output && candidate.configured_port == address;
+                });
+                if (port == connections->background.ports.end() || !port->persisted_tick_output
+                    || port->absolute_pace_exponent != 0
+                    || port->sample_layout.sample_layout != SampleStreamLayout::interleaved
+                    || port->continuous_geometry.value_type != ContinuousValueTypeId::sample) {
+                    return std::unexpected("File recording requires a buffered, project-rate interleaved Sample output");
+                }
+                port->recording_directory = recording.directory;
+            }
+        }
 
         for (std::size_t primitive = 0;
              primitive < realtime_ports->sample_ports.primitives.size();

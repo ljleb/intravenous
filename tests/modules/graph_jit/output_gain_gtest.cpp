@@ -124,6 +124,42 @@ TEST_F(GraphJitRuntimeFixture, RealtimeOutputGainUsesTheExistingSampleBySampleCo
     EXPECT_FLOAT_EQ(state->sum, 4*.625f + 5*.75f + 6*.875f + 7);
 }
 
+TEST_F(GraphJitRuntimeFixture, RealtimeOutputGainKeepsTheSettledValueOnGrabWithoutMovement)
+{
+    auto settled_graph = std::make_shared<ConfiguredGraph>(*configured_module_graph(*revision,
+        "iv.test.graph_jit.state_context.transient_sample_module"));
+    add_gain(*settled_graph, first_output(*settled_graph), .25f);
+    auto live_graph = std::make_shared<ConfiguredGraph>(*settled_graph);
+    live_graph->manual_controls.front().dynamic = true;
+
+    auto settled = compile_graph(settled_graph, 823);
+    ASSERT_TRUE(settled.succeeded()) << settled.diagnostics.front().message;
+    auto live = compile_graph(live_graph, 823);
+    ASSERT_TRUE(live.succeeded()) << live.diagnostics.front().message;
+    ASSERT_TRUE(GraphExecutor::can_replace_realtime_code(*settled.compiled_graph, *live.compiled_graph));
+    ASSERT_EQ(settled.compiled_graph->manual_controls.size(), 1u);
+
+    auto storage = settled.compiled_graph->node_layout.create_storage(resources);
+    storage.initialize();
+    auto const& binding = settled.compiled_graph->manual_controls.front();
+    auto* control = reinterpret_cast<ManualControlRuntimeState*>(
+        storage.buffer().data() + binding.state_storage_offset);
+    // The previous live kernel could have last run at a different value.
+    control->effective_bits = std::bit_cast<std::uint32_t>(.75f);
+    settled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+
+    // The click submits the same gain the settled kernel just played.
+    std::atomic_ref<std::uint32_t>{control->target_bits}.store(std::bit_cast<std::uint32_t>(.25f));
+    live.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(4), 4);
+    auto const* state = find_unique_state<SampleConsumerProbeStateMirror>(settled.compiled_graph->node_layout, storage);
+    ASSERT_NE(state, nullptr);
+    EXPECT_FLOAT_EQ(state->first, 1.f);
+    EXPECT_FLOAT_EQ(state->last, 1.75f);
+    EXPECT_FLOAT_EQ(state->sum, 5.5f);
+}
+
 TEST_F(GraphJitRuntimeFixture, SymbolicOutputsOfTheSameNodeObserveTheirOwnGainChains)
 {
     auto module = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");

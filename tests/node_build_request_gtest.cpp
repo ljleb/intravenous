@@ -2,6 +2,7 @@
 #include <intravenous/basic_nodes/automation.h>
 #include <intravenous/basic_nodes/beats.h>
 #include <intravenous/basic_nodes/click_detector.h>
+#include <intravenous/basic_nodes/sampler.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/graph/reflected_node_description.h>
 #include <intravenous/node/coverage_port_context.h>
@@ -76,6 +77,16 @@ iv::ReflectedContinuousPortStorageBinding sample_storage_binding(
         .value_stride_bytes = sizeof(iv::Sample),
     };
     return result;
+}
+
+iv::ReflectedContinuousPortStorageBinding stereo_sample_storage_binding(std::span<iv::Sample> samples)
+{
+    auto binding = sample_storage_binding(samples.first(samples.size() / 2),
+        {iv::ChannelTypeId::stereo, iv::SampleStreamLayout::interleaved});
+    binding.channels[0].value_stride_bytes = 2 * sizeof(iv::Sample);
+    binding.channels[1] = binding.channels[0];
+    binding.channels[1].storage += sizeof(iv::Sample);
+    return binding;
 }
 
 iv::ReflectedContinuousInputPortBinding sample_input_binding(
@@ -1922,6 +1933,62 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
     EXPECT_EQ(
         event_bindings[0].disposition, iv::OutputDisposition::written);
     EXPECT_EQ(event_storage.count, 0u);
+}
+
+TEST(BackgroundDspPorts, SamplerCopiesStereoAtUnityAndClearsLiveOutputWhenDisarmed)
+{
+    std::array<iv::Sample, 8> audio{0.25f, -0.4f, 0.5f, -0.3f, -0.6f, 0.1f, -0.7f, 0.8f};
+    std::array<iv::Sample, 4> record{1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<iv::Sample, 8> recorded{};
+    std::array inputs{
+        iv::ReflectedContinuousInputPortBinding{
+            .storage = stereo_sample_storage_binding(audio), .contiguous_value_capacity = record.size(),
+        },
+        sample_input_binding(record),
+    };
+    std::array outputs{iv::ReflectedContinuousOutputPortBinding{.storage = stereo_sample_storage_binding(recorded)}};
+    auto const context = iv::ReflectedNodeTickContext{
+        .continuous_input_bindings = inputs, .continuous_output_bindings = outputs,
+    };
+    auto const operations = iv::details::node_compiler_operations<iv::Sampler>();
+    iv::Sampler sampler;
+
+    operations.tick_block(&sampler, context, index(0), record.size());
+    EXPECT_EQ(outputs[0].disposition, iv::OutputDisposition::written);
+    for (std::size_t i = 0; i < audio.size(); ++i) EXPECT_EQ(recorded[i].value, audio[i].value);
+
+    record.fill(iv::Sample{0.0f});
+    for (auto callback : {operations.tick_block, operations.skip_block}) {
+        recorded.fill(iv::Sample{0.75f});
+        callback(&sampler, context, index(4), record.size());
+        EXPECT_EQ(outputs[0].disposition, iv::OutputDisposition::untouched);
+        for (auto sample : recorded) EXPECT_EQ(sample.value, 0.0f);
+    }
+}
+
+TEST(TickPointwiseExecution, StereoClipPreservesChannelsAndHasReplayableComputedOutput)
+{
+    auto const nan = std::numeric_limits<float>::quiet_NaN();
+    auto const infinity = std::numeric_limits<float>::infinity();
+    std::array<iv::Sample, 8> audio{nan, 0.5f, -2.0f, 2.0f, infinity, -infinity, -0.25f, -nan};
+    std::array<iv::Sample, 8> clipped{};
+    auto const frames = audio.size() / 2;
+    std::array inputs{iv::ReflectedContinuousInputPortBinding{
+        .storage = stereo_sample_storage_binding(audio), .contiguous_value_capacity = frames,
+    }};
+    std::array outputs{iv::ReflectedContinuousOutputPortBinding{.storage = stereo_sample_storage_binding(clipped)}};
+    iv::StereoClip clip;
+    auto const request = iv::details::make_node_build_request(clip);
+    ASSERT_NE(request.compiler_record, nullptr);
+    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::input_union);
+
+    auto const operations = iv::details::node_compiler_operations<iv::StereoClip>();
+    operations.tick_block(&clip, {
+        .continuous_input_bindings = inputs, .continuous_output_bindings = outputs,
+    }, index(0), frames);
+
+    std::array<iv::Sample, 8> const expected{0.0f, 0.5f, -1.0f, 1.0f, 1.0f, -1.0f, -0.25f, 0.0f};
+    EXPECT_EQ(clipped, expected);
 }
 
 TEST(BackgroundDspPorts, EphemeralWritesDoNotObserveOutputDisposition)

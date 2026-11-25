@@ -191,6 +191,17 @@ struct SampleRealtimePortStateRealization {
     std::size_t requirement_index = 0;
     // Exact channel view bound to the authored node callback.
     SampleRealtimePortStateStorageView authored_storage{};
+    // Input staging can bind the callback to a working copy while the delayed
+    // connection operand still owns the cutover window.
+    std::optional<SampleRealtimePortStateStorageView> connection_operand_storage{};
+    SampleRealtimePortStateStorageView const& state_storage() const noexcept
+    {
+        return connection_operand_storage ? *connection_operand_storage : authored_storage;
+    }
+    SampleRealtimePortStateStorageView& state_storage() noexcept
+    {
+        return connection_operand_storage ? *connection_operand_storage : authored_storage;
+    }
     SampleRealtimePortStateAccess retained_access =
         SampleRealtimePortStateAccess::callback_only;
     // One entry for direct access, or every source-layout channel required to

@@ -917,6 +917,17 @@ void delayed_sparse_coverage_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.replay.delayed_sparse_coverage", delayed_sparse_coverage_module, "Delayed sparse coverage");
 
+void sparse_input_with_feedback_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto sparse = graph.node<"iv.test.replay.add_one">();
+    auto counter = graph.node<"iv.test.graph_jit.state_context.neutral_feedback_counter">();
+    sparse(source);
+    counter(sparse);
+    counter(static_cast<iv::SamplePortRef>(counter).detach(1, iv::Sample{100.0f}));
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.sparse_input_with_feedback", sparse_input_with_feedback_module, "Sparse input with feedback");
+
 void replay_module_manual_resolution(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
     auto direct = graph.node<"iv.test.replay.manual_full">();

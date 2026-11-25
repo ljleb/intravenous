@@ -1399,19 +1399,10 @@ void stage_manual_control_sample_timelines(
     auto const& inputs = plan.sample_ports.primitives[primitive_index].inputs;
     for (auto const control_index : primitive.manual_controls) {
         auto const& control = plan.sample_ports.manual_controls[control_index];
+        if (!control.stages_timeline) continue;
         auto const& input = inputs[control.input_index];
         auto* state = reinterpret_cast<ManualControlRuntimeState*>(
             frame.storage_base + control.state_storage_offset);
-        auto const settled_bits = std::bit_cast<std::uint32_t>(
-            control.configured.settled_value.value);
-        if (!control.configured.dynamic || !control.stages_timeline) {
-            // Constant code owns the effective interpolation origin but never
-            // overwrites target_bits, which may already hold the first
-            // interaction value awaiting dynamic-code activation.
-            state->effective_bits = settled_bits;
-        }
-        if (!control.stages_timeline) continue;
-
         auto const pace = input.absolute_pace_exponent;
         auto const values = project_lattice(slice_index, slice_size, pace).value_count;
         if (values == 0) continue;
@@ -2327,15 +2318,21 @@ void execute_realtime_root(
     }
     for (std::size_t index = 0; index < plan.sample_ports.manual_controls.size(); ++index) {
         auto const& control = plan.sample_ports.manual_controls[index];
-        if (!control.stages_timeline) continue;
         auto* state = reinterpret_cast<ManualControlRuntimeState*>(storage_base + control.state_storage_offset);
         auto const settled = std::bit_cast<std::uint32_t>(control.configured.settled_value.value);
+        if (!control.configured.dynamic || !control.stages_timeline) {
+            // Specialized steps can read an immutable input without staging a
+            // timeline. Record its effective value for the next live kernel,
+            // while preserving any target already submitted by the UI.
+            state->effective_bits = settled;
+        }
+        if (!control.stages_timeline) continue;
         auto const target_index = plan.manual_target_latches[index];
         frame.manual_control_latches[index] = {
             .target_bits = !control.configured.dynamic ? settled : target_index < index
                 ? frame.manual_control_latches[target_index].target_bits
                 : std::atomic_ref<std::uint32_t>{state->target_bits}.load(std::memory_order_relaxed),
-            .effective_bits = control.configured.dynamic ? state->effective_bits : settled,
+            .effective_bits = state->effective_bits,
         };
     }
     initialize_bindings(frame);

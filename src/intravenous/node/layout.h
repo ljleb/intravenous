@@ -87,6 +87,10 @@ namespace iv {
         };
 
         struct NodeRecord {
+            struct RecordingOutput {
+                size_t port = 0;
+                std::string directory{};
+            };
             void const* node = nullptr;
             void const* node_type = nullptr;
             char const* node_type_name = nullptr;
@@ -104,6 +108,7 @@ namespace iv {
             size_t owned_region_count = 0;
             std::vector<size_t> dependencies;
             NodeLifecycleCallbacks lifecycle;
+            std::vector<RecordingOutput> recording_outputs{};
         };
 
         size_t storage_size = 0;
@@ -231,6 +236,7 @@ namespace iv {
 
         friend size_t details::register_node(
             NodeLayoutBuilder&, details::NodeLayoutNodeRegistration const&);
+        friend void details::declare_recording_output(NodeLayoutBuilder&, size_t, size_t, std::string_view);
         friend void details::allocate_node_state(
             NodeLayoutBuilder&, size_t, size_t, size_t);
         friend void details::allocate_node_background_state(

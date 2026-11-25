@@ -80,6 +80,8 @@ public:
         return value_ != invalid;
     }
 
+    [[nodiscard]] constexpr std::uint64_t token() const noexcept { return value_; }
+
     [[nodiscard]] constexpr PortKind kind() const noexcept
     {
         return (value_ & 1) == 0 ? PortKind::sample : PortKind::event;

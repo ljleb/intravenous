@@ -44,7 +44,6 @@ export type GraphEditorState = {
     scope: GraphScope | null;
     definitions: NodeDefinitionCatalog | null;
     definitionUsage: Readonly<Record<string, number>>;
-    error: string;
 };
 export type GraphEditorAction = "addNode" | "editNode" | "deleteNode" | "openNodeSource" | "createPackage" | "deleteConnection" | "undo" | "redo";
 export type GraphLaneInsertion = { instanceId: string };
@@ -67,7 +66,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
     | { type: "graphPresentationAccepted"; requestId: number; receipt?: ProjectEditReceipt }
-    | { type: "graphConnectionEditFinished"; requestId: number; accepted: boolean }
+    | { type: "graphEditFinished"; requestId: number; accepted: boolean }
     | { type: "laneViewStates"; reads: Array<{ requestId: number; version: string; state: string | null }> }
     | { type: "interruptProjectHistory"; requestId: number }
     | { type: "projectHistoryFinished"; requestId: number }
@@ -108,6 +107,6 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "searchNodeDefinitions"; requestId: string; source: string; cursor: number }
     | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string; afterInstanceId?: string }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;
-        previousDisplayName: string; previousConfigurationSource: string }
+        previousDisplayName: string; previousConfigurationSource: string; requestId?: number }
     | { type: "createGraphPackage"; name: string }
     | ({ type: "saveGraphPresentation"; requestId: number } & GraphPresentationPatch);

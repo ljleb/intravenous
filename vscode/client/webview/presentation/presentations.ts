@@ -1,6 +1,7 @@
 import { markRaw, shallowRef, type Component } from "vue";
 
 import GenericPresentation from "./GenericPresentation.vue";
+import SamplerPresentation from "./SamplerPresentation.vue";
 import PluginLane from "./PluginLane.vue";
 import { PresentationRegistry } from "./registry";
 import { genericPresentationId, projectProgramsByDefinition } from "../../src/presentationPrograms";
@@ -17,6 +18,8 @@ const presentations = new PresentationRegistry<Component>({
 presentations.register({ presentationId: "builtin.timeline", displayName: "Timeline",
     definitionIds: ["builtin.timeline"], component: markRaw(GenericPresentation), timeline: true,
     icon: "M2 5h12v7H2zm3 0v3m3-3v4m3-4v3" });
+presentations.register({ presentationId: "builtin.sampler", displayName: "Sampler",
+    definitionIds: ["builtin.sampler"], component: markRaw(SamplerPresentation) });
 
 const hosted = markRaw(PluginLane);
 const projectPrograms = shallowRef(new Map<string, PresentationArtifact>());

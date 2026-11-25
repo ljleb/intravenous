@@ -59,8 +59,12 @@ test("an in-flight graph scope satisfies a later invalidation at its revision", 
     const session = { graphSessionStatus: "running", graphRevision: 4, graphConnectionNumber: 1,
         readGraphScope: () => { ++reads; return scope.result; },
         graphDefinitions: async () => ({}), manualControls: { reconcile() {} } };
+    const errors: string[] = [];
+    const state: { scope: GraphScope | null } = { scope: null };
     const provider = Object.assign(Object.create(Provider.prototype) as { refresh(): Promise<void> }, {
-        session, panels: new Set([{}]), expandedByPanel: new Map(), graphUiProfiles: new Map(), state: {}, post() {},
+        session, panels: new Set([{}]), expandedByPanel: new Map(), graphUiProfiles: new Map(), state, post() {},
+        graphErrorStatus: { hide() {} },
+        outputChannel: { appendLine(message: string) { errors.push(message); } },
     });
     const first = provider.refresh();
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -69,4 +73,6 @@ test("an in-flight graph scope satisfies a later invalidation at its revision", 
     scope.finish({ sessionRevision: 5, generation: 1, editable: true, nodes: [], connections: [] });
     await Promise.all([first, second, provider.refresh()]);
     assert.equal(reads, 1);
+    assert.equal(state.scope?.sessionRevision, 5);
+    assert.deepEqual(errors, []);
 });

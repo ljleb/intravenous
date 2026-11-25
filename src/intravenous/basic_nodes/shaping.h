@@ -11,6 +11,44 @@
 #include <numbers>
 
 namespace iv {
+    template<ChannelTypeId Channels, SampleStreamLayout Layout>
+    struct ClipNode {
+        static constexpr auto replay_mode = TickReplayMode::input_union;
+        static constexpr ChannelLayout layout{Channels, Layout};
+
+        static constexpr auto inputs()
+        {
+            return std::array{
+                input<Sample>("in", InputAccess::sequential, {.channel_layout = layout}),
+            };
+        }
+
+        static constexpr auto outputs()
+        {
+            return std::array{
+                output<Sample>("out", OutputProduction::sequential, {.channel_layout = layout}),
+            };
+        }
+
+        void constrain_ports(ConstrainPortsContext<ClipNode>& ctx) const
+        {
+            ctx.template input<"in">().pace() = ctx.template output<"out">().pace();
+        }
+
+        void tick(TickSampleContext<ClipNode> const& ctx) const
+        {
+            auto const in = ctx.template input<"in">();
+            auto const out = ctx.template output<"out">();
+            for (std::size_t channel = 0; channel < channel_count(Channels); ++channel) {
+                auto const value = in.get(0, channel).value;
+                out(channel) = std::isnan(value) ? 0.0f : std::clamp(value, -1.0f, 1.0f);
+            }
+        }
+    };
+
+    using Clip = ClipNode<ChannelTypeId::mono, SampleStreamLayout::planar>;
+    using StereoClip = ClipNode<ChannelTypeId::stereo, SampleStreamLayout::interleaved>;
+
     struct Warper {
         static constexpr auto inputs()
         {

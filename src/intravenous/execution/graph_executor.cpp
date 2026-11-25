@@ -319,10 +319,19 @@ GraphExecutor::BackgroundGeneration::BackgroundGeneration(
     for (std::size_t index = 0; index < requirements.size(); ++index) {
         auto pending = std::make_unique<PendingQueue>(
             *realtime.producer_reserves[index], work_signal);
+        auto const& requirement = requirements[index];
+        auto const& port = graph.background_evaluation_plan.ports[requirement.port];
+        SampleRecordingBinding recording;
+        if (!port.recording_directory.empty() && resources.sample_recording.bind_fn) {
+            recording = resources.sample_recording.bind_fn(resources.sample_recording.owner,
+                port.recording_directory, requirement.output.token(), graph.specialization.sample_rate,
+                channel_count(port.sample_layout.channel_type));
+        }
         input_routes.push_back({
-            .output = requirements[index].output,
-            .port = requirements[index].port,
-            .kind = requirements[index].kind,
+            .output = requirement.output,
+            .port = requirement.port,
+            .kind = requirement.kind,
+            .recording = recording,
         });
         pending_inputs.push_back(std::move(pending));
     }

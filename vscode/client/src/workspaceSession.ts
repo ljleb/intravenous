@@ -41,7 +41,7 @@ import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
 import { WorkspaceRpc, workspaceNodeEvents } from "./workspaceRpc";
 import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
-import { statusBarText } from "./statusBarText";
+import { statusBarText, statusDiagnostic } from "./statusBarText";
 import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, readTimelineSnapMemory,
     type ProjectEditOperation, type TimelineGridMode } from "./timelineSnap";
 
@@ -536,11 +536,17 @@ export class WorkspaceSession {
                 return;
             }
 
-            if (params.code === "rebuildFailed" || params.code === "graphCompilationFailed") {
+            if (params.code === "graphCompilationFailed" || params.code === "graphRebaseFailed") {
+                this.logCapturedServerFailureContext();
+                this.logServerState("Graph execution", params);
+                return;
+            }
+
+            if (params.code === "rebuildFailed") {
                 this.logCapturedServerFailureContext();
                 // Keep the actionable failure below compiler output and traces.
                 this.logServerState("Rebuild failed", params);
-                this.showRebuildFailure();
+                this.showRebuildFailure(params);
                 await this.refreshProjectCatalog();
                 return;
             }
@@ -1502,11 +1508,14 @@ export class WorkspaceSession {
     private showRebuildStatus(params: ServerStatusNotification): void {
         const name = params.packageRoot ? statusBarText(path.basename(params.packageRoot)) : "module";
         this.rebuildStatusBar.text = `$(sync~spin) IV building ${name}`;
+        this.rebuildStatusBar.tooltip = undefined;
         this.rebuildStatusBar.show();
     }
 
-    private showRebuildFailure(): void {
+    private showRebuildFailure(params: ServerStatusNotification): void {
         this.rebuildStatusBar.text = "$(error) IV build failed · See Output";
+        this.rebuildStatusBar.tooltip = new vscode.MarkdownString().appendText(
+            statusDiagnostic(params.message || "An Intravenous package could not build."));
         this.rebuildStatusBar.show();
     }
 

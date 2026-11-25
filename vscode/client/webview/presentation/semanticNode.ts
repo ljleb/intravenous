@@ -58,6 +58,7 @@ export type SemanticNode = {
     address?: NodeAddress;
     construction?: GraphScopeNode["construction"];
     constructionError?: string;
+    configurationSource?: string;
     // Present only when this presentation hosts an opened graph scope.
     scope?: GraphScope;
     // Source-introspection symbolic-node ID or project instance ID.
@@ -100,6 +101,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         id: isProjectInstance(child.address) ? child.instance.instanceId : addressKey(child.address),
         construction: child.construction,
         constructionError: child.constructionError,
+        configurationSource: isProjectInstance(child.address) ? child.instance.configurationSource : undefined,
         displayName: child.childDisplayName ?? child.instance.displayName,
         defaultDisplayName: child.childDisplayName ?? child.instance.defaultDisplayName,
         sourceLabel: child.childSourceLabel,

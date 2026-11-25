@@ -43,6 +43,7 @@ struct BackgroundProducedInputRoute {
     PersistedOutputHandle output{};
     graph_jit::BackgroundPortIndex port = 0;
     PortKind kind = PortKind::sample;
+    SampleRecordingBinding recording{};
 };
 
 // Transaction-local inputs selected by the background actor. Realtime-produced
