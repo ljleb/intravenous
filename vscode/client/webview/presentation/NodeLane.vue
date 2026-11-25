@@ -118,7 +118,7 @@ function finishRename(commit: boolean) {
     --header-growth: clamp(0px, calc(100cqh - v-bind(editableHeight)), 25px);
     --heading-height: calc(14px + var(--header-growth) * .24);
     --module-footer-height: 0px;
-    --header-content-height: calc(100cqh - var(--module-footer-height));
+    --header-content-height: 100cqh;
     position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0;
     overflow-x: clip;
     padding-block-start: calc(1px + var(--header-growth) * .28);
@@ -127,9 +127,8 @@ function finishRename(commit: boolean) {
 .lane-label.has-module-footer { --module-footer-height: clamp(4px, 10cqh, 8px); }
 .lane-header-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .module-footer {
-    position: relative; pointer-events: none;
-    flex: 0 0 var(--module-footer-height); min-height: 0; padding: 0; border: 0;
-    margin-inline: calc(-1 * var(--iv-graph-header-inset)); cursor: pointer; background: transparent;
+    position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none;
+    height: var(--module-footer-height); padding: 0; border: 0; cursor: pointer; background: transparent;
 }
 .module-footer::after {
     content: ""; position: absolute; inset-inline: 0; pointer-events: auto;
@@ -182,8 +181,9 @@ function finishRename(commit: boolean) {
 .member-count { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: min(11px, calc(100cqh - 3px));
     font-variant-numeric: tabular-nums; line-height: 1.1; }
 .lane-label :deep(.node-ports) { flex: 1; min-height: 0; margin-top: calc(var(--header-growth) * .2); }
-/* A folded socket overlaps the footer only where that socket takes the pointer. */
-.has-module-footer :deep(.node-ports:has(.port-slot.cropped)) { z-index: 1; }
+/* Port controls take priority over the footer wherever they overlap it. */
+.has-module-footer :deep(.node-ports) { z-index: 1; pointer-events: none; }
+.has-module-footer :deep(.node-ports [data-port-control]) { pointer-events: auto; }
 .port-summary { display: flex; gap: 16px; margin-top: 6px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 .inline-header .lane-label {
     --header-content-height: var(--graph-lane-height);
@@ -194,9 +194,6 @@ function finishRename(commit: boolean) {
 .inline-header .lane-label :deep(.node-ports) {
     --port-slot-height: min(22px, var(--header-content-height));
     margin-top: 0; flex: 0 0 var(--inline-port-width); min-width: 0; min-height: 0; height: var(--port-slot-height);
-}
-.inline-header .module-footer {
-    position: absolute; inset-inline: 0; inset-block-end: 0; margin: 0; height: var(--module-footer-height);
 }
 .inline-header .module-footer::after { pointer-events: none; }
 .inline-header .module-footer-chevron {

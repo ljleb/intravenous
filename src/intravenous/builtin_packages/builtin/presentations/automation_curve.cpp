@@ -556,7 +556,8 @@ class AutomationCurve {
     {
         auto const& axis = view_;
         value_guides(guides_, axis, height_);
-        bool const labels = frame.lane_mode() != IV_LANE_NANO && (frame.lane_mode() != IV_LANE_COMPACT || height_ > 16);
+        auto const mode = frame.lane_mode();
+        bool const labels = mode == IV_LANE_EDITABLE || (mode == IV_LANE_COMPACT && height_ > 16);
         IvText marks[101];
         Label strings[101];
         uint32_t count = 0, length = 0;

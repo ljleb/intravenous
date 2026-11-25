@@ -251,19 +251,11 @@ function leave() {
     // overwrite the pointer position recorded by actual movement.
     checkPopoverPointer();
 }
-function crossingModuleFooter(target: Element | null, direction: SemanticPortDirection, point: { x: number; y: number }): boolean {
-    if (!target || !header?.contains(target) || chooserPort.value) return false;
-    const footer = header.querySelector(".module-footer")?.getBoundingClientRect();
-    if (!footer || point.y < footer.top || point.y >= footer.bottom) return false;
-    const column = groups[direction]?.querySelector(".port-column-hover")?.getBoundingClientRect();
-    return !!column && point.x >= column.left && point.x <= column.right;
-}
 function checkPopoverPointer() {
     const direction = expanded.value;
     if (!direction || !panelPositioned.value || !popoverPointer || dragPort.value || editingControl.value) return;
     const current = document.elementFromPoint(popoverPointer.x, popoverPointer.y);
-    if (panel.value?.contains(current) || headerPortDirection(current) === direction
-        || crossingModuleFooter(current, direction, popoverPointer)) return;
+    if (panel.value?.contains(current) || headerPortDirection(current) === direction) return;
     closePanel();
 }
 function movePopoverPointer(event: PointerEvent) {
@@ -606,7 +598,7 @@ button.port-slot { cursor: pointer; }
 .inline .single .stacked-first { left: 50%; }
 .port-slot.cropped {
     --socket-center-inset: calc(var(--port-control-column) - var(--port-knob-center-tuck) + var(--port-socket-size) / 2);
-    position: absolute; bottom: calc(-1 * var(--module-footer-height, 0px)); left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
+    position: absolute; bottom: 0; left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
     width: var(--port-handle-width); height: var(--folded-socket-height);
     overflow: hidden; border: 0; border-radius: 4px 4px 0 0; }
 .port-group[data-direction="output"] > .cropped { left: auto; right: calc(var(--socket-center-inset) - var(--port-handle-width) / 2); }

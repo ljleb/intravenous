@@ -220,6 +220,8 @@ or closing the continuation.
 The folded socket shares the knob center for its direction, regardless of
 which ports it represents. Its bottom touches the lane header edge, including
 on headers with a module footer. The footer remains clickable beside the socket.
+The footer overlays the bottom edge. Headers with and without a footer give
+their port rows the same available height and folding threshold.
 
 Hover over the input or output controls to open that column's popover.
 The gap between the columns closes the popover when the pointer enters it.
@@ -613,6 +615,7 @@ Honor the lane's existing **`nano`**, **`mini`**, and **`editable`** vertical
 zoom categories. Both `nano` and `mini` display the curve shape scaled to the
 available lane height, including its exact gaps. Nano does not substitute a
 presence-only fill: at small heights the curve naturally approaches a line.
+Both modes omit the value-axis labels.
 An outgoing `empty` segment means no curve until the next appropriate point,
 including the circular wrap and equal-index rules. Do not draw interpolated
 values in those gaps. Both modes disable point/tension/segment editing.

@@ -3946,8 +3946,8 @@ sockets take precedence when they are in view.
 
 Editable rows share the knob center across knob sizes. Standalone sockets and
 folded sockets use that center on each side. `NodePorts.vue` puts each folded
-socket at the header edge, and `NodeLane.vue` gives it pointer priority where
-it overlaps the module footer.
+socket at the header edge. `NodeLane.vue` overlays the module footer on the
+full port area and gives port controls pointer priority where they overlap.
 
 Hover or focus within the lane header opens one continuation beneath it.
 The panel uses the measured column widths and leaves the existing rows in
