@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canContinuePortConnection, canMoveConnectionEnd, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
+import { canContinuePortConnection, canMoveConnectionEnd, ConnectionDelayEdits, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
     type GraphConnectionEnd, type GraphPortEndpoint } from "../src/graphConnectionEditing";
 import { graphScopeWithChildren, resolveScopePorts, type GraphPortMatcher, type GraphScope, type GraphScopeConnection, type GraphScopeNode } from "../src/graphScope";
 import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection } from "../src/portConnectionGesture";
@@ -75,6 +75,90 @@ function replacement(graph: GraphScope, end: GraphConnectionEnd, target: GraphPo
     assert.ok(mutation?.type === "upsert");
     return mutation.connection as GraphScopeConnection["connection"];
 }
+
+test("Alt on release detaches a new or rewired cable and an Alt click selects the port action", () => {
+    const graph = connectedScope();
+    const start = { x: 0, y: 0 }, finish = { x: 40, y: 30 };
+    const fresh = beginPortConnection(cOutput, 1, 0, start)!;
+    const created = finishPortConnection(graph, fresh, 1, finish, input, false, true);
+    assert.ok(created?.type === "create" && created.detach);
+    assert.equal(connectionFromPorts(graph, "new", created.first, created.second, created.detach).loopExtraLatency, 1);
+    assert.deepEqual(finishPortConnection(graph, fresh, 1, start, null, false, true), { type: "altClick" });
+    assert.equal(finishPortConnection(graph, fresh, 1, start, null), null);
+    assert.equal(finishPortConnection(graph, fresh, 2, start, null, false, true), null);
+
+    const moving = beginPortConnection(input, 1, 0, start, selectedEnd(graph))!;
+    const rewired = finishPortConnection(graph, moving, 1, finish, cInput, false, true);
+    assert.ok(rewired?.type === "edit");
+    const mutation = connectionEndMutation(graph, rewired.edit);
+    assert.ok(mutation?.type === "upsert");
+    assert.deepEqual(mutation.connection, { ...graph.connections[0].connection, inputs: [matcher(cInput)], loopExtraLatency: 1 });
+});
+
+test("toggle from either endpoint affects only the chosen connection and protects newer edits", () => {
+    const graph = connectedScope();
+    const regular = graph.connections[0].connection;
+    const parallel = { ...graph.connections[0], id: "other", connection: { ...regular, connectionId: "other" } };
+    graph.connections.push(parallel);
+    const before = selectedEnd(graph, output);
+    const mutation = connectionEndMutation(graph, { end: before, toggleDetach: true });
+    assert.deepEqual(mutation, { type: "upsert", connection: { ...regular, loopExtraLatency: 1 } });
+    graph.connections[0] = { ...graph.connections[0], connection: { ...regular, loopExtraLatency: 6 } };
+    assert.throws(() => connectionEndMutation(graph, { end: before, toggleDetach: true }), /changed/);
+    assert.deepEqual(connectionEndMutation(graph, { end: selectedEnd(graph, input), toggleDetach: true }),
+        { type: "upsert", connection: regular });
+    assert.equal(graph.connections[1], parallel);
+    assert.equal(replacement(graph, selectedEnd(graph), cInput).loopExtraLatency, 6);
+});
+
+test("the feedback delay edit changes only a detached connection's whole-sample delay", () => {
+    const graph = connectedScope();
+    assert.throws(() => connectionEndMutation(graph, { end: selectedEnd(graph), loopExtraLatency: 80 }), /Detach the connection/);
+    graph.connections[0].connection.loopExtraLatency = 1;
+    const end = selectedEnd(graph, output);
+    for (const value of [0, -1, 1.25, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(() => connectionEndMutation(graph, { end, loopExtraLatency: value }), /positive whole number/);
+    }
+    assert.equal(connectionEndMutation(graph, { end, loopExtraLatency: 1 }), null);
+    assert.deepEqual(connectionEndMutation(graph, { end, loopExtraLatency: 4800 }), { type: "upsert",
+        connection: { ...graph.connections[0].connection, loopExtraLatency: 4800 } });
+    graph.connections[0] = { ...graph.connections[0], connection: { ...graph.connections[0].connection, loopExtraLatency: 17 } };
+    assert.throws(() => connectionEndMutation(graph, { end, loopExtraLatency: 4800 }), /changed/);
+});
+
+test("a live delay scrub sends the latest value after the accepted write and discards values on rejection", async () => {
+    const graph = connectedScope();
+    graph.connections[0].connection.loopExtraLatency = 1;
+    const writes: Array<{ before: number | undefined; samples: number; reply: (accepted: boolean) => void }> = [];
+    const pending: boolean[] = [];
+    let rejections = 0;
+    const edits = new ConnectionDelayEdits((end, samples) => new Promise((reply) => {
+        writes.push({ before: end.connection.connection.loopExtraLatency, samples, reply });
+    }), (sending) => pending.push(sending), () => { ++rejections; });
+    assert.equal(edits.begin(selectedEnd(graph)), true);
+    edits.update(2);
+    edits.update(3);
+    edits.update(4);
+    assert.deepEqual(writes.map(({ before, samples }) => [before, samples]), [[1, 2]]);
+    writes[0].reply(true);
+    await Promise.resolve();
+    assert.deepEqual(writes.map(({ before, samples }) => [before, samples]), [[1, 2], [2, 4]]);
+    edits.update(5);
+    writes[1].reply(false);
+    await Promise.resolve();
+    assert.equal(writes.length, 2);
+    assert.equal(rejections, 1);
+    assert.deepEqual(pending, [true, false]);
+
+    assert.equal(edits.begin(selectedEnd(graph)), true);
+    edits.update(6);
+    edits.update(7);
+    edits.discard();
+    writes[2].reply(true);
+    await Promise.resolve();
+    assert.deepEqual(writes.map(({ samples }) => samples), [2, 4, 6]);
+    assert.equal(edits.pending, false);
+});
 
 test("module boundary ports can be connected and rewired with their inward directions", () => {
     const graph = connectedScope();

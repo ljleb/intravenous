@@ -15,7 +15,7 @@ const props = defineProps<{
     disabled?: boolean; inactive?: boolean; inverted?: boolean; portCutout?: boolean; direction?: "input" | "output";
     activity?: KnobActivity; description?: string; step?: number; apply: (value: number, live: boolean) => void;
     reset?: () => void;
-    beginEdit?: (event: PointerEvent) => boolean; endEdit?: () => void; editActive?: () => boolean;
+    beginEdit?: (event: PointerEvent) => boolean; endEdit?: (released: boolean) => void; editActive?: () => boolean;
     bindDrag?: (event: PointerEvent) => KnobDrag | undefined; bindValueEntry?: (anchor: DOMRect) => void;
     clipboard?: { value: number | undefined; range: KnobValueRange; apply: (value: number) => void };
 }>();
@@ -91,7 +91,7 @@ function beginDrag(event: PointerEvent): KnobDrag | undefined {
         apply(next, true);
     }
     return { move: ({ y }) => move(-y), moveBy: ({ y }) => move(scrub.position - y),
-        changeSensitivity: (delta) => scrub.changeSensitivity(delta, current), finish: () => endEdit?.(), active: editActive,
+        changeSensitivity: (delta) => scrub.changeSensitivity(delta, current), finish: (point) => endEdit?.(point !== null), active: editActive,
         hint: () => ({ text: `${label} ${Number(current.toPrecision(6))} · ${scrub.hint()}`,
             shortcuts: `${scrubSensitivityShortcut} · Esc release` }) };
 }

@@ -4745,7 +4745,8 @@ TEST_F(ProjectGraphFixture, RapidManualInputTogglesAndGesturesPreserveBothFields
             Sample const value{static_cast<float>(step + 1) / 128.f};
             if (action < 2) {
                 auto const json = Json{{"id", 1}, {"method", "manualControls.toggleInput"}, {"params", {
-                    {"node", {{"instanceId", knob.id.node.instance_id}}}, {"inputName", knob.id.port_name},
+                    {"node", node_address_json(knob.id.node, ProjectConnectionJsonNames::socket_rpc)},
+                    {"inputName", knob.id.port_name},
                 }}};
                 auto const request = parse_socket_rpc_request(json.dump());
                 auto const* toggle = std::get_if<ToggleManualInputRequest>(&request.payload);

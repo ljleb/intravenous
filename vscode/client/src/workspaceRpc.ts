@@ -1,7 +1,7 @@
 import { recordedEventTimestampsOperation, type ObservationInterest, type ObservationCapability } from "./observations";
 import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient, StaleProjectRevisionError } from "./rpcClient";
-import { connectionEndMutation, type GraphConnectionEdit } from "./graphConnectionEditing";
+import { connectionEndMutation, type GraphConnectionChange } from "./graphConnectionEditing";
 import { SymbolicNode, SourceSpan } from "./graphModel";
 import { graphScopeWithChildren, laneViewReadBatchSize, type GraphScope, type ProjectEditReceipt } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
@@ -252,7 +252,7 @@ export class WorkspaceRpc {
             "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
     }
 
-    async editGraphConnectionEnd(edit: GraphConnectionEdit, expanded: NodeAddress[]): Promise<void> {
+    async editGraphConnectionEnd(edit: GraphConnectionChange, expanded: NodeAddress[]): Promise<void> {
         const attempts = 4;
         for (let attempt = 0; ; ++attempt) {
             const beforeRead = this.currentRevision();

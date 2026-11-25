@@ -527,6 +527,62 @@ TEST(GraphConnections, AppliesEventConnectionWithStructuredMatchers)
     EXPECT_EQ(configured.connections.configured_event_connections().size(), before + 1);
 }
 
+TEST(GraphConnections, CarriesProjectDetachLatencyIntoConfiguredSampleAndEventSources)
+{
+    using namespace iv;
+    auto sample = make_sample_passthrough(ChannelTypeId::stereo);
+    auto event = make_event_passthrough();
+    GraphBuilder root;
+    std::unordered_map<std::string, NodeInstancePlacement> placements;
+    placements.emplace("sample-a", embed_as_instance(root, sample, "sample-a"));
+    placements.emplace("sample-b", embed_as_instance(root, sample, "sample-b"));
+    placements.emplace("event-a", embed_as_instance(root, event, "event-a"));
+    placements.emplace("event-b", embed_as_instance(root, event, "event-b"));
+    GraphConnections connections;
+    auto const result = apply(connections, root, placements, GraphConnectionReplaceAllMutation{
+        .connections = {
+            ProjectSampleConnection{
+                .connection_id = "sample",
+                .source_type = ChannelTypeId::stereo,
+                .outputs = {named_matcher("sample-a", "main")},
+                .target_type = ChannelTypeId::stereo,
+                .inputs = {named_matcher("sample-b", "main")},
+                .loop_extra_latency = 1,
+            },
+            ProjectEventConnection{
+                .connection_id = "event",
+                .source_type = EventTypeId::trigger,
+                .outputs = {named_matcher("event-a", "trigger")},
+                .target_type = EventTypeId::trigger,
+                .inputs = {named_matcher("event-b", "trigger")},
+                .loop_extra_latency = 7,
+            },
+        },
+    });
+    ASSERT_FALSE(result.failure);
+    ASSERT_TRUE(result.diagnostics.empty());
+    ASSERT_EQ(result.applied_connections.size(), 2u);
+    root.outputs();
+    auto const configured = std::move(root).finish();
+    for (auto const& connection : result.applied_connections) {
+        ASSERT_EQ(connection.end, connection.begin + 1);
+        if (connection.kind == PortKind::sample) {
+            auto const& sources = configured.connections.configured_sample_connections()[connection.begin].source_channels;
+            ASSERT_EQ(sources.size(), 2u);
+            for (auto const& source : sources) {
+                ASSERT_TRUE(source.detach);
+                EXPECT_EQ(source.detach->loop_extra_latency, 1u);
+                EXPECT_FALSE(source.detach->initial_value_override);
+            }
+        } else {
+            auto const& sources = configured.connections.configured_event_connections()[connection.begin].sources;
+            ASSERT_EQ(sources.size(), 1u);
+            ASSERT_TRUE(sources.front().detach);
+            EXPECT_EQ(sources.front().detach->loop_extra_latency, 7u);
+        }
+    }
+}
+
 TEST(GraphConnections, TypeMismatchIsDiagnosticAndDoesNotDeleteDesiredConnection)
 {
     auto source_graph = make_sample_passthrough(iv::ChannelTypeId::stereo);

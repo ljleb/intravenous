@@ -35,7 +35,7 @@ import { Duplex } from "stream";
 import { JsonRpcSocketClient } from "./rpcClient";
 import type { JsonRpcSend } from "./clientInteractionTrace";
 import { spawnWorkspaceServer } from "./workspaceServerProcess";
-import { connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { connectionFromPorts, type GraphConnectionChange, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
@@ -223,12 +223,12 @@ export class WorkspaceSession {
         await rpc.toggleManualInput(control);
     }
 
-    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[]): Promise<void> {
+    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[], detach = false): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         const rpc = this.rpc;
         const revision = this.lastSessionRevision;
         const scope = graphScopeWithChildren(await rpc.getGraphScope(expanded));
-        const connection = connectionFromPorts(scope, id, first, second);
+        const connection = connectionFromPorts(scope, id, first, second, detach);
         await rpc.upsertGraphConnection(connection, scope.sessionRevision ?? revision);
     }
 
@@ -240,7 +240,7 @@ export class WorkspaceSession {
         await this.rpc!.deleteGraphConnection(id);
     }
 
-    async editGraphConnectionEnd(edit: GraphConnectionEdit, expanded: NodeAddress[]): Promise<void> {
+    async editGraphConnectionEnd(edit: GraphConnectionChange, expanded: NodeAddress[]): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
         await this.rpc.editGraphConnectionEnd(edit, expanded);
     }

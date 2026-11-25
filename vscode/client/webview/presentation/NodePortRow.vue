@@ -9,7 +9,7 @@ defineProps<{ port: SemanticPort; endpoint: GraphPortEndpoint;
     hasKnob: boolean; connected: boolean; pending: boolean; unavailable: boolean;
     hint: string; feedback?: ConnectionFeedback }>();
 const emit = defineEmits<{
-    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent];
+    handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent]; handleContext: [event: MouseEvent];
 }>();
 </script>
 
@@ -22,7 +22,7 @@ const emit = defineEmits<{
             data-port-control :data-port-endpoint="JSON.stringify(endpoint)" :data-status-hint="hint" :aria-description="portDescription(port)"
             :aria-disabled="unavailable" :aria-label="`${endpoint.direction} ${port.displayName || port.name || port.index + 1}`"
             @iv-hoverenter="emit('handleHover', $event)" @pointermove="emit('handleHover', $event)"
-            @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)">
+            @iv-hoverleave="emit('handleLeave')" @pointerdown="emit('wireStart', $event)" @contextmenu="emit('handleContext', $event)">
             <span class="port-circle" />
         </button>
         <span class="direct-port-name iv-graph-header-detail" data-port-control :data-status-hint="hint">
@@ -80,9 +80,8 @@ const emit = defineEmits<{
 }
 .connected .port-circle { --port-circle-fill: currentColor; }
 .pending .port-circle { border: 2px dashed currentColor; }
-[data-connection-feedback] { --port-color: var(--vscode-errorForeground); }
-[data-connection-feedback] .port-circle { --port-circle-fill: currentColor; border: 0; }
-[data-connection-feedback="edited"] .port-circle { outline: 1px solid currentColor; outline-offset: 2px; }
+.control-row[data-connection-feedback] .port-circle { --port-circle-fill: var(--vscode-errorForeground); border: 0; }
+.control-row[data-connection-feedback="edited"] .port-circle { outline: 1px solid var(--vscode-errorForeground); outline-offset: 2px; }
 .port-handle[data-hovered] { background: color-mix(in srgb, currentColor 12%, transparent); }
 .with-knob .port-handle[data-hovered] { background: transparent; }
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }

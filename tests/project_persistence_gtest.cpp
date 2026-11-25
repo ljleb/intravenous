@@ -381,6 +381,7 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
             }},
             .port = {.index = 0, .channel = 0},
         }},
+        .loop_extra_latency = 4,
     };
 
     for (auto const names : {
@@ -388,6 +389,7 @@ TEST(ProjectConnectionJson, RoundTripsEveryStructuredMatcherFieldInBothNameStyle
              iv::ProjectConnectionJsonNames::socket_rpc,
          }) {
         auto const json = iv::project_connection_json(original, names);
+        EXPECT_EQ(json.at(names == iv::ProjectConnectionJsonNames::project_file ? "loop_extra_latency" : "loopExtraLatency"), 4u);
         EXPECT_EQ(iv::parse_project_connection_json(json, names), original);
     }
 }
@@ -400,6 +402,7 @@ TEST(ProjectConnectionJson, RoundTripsBeatEventTypes)
         .outputs = {{.instance_id = "beats", .port = {.name = "beats"}}},
         .target_type = iv::EventTypeId::trigger,
         .inputs = {{.instance_id = "sink", .port = {.name = "clock"}}},
+        .loop_extra_latency = 1,
     };
     for (auto const names : {iv::ProjectConnectionJsonNames::project_file,
              iv::ProjectConnectionJsonNames::socket_rpc}) {

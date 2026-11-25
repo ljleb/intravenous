@@ -1,4 +1,4 @@
-import { canContinuePortConnection, canMoveConnectionEnd, connectionFromPorts, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { canContinuePortConnection, canDetachConnection, canMoveConnectionEnd, connectionFromPorts, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import type { GraphScope } from "./graphScope";
 import { isTimelineSnapAddress } from "./timelineSnap";
 
@@ -11,8 +11,8 @@ export type PortConnectionDrag = {
     moved: boolean;
     edit?: GraphConnectionEnd;
 };
-export type PortConnectionResult = { type: "create"; first: GraphPortEndpoint; second: GraphPortEndpoint }
-    | { type: "edit"; edit: GraphConnectionEdit };
+export type PortConnectionResult = { type: "create"; first: GraphPortEndpoint; second: GraphPortEndpoint; detach?: true }
+    | { type: "edit"; edit: GraphConnectionEdit } | { type: "altClick" };
 
 export function destinationHandle(hit: Element | null): HTMLElement | null {
     return hit?.closest<HTMLElement>("[data-port-endpoint]")
@@ -63,16 +63,21 @@ export function canDropPortConnection(scope: GraphScope | null, drag: PortConnec
 }
 
 export function finishPortConnection(scope: GraphScope | null, drag: PortConnectionDrag, pointerId: number,
-    position: PortPointerPosition, target: GraphPortEndpoint | null, emptyEditorSpace = false): PortConnectionResult | null {
-    if (!scope?.editable || pointerId !== drag.pointerId || !movedFromStart(drag, position)) return null;
+    position: PortPointerPosition, target: GraphPortEndpoint | null, emptyEditorSpace = false,
+    altHeld = false): PortConnectionResult | null {
+    if (!scope?.editable || pointerId !== drag.pointerId) return null;
+    if (!movedFromStart(drag, position)) return altHeld ? { type: "altClick" } : null;
+    if (altHeld && target && (isTimelineSnapAddress(target.address) || isTimelineSnapAddress(drag.port.address)
+        || (drag.edit && !canDetachConnection(drag.edit.connection.connection)))) return null;
+    const detach = altHeld ? { detach: true as const } : {};
     if (drag.edit) {
         if (target && sameGraphPort(drag.port, target)) return null;
-        if (target && canDropPortConnection(scope, drag, target)) return { type: "edit", edit: { end: drag.edit, target } };
+        if (target && canDropPortConnection(scope, drag, target)) return { type: "edit", edit: { end: drag.edit, target, ...detach } };
         if ((target || emptyEditorSpace) && canContinuePortConnection(scope, drag.port, drag.edit)) {
             return { type: "edit", edit: { end: drag.edit, target: null } };
         }
         return null;
     }
     if (!target || !canDropPortConnection(scope, drag, target)) return null;
-    return { type: "create", first: drag.port, second: target };
+    return { type: "create", first: drag.port, second: target, ...detach };
 }

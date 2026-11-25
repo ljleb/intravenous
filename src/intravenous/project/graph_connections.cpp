@@ -350,6 +350,8 @@ void validate_connection_impl(ProjectConnection const& connection)
             throw std::invalid_argument("project connection requires at least one output matcher");
         if (value.inputs.empty())
             throw std::invalid_argument("project connection requires at least one input matcher");
+        if (value.loop_extra_latency == 0)
+            throw std::invalid_argument("project connection loop extra latency must be at least 1");
         if constexpr (std::same_as<Connection, ProjectSampleConnection>) {
             if (!is_registered_channel_type(value.source_type)
                 || !is_registered_channel_type(value.target_type)) {
@@ -472,9 +474,13 @@ void apply_sample_connection(
 
     std::vector<ConfiguredSampleConnectionSource> sources;
     sources.reserve(outputs.size() * channel_count(connection.source_type));
+    std::optional<ConfiguredSampleConnectionDetach> detach;
+    if (connection.loop_extra_latency) detach = ConfiguredSampleConnectionDetach{
+        .loop_extra_latency = *connection.loop_extra_latency,
+    };
     for (auto const& output : outputs) {
         for (auto const& route : output.routes)
-            sources.push_back({.channel = route.channel, .node_ref_occurrence = route.node_ref_occurrence});
+            sources.push_back({.channel = route.channel, .detach = detach, .node_ref_occurrence = route.node_ref_occurrence});
     }
     auto& state = details::builder_graph_state(root_builder);
     auto const begin = state.mark().sample_connections;
@@ -528,9 +534,15 @@ void apply_event_connection(
 
     auto& state = details::builder_graph_state(root_builder);
     auto const begin = state.mark().event_connections;
+    std::vector<EventPortRef> sources;
+    sources.reserve(outputs.size());
+    for (auto const& output : outputs) {
+        EventPortRef source(root_builder, output.type, output.sources);
+        sources.push_back(connection.loop_extra_latency
+            ? state.detach_event_port(source, *connection.loop_extra_latency) : source);
+    }
     for (auto const& input : inputs) {
-        for (auto const& output : outputs) {
-            EventPortRef source(root_builder, output.type, output.sources);
+        for (auto const& source : sources) {
             state.connect_event_input(input.target, source);
         }
     }

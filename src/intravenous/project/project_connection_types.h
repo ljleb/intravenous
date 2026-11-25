@@ -37,6 +37,7 @@ struct ProjectSampleConnection {
     std::vector<ProjectNodePortMatcher> outputs{};
     ChannelTypeId target_type = ChannelTypeId::mono;
     std::vector<ProjectNodePortMatcher> inputs{};
+    std::optional<std::size_t> loop_extra_latency{};
     bool operator==(ProjectSampleConnection const&) const = default;
 };
 
@@ -46,6 +47,7 @@ struct ProjectEventConnection {
     std::vector<ProjectNodePortMatcher> outputs{};
     EventTypeId target_type = EventTypeId::empty;
     std::vector<ProjectNodePortMatcher> inputs{};
+    std::optional<std::size_t> loop_extra_latency{};
     bool operator==(ProjectEventConnection const&) const = default;
 };
 

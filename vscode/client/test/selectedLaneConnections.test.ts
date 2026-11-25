@@ -46,6 +46,17 @@ test("selected lane shows incoming and outgoing connections and excludes unrelat
     assert.deepEqual(selectedLaneConnections(resolveLaneConnectionEnds(graph), new Set([addressKey({ instanceId: "removed" })]), anchors([])), []);
 });
 
+test("a grouped wire is dashed while any of its authored connections is detached", () => {
+    const ordinary = connection("ordinary", "a", 0, "b", 0);
+    const detached = connection("detached", "a", 1, "b", 1);
+    detached.connection.loopExtraLatency = 1;
+    const graph = scope([ordinary, detached]);
+    const grouped = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, anchors([]));
+    assert.deepEqual(grouped.map(({ connectionIds, detached }) => [connectionIds, detached]), [[ ["ordinary", "detached"], true ]]);
+    const expanded = selectedLaneConnections(resolveLaneConnectionEnds(graph), selected, anchors([group("b", "input")]));
+    assert.deepEqual(expanded.map(({ connectionIds, detached }) => [connectionIds, detached]), [[ ["ordinary"], undefined ], [ ["detached"], true ]]);
+});
+
 test("each selected lane emphasizes its own connections without doubling a shared cable", () => {
     const graph = scope([connection("a to b", "a", 0, "b", 0), connection("b to c", "b", 0, "c", 0)]);
     const lanes = new Set([...selected, addressKey({ instanceId: "b" })]);

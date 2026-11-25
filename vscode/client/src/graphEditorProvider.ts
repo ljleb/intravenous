@@ -45,6 +45,7 @@ export class GraphEditorProvider implements vscode.Disposable {
     private readonly ready = new Set<vscode.WebviewPanel>();
     private readonly history = new GraphEditorHistory(this.ready);
     private readonly nodeEventRequests = new Set<Promise<unknown>>();
+    private readonly connectionEditRequests = new Set<Promise<void>>();
     private lastActivePanel: vscode.WebviewPanel | null = null;
     private readonly graphUiProfiles = new Map<vscode.WebviewPanel, { id: string; waits: GraphUiTimings }>();
     private readonly pendingActions = new Map<vscode.WebviewPanel, GraphEditorAction[]>();
@@ -424,12 +425,33 @@ export class GraphEditorProvider implements vscode.Disposable {
         return this.history.run(async () => {
             // Drain sends admitted before this request, including sends still
             // waiting on the node-event protocol read.
-            await Promise.all([...this.nodeEventRequests]);
+            await Promise.all([...this.nodeEventRequests, ...this.connectionEditRequests]);
             await Promise.all([...this.controlOwners.values()].map((owner) => this.session.nodeEvents.releaseOwner(owner)));
             if (this.disposed) return;
             await this.session.projectHistory(direction);
             await this.refresh();
         });
+    }
+
+    private async editGraphConnection(panel: vscode.WebviewPanel,
+        message: Extract<GraphEditorWebviewMessage, { type: "connectGraphPorts" | "editGraphConnectionEnd" }>): Promise<void> {
+        let accepted = false;
+        try {
+            if (!this.history.allowsNodeEdits(panel)) throw new Error("Project history interrupted the connection edit");
+            const expanded = this.expandedByPanel.get(panel) ?? [];
+            if (message.type === "connectGraphPorts") {
+                await this.session.connectGraphPorts(crypto.randomUUID(), message.first, message.second, expanded, message.detach === true);
+            } else await this.session.editGraphConnectionEnd(message.edit, expanded);
+            accepted = true;
+            await this.refresh();
+        } catch (error) {
+            void vscode.window.showErrorMessage(`Cannot edit connection: ${error.message}`);
+        } finally {
+            if (message.type === "editGraphConnectionEnd" && message.requestId !== undefined && this.panels.has(panel)) {
+                void panel.webview.postMessage({ type: "graphConnectionEditFinished",
+                    requestId: message.requestId, accepted } satisfies GraphEditorHostMessage);
+            }
+        }
     }
 
     private async handleNodeEvent(panel: vscode.WebviewPanel, message: NodeEventHostRequest): Promise<void> {
@@ -730,15 +752,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                     await this.refresh();
                 } catch (error) { void vscode.window.showErrorMessage(`Cannot change timeline snapping: ${error.message}`); }
             } else if (message?.type === "connectGraphPorts" || message?.type === "editGraphConnectionEnd") {
-                try {
-                    const expanded = this.expandedByPanel.get(panel) ?? [];
-                    if (message.type === "connectGraphPorts") {
-                        await this.session.connectGraphPorts(crypto.randomUUID(), message.first, message.second, expanded);
-                    } else await this.session.editGraphConnectionEnd(message.edit, expanded);
-                    await this.refresh();
-                } catch (error) {
-                    void vscode.window.showErrorMessage(`Cannot edit connection: ${error.message}`);
-                }
+                const edit = this.editGraphConnection(panel, message);
+                this.connectionEditRequests.add(edit);
+                try { await edit; } finally { this.connectionEditRequests.delete(edit); }
             } else if (message?.type === "searchNodeDefinitions") {
                 const { requestId, source, cursor } = message;
                 try {

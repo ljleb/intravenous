@@ -24,6 +24,7 @@ struct Fields {
     std::string_view source_identity;
     std::string_view type_identity;
     std::string_view module_boundary;
+    std::string_view loop_extra_latency;
 };
 
 Fields fields(ProjectConnectionJsonNames names)
@@ -37,6 +38,7 @@ Fields fields(ProjectConnectionJsonNames names)
             .source_identity = "sourceIdentity",
             .type_identity = "typeIdentity",
             .module_boundary = "moduleBoundary",
+            .loop_extra_latency = "loopExtraLatency",
         };
     }
     return {
@@ -47,6 +49,7 @@ Fields fields(ProjectConnectionJsonNames names)
         .source_identity = "source_identity",
         .type_identity = "type_identity",
         .module_boundary = "module_boundary",
+        .loop_extra_latency = "loop_extra_latency",
     };
 }
 
@@ -272,6 +275,7 @@ nlohmann::ordered_json project_connection_json(
             result[std::string(names.target_type)] =
                 details::event_type_name(value.target_type);
         }
+        if (value.loop_extra_latency) result[std::string(names.loop_extra_latency)] = *value.loop_extra_latency;
         return result;
     }, connection);
 }
@@ -288,6 +292,7 @@ ProjectConnection parse_project_connection_json(
     auto const connection_id = require_string(json, names.connection_id);
     auto outputs = parse_matchers(json, "outputs", names);
     auto inputs = parse_matchers(json, "inputs", names);
+    auto const loop_extra_latency = optional_index(json, names.loop_extra_latency);
     if (kind == "sample") {
         return ProjectSampleConnection{
             .connection_id = connection_id,
@@ -295,6 +300,7 @@ ProjectConnection parse_project_connection_json(
             .outputs = std::move(outputs),
             .target_type = parse_channel_type(require_string(json, names.target_type)),
             .inputs = std::move(inputs),
+            .loop_extra_latency = loop_extra_latency,
         };
     }
     if (kind == "event") {
@@ -304,6 +310,7 @@ ProjectConnection parse_project_connection_json(
             .outputs = std::move(outputs),
             .target_type = parse_event_type(require_string(json, names.target_type)),
             .inputs = std::move(inputs),
+            .loop_extra_latency = loop_extra_latency,
         };
     }
     throw std::runtime_error("unknown project connection kind: " + kind);

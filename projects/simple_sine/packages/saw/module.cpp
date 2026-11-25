@@ -25,7 +25,6 @@ void module_main(iv::GraphBuilder& g)
     {
         auto const add_voice = [&] (auto&& gain) {
             auto const osc = g.node<"sine">();
-            auto const osc2 = osc;
             auto const f_offset = (static_cast<double>(i) - 0.5) * detune_pair - detune;
             osc("frequency"_P = frequency + f_offset, "phase_offset"_P = 0.25); // cosine
             g.outputs(osc * gain * 0.1);

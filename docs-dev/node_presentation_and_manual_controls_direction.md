@@ -286,6 +286,23 @@ semantic identity and does not create a new graph connection or fan-in operation
 Selection and hovering do not request graph compilation or an undo entry.
 The wires must not intercept port dragging or hover expansion.
 
+Hold Alt when dropping a new connection or moving an existing end to set the
+connection's feedback detach. Alt-click an endpoint port to toggle an authored
+connection. If several connections at that port can be toggled, open the port's
+connection chooser. Toggling preserves the connection ID and both endpoint
+selectors. A newly detached connection uses one sample of extra loop latency,
+following `port.detach()` in the [node-reference DSL](./node_ref_dsl_contract.md#expression-rules).
+Draw detached connections dashed, including a shared wire that contains a
+detached connection. Draw pending ordinary wires dotted. GraphJit validates the
+feedback path against the realized graph.
+
+The port connection chooser shows a **Feedback delay (samples)** knob on each
+detached connection. Hovering a delay knob lets the user release Shift while
+the chooser stays open. Right-clicking either endpoint opens those controls. The
+knob sends whole-sample updates during a scrub. While a write is in flight, keep
+the latest requested delay so a fast scrub cannot queue obsolete values.
+Each accepted write uses the same undo history as other connection edits.
+
 The owner added two display rules on 2026-11-13. A grouped input or output
 slot uses its two circles to show how many of its ports have connections:
 both empty means none; only the right circle filled means some; both filled

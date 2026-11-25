@@ -13,6 +13,7 @@ export type SelectedLaneWire = {
     applied: boolean;
     emphasized: boolean;
     sourceOwned: boolean;
+    detached?: true;
     feedback?: ConnectionFeedback;
 };
 
@@ -57,7 +58,8 @@ export function resolveLaneConnectionEnds(scope: GraphScope) {
         };
         const hiddenSampleSources = (entry.hiddenSampleSourceModules ?? []).map(addressKey)
             .filter((address) => nodes.has(address));
-        return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned, feedback: entry.feedback,
+        return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned,
+            detached: connection.loopExtraLatency !== undefined, feedback: entry.feedback,
             outputs: resolve("output"), inputs: resolve("input"), hiddenSampleSources };
     });
 }
@@ -192,9 +194,11 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
                     if (!existing.connectionIds.includes(entry.id)) existing.connectionIds.push(entry.id);
                     existing.applied = existing.applied && entry.applied;
                     existing.emphasized ||= emphasized;
+                    if (entry.detached) existing.detached = true;
                     if (entry.feedback) existing.feedback = strongestConnectionFeedback(existing.feedback, entry.feedback);
                 } else {
                     wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied, emphasized, sourceOwned,
+                        ...(entry.detached ? { detached: true } : {}),
                         ...(entry.feedback ? { feedback: entry.feedback } : {}) });
                 }
             }

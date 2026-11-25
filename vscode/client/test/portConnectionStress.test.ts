@@ -67,7 +67,7 @@ function scenario(pick: (limit: number) => number) {
     const movingSide = [authored(chosen, wildcard), ...(extraEnd ? [extra] : [])];
     const wire: GraphScopeConnection = { id: "picked", applied: hasType,
         connection: { connectionId: "picked", kind, sourceType: type, targetType: type,
-            [side]: movingSide, [otherSide]: [fixed] } as GraphScopeConnection["connection"] };
+            inputs: side === "inputs" ? movingSide : [fixed], outputs: side === "outputs" ? movingSide : [fixed] } };
     const unrelated: GraphScopeConnection = { ...wire, id: "other", connection: { ...wire.connection, connectionId: "other" } };
     const scope: GraphScope = { generation: 1, editable: true, connections: [unrelated, wire],
         nodes: [node(fixed, true), node(extra, true), node(next.address, true), ...(!nested ? [node(address, hasType)] : [])],

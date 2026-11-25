@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { addressKey, graphScopeNodeLabel, oppositePortDirection, scopeNodeForAddress, strongestConnectionFeedback,
     type ConnectionFeedback, type GraphScopeConnection } from "../../src/graphScope";
-import { canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
+import { canDetachConnection, canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineNavigation } from "../timeline/timelineContext";
 import { useNode } from "./nodeContext";
@@ -12,6 +12,7 @@ import { acceptsPortConnection, canDropPortConnection } from "../../src/portConn
 import { isTimelineSnapAddress } from "../../src/timelineSnap";
 import { portEndpointKey, portSlotKey } from "../../src/selectedLaneConnections";
 import ManualInput from "./ManualInput.vue";
+import ConnectionDelayKnob from "./ConnectionDelayKnob.vue";
 import ImplicitOutputPort from "./ImplicitOutputPort.vue";
 import NodePortRow from "./NodePortRow.vue";
 import { useOptionalManualControls } from "./manualControlContext";
@@ -28,7 +29,8 @@ const timelineNavigation = useTimelineNavigation();
 const manualControls = useOptionalManualControls();
 const editingControl = computed(() => {
     void manualControls?.version.value;
-    return !!node.value.address && !!manualControls?.gestures.isEditingNode(node.value.address);
+    return (!!node.value.address && !!manualControls?.gestures.isEditingNode(node.value.address))
+        || choices.value.some((end) => editor?.activeKnob.value === delayKnobIdentity(end));
 });
 const panel = ref<HTMLElement | null>(null);
 const portArea = ref<HTMLElement | null>(null);
@@ -38,6 +40,8 @@ const rowHeight = computed(() => lanePortRowHeight(portAreaHeight.value));
 let header: HTMLElement | null = null;
 const expanded = ref<SemanticPortDirection | null>(null);
 const chooserPort = ref<SemanticPort | null>(null);
+type ConnectionChooserMode = "move" | "detach" | "delay";
+const chooserMode = ref<ConnectionChooserMode>("move");
 const hoveredPort = ref<SemanticPort | null>(null);
 let hoveredPortRect: DOMRect | null = null;
 let popoverPointer: { x: number; y: number } | null = null;
@@ -108,7 +112,7 @@ const dragEdit = computed(() => editor?.connectionDrag.value?.edit);
 const destinationDirection = computed(() => !dragPort.value ? null : dragEdit.value
     ? dragPort.value.direction : oppositePortDirection(dragPort.value.direction));
 const choices = computed(() => chooserPort.value && editor?.scope.value
-    ? connectionEndsAtPort(editor.scope.value, endpoint(chooserPort.value)) : []);
+    ? portConnectionChoices(chooserPort.value, chooserMode.value) : []);
 const portKey = (port: SemanticPort) => `${port.direction}:${port.kind}:${port.index}`;
 const linksByPort = computed(() => {
     const links = new Map<string, GraphScopeConnection[]>();
@@ -253,7 +257,8 @@ function leave() {
 }
 function checkPopoverPointer() {
     const direction = expanded.value;
-    if (!direction || !panelPositioned.value || !popoverPointer || dragPort.value || editingControl.value) return;
+    if (!direction || !panelPositioned.value || !popoverPointer || dragPort.value || editingControl.value
+        || (chooserPort.value && chooserMode.value === "delay")) return;
     const current = document.elementFromPoint(popoverPointer.x, popoverPointer.y);
     if (panel.value?.contains(current) || headerPortDirection(current) === direction) return;
     closePanel();
@@ -269,6 +274,7 @@ function leavePopoverWindow(event: PointerEvent) {
         || event.clientX >= window.innerWidth || event.clientY >= window.innerHeight)) closePanel();
 }
 function closePanel() {
+    if (panel.value) editor?.closeKnobValueWithin(panel.value);
     ++panelPositionVersion;
     panelPositioned.value = false;
     expanded.value = null; chooserPort.value = null;
@@ -287,11 +293,23 @@ function endpoint(port: SemanticPort): GraphPortEndpoint {
     return { address: node.value.address!, direction: portDirection(port), moduleBoundary: props.moduleBoundary || undefined,
         kind: port.kind === "continuous" ? "sample" : "event", index: port.index, name: port.name };
 }
-function openConnectionChooser(port: SemanticPort, origin = hoveredPortRect) {
+function delayKnobIdentity(end: GraphConnectionEnd): string {
+    return `feedback-delay:${end.connection.id}:${portEndpointKey(end.port)}`;
+}
+function portConnectionChoices(port: SemanticPort, mode: ConnectionChooserMode) {
+    const scope = editor?.scope.value;
+    if (!scope || !node.value.address) return [];
+    const ends = connectionEndsAtPort(scope, endpoint(port));
+    if (mode === "detach") return ends.filter((end) => canDetachConnection(end.connection.connection));
+    if (mode === "delay") return ends.filter(({ connection }) => connection.connection.loopExtraLatency !== undefined);
+    return ends;
+}
+function openConnectionChooser(port: SemanticPort, origin = hoveredPortRect, mode: ConnectionChooserMode = "move") {
     if (!validOrigin(origin) || !editable.value || dragPort.value || !editor?.scope.value
-        || (chooserPort.value && portKey(chooserPort.value) === portKey(port))
-        || connectionEndsAtPort(editor.scope.value, endpoint(port)).length < 1) return;
+        || (chooserPort.value && chooserMode.value === mode && portKey(chooserPort.value) === portKey(port))
+        || !portConnectionChoices(port, mode).length) return;
     chooserPort.value = port;
+    chooserMode.value = mode;
     expandConnectionChooser(portDirection(port), origin);
 }
 function portIconRect(event: Event): DOMRect | null {
@@ -305,19 +323,38 @@ function enterPort(event: Event, port: SemanticPort) {
     if (!rect) return;
     hoveredPort.value = port;
     hoveredPortRect = rect;
-    if (shiftHeld.value) openConnectionChooser(port, hoveredPortRect);
+    if (shiftHeld.value && (!chooserPort.value || chooserMode.value === "move")) openConnectionChooser(port, hoveredPortRect);
+}
+function openDelayChooser(event: MouseEvent, port: SemanticPort) {
+    const rect = portIconRect(event);
+    if (!editable.value || !rect || !portConnectionChoices(port, "delay").length) return;
+    event.preventDefault(); event.stopPropagation();
+    openConnectionChooser(port, rect, "delay");
 }
 function start(event: PointerEvent, port: SemanticPort) {
     if (!editable.value || event.button !== 0 || !editor?.scope.value) return;
-    if (!event.shiftKey) { editor.startConnection(event, endpoint(port)); return; }
+    const origin = portIconRect(event);
+    const altClick = () => void nextTick(() => {
+        if (!editable.value) return;
+        const ends = portConnectionChoices(port, "detach");
+        if (ends.length === 1) editor.toggleConnectionDetach(ends[0]);
+        else if (ends.length > 1) openConnectionChooser(port, origin, "detach");
+    });
+    if (!event.shiftKey) { editor.startConnection(event, endpoint(port), undefined, altClick); return; }
     event.preventDefault(); event.stopPropagation();
-    const ends = connectionEndsAtPort(editor.scope.value, endpoint(port));
-    if (ends.length === 1) editor.startConnection(event, endpoint(port), ends[0]);
-    else if (ends.length > 1) openConnectionChooser(port, portIconRect(event));
+    const ends = portConnectionChoices(port, "move");
+    if (ends.length === 1) editor.startConnection(event, endpoint(port), ends[0], altClick);
+    else if (ends.length > 1) openConnectionChooser(port, origin);
 }
 function pickConnection(event: PointerEvent, end: GraphConnectionEnd) {
-    if (!editable.value || event.button !== 0) return;
-    editor?.startConnection(event, end.port, end);
+    if (!editable.value || event.button !== 0 || chooserMode.value === "detach") return;
+    const altClick = canDetachConnection(end.connection.connection) ? () => editor?.toggleConnectionDetach(end) : undefined;
+    editor?.startConnection(event, end.port, end, altClick);
+}
+function pickDetach(end: GraphConnectionEnd) {
+    if (!editable.value || chooserMode.value !== "detach") return;
+    editor?.toggleConnectionDetach(end);
+    closeConnectionChooser();
 }
 function accepts(port: SemanticPort) {
     if (!editable.value || !dragPort.value) return false;
@@ -349,7 +386,9 @@ function portStatus(port: SemanticPort) {
         ? connectionLabel(first.connection)
         : links.length ? `${links.length} ${links.length === 1 ? "connection" : "connections"}` : "";
     const name = `${port.displayName || port.name || port.index + 1} ${portDirection(port) === "input" ? "In" : "Out"}`;
-    return [name, portFeedback(port) ? "Feedback loop" : "", route, pending ? `${pending} pending` : "",
+    return [name, portFeedback(port) ? "Feedback loop" : "", route,
+        first?.connection.loopExtraLatency !== undefined && links.length === 1 ? `Detached · ${first.connection.loopExtraLatency} smp` : "",
+        pending ? `${pending} pending` : "",
         portTypeSummary(port)].filter(Boolean).join(" · ");
 }
 function rowProps(port: SemanticPort) {
@@ -389,8 +428,14 @@ watch(editingControl, (editing) => {
 });
 watch(choices, (entries) => { if (chooserPort.value && !entries.length) closeConnectionChooser(); });
 watch(shiftHeld, (held) => {
-    if (!held) closeConnectionChooser();
-    else if (hoveredPort.value) openConnectionChooser(hoveredPort.value);
+    if (chooserPort.value && chooserMode.value !== "move") return;
+    if (held) {
+        if (hoveredPort.value) openConnectionChooser(hoveredPort.value);
+        return;
+    }
+    if (!chooserPort.value || editingControl.value) return;
+    const knob = editor?.elementAtPointer()?.closest(".connection-delay-knob");
+    if (!knob || !panel.value?.contains(knob)) closeConnectionChooser();
 });
 watch([expanded, chooserPort], () => editor?.portsChanged(), { flush: "post" });
 watch([portAreaHeight, socketsOnly, () => portAreaSize.value?.width, () => props.inline,
@@ -417,10 +462,20 @@ function dismissPanel(event: KeyboardEvent) {
     closePanel();
 }
 function windowBlurred() { if (!editingControl.value) closePanel(); }
+function dismissDelayChooser(event: PointerEvent) {
+    const target = event.target;
+    if (chooserPort.value && chooserMode.value === "delay" && target instanceof Element
+        && !panel.value?.contains(target) && !target.closest(".manual-value-popover")) closePanel();
+}
+watch([chooserPort, chooserMode], ([port, mode], _previous, onCleanup) => {
+    if (!port || mode !== "delay") return;
+    window.addEventListener("pointerdown", dismissDelayChooser, true);
+    onCleanup(() => window.removeEventListener("pointerdown", dismissDelayChooser, true));
+});
 function leaveFocus() {
     queueMicrotask(() => {
         const focused = document.activeElement;
-        if (!expanded.value || editingControl.value || dragPort.value
+        if (!expanded.value || editingControl.value || dragPort.value || (chooserPort.value && chooserMode.value === "delay")
             || headerPortDirection(focused) === expanded.value || panel.value?.contains(focused)) return;
         if (popoverPointer) checkPopoverPointer();
         else closePanel();
@@ -463,7 +518,7 @@ onBeforeUnmount(() => {
                         :data-port-group="direction" :data-node-key="nodeKey"
                         :data-folded-ports="layout[direction].foldedCount ? direction : undefined"
                         @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null"
-                        @wire-start="start($event, port)" />
+                        @wire-start="start($event, port)" @handle-context="openDelayChooser($event, port)" />
                 </template>
             </div>
         </div>
@@ -473,7 +528,8 @@ onBeforeUnmount(() => {
             <span v-if="!inline && layout[direction].foldedCount" class="port-column-hover" data-port-control aria-hidden="true" />
             <template v-if="!shareLabels">
                 <NodePortRow v-for="port in layout[direction].direct" :key="portKey(port)" v-bind="rowProps(port)"
-                    @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
+                    @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)"
+                    @handle-context="openDelayChooser($event, port)" />
                 <ImplicitOutputPort v-if="layout[direction].implicitDirect" :module-key="nodeKey" :feedback="implicitFeedback" />
             </template>
             <component :is="inline ? 'span' : 'button'" v-if="layout[direction].foldedCount" class="port-slot"
@@ -502,31 +558,39 @@ onBeforeUnmount(() => {
             :class="{ above, continuation: !chooserPort, positioning: !panelPositioned, 'sockets-only': socketsOnly }"
             :style="[panelPosition, columnStyle]"
             :aria-hidden="!panelPositioned"
+            :role="chooserPort && chooserMode === 'delay' ? 'dialog' : undefined"
+            :aria-label="chooserPort && chooserMode === 'delay' ? 'Detached connections' : undefined"
             :data-lane-key="moduleBoundary ? undefined : nodeKey"
             :data-lane-row="rowKey" :data-module-boundary="moduleBoundary ? '' : undefined"
             :data-port-group="expanded" :data-node-key="nodeKey"
             @iv-hoverleave="leave" @focusout="leaveFocus" @keydown.esc="closePanel"
             @wheel="timelineNavigation?.wheel($event)" @pointerdown.capture="timelineNavigation?.beginMiddleDrag($event)">
             <div v-if="chooserPort" class="expansion-body" tabindex="-1">
-                <div v-for="(end, index) in choices" :key="end.connection.id" class="port-row"
-                    :data-direction="end.port.direction"
-                    :class="{ 'with-knob': index === 0 && popoverHasKnob(chooserPort) }">
-                    <button type="button" tabindex="-1" class="port-entry connection-choice"
-                        :data-port-kind="end.port.kind"
-                        :data-connection-feedback="end.connection.feedback"
-                        :data-connection-end="JSON.stringify({ connectionId: end.connection.id, port: end.port })"
-                        :class="{ connected: end.connection.applied, pending: !end.connection.applied }"
-                        :data-status-hint="`${end.connection.feedback ? 'Feedback loop · ' : end.connection.applied ? '' : 'Pending · '}${connectionLabel(end.connection.connection)}`"
-                        :aria-description="`${chooserPort.name} · ${portDescription(chooserPort)}`"
-                        @pointerdown="pickConnection($event, end)">
-                        <span class="port-circle" /><span class="port-name">{{ connectionLabel(end.connection.connection) }}</span>
-                    </button>
-                    <ManualInput v-if="index === 0 && popoverHasKnob(chooserPort)" :name="chooserPort.name" :direction="chooserPort.direction" />
+                <div v-for="(end, index) in choices" :key="end.connection.id" class="connection-choice-row">
+                    <div class="port-row" :data-direction="end.port.direction"
+                        :class="{ 'with-knob': index === 0 && popoverHasKnob(chooserPort) }">
+                        <button type="button" tabindex="-1" class="port-entry connection-choice"
+                            :data-port-kind="end.port.kind"
+                            :data-connection-feedback="end.connection.feedback"
+                            :data-connection-end="JSON.stringify({ connectionId: end.connection.id, port: end.port })"
+                            :class="{ connected: end.connection.applied, pending: !end.connection.applied }"
+                            :data-status-hint="`${end.connection.feedback ? 'Feedback loop · ' : end.connection.applied ? '' : 'Pending · '}${connectionLabel(end.connection.connection)}`"
+                            :aria-description="`${chooserPort.name} · ${portDescription(chooserPort)}`"
+                            @pointerdown="pickConnection($event, end)" @click.stop="pickDetach(end)">
+                            <span class="port-circle" /><span class="port-name">{{ chooserMode === 'detach'
+                                ? `${end.connection.connection.loopExtraLatency === undefined ? 'Detach' : 'Attach'} ${connectionLabel(end.connection.connection)}`
+                                : connectionLabel(end.connection.connection) }}</span>
+                        </button>
+                        <ManualInput v-if="index === 0 && popoverHasKnob(chooserPort)" :name="chooserPort.name" :direction="chooserPort.direction" />
+                    </div>
+                    <ConnectionDelayKnob v-if="end.connection.connection.loopExtraLatency !== undefined" class="connection-delay-knob"
+                        :end="end" :identity="delayKnobIdentity(end)" />
                 </div>
             </div>
             <div v-else class="expansion-body" tabindex="-1" :data-direction="expanded">
                 <NodePortRow v-for="port in layout[expanded].folded" :key="portKey(port)" v-bind="rowProps(port)"
-                    @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
+                    @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)"
+                    @handle-context="openDelayChooser($event, port)" />
                 <ImplicitOutputPort v-if="layout[expanded].implicitFolded" :module-key="nodeKey" :feedback="implicitFeedback" />
             </div>
         </div>
@@ -623,6 +687,9 @@ button.port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color
 .continuation .expansion-body[data-direction="output"] { direction: rtl; }
 .continuation .expansion-body[data-direction="output"] > .control-row { direction: ltr; }
 .above .expansion-body { display: flex; flex-direction: column-reverse; }
+.connection-choice-row { display: flex; flex-shrink: 0; align-items: center; min-width: 0; }
+.connection-choice-row > .port-row { flex: 1; }
+.connection-delay-knob { --knob-size: 24px; margin-inline: 4px; }
 .port-row { display: flex; flex-shrink: 0; align-items: center; min-width: 0; }
 .port-row .port-entry { flex: 1; min-width: 0; width: auto; }
 .port-row.with-knob { --chooser-columns: 24px calc(38px + var(--output-polarity-width) - var(--output-polarity-inset)) minmax(0, 1fr);

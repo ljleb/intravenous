@@ -2,6 +2,8 @@ import { addressKey, matchingScopePorts, oppositePortDirection, resolveScopePort
     type GraphScopeConnection, type GraphScopePort, type NodeAddress } from "./graphScope";
 import { isGeneratedSnapConnection, isTimelineSnapAddress, timelineGridMode } from "./timelineSnap";
 
+const defaultLoopExtraLatency = 1;
+
 export type GraphPortEndpoint = {
     address: NodeAddress;
     kind: "sample" | "event";
@@ -17,7 +19,9 @@ export type GraphConnectionEnd = {
     connection: GraphScopeConnection;
     port: GraphPortEndpoint;
 };
-export type GraphConnectionEdit = { end: GraphConnectionEnd; target: GraphPortEndpoint | null };
+export type GraphConnectionEdit = { end: GraphConnectionEnd; target: GraphPortEndpoint | null; detach?: true };
+export type GraphConnectionChange = GraphConnectionEdit
+    | { end: GraphConnectionEnd; toggleDetach: true } | { end: GraphConnectionEnd; loopExtraLatency: number };
 export type GraphConnectionMutation = { type: "delete"; id: string }
     | { type: "upsert"; connection: Record<string, unknown> };
 
@@ -72,12 +76,67 @@ function connectionKey(entry: GraphScopeConnection): string {
     const matchers = (values: GraphPortMatcher[]) => values.map((value) => [addressKey(value),
         !!value.moduleBoundary, value.port.name ?? null, value.port.index ?? null, value.port.channel ?? null]);
     const c = entry.connection;
-    return JSON.stringify([entry.id, c.kind, c.sourceType, c.targetType, matchers(c.outputs), matchers(c.inputs)]);
+    return JSON.stringify([entry.id, c.kind, c.sourceType, c.targetType, c.loopExtraLatency, matchers(c.outputs), matchers(c.inputs)]);
 }
 
-export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEdit): GraphConnectionMutation | null {
+export function canDetachConnection(connection: GraphScopeConnection["connection"]): boolean {
+    return !connection.inputs.some(isTimelineSnapAddress);
+}
+
+export class ConnectionDelayEdits {
+    private end: GraphConnectionEnd | undefined;
+    private next: number | undefined;
+    private sending = false;
+
+    constructor(private readonly write: (end: GraphConnectionEnd, samples: number) => Promise<boolean>,
+        private readonly changed: (pending: boolean) => void, private readonly rejected: () => void) {}
+
+    get pending(): boolean { return this.sending; }
+
+    begin(end: GraphConnectionEnd): boolean {
+        if (this.sending || end.connection.connection.loopExtraLatency === undefined) return false;
+        this.end = end;
+        return true;
+    }
+
+    update(samples: number): void {
+        if (!this.end) return;
+        this.next = samples;
+        if (!this.sending) void this.flush();
+    }
+
+    discard(): void {
+        this.next = undefined;
+        this.end = undefined;
+    }
+
+    private async flush(): Promise<void> {
+        this.sending = true;
+        this.changed(true);
+        try {
+            while (this.end && this.next !== undefined) {
+                const end: GraphConnectionEnd = this.end;
+                const samples = this.next;
+                this.next = undefined;
+                const { connection } = end;
+                if (samples === connection.connection.loopExtraLatency) continue;
+                if (!await this.write(end, samples)) throw new Error("Feedback delay edit was rejected");
+                if (this.end === end) this.end = { ...end, connection: { ...connection,
+                    connection: { ...connection.connection, loopExtraLatency: samples } } };
+            }
+        } catch {
+            this.discard();
+            this.rejected();
+        } finally {
+            this.sending = false;
+            this.changed(false);
+        }
+    }
+}
+
+export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionChange): GraphConnectionMutation | null {
     if (!scope.editable) throw new Error("This graph is read-only");
-    const { end, target } = edit;
+    const { end } = edit;
     const current = scope.connections.find((entry) => entry.id === end.connection.id);
     if (!current || connectionKey(current) !== connectionKey(end.connection)) {
         throw new Error("The selected connection changed; select it again");
@@ -87,6 +146,23 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     const original = resolveEndpoint(scope, end.port);
     const connection = current.connection;
     if (connection.kind !== end.port.kind) throw new Error("The selected connection changed; select it again");
+    if ("toggleDetach" in edit || "loopExtraLatency" in edit) {
+        const matchers = end.port.direction === "input" ? connection.inputs : connection.outputs;
+        if (!matchers.some((matcher) => matchesPort(scope, matcher, end.port)))
+            throw new Error("The selected connection no longer reaches this port");
+        if (!canDetachConnection(connection)) throw new Error("The ruler Beats input cannot use a detached connection");
+        const { loopExtraLatency, ...record } = connection;
+        if ("loopExtraLatency" in edit) {
+            if (loopExtraLatency === undefined) throw new Error("Detach the connection before changing its feedback delay");
+            if (!Number.isSafeInteger(edit.loopExtraLatency) || edit.loopExtraLatency < 1)
+                throw new Error("The feedback delay must be a positive whole number of samples");
+            if (loopExtraLatency === edit.loopExtraLatency) return null;
+            return { type: "upsert", connection: { ...record, connectionId: current.id, loopExtraLatency: edit.loopExtraLatency } };
+        }
+        return { type: "upsert", connection: { ...record, connectionId: current.id,
+            ...(loopExtraLatency === undefined && { loopExtraLatency: defaultLoopExtraLatency }) } };
+    }
+    const { target, detach } = edit;
     if (target && (target.kind !== end.port.kind || target.direction !== end.port.direction))
         throw new Error("Move the connection end to a port of the same kind and direction");
     if (target && sameGraphPort(end.port, target)) return null;
@@ -133,7 +209,11 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
             requireCustomBeatInput(scope, type);
         }
     }
-    return { type: "upsert", connection: { ...connection, connectionId: current.id, [side]: matchers, [typeField]: type } };
+    const updated = { ...connection, connectionId: current.id, [side]: matchers, [typeField]: type,
+        ...(detach && { loopExtraLatency: connection.loopExtraLatency ?? defaultLoopExtraLatency }) };
+    if (updated.loopExtraLatency !== undefined && !canDetachConnection(updated))
+        throw new Error("The ruler Beats input cannot use a detached connection");
+    return { type: "upsert", connection: updated };
 }
 
 export function canMoveConnectionEnd(scope: GraphScope, end: GraphConnectionEnd, target: GraphPortEndpoint): boolean {
@@ -151,7 +231,7 @@ export function canContinuePortConnection(scope: GraphScope | null, port: GraphP
 }
 
 export function connectionFromPorts(scope: GraphScope, id: string,
-    first: GraphPortEndpoint, second: GraphPortEndpoint): GraphScopeConnection["connection"] {
+    first: GraphPortEndpoint, second: GraphPortEndpoint, detach = false): GraphScopeConnection["connection"] {
     if (!scope.editable) throw new Error("This graph is read-only");
     if (first.kind !== second.kind || first.direction === second.direction) {
         throw new Error("Connect an input and an output of the same port kind");
@@ -160,9 +240,12 @@ export function connectionFromPorts(scope: GraphScope, id: string,
     const input = first.direction === "input" ? first : second;
     const sourceType = portType(resolveEndpoint(scope, output), output.kind);
     const targetType = portType(resolveEndpoint(scope, input), input.kind);
-    if (isTimelineSnapAddress(input.address)) requireCustomBeatInput(scope, sourceType);
+    if (isTimelineSnapAddress(input.address)) {
+        if (detach) throw new Error("The ruler Beats input cannot use a detached connection");
+        requireCustomBeatInput(scope, sourceType);
+    }
     return { connectionId: id, kind: output.kind, sourceType, targetType,
-        outputs: [matcherFor(output)], inputs: [matcherFor(input)] };
+        outputs: [matcherFor(output)], inputs: [matcherFor(input)], ...(detach && { loopExtraLatency: defaultLoopExtraLatency }) };
 }
 
 function requireCustomBeatInput(scope: GraphScope, sourceType: string): void {

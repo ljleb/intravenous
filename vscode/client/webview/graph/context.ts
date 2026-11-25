@@ -66,7 +66,9 @@ type GraphEditorContext = {
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; rowKey?: string; direction: "input" | "output" } | null>;
-    startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) => void;
+    startConnection: (event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd, altClick?: () => void) => void;
+    toggleConnectionDetach: (end: GraphConnectionEnd) => void;
+    setConnectionDelay: (end: GraphConnectionEnd, samples: number) => Promise<boolean>;
     cancelConnection: () => void;
     activeKnob: Readonly<Ref<string | null>>;
     startKnob: (event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) => void;

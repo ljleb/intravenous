@@ -6,7 +6,7 @@ import type { ManualControlAction, ManualControlId, ManualControlInteractionStat
 import type { GraphLaneCopy, GraphScope, NodeAddress, ProjectEditReceipt } from "./graphScope";
 import type { SerializedPresentationState } from "./presentationStateJson";
 import type { LiveGraphSessionStatus } from "./liveGraphProtocol";
-import type { GraphConnectionEdit, GraphPortEndpoint } from "./graphConnectionEditing";
+import type { GraphConnectionChange, GraphPortEndpoint } from "./graphConnectionEditing";
 import type { NodeEventHostRequest, NodeEventResponse } from "./nodeEventMessaging";
 import type { PlaybackDragPhase, PlaybackSnapshot } from "./playback";
 import type { StatusHint } from "./statusBarText";
@@ -67,6 +67,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }
     | { type: "graphPresentationAccepted"; requestId: number; receipt?: ProjectEditReceipt }
+    | { type: "graphConnectionEditFinished"; requestId: number; accepted: boolean }
     | { type: "laneViewStates"; reads: Array<{ requestId: number; version: string; state: string | null }> }
     | { type: "interruptProjectHistory"; requestId: number }
     | { type: "projectHistoryFinished"; requestId: number }
@@ -101,8 +102,8 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "flushProjectAutosave" }
     | { type: "knobClipboard"; requestId: number; text?: string }
     | { type: "renameGraphLane"; instanceId: string; displayName: string; previousDisplayName: string }
-    | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint }
-    | { type: "editGraphConnectionEnd"; edit: GraphConnectionEdit }
+    | { type: "connectGraphPorts"; first: GraphPortEndpoint; second: GraphPortEndpoint; detach?: true }
+    | { type: "editGraphConnectionEnd"; edit: GraphConnectionChange; requestId?: number }
     | { type: "searchNodeDefinitions"; requestId: string; source: string; cursor: number }
     | { type: "createGraphNode"; definitionId: string; displayName: string; configurationSource: string; afterInstanceId?: string }
     | { type: "updateGraphNode"; instanceId: string; displayName: string; configurationSource: string;

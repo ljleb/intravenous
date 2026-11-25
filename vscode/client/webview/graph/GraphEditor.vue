@@ -180,6 +180,12 @@ let knobDrag: (KnobDrag & { pointerId: number }) | null = null;
 const valueEntryAnchor = shallowRef<HTMLElement>();
 const knobClipboards = new WeakMap<Element, KnobClipboard>();
 const pendingKnobPastes = new Map<number, (text: string) => string | undefined>();
+let nextConnectionEditRequest = 0;
+const pendingConnectionEdits = new Map<number, (accepted: boolean) => void>();
+function settleConnectionEdits() {
+    for (const finish of pendingConnectionEdits.values()) finish(false);
+    pendingConnectionEdits.clear();
+}
 let knobClipboardRequest = 0;
 let knobClipboardStatus: StatusHint | null = null;
 let knobClipboardStatusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -807,6 +813,14 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     scope: visibleScope, lanes, expandedModules, implicitOutputModules, connectionFeedback, toggleModule,
     shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
+    toggleConnectionDetach: (end) => webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: { end, toggleDetach: true } }),
+    setConnectionDelay: (end, loopExtraLatency) => {
+        const requestId = ++nextConnectionEditRequest;
+        return new Promise<boolean>((finish) => {
+            pendingConnectionEdits.set(requestId, finish);
+            webviewApi.postMessage({ type: "editGraphConnectionEnd", requestId, edit: { end, loopExtraLatency } });
+        });
+    },
     cancelKnob() {
         if (!knobDrag) return false;
         knobClicks.cancel();
@@ -1086,7 +1100,8 @@ function scheduleWireUpdate() {
 }
 watch([selectedLanes, visibleScope, lanes, () => layout.value.timeline.laneHeight],
     scheduleWireUpdate, { flush: "post" });
-function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd) {
+let connectionAltClick: (() => void) | undefined;
+function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd, altClick?: () => void) {
     if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
     const handle = event.currentTarget;
     if (!(handle instanceof HTMLElement)) return;
@@ -1100,6 +1115,7 @@ function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: Gr
     surface.value.focus({ preventScroll: true });
     surface.value.setPointerCapture(event.pointerId);
     connectionDrag.value = drag;
+    connectionAltClick = altClick;
     connectionStartAnchor.value = edit ? null : anchor;
     sourceGroupToLeave = { nodeKey: addressKey(port.address), direction: port.direction,
         rowKey: handle.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow };
@@ -1144,14 +1160,18 @@ function releaseConnection(event: PointerEvent) {
     if (event.button !== 0) { cancelConnection(); return; }
     const { target, emptyEditorSpace } = portConnectionDrop(document.elementFromPoint(event.clientX, event.clientY), surface.value);
     const connection = finishPortConnection(visibleScope.value, drag, event.pointerId,
-        { x: event.clientX, y: event.clientY }, target, emptyEditorSpace);
+        { x: event.clientX, y: event.clientY }, target, emptyEditorSpace, event.altKey);
+    const altClick = connectionAltClick;
     cancelConnection();
-    if (connection?.type === "create") webviewApi.postMessage({ type: "connectGraphPorts", first: connection.first, second: connection.second });
+    if (connection?.type === "create") webviewApi.postMessage({ type: "connectGraphPorts", first: connection.first,
+        second: connection.second, detach: connection.detach });
     else if (connection?.type === "edit") webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: connection.edit });
+    else if (connection?.type === "altClick") altClick?.();
 }
 function cancelConnection() {
     const pointerId = connectionDrag.value?.pointerId;
     connectionDrag.value = null;
+    connectionAltClick = undefined;
     connectionStartAnchor.value = null;
     dropPreviewAnchor.value = null;
     hoveredPortGroup.value = null;
@@ -1417,6 +1437,13 @@ function receive(event: MessageEvent<GraphEditorHostMessage>) {
 }
 
 function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
+    if (event.data?.type === "graphConnectionEditFinished") {
+        const { requestId, accepted } = event.data;
+        const finish = pendingConnectionEdits.get(requestId);
+        pendingConnectionEdits.delete(requestId);
+        finish?.(accepted);
+        return;
+    }
     if (event.data?.type === "startPlaybackProfile") {
         playbackProfileMarker = { profileId: event.data.profileId, until: performance.now() + event.data.durationMs };
         return;
@@ -1581,6 +1608,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     }
     if (event.data?.type !== "graphState") return;
     if (state.value.connectionNumber !== event.data.state.connectionNumber) {
+        settleConnectionEdits();
         laneViewReads.clear();
         pendingPresentation.clear();
         changedPresentationStates.clear();
@@ -1602,6 +1630,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
     } else {
         configuredObservations = undefined;
         observations.disconnect();
+        settleConnectionEdits();
         for (const interrupt of presentationInterrupts) interrupt("disconnected");
     }
     const entry = manualGestures.numericEntry();
@@ -1668,6 +1697,7 @@ onMounted(() => {
     webviewApi.postMessage({ type: "graphReady" });
 });
 onBeforeUnmount(() => {
+    settleConnectionEdits();
     clearTimeout(knobClipboardStatusTimer);
     pendingKnobPastes.clear();
     clearTimeout(cursorReturnTraceTimer);
@@ -1800,15 +1830,15 @@ onBeforeUnmount(() => {
                     <g v-for="layer in ['faint', 'emphasized'] as const" :key="layer"
                         :mask="layer === 'emphasized' ? 'url(#wire-label-fade)' : undefined">
                         <path v-for="{ wire, index } in layers[layer]" :key="wire.key" class="selected-wire"
-                            :class="{ pending: !wire.applied }"
+                            :class="{ pending: !wire.applied, detached: wire.detached }"
                             :d="selectedLaneWirePath(wire)" :stroke="`url(#selected-wire-${index})`"
                             :stroke-opacity="wireOpacity[layer]" />
                     </g>
                     <g mask="url(#wire-label-fade)">
                         <path v-for="{ wire } in layers.feedback" :key="wire.key" class="selected-wire feedback-wire"
-                            :d="selectedLaneWirePath(wire)" />
+                            :class="{ detached: wire.detached }" :d="selectedLaneWirePath(wire)" />
                         <path v-for="{ wire } in layers.edited" :key="wire.key" class="selected-wire feedback-wire edited-wire"
-                            :d="selectedLaneWirePath(wire)" />
+                            :class="{ detached: wire.detached }" :d="selectedLaneWirePath(wire)" />
                     </g>
                 </g>
                 <g mask="url(#wire-label-fade)">
@@ -1832,7 +1862,8 @@ onBeforeUnmount(() => {
 .preview-wire { fill: none; stroke-width: 2; }
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }
 .selected-wire { fill: none; stroke-width: 1.5; }
-.selected-wire.pending { stroke-dasharray: 5 4; }
+.selected-wire.pending { stroke-dasharray: 1 3; }
+.selected-wire.detached { stroke-dasharray: 5 4; }
 .feedback-wire { stroke: var(--vscode-errorForeground); stroke-width: 2; }
 .feedback-wire.edited-wire { stroke-width: 3.5; }
 .package-dialog-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #0005; }

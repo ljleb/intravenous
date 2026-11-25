@@ -88,6 +88,7 @@ export type GraphScopeConnection = {
         kind: "sample" | "event";
         sourceType?: string;
         targetType?: string;
+        loopExtraLatency?: number;
         outputs: GraphPortMatcher[];
         inputs: GraphPortMatcher[];
     };
