@@ -83,22 +83,40 @@ Each expanded group has an inset shadow around its descendants, with a visible
 edge above its first child and below its last descendant. The shadows and lane
 headers share a left edge at every depth.
 
-### Project lanes within modules
+### Project lane nesting
 
-A project lane can sit under a module instance in the graph editor. The
-project presentation stores the parent address and the lane order. The node
-keeps its project instance ID, ports, and connections. Operators can still
-edit, wire, duplicate, or delete the project node from its nested lane.
-If the parent address becomes unavailable, the editor shows the lane at the
-root until the address resolves again.
+_Owner direction, 2026-11-25._
 
-Shift+Right moves each selected run into the module immediately above it at
-the same level. Shift+Left moves nodes one module up. Root lanes stay in
-place on Shift+Left. Shift+Up and Shift+Down reorder siblings. Shift+drag
-from a selected header moves the selection to a module or a sibling insertion
-point. Module Ports and C++ children keep their source-defined order. A
-project edit saves the parent changes and order together for undo and redo.
-Project lanes can move past C++ siblings. Module Ports stays at the top.
+A project-authored lane can sit under any addressable node lane, including a
+project lane, a symbolic C++ lane, or a concrete C++ lane. Nesting is layout
+and can repeat at any depth. A project-authored module is a graph scope with
+its own interface and ownership. Moving a lane keeps its instance ID, ports,
+connections, and graph scope. C++-authored lanes keep their source-defined
+parents. A header with project children can expand and collapse them.
+
+`ProjectPresentation::lane_parents` stores the chosen parent `NodeAddress` and
+`lane_order` stores the order. The parent address identifies the chosen lane
+occurrence, including its symbolic membership path when several rows show
+the same concrete node. Derive the displayed parent from the current graph.
+If a C++ edit removes the chosen parent, use the deepest surviving ancestor
+along the saved path that has a lane. For example, if a symbolic lane shrinks
+from 30 members to 20, a project lane under member 30 appears under the
+symbolic lane. If the symbolic lane also disappears, continue toward the
+project instance lane. Use the top level when no ancestor is available.
+Collapsed ancestors still count as available. Fallback leaves the saved
+parent untouched, so the child returns when the original occurrence comes
+back. An explicit reparent replaces the saved address. Wiring continues to
+resolve its exact `ProjectNodePortMatcher` paths.
+
+Shift+Right moves each selected run under the node lane immediately above it
+at the same level. Shift+Left moves it up one level. Root lanes stay in place
+on Shift+Left. Shift+Up and Shift+Down reorder siblings. Shift+drag from a
+selected header moves the selection under a node lane or to a sibling
+insertion point. Reject a move that would make a lane its own ancestor,
+including a move through a generated descendant. A project edit saves parent
+changes and order together for undo and redo. Project lanes can move past C++
+siblings. Module Ports and C++ children keep their source-defined order.
+[Earlier module-only nesting](./historical/lane_parents_before_general_nesting_2026-11-25.md).
 
 Drag the header separator to resize the headers in the current webview. The
 timeline opens at the smallest editable height on the vertical wheel zoom grid.

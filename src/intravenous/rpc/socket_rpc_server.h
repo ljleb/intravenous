@@ -41,6 +41,7 @@ namespace iv {
     using SocketRpcGetGraphScopeEvent =
         void (*)(GetGraphScopeRequest const &, SocketRpcGraphScopeResultBuilder &);
     using SocketRpcGetProjectLaneViewsEvent = void (*)(GetProjectLaneViewsRequest const&, std::vector<std::optional<std::string>>&);
+    using SocketRpcResetGraphStateEvent = void (*)(ResetGraphStateRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcGetNodeDefinitionsEvent = void (*)(std::shared_ptr<NodeDefinitionsSnapshot const>&);
     using SocketRpcCreateNodeInstanceEvent =
         void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
@@ -111,6 +112,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodeEvent, iv_socket_rpc_get_symbolic_node_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodesEvent, iv_socket_rpc_get_symbolic_nodes_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetGraphScopeEvent, iv_socket_rpc_get_graph_scope_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcResetGraphStateEvent, iv_socket_rpc_reset_graph_state_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetProjectLaneViewsEvent, iv_socket_rpc_get_project_lane_views_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);

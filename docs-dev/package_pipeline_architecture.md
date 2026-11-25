@@ -17,6 +17,10 @@ Related documents:
 - [event_flows/package_refresh.md](./event_flows/package_refresh.md)
 - [startup_realization_order.md](./startup_realization_order.md)
 
+[Package Sandbox Security](./package_sandbox_security_direction.md) governs the
+trust boundary. Its confinement and verification requirements precede any new
+package installation or listing mechanism.
+
 ## Pipeline overview
 
 The package side needs three application modules before the downstream global

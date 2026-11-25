@@ -18,6 +18,8 @@ IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_apply_project_edit_event, &ProjectGraph::handle_socket_rpc_apply_project_edit)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
+    iv_socket_rpc_reset_graph_state_event, &ProjectGraph::handle_socket_rpc_reset_graph_state)
+IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_undo_project_edit_event, &ProjectGraph::handle_socket_rpc_undo_project_edit)
 IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_project_graph_bridge,
     iv_socket_rpc_redo_project_edit_event, &ProjectGraph::handle_socket_rpc_redo_project_edit)

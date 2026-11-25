@@ -111,14 +111,39 @@ Similarly, smoothing is an explicit signal/input interpretation rather than a
 mandatory approximation for every parameter change; the compiled graph should
 preserve sample-exact authored behavior.
 
-### Explicit node state reset
+### Reset graph state
 
-_Future work recorded 2026-11-21._
+_Owner direction, 2026-11-25._
 
-Provide a session action that resets the state of all nodes in the current node
-buffer. Use the `release()` hook before `initialize()` and reuse the existing
-buffer allocation. Apply the reset at a safe execution boundary. Set the
-foreground playhead to the applied background playhead position at that boundary.
+Shift+R invokes **Reset Graph State** for the whole graph, regardless of
+selection. Prepare a fresh execution generation with its own `NodeStorage`
+and `TockStateStorage` while the current graph continues rendering. Construct
+fresh `State` objects and run their `initialize()` hooks during preparation.
+Reset input and output port history, still-revisable writes within output
+latency windows, and in-flight Sample and Event deliveries, including detached
+connections. Use the graph's fresh-start semantics, including any authored
+initial values in a detached Sample delay.
+
+Publish the initialized generation at an ordered audio block boundary. The
+cutover transfers no node state, history, or pending latency writes from the
+predecessor. Run predecessor `release()` hooks at the boundary required by
+their execution owner and reclaim storage after both executors finish with it.
+The owner accepts temporary overlap of the two runtime allocations. For two
+similarly sized generations, allow roughly twice the node and port storage,
+plus any extra history required by the startup plan. Preparing the new state
+ahead of the cutover moves allocation and initialization off the audio thread.
+
+The immutable startup artifact can be compiled ahead of the reset and reused
+while its compilation inputs stay current. It uses empty-predecessor startup
+semantics and has its own lifetime independent of predictive cutover code.
+Each reset still prepares fresh mutable storage.
+
+Preserve the authored project, including controls, connections, and saved
+recordings. Keep the applied background playhead and align the foreground
+playhead to it at the boundary. A graph transition must start from state after
+the reset if it activates afterward. The session action is the one reset
+control for this feature.
+[Earlier reset designs](./historical/runtime_reset_before_whole_graph_shortcut_2026-11-25.md).
 
 ### Background selection, coverage and pause
 

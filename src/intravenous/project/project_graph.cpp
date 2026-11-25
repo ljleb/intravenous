@@ -642,7 +642,7 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
     if (!current_generation_ || !current_generation_->graph
         || configuration_failure_ || compile_worker_.get_stop_token().stop_requested()) return;
     auto candidate = std::exchange(observation_candidate_, {});
-    if (candidate && (graph || candidate->requirements != observation_requirements_
+    if (candidate && (reset_state_requested_ || graph || candidate->requirements != observation_requirements_
         || candidate->predecessor != accepted_execution_graph_
         || candidate->inputs.configured_generation != current_generation_->configured_generation
         || candidate->inputs.definitions != current_generation_->definitions
@@ -650,6 +650,7 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
         candidate.reset();
     auto inputs = candidate ? candidate->inputs : capture_compile_inputs_locked(
         graph ? std::move(graph) : graph_for_compile_locked(desired_dynamic_inputs_locked(false)));
+    inputs.reset_state = reset_state_requested_;
     observation_prediction_pending_ = predicted_observation_requirements_.has_value();
     if (pending_graph_compile_ && pending_graph_compile_->trace)
         queue_control_compile_status_locked(pending_graph_compile_->trace, "superseded");
@@ -661,7 +662,7 @@ void ProjectGraph::schedule_graph_compile_locked(std::shared_ptr<ControlCompileT
         .inputs = std::move(inputs),
         .trace = std::move(trace),
         .observation_candidate = std::move(candidate),
-        .observation_update = observation_update,
+        .observation_update = observation_update && !reset_state_requested_,
     };
     control_compile_changed_.notify_all();
 }
@@ -754,7 +755,8 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
     };
     auto eligible = [&] {
         return !stop.stop_requested() && !configuration_failure_
-            && accepted_execution_graph_ == predecessor;
+            && accepted_execution_graph_ == predecessor
+            && (!request.inputs.reset_state || desired());
     };
     {
         std::scoped_lock lock(mutex_);
@@ -811,10 +813,24 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
                     .execution_preparation = ExecutionPreparationProgress{.attempt = request.attempt, .pending = true}});
         }
         auto const& candidate = request.observation_candidate;
-        if (candidate && candidate->predecessor == predecessor && candidate->result.compiled_graph)
+        auto const& inputs = request.inputs;
+        if (reset_startup_artifact_ && reset_startup_artifact_->configured_generation != inputs.configured_generation)
+            reset_startup_artifact_.reset();
+        auto const& startup = reset_startup_artifact_;
+        if (inputs.reset_state && startup && startup->configured_generation == inputs.configured_generation
+            && startup->configured_bundles == inputs.configured_bundles
+            && startup->definitions_generation == inputs.definitions->generation
+            && startup->observations.revision == inputs.observations.revision
+            && startup->configured_graph->manual_controls == inputs.graph->manual_controls) {
+            compiled = {.attempted = true, .compiled_graph = std::make_shared<CompiledGraph>(*startup)};
+            compiled.compiled_graph->reset_state = true;
+        } else if (candidate && candidate->predecessor == predecessor && candidate->result.compiled_graph) {
             compiled = std::move(candidate->result);
-        else
+        } else {
             compiled = compile_for_predecessor(std::move(observation_code));
+            if ((!predecessor || inputs.reset_state) && compiled.compiled_graph)
+                reset_startup_artifact_ = compiled.compiled_graph;
+        }
         if (stage_observation_update(&compiled)) {
             completion_published = true;
             return;
@@ -899,6 +915,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
             if (is_desired) {
                 current_generation_ = state;
                 latest_execution_attempt_.reset();
+                if (request.inputs.reset_state) reset_state_requested_ = false;
             }
             publication.graph_changed = true;
             publication.execution_preparation = ExecutionPreparationProgress{.attempt = request.attempt};
@@ -948,6 +965,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
         if (desired()) {
             current_generation_ = std::move(state);
             latest_execution_attempt_.reset();
+            if (request.inputs.reset_state) reset_state_requested_ = false;
         }
         queue_control_compile_status_locked(request.trace, "failed", error.what());
         publication.graph_changed = true;
@@ -1056,6 +1074,7 @@ void ProjectGraph::recover_failed_execution(std::stop_token stop)
             {
                 std::scoped_lock lock(mutex_);
                 if (failure.empty()) {
+                    if (!predecessor || request.reset_state) reset_startup_artifact_ = compiled.compiled_graph;
                     predecessor = compiled.compiled_graph;
                     accepted_execution_graph_ = predecessor;
                     staged_control_graph_ = predecessor;
@@ -1736,6 +1755,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
             log_configuration_failure(*shared);
             configuration_failure_ = shared;
             pending_graph_compile_.reset();
+            reset_state_requested_ = false;
             cancel_pending_control_compile_locked();
             ready_control_code_.reset();
             latest_control_compile_request_ = next_control_compile_request_++;
@@ -3548,6 +3568,26 @@ void ProjectGraph::handle_socket_rpc_apply_project_edit(
         builder.set_publication(project_builder.take_publication());
         project_builder.build();
         builder.succeed(std::move(project_builder.accepted_lane_views));
+    } catch (std::exception const& error) { builder.fail(error.what()); }
+}
+
+void ProjectGraph::handle_socket_rpc_reset_graph_state(
+    ResetGraphStateRequest const&, SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        std::scoped_lock lock(mutex_);
+        if (!current_generation_ || !current_generation_->graph || configuration_failure_
+            || compile_worker_.get_stop_token().stop_requested()) {
+            builder.fail("No configured graph is available to reset");
+            return;
+        }
+        auto const already_requested = std::exchange(reset_state_requested_, true);
+        try { schedule_graph_compile_locked(); }
+        catch (...) {
+            reset_state_requested_ = already_requested;
+            throw;
+        }
+        builder.succeed();
     } catch (std::exception const& error) { builder.fail(error.what()); }
 }
 

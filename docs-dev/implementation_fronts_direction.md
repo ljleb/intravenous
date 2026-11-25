@@ -59,6 +59,76 @@ The fronts below follow five rules:
    moving. The superseded policy is retained in
    [historical documentation](./historical/implementation_fronts_temporary_adapter_policy.md).
 
+## Lane nesting, runtime reset, and package isolation
+
+_Implementation status and open questions, 2026-11-25._
+
+- **Lane nesting.** `ProjectLaneParent::parent` already stores the chosen
+  `NodeAddress`, including the path to a generated lane. `ProjectGraph` currently
+  uses `is_module_lane_parent()` both to validate edits and to fill
+  `ProjectGraphScope::unavailable_lane_parents`. The webview uses that list to
+  place the child at the top level. The parent lookup needs to return the
+  effective occurrence, including a surviving ancestor, from the same graph
+  revision as the child scopes. `ProjectGraphScopeNode::membership_address`
+  identifies the row under a particular symbolic lane when the canonical
+  `address` identifies a concrete node shared by several rows. The webview only
+  receives generated children for requested expansions, so it cannot infer
+  that a missing row means a missing parent. Resolve the saved path against
+  the authoritative presentation tree, then use the resulting parent for
+  expansion, ordering, and drag validation. Verify shrink and restore, collapsed
+  ancestors, shared concrete rows, save and reopen while using a fallback, and
+  cycle rejection. [Lane nesting design](./module_interoperability_and_graph_macros_direction.md#project-lane-nesting)
+- **Graph state reset.** Shift+R submits `graph.resetState`. `ProjectGraph`
+  stages a reset through the compile worker and retains one compatible startup
+  artifact separately from observation prediction. Initial load supplies this
+  artifact for a reset with matching inputs. After a graph change, compile a
+  new startup artifact on the first reset that needs it. `GraphExecutor` prepares
+  fresh node storage and background state, then activates them without migrating live
+  state, port history, or pending recording spans. Closed producer queues retain
+  their normal drain so already finalized recording data can commit. Native and
+  client verification remain owner-run. The new regressions cover startup Sample
+  history, detached Sample feedback, background playback preparation, playhead
+  alignment, and startup code reuse.
+  [Reset design](./project_playback_and_presentation_grids_direction.md#reset-graph-state) ·
+  [Earlier selective reset friction](./historical/runtime_reset_before_whole_graph_shortcut_2026-11-25.md#implementation-friction-for-selective-reset)
+- **Package installation and listing.** The current pipeline runs native
+  package code in the project server. Define the boundary, prove the model, and
+  connect the proof obligations to launcher, IPC, and resource enforcement on
+  the executable path before introducing either mechanism. [Security prerequisite](./package_sandbox_security_direction.md#installation-and-listing-prerequisite)
+
+### Reset graph state startup storage
+
+_Implementation friction and accepted resolution, 2026-11-25._
+
+An in-place reset assumed that reinitializing `NodeStorage` would give each
+Sequential input its fresh history. `plan_fresh_sample_storage_values()` can
+initialize a shared producer region only when every overlapping window that
+uses it agrees on the initial value. In the existing shared-ramp fixture, a
+history input needs zero and a compensated input needs 100 for the same last
+seven pre-start positions. `specialize_transition_plan()` resolves conflicting
+fresh windows with transition-only storage and a corresponding Tick root. An
+accepted `CompiledGraph` has the steady layout and the cutover compiled for its
+own predecessor, which may have no suffix or a different suffix. Resetting its
+bytes cannot supply the missing window and root.
+
+The in-place alternatives were to reserve the startup root and its suffix as
+an additional layout variant for each generation, or to generate a startup
+path that could supply fresh windows without that suffix.
+
+The owner accepted a fresh execution generation at an ordered cutover. This
+avoids extending every generation's `NodeStorage` layout to reserve a separate
+startup suffix in advance. Use the existing empty-predecessor startup plan and
+retain a reusable startup artifact separately from predictive cutover code.
+Temporary runtime storage scales with the two live generations and the new
+startup suffix. Initialization can finish ahead of cutover, and the cutover
+has no state or history to migrate. Prepare the new background state against
+the canonical recordings and retire the old execution state after handoff.
+The runtime operation and Shift+R are implemented in source. Runtime verification
+is pending.
+[Shared-ramp fixture](../tests/test_modules/graph_jit_runtime_shared_package/sample_conversion_and_feedback.inc#L818) ·
+[Fresh storage contract](../src/intravenous/graph_jit/realtime_port_state_transition.h#L251) ·
+[Transition lowering](../src/intravenous/graph_jit/lowering.cpp#L1336)
+
 ## Front 1: port constraints and realization
 
 **Primary ownership:** `constrain_ports()`, graph-wide port-property solving, and the

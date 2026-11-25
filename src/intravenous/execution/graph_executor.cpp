@@ -155,6 +155,12 @@ bool requires_prepared_playback(CompiledGraph const& graph) noexcept
         || !plan.tick_runtime.random_access_event_inputs.empty();
 }
 
+bool prepare_before_activation(CompiledGraph const& graph) noexcept
+{
+    return requires_prepared_playback(graph)
+        || (graph.reset_state && graph.background_operations.valid());
+}
+
 std::vector<PersistedOutputHandle> retired_persisted_outputs(
     CompiledGraph const& current,
     CompiledGraph const& previous,
@@ -203,6 +209,21 @@ std::vector<PersistedOutputHandle> retired_persisted_outputs(
         }
     }
     return result;
+}
+
+void append_reset_output_caches(CompiledGraph const& graph, PersistedDataStore& data,
+    std::vector<PersistedOutputHandle>& outputs)
+{
+    auto const& plan = graph.background_evaluation_plan;
+    for (graph_jit::PortStorageIndex index = 0; index < plan.storage.ports.size(); ++index) {
+        auto const& storage = plan.storage.ports[index];
+        if (!uses_output_cache(plan, storage, true) || !storage.output_port) continue;
+        auto const& port = plan.ports[*storage.output_port];
+        // A generation-local cache key cannot have any entries at startup.
+        if (port.persisted_tick_output || !port.stable_identity) continue;
+        auto const handle = data.resolve_output(persisted_output_id(plan, index, graph.project_generation));
+        if (!std::ranges::contains(outputs, handle)) outputs.push_back(handle);
+    }
 }
 
 void append_tick_materialization_demands(
@@ -464,7 +485,7 @@ void GraphExecutor::ExecutionGeneration::initialize_first_background_generation(
         if (nodes[node].authored_forward_coverage || nodes[node].uses_replay_forward_coverage)
             roots.push_back(node);
     }
-    background.reconciliation_required = requires_prepared_playback(*graph) || !roots.empty();
+    background.reconciliation_required = prepare_before_activation(*graph) || !roots.empty();
     background_initialized = true;
 }
 
@@ -654,7 +675,7 @@ void GraphExecutor::ExecutionGeneration::update_realtime_phase(
 
 void GraphExecutor::ExecutionGeneration::initialize_background_for_playback_preview()
 {
-    if (!preparation_predecessor) {
+    if (!preparation_predecessor || graph->reset_state) {
         initialize_first_background_generation();
         return;
     }
@@ -671,6 +692,11 @@ void GraphExecutor::ExecutionGeneration::adopt_background_after_drain(
         // Keep the preview state and results. Reconcile against the recording
         // roots to account for anything committed during the drain.
         background.reconciliation_required = true;
+        return;
+    }
+    if (graph->reset_state) {
+        initialize_first_background_generation();
+        background.reconciliation_required |= !background.retired_outputs.empty();
         return;
     }
     background.tock_states.initialize(&predecessor.background.tock_states);
@@ -1221,7 +1247,12 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
         && compiled_graph->project_generation <= newest_generation) {
         return {};
     }
-    if (compiled_graph->cutover && compiled_graph->cutover->from_empty_graph) {
+    auto const reset_state = compiled_graph->reset_state;
+    if (reset_state) {
+        if (compiled_graph->cutover && !compiled_graph->cutover->from_empty_graph) {
+            throw std::invalid_argument("GraphExecutor reset requires an empty-predecessor startup artifact");
+        }
+    } else if (compiled_graph->cutover && compiled_graph->cutover->from_empty_graph) {
         if (predecessor) {
             throw std::invalid_argument(
                 "GraphExecutor successor cannot start from the empty graph");
@@ -1246,7 +1277,7 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
             "GraphExecutor successor does not carry its predecessor cutover");
     }
 
-    bool const preserve_state = predecessor_code && graph_jit::same_audio_configuration(
+    bool const preserve_state = !reset_state && predecessor_code && graph_jit::same_audio_configuration(
         *predecessor_code, graph_jit::realtime_code_configuration(*compiled_graph));
     auto prepared = std::make_unique<ExecutionGeneration>(
         std::move(compiled_graph),
@@ -1265,10 +1296,15 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
                 .tick_sequential_inputs.empty();
     prepared->preparation_predecessor = predecessor;
     prepared->definitions_for_pending_recompile = std::move(definitions);
-    if (!requires_prepared_playback(*prepared->graph))
+    if (!prepare_before_activation(*prepared->graph))
         prepared->prepare_initial_persisted_state(persisted_data_);
-    if (!predecessor) {
+    if (!predecessor || reset_state) {
         prepared->initialize_first_generation();
+        if (reset_state) {
+            if (predecessor) prepared->background.retired_outputs = retired_persisted_outputs(
+                *prepared->graph, *predecessor->graph, persisted_data_);
+            append_reset_output_caches(*prepared->graph, persisted_data_, prepared->background.retired_outputs);
+        }
     } else {
         prepared->prepare_realtime_migration_from(*predecessor, preserve_state);
         background_executor_.prepare_background_migration(
@@ -1299,7 +1335,7 @@ GraphExecutorPreparedGeneration GraphExecutor::prepare(
         }
         pending_tail_ = accepted;
         accepted_tail_graph_ = accepted->graph;
-        if (requires_prepared_playback(*accepted->graph))
+        if (prepare_before_activation(*accepted->graph))
             background_executor_.queue_initial_playback(*accepted);
         return GraphExecutorStageResult::accepted;
     }, true};
@@ -1638,7 +1674,7 @@ bool GraphExecutor::playback_ready(CompiledGraph const& graph,
 }
 
 bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackDemand const* candidate,
-    RealtimePersistedState const** activated_root, bool* applied_candidate)
+    RealtimePersistedState const** activated_root, bool* applied_candidate, bool* reset_playhead)
 {
     if (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) {
         return false;
@@ -1647,7 +1683,7 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         GraphExecutor* executor;
         ~Unlock() { executor->unlock_accepted_chain(); }
     } unlock{this};
-    if (pending_head_ && requires_prepared_playback(*pending_head_->graph)) {
+    if (pending_head_ && prepare_before_activation(*pending_head_->graph)) {
         requested_playback_index_.store(applied.project.bits(), std::memory_order_release);
         background_executor_.work_signal().notify_work();
     }
@@ -1660,24 +1696,26 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
                 std::memory_order_acq_rel);
         };
         if (generation.activation.load(std::memory_order_acquire) == Activation::failed) return {};
-        if (requires_prepared_playback(*generation.graph)) {
+        if (prepare_before_activation(*generation.graph)) {
             auto const* selected = generation.prepared_initial_states.adopt(generation.graph->project_generation);
             if (!selected) return {};
-            if (candidate && playback_ready(*generation.graph, *selected, *candidate))
+            if (!generation.graph->reset_state && candidate && playback_ready(*generation.graph, *selected, *candidate))
                 selected_boundary = candidate;
             else if (!playback_ready(*generation.graph, *selected, applied)) return {};
             if (!claim()) return {};
             return generation.prepared_initial_states.take_active();
         }
         if (!claim()) return {};
-        if (candidate) selected_boundary = candidate;
+        if (!generation.graph->reset_state && candidate) selected_boundary = candidate;
         if (!generation.initial_persisted_state || !generation.initial_persisted_state->capture_initial())
             throw std::logic_error("GraphExecutor initial persisted state was not prepared");
         return std::move(generation.initial_persisted_state);
     };
-    auto install_initial = [&](std::unique_ptr<RealtimePersistedState> initial) {
+    auto install_initial = [&](ExecutionGeneration const& generation, std::unique_ptr<RealtimePersistedState> initial) {
         if (activated_root) *activated_root = initial.get();
         if (applied_candidate) *applied_candidate = candidate && selected_boundary == candidate;
+        if (reset_playhead) *reset_playhead = generation.graph->reset_state;
+        if (generation.graph->reset_state) playback_.align_foreground_after_reset();
         realtime_persisted_state_.activate_generation(std::move(initial));
     };
     auto activate_realtime_code = [&](ExecutionGeneration& generation) {
@@ -1712,7 +1750,7 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         if (!initial) return false;
         auto* first = pending_head_;
         realtime_active_ = first;
-        install_initial(std::move(initial));
+        install_initial(*first, std::move(initial));
         first->activation.store(ExecutionGeneration::Activation::active, std::memory_order_release);
         published_active_generation_.store(first->graph->configured_generation.value_or(first->graph->project_generation), std::memory_order_relaxed);
         published_active_project_generation_.store(first->graph->project_generation, std::memory_order_release);
@@ -1730,10 +1768,11 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     auto const previous_phase =
         previous.realtime_phase.load(std::memory_order_relaxed);
     auto const& cutover = pending_head_->graph->cutover;
-    auto const cutover_is_current = cutover
+    auto* next = pending_head_;
+    auto const cutover_is_current = next->graph->reset_state || (cutover
         ? cutover->predecessor.lock().get() == previous.graph.get()
             && cutover->predecessor_phase == previous_phase
-        : previous_phase == CompiledGraphRealtimePhase::steady;
+        : previous_phase == CompiledGraphRealtimePhase::steady);
     if (!cutover_is_current) {
         // The accepted successor remains queued until its named predecessor
         // realization becomes active. In particular, ProjectGraph may submit
@@ -1741,13 +1780,16 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         // is still expiring.
         return false;
     }
-    auto initial = initial_selection(*pending_head_);
+    auto initial = initial_selection(*next);
     if (!initial) return false;
-    pending_head_->commit_realtime_migration(selected_boundary->execution.begin);
-    pending_head_->realtime.tick_invocation.transfer_recording_from(previous.realtime.tick_invocation);
+    if (next->graph->reset_state) {
+        previous.realtime.storage.release();
+    } else {
+        next->commit_realtime_migration(selected_boundary->execution.begin);
+        next->realtime.tick_invocation.transfer_recording_from(previous.realtime.tick_invocation);
+    }
     previous.background.close_inputs();
-    auto* next = pending_head_;
-    install_initial(std::move(initial));
+    install_initial(*next, std::move(initial));
     next->activation.store(ExecutionGeneration::Activation::active, std::memory_order_release);
     if (pending_owner_) {
         previous.attach_successor(std::move(pending_owner_));
@@ -1816,7 +1858,8 @@ std::optional<FailedExecutionGeneration> GraphExecutor::reject_failed_pending_ge
             result.successors.push_back({.project_generation = graph.project_generation,
                 .graph = graph.configured_graph, .definitions = successor->definitions_for_pending_recompile,
                 .observations = graph.observations, .configured_generation = graph.configured_generation,
-                .configured_bundles = graph.configured_bundles});
+                .configured_bundles = graph.configured_bundles,
+                .reset_state = successor->graph->reset_state});
         }
         if (!result.successors.empty()) {
             result.publish_rebuilt_suffix = [this] {
@@ -1892,7 +1935,7 @@ GraphExecutor::evaluate_generation(
         tick_materializations_,
         BackgroundTransactionInputs{
             .roots = std::move(roots),
-            .retired_outputs = !prepare_only && background.reconciliation_required
+            .retired_outputs = (!prepare_only || generation.graph->reset_state) && background.reconciliation_required
                 ? std::span<PersistedOutputHandle const>{
                     background.retired_outputs}
                 : std::span<PersistedOutputHandle const>{},
@@ -1939,7 +1982,7 @@ GraphExecutor::evaluate_generation(
         } else {
             PlaybackPreparationMetrics::Interval publish{PlaybackPreparationPhase::publish_foreground_snapshot};
             published_state->set_prepared_playback(background.tick_materialization_demand);
-            if (requires_prepared_playback(*generation.graph)
+            if (prepare_before_activation(*generation.graph)
                 && generation.activation.load(std::memory_order_acquire) != ExecutionGeneration::Activation::active)
                 generation.prepared_initial_states.publish(std::move(published_state));
             else {
@@ -1992,6 +2035,7 @@ bool GraphExecutor::BackgroundExecutor::advance_generation()
             "GraphExecutor could not retire drained producer queues");
     }
     successor->adopt_background_after_drain(previous);
+    if (successor->graph->reset_state) sampled_windows_.clear();
 
     auto retired = std::move(generation_chain_);
     generation_chain_ = std::move(retired->successor_owner);
@@ -2054,7 +2098,7 @@ GraphExecutor::BackgroundExecutor::prepare_playback(ExecutionGeneration& target)
             background.discard_empty_selection();
             return BackgroundEvaluationResult{};
         }
-        auto const private_preparation = requires_prepared_playback(*target.graph)
+        auto const private_preparation = prepare_before_activation(*target.graph)
             && target.activation.load(std::memory_order_acquire) != ExecutionGeneration::Activation::active;
         auto result = owner_.evaluate_generation(target, true, private_preparation);
         if (!result || result->status != BackgroundEvaluationStatus::committed) return result;
@@ -2356,7 +2400,7 @@ std::optional<std::array<GraphExecutor::PlaybackDemand, 2>> GraphExecutor::read_
 void GraphExecutor::render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile)
 {
     auto const candidate = playback_.begin_block(sample_rate);
-    auto const applied = playback_.current_block(sample_rate);
+    auto applied = playback_.current_block(sample_rate);
     bool const pending = applied.state.applied_command != candidate.state.applied_command;
     auto demand = [&](auto const& block) -> PlaybackDemand {
         return {block.state.background_playhead, {block.state.foreground_playhead, frames}, !block.state.running};
@@ -2366,9 +2410,11 @@ void GraphExecutor::render_block(std::size_t frames, double sample_rate, Playbac
     publish_playback_demand({applied_demand, candidate_demand});
     RealtimePersistedState const* persisted = nullptr;
     bool can_apply = false;
+    bool reset_playhead = false;
     (void)activate_pending_at(applied_demand, pending ? &candidate_demand : nullptr,
-        &persisted, &can_apply);
+        &persisted, &can_apply, &reset_playhead);
     if (!realtime_active_) return;
+    if (reset_playhead) applied = playback_.current_block(sample_rate);
     auto& generation = *realtime_active_;
     if (profile) {
         *profile = {.execution_generation = generation.graph->project_generation,

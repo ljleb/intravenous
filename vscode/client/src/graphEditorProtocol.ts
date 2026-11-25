@@ -77,6 +77,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setExpandedModules"; modules: NodeAddress[] }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
     | { type: "playbackToggle" }
+    | { type: "resetGraphState" }
     | { type: "playbackSeek"; position: string }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string; releaseId?: string }
     | ObservationHostRequest

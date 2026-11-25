@@ -1729,6 +1729,12 @@ class BackgroundEvaluationTransaction::Impl {
                     .status = BackgroundEvaluationStatus::stale_base,
                 };
             }
+            auto erase_retired_outputs = [&] {
+                for (auto const output : inputs_.retired_outputs) candidate->erase_output(output);
+            };
+            // A reset preview already excluded the old cached outputs. Keep
+            // its fresh results when committing them to the canonical store.
+            if (graph_->reset_state) erase_retired_outputs();
             if (inputs_.reusable_data) {
                 auto const& plan = graph_->background_evaluation_plan;
                 for (graph_jit::PortStorageIndex storage = 0; storage < plan.storage.ports.size(); ++storage) {
@@ -1747,7 +1753,7 @@ class BackgroundEvaluationTransaction::Impl {
                 // boundaries, with no incidental result-cache reuse.
                 candidate->retain_payload({});
             }
-            for (auto const output : inputs_.retired_outputs) candidate->erase_output(output);
+            if (!graph_->reset_state) erase_retired_outputs();
             if (auto applied = apply_produced_records(
                     *decoded, candidate->working_snapshot(), *candidate);
                 !applied) {

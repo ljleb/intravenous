@@ -635,6 +635,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                     },
                     trace,
                 });
+            } else if (message?.type === "resetGraphState") {
+                try { await this.session.resetGraphState(); }
+                catch (error) { void vscode.window.showErrorMessage(`Cannot reset graph state: ${error.message}`); }
             } else if (message?.type === "playbackToggle" || message?.type === "playbackSeek" || message?.type === "playbackDrag") {
                 try {
                     if (message.type === "playbackDrag") {

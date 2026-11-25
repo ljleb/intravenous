@@ -69,6 +69,7 @@ export class WorkspaceRpc {
         });
     }
     togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
+    resetGraphState(): Promise<{ ok: true }> { return this.client.request("graph.resetState", {}); }
     setPlaybackRunning(running: boolean): Promise<PlaybackSnapshot> { return this.client.request("playback.setRunning", { running }); }
     seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }
     dragPlayback(position: string, drag: PlaybackDrag): Promise<PlaybackSnapshot> {

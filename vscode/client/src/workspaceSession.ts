@@ -130,6 +130,11 @@ export class WorkspaceSession {
             : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
         return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
     }
+    async resetGraphState(): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+        await rpc.resetGraphState();
+    }
     private readonly observationChanges = new vscode.EventEmitter<ObservationDelivery>();
     readonly onDidChangeObservations = this.observationChanges.event;
     observeRpcSends(observe: (send: JsonRpcSend) => void): (() => void) | undefined {

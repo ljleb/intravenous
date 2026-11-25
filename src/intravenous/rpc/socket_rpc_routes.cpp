@@ -260,6 +260,14 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
+    impl_->add<ResetGraphStateRequest>(
+        "graph.resetState", "project.write", false, false,
+        [](auto const& request, int id, Context const&) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_reset_graph_state_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            return builder.build(id);
+        });
     impl_->add<GetGraphScopeRequest>(
         "graph.getScope", "project.read", false, false,
         [](auto const& request, int id, Context const&) {

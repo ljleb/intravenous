@@ -2629,6 +2629,7 @@ public:
                 .root_operations = materialized.root_operations,
                 .background_operations = materialized.background_operations,
                 .code_lifetime = std::move(materialized.lifetime),
+                .reset_state = request.reset_state,
             });
             result.reuses_observation_layout = observation_layout_reuse.has_value() && !timings.transition;
         } catch (GraphJitCompileError const& error) {
@@ -2752,8 +2753,8 @@ GraphJitCompileResult GraphJit::compile_transition(
 GraphJitCompileResult GraphJit::handle_project_graph_transaction(
     ProjectGraphGraphJitRequest const& request)
 {
-    if (!request.predecessor) {
-        return request.initial_generation
+    if (request.successor.reset_state || !request.predecessor) {
+        return request.initial_generation || request.successor.reset_state
             ? impl_->compile_initial_generation(request.successor)
             : compile(request.successor);
     }

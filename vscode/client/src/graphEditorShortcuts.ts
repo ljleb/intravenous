@@ -1,7 +1,7 @@
 export function graphEditorShortcut(event: {
     key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean;
     isComposing?: boolean; defaultPrevented?: boolean;
-}): "addNode" | "duplicateLanes" | "selectAll" | "copyKnobValue" | "pasteKnobValue" | null {
+}): "addNode" | "duplicateLanes" | "selectAll" | "copyKnobValue" | "pasteKnobValue" | "resetGraphState" | null {
     if (event.defaultPrevented || event.isComposing || event.altKey) return null;
     const key = event.key.toLowerCase(), command = event.ctrlKey || event.metaKey;
     if (command && !event.shiftKey) {
@@ -12,7 +12,11 @@ export function graphEditorShortcut(event: {
         if (key === "c") return "copyKnobValue";
         if (key === "v") return "pasteKnobValue";
     }
-    return !command && event.shiftKey && key === "a" ? "addNode" : null;
+    if (!command && event.shiftKey) {
+        if (key === "a") return "addNode";
+        if (key === "r") return "resetGraphState";
+    }
+    return null;
 }
 
 export function isTextEditingTarget(target: EventTarget | null): boolean {

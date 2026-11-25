@@ -522,7 +522,8 @@ class GraphExecutor {
     [[nodiscard]] static bool playback_ready(CompiledGraph const& graph,
         RealtimePersistedState const& persisted, PlaybackDemand const& demand) noexcept;
     bool activate_pending_at(PlaybackDemand const& applied, PlaybackDemand const* candidate = nullptr,
-        RealtimePersistedState const** activated_root = nullptr, bool* applied_candidate = nullptr);
+        RealtimePersistedState const** activated_root = nullptr, bool* applied_candidate = nullptr,
+        bool* reset_playhead = nullptr);
     void execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
         GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
         PlaybackRenderSlice* profile = nullptr);
@@ -646,8 +647,8 @@ public:
         ProjectGraphGraphExecutorControlsRequest& request);
     bool stage_observation_update(ProjectGraphRealtimeObservationRequest const& request);
 
-    // At the caller-provided quiescent boundary, commits the prepared realtime
-    // migration at the first successor sample, closes the predecessor's
+    // At the caller-provided quiescent boundary, commits realtime migration or
+    // activates freshly initialized reset storage, closes the predecessor's
     // producer queues, installs the successor's prepared initial persisted-state
     // root, publishes the next accepted generation in the ordered cutover chain
     // and switches realtime. Background migration commits only after those

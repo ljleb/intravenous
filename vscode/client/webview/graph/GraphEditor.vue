@@ -1312,6 +1312,7 @@ function handleGraphEditorShortcut(event: KeyboardEvent) {
     }
     if (event.repeat || !state.value.scope.editable) return;
     if (action === "addNode") openAddNode();
+    else if (action === "resetGraphState") webviewApi.postMessage({ type: "resetGraphState" });
     else if (!pendingLaneCopies && selectedLaneIds.value.length) {
         const copies = selectedLaneIds.value.map((sourceInstanceId) => ({ sourceInstanceId, instanceId: crypto.randomUUID() }));
         save();

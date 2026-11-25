@@ -1159,9 +1159,11 @@ public:
         auto compiled = std::make_shared<iv::CompiledGraph>();
         compiled->project_generation = request.successor.project_generation;
         compiled->configured_generation = request.successor.configured_generation;
+        compiled->definitions_generation = request.successor.definitions ? request.successor.definitions->generation : 0;
         compiled->configured_graph = request.successor.graph;
         compiled->configured_bundles = request.successor.configured_bundles;
         compiled->observations = request.successor.observations;
+        compiled->reset_state = request.successor.reset_state;
         compiled->node_layout.storage_size = needs_storage ? 8 : 0;
         compiled->node_layout.steady_storage_size = compiled->node_layout.storage_size;
         compiled->root_operations.tick_block.function = +[](
@@ -4925,6 +4927,56 @@ TEST_F(ProjectGraphManualControlSchedulingFixture, MatchingObservationPrediction
     ASSERT_TRUE(project_graph.wait_for_compilation());
     EXPECT_EQ(probe.compilations().size(), base_compiles + 1);
     EXPECT_EQ(probe.structural_stage_count(), base_stages + 1);
+}
+
+TEST_F(ProjectGraphManualControlSchedulingFixture, GraphResetReusesStartupCodeAndCompilesLazilyAfterAnEdit)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    auto const before = project_graph.current_generation();
+    ASSERT_TRUE(before && before->compiled_graph);
+    auto const compilations = probe.compilation_count();
+    auto const stages = probe.structural_stage_count();
+    ASSERT_EQ(compilations, 1u);
+    auto reset = [&] {
+        iv::SocketRpcAckResponseBuilder response;
+        in_event_source([&] { project_graph.handle_socket_rpc_reset_graph_state({}, response); });
+        ASSERT_TRUE(nlohmann::json::parse(response.build(1)).contains("result"));
+        ASSERT_TRUE(project_graph.wait_for_compilation());
+    };
+    ASSERT_NO_FATAL_FAILURE(reset());
+    auto const first = project_graph.current_generation();
+    ASSERT_TRUE(first->compiled_graph);
+    EXPECT_FALSE(before->compiled_graph->reset_state);
+    EXPECT_TRUE(first->compiled_graph->reset_state);
+    EXPECT_EQ(first->configured_generation, before->configured_generation);
+    EXPECT_NE(first->execution_generation, before->execution_generation);
+    EXPECT_EQ(probe.compilation_count(), compilations);
+
+    ASSERT_NO_FATAL_FAILURE(reset());
+    auto const second = project_graph.current_generation();
+    ASSERT_TRUE(second->compiled_graph);
+    EXPECT_TRUE(second->compiled_graph->reset_state);
+    EXPECT_EQ(second->configured_generation, first->configured_generation);
+    EXPECT_NE(second->execution_generation, first->execution_generation);
+    EXPECT_EQ(probe.compilation_count(), compilations);
+    EXPECT_EQ(probe.structural_stage_count(), stages + 2);
+
+    iv::ProjectStringBuilder added;
+    in_event_source([&] { project_graph.handle_project_create_node_instance({
+        .instance_id = "extra", .definition_id = manual_control_leaf_definition_id}, added); });
+    ASSERT_EQ(added.build(), "extra");
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const edited = project_graph.current_generation();
+    EXPECT_NE(edited->configured_generation, second->configured_generation);
+    auto const edited_compilations = probe.compilation_count();
+    EXPECT_EQ(edited_compilations, compilations + 1);
+
+    ASSERT_NO_FATAL_FAILURE(reset());
+    auto const first_reset_after_edit = project_graph.current_generation();
+    EXPECT_EQ(first_reset_after_edit->configured_generation, edited->configured_generation);
+    EXPECT_EQ(probe.compilation_count(), edited_compilations + 1);
+    ASSERT_NO_FATAL_FAILURE(reset());
+    EXPECT_EQ(probe.compilation_count(), edited_compilations + 1);
 }
 
 TEST_F(ProjectGraphManualControlSchedulingFixture, RejectedSteadyObservationArtifactRetriesWithACutover)

@@ -67,6 +67,7 @@ struct EndManualControlInteractionRequest;
 struct DispatchNodeMessageRequest;
 struct GetNodeEventProtocolRequest;
 struct GetGraphScopeRequest;
+struct ResetGraphStateRequest;
 struct GetProjectLaneViewsRequest;
 struct ApplyProjectEditRequest;
 struct UndoProjectEditRequest;
@@ -241,6 +242,9 @@ class ProjectGraph {
     std::uint64_t next_execution_attempt_ = 1;
     std::optional<std::uint64_t> latest_execution_attempt_{};
     bool compile_inflight_ = false;
+    bool reset_state_requested_ = false; // Guarded by mutex_, including superseding compile requests.
+    // Compile worker only. The startup artifact has no predecessor dependency.
+    std::shared_ptr<CompiledGraph const> reset_startup_artifact_{};
     void schedule_graph_compile_locked(std::shared_ptr<ControlCompileTrace> trace = {},
         bool observation_update = false, std::shared_ptr<ConfiguredGraph const> graph = {});
     [[nodiscard]] std::shared_ptr<ConfiguredGraph> graph_for_compile_locked(
@@ -439,6 +443,7 @@ public:
     void handle_project_set_audio_devices(ProjectSetAudioDevicesRequest const&, ProjectAudioDevicesBuilder&);
     void handle_socket_rpc_set_project_toolchain(SetProjectToolchainRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_apply_project_edit(ApplyProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    void handle_socket_rpc_reset_graph_state(ResetGraphStateRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_undo_project_edit(UndoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
     void handle_socket_rpc_redo_project_edit(RedoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
 

@@ -197,6 +197,7 @@ struct CompiledGraph {
     CompiledGraphRootOperations root_operations{};
     CompiledGraphBackgroundOperations background_operations{};
     std::shared_ptr<void const> code_lifetime{};
+    bool reset_state = false;
 };
 
 struct GraphJitCompileRequest {
@@ -209,6 +210,8 @@ struct GraphJitCompileRequest {
     graph_jit::ConfiguredBundleInventory configured_bundles{};
     // Control recompiles of an accepted configuration reuse its assignments.
     std::shared_ptr<graph_jit::BundleMigrationIdentities const> bundle_migration_identities{};
+    // Use empty-predecessor initialization at an ordered successor cutover.
+    bool reset_state = false;
 };
 
 // A transition specialization augments an already compiled steady successor.
@@ -233,6 +236,7 @@ struct GraphJitTransitionCompileRequest {
 // when the fresh values need one (CompiledGraphCutover::from_empty_graph). A
 // request without a predecessor that is not initial, such as a manual-control
 // recompile, yields the steady artifact.
+// A reset uses that same startup plan even when an older graph is playing.
 struct ProjectGraphGraphJitRequest {
     GraphJitCompileRequest successor{};
     std::shared_ptr<CompiledGraph const> predecessor{};

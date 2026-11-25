@@ -20,6 +20,7 @@ The primary application-architecture entry points are:
 - [Project Graph Application Architecture](./project_graph_application_architecture.md)
 - [Project Undo And Redo Direction](./project_undo_redo_and_backups_direction.md)
 - [Package Pipeline Application Architecture](./package_pipeline_architecture.md)
+- [Package Sandbox Security](./package_sandbox_security_direction.md) (prerequisite for package installation and listing)
 - [Node Definitions And Instances Direction](./node_definitions_and_instances_direction.md)
 - [Module Interoperability And Graph Macros Direction](./module_interoperability_and_graph_macros_direction.md)
 - [VST Hosting And Presentation Direction](./vst_hosting_and_presentation_direction.md)

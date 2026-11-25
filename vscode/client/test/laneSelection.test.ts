@@ -197,6 +197,16 @@ test("graph shortcuts distinguish add, duplicate, and select all", () => {
     assert.equal(graphEditorShortcut({ ...key, ctrlKey: true, isComposing: true }), null);
 });
 
+test("Shift+R resets the graph without changing native keyboard shortcuts", () => {
+    const key = { key: "R", ctrlKey: false, metaKey: false, altKey: false, shiftKey: true };
+    assert.equal(graphEditorShortcut(key), "resetGraphState");
+    assert.equal(graphEditorShortcut({ ...key, shiftKey: false }), null);
+    assert.equal(graphEditorShortcut({ ...key, ctrlKey: true }), null);
+    assert.equal(graphEditorShortcut({ ...key, metaKey: true }), null);
+    assert.equal(graphEditorShortcut({ ...key, altKey: true }), null);
+    assert.equal(graphEditorShortcut({ ...key, isComposing: true }), null);
+});
+
 test("knob clipboard shortcuts leave native clipboard shortcuts and composition alone", () => {
     const key = { key: "c", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
     assert.equal(graphEditorShortcut(key), "copyKnobValue");

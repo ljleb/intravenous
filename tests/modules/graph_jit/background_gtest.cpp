@@ -622,6 +622,45 @@ TEST_F(GraphJitRuntimeFixture, PlaybackUnderrunSkipsTheGraphAndResumesForPrepare
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, ResetPreparesBackgroundPlaybackBeforeActivatingAtTheHeldPosition)
+{
+    auto initial = compile(graph_jit_multi_region_module_id, 3004);
+    ASSERT_TRUE(initial.succeeded()) << (initial.diagnostics.empty() ? "" : initial.diagnostics.front().message);
+    auto reset = in_event_source([&] { return jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 3005,
+            .graph = initial.compiled_graph->configured_graph, .definitions = definitions, .reset_state = true},
+        .predecessor = initial.compiled_graph,
+    }); });
+    ASSERT_TRUE(reset.succeeded()) << (reset.diagnostics.empty() ? "" : reset.diagnostics.front().message);
+    ASSERT_FALSE(reset.compiled_graph->background_evaluation_plan.tick_sequential_inputs.empty());
+
+    iv::GraphExecutor executor{resources};
+    executor.set_tick_materialization_demand(index_coverage({{10, 74}}));
+    (void)executor.seek_playback(index(10));
+    auto render_until_activated = [&](std::shared_ptr<iv::CompiledGraph const> const& compiled,
+                                      iv::PlaybackRenderSlice& slice) {
+        ASSERT_EQ(executor.stage(compiled), iv::GraphExecutorStageResult::accepted);
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            executor.render_block(6, 48000, &slice);
+            if (slice.execution_generation == compiled->project_generation) break;
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            std::this_thread::yield();
+        } while (true);
+        EXPECT_TRUE(slice.rendered);
+    };
+    iv::PlaybackRenderSlice slice;
+    ASSERT_NO_FATAL_FAILURE(render_until_activated(initial.compiled_graph, slice));
+    ASSERT_EQ(executor.playback_snapshot().background_playhead, index(10));
+    executor.render_block(6, 48000);
+    EXPECT_GT(executor.playback_snapshot().foreground_playhead.signed_value(), 10);
+
+    ASSERT_NO_FATAL_FAILURE(render_until_activated(reset.compiled_graph, slice));
+    EXPECT_EQ(slice.foreground_sample, index(10));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(10));
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
 TEST_F(GraphJitRuntimeFixture,
      GeneratedRegionAndCoverageCallbacksPreserveAuthoredRegions)
 {

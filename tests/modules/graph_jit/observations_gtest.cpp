@@ -56,6 +56,76 @@ TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithout
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePlayhead)
+{
+    for (auto const* module : {
+            "iv.test.graph_jit.state_context.shared_neutral_compensated_module",
+            "iv.test.graph_jit.state_context.detach_feedback_module",
+        }) {
+        SCOPED_TRACE(module);
+        auto graph = configured_module_graph(*revision, module);
+        ASSERT_TRUE(graph);
+        auto const bundles = concrete_bundles(*graph);
+        ASSERT_FALSE(bundles.empty());
+        auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+        GraphJitCompileRequest request{
+            .project_generation = 710,
+            .graph = graph,
+            .definitions = definitions,
+            .observations = {.probes = {{.id = 1, .operation = &operation,
+                .kind = ObservationSourceKind::input, .bundle = bundles.back(), .port = 0,
+                .channels = {0}, .available = true}}},
+        };
+        auto initial = in_event_source([&] { return jit->handle_project_graph_transaction(
+            {.successor = request, .initial_generation = true}); });
+        ASSERT_TRUE(initial.succeeded()) << (initial.diagnostics.empty() ? "" : initial.diagnostics.front().message);
+        request.project_generation = 711;
+        request.reset_state = true;
+        auto reset = in_event_source([&] { return jit->handle_project_graph_transaction(
+            {.successor = request, .predecessor = initial.compiled_graph}); });
+        ASSERT_TRUE(reset.succeeded()) << (reset.diagnostics.empty() ? "" : reset.diagnostics.front().message);
+        if (auto const& cutover = reset.compiled_graph->cutover) EXPECT_TRUE(cutover->from_empty_graph);
+
+        GraphExecutor executor(resources);
+        auto render_first = [&](std::shared_ptr<CompiledGraph const> const& compiled, PlaybackRenderSlice& slice) {
+            ASSERT_EQ(executor.stage(compiled), GraphExecutorStageResult::accepted);
+            auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            do {
+                executor.render_block(7, 48000, &slice);
+                if (slice.execution_generation == compiled->project_generation) break;
+                ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+                std::this_thread::yield();
+            } while (true);
+            ASSERT_TRUE(slice.rendered);
+        };
+        auto input_level = [&] {
+            auto const* frame = executor.collect_observations();
+            EXPECT_NE(frame, nullptr);
+            EXPECT_TRUE(frame && frame->count == 1 && frame->values[0].value.captured);
+            return frame ? frame->values[0].value.load<observation_details::SampleLevelState>()
+                         : observation_details::SampleLevelState{};
+        };
+
+        PlaybackRenderSlice first;
+        ASSERT_NO_FATAL_FAILURE(render_first(initial.compiled_graph, first));
+        auto const fresh_level = input_level();
+        for (int block = 0; block < 5; ++block) executor.render_block(7, 48000);
+        EXPECT_NE(input_level().peak, fresh_level.peak);
+        EXPECT_NE(executor.playback_snapshot().foreground_playhead, index(0));
+
+        PlaybackRenderSlice restarted;
+        ASSERT_NO_FATAL_FAILURE(render_first(reset.compiled_graph, restarted));
+        EXPECT_EQ(restarted.foreground_sample, index(0));
+        EXPECT_GT(restarted.segment, first.segment);
+        auto const reset_level = input_level();
+        EXPECT_EQ(reset_level.samples, 7u);
+        EXPECT_DOUBLE_EQ(reset_level.peak, fresh_level.peak);
+        EXPECT_DOUBLE_EQ(reset_level.sum_squares, fresh_level.sum_squares);
+        EXPECT_EQ(executor.playback_snapshot().background_playhead, index(0));
+        EXPECT_FALSE(executor.background_execution_failures().any());
+    }
+}
+
 TEST_F(GraphJitRuntimeFixture, SummedOutputObservationReducesTheMixedSamplesOnce)
 {
     auto member = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");

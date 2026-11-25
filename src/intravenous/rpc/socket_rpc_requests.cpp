@@ -290,6 +290,7 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         return parsed(GetSymbolicNodesRequest{
             .node_ids = parse_string_array_param(params, "nodeIds")});
     }
+    if (method == "graph.resetState") return parsed(ResetGraphStateRequest{});
     if (method == "graph.getScope") {
         GetGraphScopeRequest query;
         if (auto const expanded = params.find("expanded"); expanded != params.end()) {

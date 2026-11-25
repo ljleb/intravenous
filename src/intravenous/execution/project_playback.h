@@ -263,6 +263,14 @@ public:
         publish();
     }
 
+    void align_foreground_after_reset() noexcept
+    {
+        state_.foreground_playhead = state_.background_playhead;
+        ++state_.segment;
+        ++pending_.segment;
+        publish();
+    }
+
     [[nodiscard]] ProjectPlaybackSnapshot snapshot() const noexcept
     {
         for (;;) {
