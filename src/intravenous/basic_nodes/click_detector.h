@@ -89,7 +89,7 @@ struct ClickDetector {
         for (std::size_t i = 0; i < ctx.block_size; ++i) {
             if (state.detect(audio.get_value(i, 0).value, audio.get_value(i, 1).value,
                     threshold.get_value(i).value)) {
-                clicks.push_preserving_recording(TriggerEvent{}, i);
+                clicks.push_and_append_to_recording_gaps(TriggerEvent{}, i);
             }
         }
     }

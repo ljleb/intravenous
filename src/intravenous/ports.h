@@ -1072,7 +1072,8 @@ namespace iv {
         untouched,
         written,
         voided,
-        written_preserving_recording,
+        // Buffered Event outputs only. Record events in previously uncovered positions.
+        append_events_in_gaps,
     };
 
     class OutputPort {

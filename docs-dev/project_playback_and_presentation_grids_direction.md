@@ -253,9 +253,13 @@ _First implementation, pending build and runtime verification._
 The built-in `Sampler` takes stereo `audio` and a `record` gate. At the start
 of each callback block, a gate of at least `0.5` selects recording. The Tick
 callback copies into its project-rate `Sequential/buffered` `recorded` port.
-An unarmed callback leaves the recording untouched and delivers silence to
-live consumers. Waveform observations and Random Access consumers use the
-published recording from that port.
+An unarmed callback leaves the output `untouched`. Sequential consumers then
+read the pinned recording at the selected playback positions, with silence
+in gaps. Newly written samples take effect in that callback and are also
+recorded on finalization. Waveform observations and Random Access consumers
+use the published recording from the same port. The
+[earlier live-output behavior](./historical/sampler_live_output_2026-11-25.md)
+delivered silence during unarmed callbacks.
 
 For a project-authored Sampler, its Settings popover edits the project-relative
 recording directory through the constructor argument.
@@ -290,8 +294,9 @@ a skipped Tick node is an actual authored write when it uses the output facade;
 it is not equivalent to `untouched`.
 
 A Tick block with a buffered Sequential Event output can use
-`push_preserving_recording(event, sample_offset)` to fill gaps in its
-recording. The background writer compares the finalized range with the
+`push_and_append_to_recording_gaps(event, sample_offset)` to fill gaps in its
+recording. The `append_events_in_gaps` disposition applies only to Event
+outputs. The background writer compares the finalized range with the
 recording as it stands, including earlier records in the same transaction.
 The writer preserves previously recorded positions, including positions
 that contain no events. The current Tick event stream still reaches live

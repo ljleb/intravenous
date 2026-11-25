@@ -48,12 +48,10 @@ struct Sampler {
 
     void tick_block(TickBlockContext<Sampler> const& ctx) const
     {
-        auto recorded = ctx.output<"recorded">();
         auto const armed = ctx.input<"record">().get_value(0).value >= 0.5f;
-        if (!armed) {
-            recorded.clear_live_block();
-            return;
-        }
+        if (!armed) return;
+
+        auto recorded = ctx.output<"recorded">();
         auto const audio = ctx.input<"audio">();
         for (std::size_t frame = 0; frame < recorded.block_size(); ++frame) {
             for (std::size_t channel = 0; channel < channel_count(layout.channel_type); ++channel)

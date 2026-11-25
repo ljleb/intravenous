@@ -944,6 +944,22 @@ TEST(NodeBuildRequest, SimpleIirCutoffDeclaresItsNormalizedRange)
     EXPECT_FLOAT_EQ(iv::SimpleIirLowPass::maximum_cutoff_hz, 20'000.0f);
 }
 
+TEST(NodeBuildRequest, IirFiltersRetainTheirPreviousOutputSample)
+{
+    auto check = [](auto const& node) {
+        auto const description = iv::details::reflect_node(node);
+        auto const& histories = description.port_constraints.history_anchors;
+        auto const output_history = std::ranges::find(histories,
+            iv::PortConstraintRef{iv::PortConstraintDirection::output, iv::PortKind::sample, 0},
+            &iv::PortHistoryAnchorConstraint::port);
+        ASSERT_NE(output_history, histories.end());
+        EXPECT_EQ(output_history->value, 1u);
+    };
+    check(iv::SimpleIirLowPass{});
+    check(iv::SimpleIirHighPass{});
+    check(iv::WhackIirThing{});
+}
+
 TEST(NodeBuildRequest, PersistedTickContinuousOutputReflectsAsInterleaved)
 {
     auto const erased = iv::erase_port_config(iv::output<iv::Sample>(
@@ -1935,7 +1951,7 @@ TEST(BackgroundDspPorts, GeneratedPersistedSkipOutputsAreOrdinaryWrites)
     EXPECT_EQ(event_storage.count, 0u);
 }
 
-TEST(BackgroundDspPorts, SamplerCopiesStereoAtUnityAndClearsLiveOutputWhenDisarmed)
+TEST(BackgroundDspPorts, SamplerCopiesStereoAtUnityAndLeavesOutputUntouchedWhenDisarmed)
 {
     std::array<iv::Sample, 8> audio{0.25f, -0.4f, 0.5f, -0.3f, -0.6f, 0.1f, -0.7f, 0.8f};
     std::array<iv::Sample, 4> record{1.0f, 1.0f, 1.0f, 1.0f};
@@ -1962,7 +1978,7 @@ TEST(BackgroundDspPorts, SamplerCopiesStereoAtUnityAndClearsLiveOutputWhenDisarm
         recorded.fill(iv::Sample{0.75f});
         callback(&sampler, context, index(4), record.size());
         EXPECT_EQ(outputs[0].disposition, iv::OutputDisposition::untouched);
-        for (auto sample : recorded) EXPECT_EQ(sample.value, 0.0f);
+        for (auto sample : recorded) EXPECT_EQ(sample.value, 0.75f);
     }
 }
 

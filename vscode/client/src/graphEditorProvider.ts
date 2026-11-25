@@ -33,7 +33,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         "intravenous.manualControlHints", vscode.StatusBarAlignment.Left, 101);
     private readonly graphErrorStatus = vscode.window.createStatusBarItem(
         "intravenous.graphError", vscode.StatusBarAlignment.Left, 100);
-    private graphExecutionFailure?: string;
+    private graphExecutionFailure?: { title: string; detail: string };
     private graphReadFailure?: string;
     private readonly controlOwners = new Map<vscode.WebviewPanel, string>();
     private readonly controlsChanged: vscode.Disposable;
@@ -253,21 +253,30 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.graphReadFailure = readFailure;
         if (!readFailure) {
             const execution = scope?.execution;
-            if (execution?.phase === "failed" || execution?.phase === "configurationFailed") {
-                this.graphExecutionFailure = execution.message || "The graph could not be prepared.";
+            if (scope && execution?.phase === "configurationFailed") {
+                const failed = scope.nodes.find((node) => node.loadState === "failed");
+                const waiting = scope.nodes.some((node) => node.loadState === "waitingForDefinition");
+                this.graphExecutionFailure = waiting && !failed ? undefined : {
+                    title: "IV graph configuration failed",
+                    detail: failed?.errorMessage || execution.message || "The graph could not be configured.",
+                };
+            } else if (execution?.phase === "failed") {
+                this.graphExecutionFailure = {
+                    title: "IV graph compilation failed",
+                    detail: execution.message || "The graph could not be prepared.",
+                };
             } else if (execution?.phase !== "queued" && execution?.phase !== "compiling") {
                 this.graphExecutionFailure = undefined;
             }
         }
-        const detail = readFailure ?? this.graphExecutionFailure;
-        if (!detail) {
+        const failure = readFailure ? { title: "IV graph read failed", detail: readFailure } : this.graphExecutionFailure;
+        if (!failure) {
             this.graphErrorStatus.hide();
             return;
         }
-        const title = readFailure ? "IV graph read failed" : "IV graph compilation failed";
-        this.graphErrorStatus.text = `$(error) ${title}`;
+        this.graphErrorStatus.text = `$(error) ${failure.title}`;
         this.graphErrorStatus.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
-        this.graphErrorStatus.tooltip = new vscode.MarkdownString().appendText(statusDiagnostic(detail));
+        this.graphErrorStatus.tooltip = new vscode.MarkdownString().appendText(statusDiagnostic(failure.detail));
         this.graphErrorStatus.show();
     }
 

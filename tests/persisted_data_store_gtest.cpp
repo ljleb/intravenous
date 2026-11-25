@@ -2356,7 +2356,7 @@ TEST(TickInvocationWorkspace,
 }
 
 TEST(TickInvocationWorkspace,
-     SampleCapturePublishesOneWrappedBlockAfterTheCallbackFinishes)
+     UntouchedSamplesPlayRecordingAndWrittenSamplesPublishFromTheSameRing)
 {
     auto plan = direct_tick_plan(iv::PortKind::sample);
     iv::PersistedDataStore data;
@@ -2373,18 +2373,20 @@ TEST(TickInvocationWorkspace,
     workspace.bind_producer_endpoint(
         0, reserve, pending, reservation_failed);
 
-    std::array<iv::Sample, 8> source{
-        100.0f, 101.0f, 102.0f, 103.0f,
-        104.0f, 105.0f, 106.0f, 107.0f};
+    std::array<iv::Sample, 8> source{};
     auto binding = sample_output_binding(
         std::span{source},
         1,
         0,
-        iv::OutputDisposition::written,
+        iv::OutputDisposition::untouched,
         iv::mono_interleaved_channel_layout);
     binding.sequential_begin_index = 6;
-    auto const begin = iv::GlobalIndex::from_bits(
-        std::numeric_limits<std::uint64_t>::max() - 1);
+    auto const begin = index(std::numeric_limits<std::int64_t>::max() - 1);
+    auto const output = workspace.producer_requirements().front().output;
+    auto seed = data.begin_candidate(1);
+    seed.overwrite(sample_region(output, {begin, 1}, 7.0f));
+    seed.overwrite(sample_region(output, {begin.advanced_by(2), 2}, 9.0f));
+    ASSERT_EQ(data.publish(std::move(seed)), iv::PersistedDataPublishResult::published);
 
     {
         iv::TickInvocationFrame frame{
@@ -2392,8 +2394,29 @@ TEST(TickInvocationWorkspace,
         auto const& operation = frame.call().sample_captures.data()[0];
         ASSERT_NE(operation.context, nullptr);
         ASSERT_NE(operation.capture, nullptr);
-        binding.disposition = iv::OutputDisposition::untouched;
         operation.capture(operation.context, &binding, begin, 4);
+        EXPECT_EQ(source[6], iv::Sample{7.0f});
+        EXPECT_EQ(source[7], iv::Sample{0.0f});
+        EXPECT_EQ(source[0], iv::Sample{9.0f});
+        EXPECT_EQ(source[1], iv::Sample{10.0f});
+    }
+    EXPECT_TRUE(pending.pin().empty());
+
+    {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, index(40), 4,
+            {.held_position = begin.advanced_by(2)}};
+        auto const& operation = frame.call().sample_captures.data()[0];
+        operation.capture(operation.context, &binding, index(40), 4);
+        for (auto slot : {6u, 7u, 0u, 1u}) EXPECT_EQ(source[slot], iv::Sample{9.0f});
+    }
+    EXPECT_TRUE(pending.pin().empty());
+
+    {
+        iv::TickInvocationFrame frame{
+            data_reader, materialization_reader, workspace, begin, 4};
+        auto const& operation = frame.call().sample_captures.data()[0];
+        source = {100.0f, 101.0f, 102.0f, 103.0f, 104.0f, 105.0f, 106.0f, 107.0f};
         binding.disposition = iv::OutputDisposition::written;
         operation.capture(operation.context, &binding, begin, 4);
         EXPECT_TRUE(pending.pin().empty());
@@ -3328,7 +3351,7 @@ TEST(BackgroundEvaluationTransaction,
 }
 
 TEST(BackgroundEvaluationTransaction,
-     PreservingEventWritesFillGapsAndKeepEarlierQueuedEvents)
+     AppendingEventsFillsRecordingGapsAndKeepsEarlierQueuedEvents)
 {
     auto graph = queued_persisted_graph(iv::PortKind::event);
     iv::ResourceContext resources;
@@ -3353,7 +3376,7 @@ TEST(BackgroundEvaluationTransaction,
     iv::ProducedBlockWriter writer;
     auto append = [&](std::int64_t begin, std::size_t extent, std::span<iv::TimedEvent const> events) {
         append_record(reserve, chain, writer, {
-            .payload_kind = iv::RealtimeProducedPayloadKind::events_preserving_recording,
+            .payload_kind = iv::RealtimeProducedPayloadKind::append_events_in_gaps,
             .payload_size = events.size_bytes(),
             .begin = index(begin),
             .range_extent = extent,

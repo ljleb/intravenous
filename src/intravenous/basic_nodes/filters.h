@@ -14,7 +14,15 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array<SequentialOutputConfig<Sample>, 2>{};
+            return std::array {
+                output<Sample>("low"),
+                output<Sample>("high"),
+            };
+        }
+
+        void constrain_ports(ConstrainPortsContext<WhackIirThing>& ctx) const
+        {
+            ctx.output<"low">().history() = 1;
         }
 
         void tick(TickSampleContext<WhackIirThing> const& ctx) const
@@ -26,8 +34,8 @@ namespace iv {
                 alpha *= alpha;
             }
 
-            auto out_low = ctx.template output<0>();
-            auto out_high = ctx.template output<1>();
+            auto out_low = ctx.output<"low">();
+            auto out_high = ctx.output<"high">();
             Sample last_low = out_low.get();
             Sample low = last_low + alpha * (in_dry - last_low);
             out_low.push(low);
@@ -51,14 +59,15 @@ namespace iv {
             };
         }
 
-        void constrain_ports(ConstrainPortsContext<SimpleIirHighPass>& ctx) const
-        {
-            ctx.input<"in">().history() = 1;
-        }
-
         static constexpr auto outputs()
         {
             return std::array { output<Sample>("out") };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SimpleIirHighPass>& ctx) const
+        {
+            ctx.input<"in">().history() = 1;
+            ctx.output<"out">().history() = 1;
         }
 
         void tick(TickSampleContext<SimpleIirHighPass> const& ctx) const
@@ -101,14 +110,15 @@ namespace iv {
             };
         }
 
-        void constrain_ports(ConstrainPortsContext<SimpleIirLowPass>& ctx) const
-        {
-            ctx.input<"in">().history() = 1;
-        }
-
         static constexpr auto outputs()
         {
             return std::array { output<Sample>("out") };
+        }
+
+        void constrain_ports(ConstrainPortsContext<SimpleIirLowPass>& ctx) const
+        {
+            ctx.input<"in">().history() = 1;
+            ctx.output<"out">().history() = 1;
         }
 
         void tick(TickSampleContext<SimpleIirLowPass> const& ctx) const

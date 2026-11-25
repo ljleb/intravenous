@@ -216,6 +216,9 @@ public:
     };
 
     struct SampleCaptureSlot : RecordingProducer {
+        PersistedOutputHandle output{};
+        PersistedDataStore::Snapshot const* published = nullptr;
+        std::optional<GlobalIndex> held_position{};
         ChannelLayout layout{};
         ContinuousValueStorageGeometry geometry{};
         std::int32_t absolute_pace_exponent = 0;
@@ -245,6 +248,7 @@ public:
             std::size_t block_size) noexcept
         {
             if (!reserve || !pending
+                || binding.disposition == OutputDisposition::append_events_in_gaps
                 || binding.storage.channel_layout != layout
                 || binding.storage.geometry != geometry
                 || binding.history != history || binding.latency != latency
@@ -277,8 +281,10 @@ public:
             auto const projection = FractionalGlobalIndexRange::from_global_range(
                 window).try_project_onto_lattice(absolute_pace_exponent);
             if (!projection || projection->count == 0) return;
+            auto const addresses = GlobalIndexRange{
+                GlobalIndex::from_bits(projection->begin_index_bits), projection->count};
             spans.capture({
-                .addresses = {GlobalIndex::from_bits(projection->begin_index_bits), projection->count},
+                .addresses = addresses,
                 .disposition = binding.disposition,
             }, latency, [&](RecordingSpans::Span const& finalized) {
                 if (finalized.disposition != OutputDisposition::untouched) {
@@ -287,6 +293,65 @@ public:
                     publish(finalized, binding, physical_begin, channels, bytes_per_value_index);
                 }
             });
+            if (geometry.value_type == continuous_value_type_id_v<Sample>
+                && (binding.disposition == OutputDisposition::untouched
+                    || binding.disposition == OutputDisposition::voided)) {
+                deliver_samples(binding, addresses, channels);
+            }
+        }
+
+        static std::byte* value_storage(
+            ContinuousChannelStorageBinding const& channel,
+            std::uint64_t value_index) noexcept
+        {
+            auto const slot = (value_index - channel.value_delay) & (channel.value_capacity - 1);
+            return channel.storage + slot * channel.value_stride_bytes;
+        }
+
+        void deliver_samples(
+            ReflectedContinuousOutputPortBinding const& binding,
+            GlobalIndexRange addresses, std::size_t channels) const noexcept
+        {
+            auto copy = [&](std::size_t first, std::size_t end,
+                            PersistedSampleRegion const* region = nullptr,
+                            GlobalIndex source = {}, bool repeat = false) noexcept {
+                for (auto frame = first; frame < end; ++frame) {
+                    for (std::size_t channel = 0; channel < channels; ++channel) {
+                        auto const value = region ? region->at(source, channel) : Sample{};
+                        std::memcpy(value_storage(binding.storage.channels[channel],
+                            binding.sequential_begin_index + frame), &value, sizeof(value));
+                    }
+                    if (!repeat) source = source.advanced_by(1);
+                }
+            };
+            if (!published || binding.disposition == OutputDisposition::voided) {
+                copy(0, addresses.extent);
+                return;
+            }
+
+            if (held_position) {
+                auto const held = FractionalGlobalIndexRange::from_global_range(
+                    {*held_position, 1}).try_project_onto_lattice(absolute_pace_exponent);
+                PersistedSampleRegion const* region = nullptr;
+                GlobalIndex source{};
+                if (held && held->count != 0) {
+                    source = GlobalIndex::from_bits(held->begin_index_bits);
+                    published->for_each_sample_region(output, {source, 1},
+                        [&](PersistedSampleRegion const& stored, GlobalIndexRange) {
+                            if (stored.layout == layout && stored.geometry == geometry) region = &stored;
+                        });
+                }
+                copy(0, addresses.extent, region, source, true);
+                return;
+            }
+
+            copy(0, addresses.extent);
+            published->for_each_sample_region(output, addresses,
+                [&](PersistedSampleRegion const& stored, GlobalIndexRange part) {
+                    if (stored.layout != layout || stored.geometry != geometry) return;
+                    auto const first = static_cast<std::size_t>(addresses.begin.forward_distance_to(part.begin));
+                    copy(first, first + part.extent, &stored, part.begin);
+                });
         }
 
         void publish(
@@ -314,12 +379,8 @@ public:
             for (std::size_t frame = 0; frame < selected_count; ++frame) {
                 for (std::size_t channel = 0; channel < channels; ++channel) {
                     auto const& source = binding.storage.channels[channel];
-                    auto const delayed = physical_begin + frame - source.value_delay;
-                    auto const source_frame = static_cast<std::size_t>(
-                        delayed & (source.value_capacity - 1));
                     if (!writer.append(std::span<std::byte const>{
-                        source.storage
-                            + source_frame * source.value_stride_bytes,
+                        value_storage(source, physical_begin + frame),
                         geometry.value_size_bytes})) {
                         fail_queue_reservation();
                         return;
@@ -383,11 +444,11 @@ public:
                      std::span<PendingEvent const> events) noexcept
         {
             auto const voided = span.disposition == OutputDisposition::voided;
-            auto const preserving = span.disposition == OutputDisposition::written_preserving_recording;
+            auto const append_in_gaps = span.disposition == OutputDisposition::append_events_in_gaps;
             if (!write_header({
                 .payload_kind = voided ? RealtimeProducedPayloadKind::void_value
-                    : preserving ? RealtimeProducedPayloadKind::events_preserving_recording
-                                 : RealtimeProducedPayloadKind::events,
+                    : append_in_gaps ? RealtimeProducedPayloadKind::append_events_in_gaps
+                                     : RealtimeProducedPayloadKind::events,
                 .payload_size = voided ? 0 : events.size() * sizeof(TimedEvent),
                 .begin = span.addresses.begin,
                 .range_extent = span.addresses.extent,
@@ -422,7 +483,7 @@ public:
             auto const open_window = GlobalIndexRange{
                 sample_index.retreated_by(spans.extent), spans.extent + block_size};
             if ((binding.disposition == OutputDisposition::written
-                    || binding.disposition == OutputDisposition::written_preserving_recording)
+                    || binding.disposition == OutputDisposition::append_events_in_gaps)
                 && storage.event_capacity != 0) {
                 auto const* events = reinterpret_cast<TimedEvent const*>(storage.storage + storage.events_offset);
                 auto const write = *reinterpret_cast<std::size_t const*>(storage.storage
@@ -1227,6 +1288,7 @@ public:
                 plan, planned.port, selected_generation));
             auto& selected = sample_capture_slots[slot];
             selected = SampleCaptureSlot{
+                .output = output,
                 .layout = port.sample_layout,
                 .geometry = port.continuous_geometry,
                 .absolute_pace_exponent = port.absolute_pace_exponent,
@@ -1367,6 +1429,10 @@ public:
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
         auto const selected_block_size = std::min(block_size, maximum_block_size);
+        for (auto& selected : sample_capture_slots) {
+            selected.published = &published;
+            selected.held_position = selection.held_position;
+        }
         for (auto& selected : sequential_sample_slots) {
             auto const* materialized_sample = materialization_matches
                     && selected.accepts_materialization

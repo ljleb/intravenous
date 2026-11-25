@@ -330,7 +330,7 @@ class BackgroundEvaluationTransaction::Impl {
         auto const& port =
             graph_->background_evaluation_plan.ports[record.route.port];
         if ((header.payload_kind != RealtimeProducedPayloadKind::events
-                && header.payload_kind != RealtimeProducedPayloadKind::events_preserving_recording)
+                && header.payload_kind != RealtimeProducedPayloadKind::append_events_in_gaps)
             || record.route.kind != PortKind::event
             || header.event_type != port.event_type
             || header.event_count
@@ -488,12 +488,12 @@ class BackgroundEvaluationTransaction::Impl {
             }
             auto const is_void = record.header.payload_kind
                 == RealtimeProducedPayloadKind::void_value;
-            auto const preserving = record.header.payload_kind
-                == RealtimeProducedPayloadKind::events_preserving_recording;
+            auto const append_in_gaps = record.header.payload_kind
+                == RealtimeProducedPayloadKind::append_events_in_gaps;
             std::optional<IndexCoverage> gaps;
-            if (preserving) {
+            if (append_in_gaps) {
                 if (record.route.kind != PortKind::event)
-                    return std::unexpected("preserving recording requires a realtime-produced event record");
+                    return std::unexpected("only realtime-produced Event records can append to recording gaps");
                 if (found->coverage.contains(changed)) continue;
                 if (found->coverage.intersects(changed)) gaps = IndexCoverage{changed} - found->coverage;
             }

@@ -623,3 +623,47 @@ This is a static-review priority order, not benchmark evidence. Measurements sho
 validate constants and later optimization choices, but no measurement is needed to
 justify removing work whose asymptotic cost grows with the complete recording on the
 realtime or successor-publication path.
+
+## Detached sample delay while scrubbing
+
+The project delay knob sends a connection edit for each accepted position. The
+working ring has a power-of-two capacity, but `SampleConnectionPlan` carries the
+exact detach delay. GraphJit uses it in the consumer binding, routed sample
+composition, `SequentialCoverageSource::read_latency`, and the extent of the
+input's in-flight state. Compact carry also stores an exact retained extent.
+Making only the consumer binding adjustable would leave those other uses at the
+old delay.
+
+The owner chose to retain the existing delivery order during scrubbing. In the
+[port state contract](./sequential_port_storage_planning.md#port-windows-are-semantically-node-owned-even-when-storage-is-shared),
+an input with four in-flight samples keeps those samples when the delay grows to
+six. The two fresh positions follow them. Moving a source-time read position
+back by two can replay two samples the input already heard. The difference is
+audible even if both offsets fit the same allocation.
+
+Keeping the existing contract would require a bounded timeline for deliveries at
+their destination positions, with the same delay change applied to sample values
+and coverage. It must retain the input's resolved history when several sources
+are combined. GraphJit must expose enough state for a later structural cutover to
+preserve what the input actually heard and what is still queued. An immediate
+source-time read tap would need an explicit decision to change those semantics
+during the gesture and define the handoff to the committed delay.
+
+`SampleFeedbackQueue` implements the bounded delivery tags for a ring indexed by
+destination position. It keeps authored absence distinct from a fresh position
+and invalidates a discarded or newly exposed tail without touching its sample
+bytes. The tag storage costs four bits per frame. This is a lower-layer
+implementation milestone. GraphJit still runs the fixed-delay feedback plans.
+The next step is to route each editable detach's finalized contributions into
+the destination-indexed queue, then carry its live end and resolved history into
+`PreparedRealtimePortStateTransition`. Existing transition windows use the
+compile-time `RealtimePortStateRequirement::in_flight_samples`. They need the
+queue end at activation when a live edit can change it after preparation.
+
+Once the live representation exists, compile candidates for the current range
+and the adjacent storage and feedback-slice boundaries. Prepare the boundary in
+the direction of the drag first and keep the previous range ready for reversals.
+Key candidates by graph and observation configuration, the cable, and the range.
+The current execution generation and its queued values determine the cutover at
+activation. Reuse the latest requested value when the candidate becomes ready.
+Only prepare further ranges while active edits and execution recovery are idle.

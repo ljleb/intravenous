@@ -2473,6 +2473,45 @@ void PersistedDataStore::Snapshot::for_each_sample_region(
         sample_output_levels_,
         PersistedDataStore::output_directory_index(output));
     if (!selected || !selected->logical_regions) return;
+    if (selected->positional_recording) {
+        // Recording ranges are disjoint in signed order, and each range's
+        // mapped windows partition it in the same order.
+        auto visit_intersections = [](auto const& regions, GlobalIndexRange requested, auto&& visit) {
+            auto current = std::ranges::upper_bound(
+                regions, requested.begin, SignedGlobalIndexOrder{},
+                [](auto const& region) { return region.range.begin; });
+            if (current != regions.begin() && (current - 1)->range.contains(requested.begin)) {
+                --current;
+            }
+            for (; current != regions.end(); ++current) {
+                auto const part = intersection(current->range, requested);
+                if (part.empty()) break;
+                visit(*current, part);
+            }
+        };
+        // A query that crosses the signed seam splits in traversal order.
+        // Visit the low signed indices first, as in the recording's region list.
+        std::array<GlobalIndexRange, 2> segments;
+        std::size_t segment_count = 0;
+        range.for_each_signed_order_segment([&](GlobalIndexRange segment) {
+            segments[segment_count++] = segment;
+        });
+        while (segment_count != 0) {
+            auto const requested = segments[--segment_count];
+            visit_intersections(*selected->logical_regions, requested,
+                [&](PersistedSampleRegion const& region, GlobalIndexRange part) {
+                    if (region.windows) {
+                        visit_intersections(*region.windows, part,
+                            [&](PersistedSampleRegion const& window, GlobalIndexRange overlap) {
+                                visitor(visitor_data, window, overlap);
+                            });
+                    } else {
+                        visitor(visitor_data, region, part);
+                    }
+                });
+        }
+        return;
+    }
     auto visit_window = [&](PersistedSampleRegion const& window) {
         range.for_each_signed_order_segment([&](GlobalIndexRange requested) {
             window.range.for_each_signed_order_segment([&](GlobalIndexRange stored) {

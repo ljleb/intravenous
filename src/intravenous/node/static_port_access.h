@@ -1537,13 +1537,6 @@ namespace iv::details {
             clear_block_values();
         }
 
-        // Supply zeros to live consumers while retaining the recording disposition.
-        constexpr void clear_live_block() const noexcept
-        requires (Access == TickPortAccessKind::block && Recording)
-        {
-            clear_block_values();
-        }
-
         constexpr void write_void() const noexcept requires Recording
         {
             this->observe_void();

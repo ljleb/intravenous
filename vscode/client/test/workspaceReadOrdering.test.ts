@@ -2,15 +2,22 @@ import assert from "node:assert/strict";
 import Module from "node:module";
 import { test, type TestContext } from "node:test";
 import type * as vscode from "vscode";
-import type { GraphScope } from "../src/graphScope";
+import type { GraphScope, GraphScopeNode } from "../src/graphScope";
 import type { WorkspaceSession } from "../src/workspaceSession";
 import type { GraphEditorProvider } from "../src/graphEditorProvider";
 
 function loadWorkspaceClasses(t: TestContext) {
     const loader = Module as typeof Module & { _load(request: string, parent: NodeModule, isMain: boolean): unknown };
     const load = loader._load;
+    const vscode = {
+        ThemeColor: class {},
+        MarkdownString: class {
+            value = "";
+            appendText(text: string) { this.value += text; return this; }
+        },
+    };
     const stub = t.mock.method(loader, "_load", function (this: typeof loader, request: string, parent: NodeModule, isMain: boolean) {
-        return request === "vscode" ? {} : load.call(this, request, parent, isMain);
+        return request === "vscode" ? vscode : load.call(this, request, parent, isMain);
     });
     try {
         return { Session: require("../src/workspaceSession").WorkspaceSession as typeof WorkspaceSession,
@@ -75,4 +82,47 @@ test("an in-flight graph scope satisfies a later invalidation at its revision", 
     assert.equal(reads, 1);
     assert.equal(state.scope?.sessionRevision, 5);
     assert.deepEqual(errors, []);
+});
+
+test("the graph error status waits for definitions and reports confirmed failures", async (t) => {
+    const { Provider } = loadWorkspaceClasses(t);
+    let visible = false;
+    const status = { text: "", tooltip: { value: "" },
+        show() { visible = true; }, hide() { visible = false; } };
+    const provider = Object.assign(Object.create(Provider.prototype) as { updateGraphErrorStatus(scope: GraphScope): void }, {
+        graphErrorStatus: status,
+    });
+    const node: GraphScopeNode = {
+        loadState: "waitingForDefinition", address: { instanceId: "clip" },
+        instance: { instanceId: "clip", definitionId: "builtin.clip", realized: false },
+        sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [], hasChildren: false,
+        errorMessage: "The definition is unavailable in this snapshot.",
+    };
+    const execution = { phase: "configurationFailed", message: "", preparedGeneration: null, activeGeneration: null };
+    const scope: GraphScope = { generation: null, editable: true, nodes: [node], connections: [], execution };
+
+    provider.updateGraphErrorStatus(scope);
+    assert.equal(visible, false);
+    node.loadState = "waitingForGraph";
+    execution.phase = "compiling";
+    provider.updateGraphErrorStatus(scope);
+    assert.equal(visible, false);
+
+    execution.phase = "failed";
+    execution.message = "Feedback requires a delay.";
+    provider.updateGraphErrorStatus(scope);
+    assert.equal(visible, true);
+    assert.match(status.text, /graph compilation failed/);
+    assert.ok(status.tooltip.value.startsWith(execution.message));
+
+    execution.phase = "configurationFailed";
+    scope.nodes.push({ ...node, address: { instanceId: "saw" },
+        instance: { instanceId: "saw", definitionId: "iv.project.saw", realized: false },
+        loadState: "waitingForDefinition" });
+    node.loadState = "failed";
+    node.errorMessage = "The built package did not publish the requested definition.";
+    provider.updateGraphErrorStatus(scope);
+    assert.equal(visible, true);
+    assert.match(status.text, /graph configuration failed/);
+    assert.ok(status.tooltip.value.startsWith(node.errorMessage));
 });

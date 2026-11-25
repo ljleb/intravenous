@@ -1,6 +1,7 @@
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
 #include <intravenous/graph_jit/event_conversion_runtime.h>
 #include <intravenous/graph_jit/event_retention_runtime.h>
+#include <intravenous/graph_jit/sample_feedback_queue.h>
 
 #include <gtest/gtest.h>
 
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <string>
@@ -21,6 +23,64 @@ namespace {
 iv::GlobalIndex global_index(std::uint64_t bits)
 {
     return iv::GlobalIndex::from_bits(bits);
+}
+
+TEST(SampleFeedbackQueue, GrowingKeepsQueuedDeliveriesAndExposesFreshPositions)
+{
+    using iv::graph_jit::SampleFeedbackDelivery;
+    using iv::graph_jit::SampleFeedbackQueue;
+    constexpr std::size_t capacity = 16;
+    std::array<std::uint64_t, SampleFeedbackQueue::required_words(capacity)> tags{};
+    std::array<int, capacity> payload{};
+    SampleFeedbackQueue queue(tags, capacity);
+    auto enqueue = [&](std::uint64_t first, std::initializer_list<int> samples) {
+        queue.mark_delivered(first, samples.size());
+        for (int sample : samples) payload[first++ & (capacity - 1)] = sample;
+    };
+    auto read = [&](std::uint64_t first, std::size_t count) {
+        std::vector<int> result;
+        queue.visit_deliveries(first, count, [&](std::uint64_t begin, std::size_t frames, SampleFeedbackDelivery kind) {
+            for (std::size_t frame = 0; frame < frames; ++frame)
+                result.push_back(kind == SampleFeedbackDelivery::delivered
+                    ? payload[(begin + frame) & (capacity - 1)] : -1);
+        });
+        return result;
+    };
+
+    // The position wraps both the physical ring and the timeline's index.
+    constexpr auto first = std::numeric_limits<std::uint64_t>::max() - 2;
+    enqueue(first - 2, {1, 2, 3, 4, 5, 6, 99, 99});
+    queue.retime(first, 4, 6);
+    enqueue(first + 6, {7, 8});
+    EXPECT_EQ(read(first - 2, 10), (std::vector<int>{1, 2, 3, 4, 5, 6, -1, -1, 7, 8}));
+}
+
+TEST(SampleFeedbackQueue, ShorteningAndGrowingAgainDoesNotRestoreDroppedDeliveries)
+{
+    using enum iv::graph_jit::SampleFeedbackDelivery;
+    using iv::graph_jit::SampleFeedbackDelivery;
+    using iv::graph_jit::SampleFeedbackQueue;
+    constexpr std::size_t capacity = 128;
+    std::array<std::uint64_t, SampleFeedbackQueue::required_words(capacity)> tags{};
+    SampleFeedbackQueue queue(tags, capacity);
+    queue.mark_delivered(100, 10);
+    queue.retime(100, 10, 3);
+    queue.mark_delivered(103, 2);
+    queue.mark_absent(103, 1);
+    queue.retime(102, 3, 9);
+
+    auto read = [&](std::uint64_t first, std::size_t count) {
+        std::vector<SampleFeedbackDelivery> result;
+        queue.visit_deliveries(first, count, [&](std::uint64_t position, std::size_t frames, SampleFeedbackDelivery kind) {
+            EXPECT_EQ(position, first + result.size());
+            result.insert(result.end(), frames, kind);
+        });
+        return result;
+    };
+    EXPECT_EQ(read(100, 11), (std::vector{delivered, delivered, delivered, absent, delivered,
+        fresh, fresh, fresh, fresh, fresh, fresh}));
+    queue.clear();
+    EXPECT_EQ(read(100, 11), std::vector(11, fresh));
 }
 
 TEST(RealtimePortStateTransition,
