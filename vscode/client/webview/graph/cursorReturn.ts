@@ -1,17 +1,23 @@
 import type { Point } from "../../src/graphScope";
-import type { CursorReturnMessage, CursorReturnPolicy, TraceLog } from "../../src/graphEditorProtocol";
+import type { CursorReturnMessage, CursorReturnPolicy, CursorWarp, TraceLog } from "../../src/graphEditorProtocol";
 import type { PointerLockExitGuard } from "../../src/pointerLockExitGuard";
 import type { PresentationCursor } from "../../src/presentationPlugin";
 import { timelineSampleFraction } from "../../src/timelineGeometry";
 import type { PresentationTime } from "../../src/timelineSamples";
 
 export type CursorWarpAnchor = { screenOrigin: Point; scale: number };
+export type CursorWindowReference = {
+    windowSizeDip: { width: number; height: number };
+    windowPointDip: Point;
+    clientPoint: Point;
+    devicePixelRatio: number;
+};
 export type CursorFollowTarget = {
     destination: () => Point | null | Promise<Point | null>;
     initialCenter?: Point | null;
     policy?: CursorReturnPolicy;
 };
-export type CursorFollow = CursorWarpAnchor & CursorFollowTarget;
+export type CursorFollow = CursorFollowTarget & (CursorWarpAnchor | { windowReference: CursorWindowReference });
 export type CursorTrace = { id: string; log: TraceLog };
 
 export function cursorWarpAnchor(event: Pick<PointerEvent, "pointerType" | "screenX" | "screenY">,
@@ -19,7 +25,15 @@ export function cursorWarpAnchor(event: Pick<PointerEvent, "pointerType" | "scre
     return event.pointerType === "mouse" ? { screenOrigin: { x: event.screenX, y: event.screenY }, scale } : null;
 }
 
-type PendingReturn = CursorFollow & { lockOrigin: Point; expiresAt: number; resolving?: true; trace?: CursorTrace };
+export function cursorWindowReference(event: Pick<MouseEvent, "screenX" | "screenY" | "clientX" | "clientY">,
+    view: Pick<Window, "screenX" | "screenY" | "outerWidth" | "outerHeight" | "devicePixelRatio">): CursorWindowReference {
+    // The event relates the iframe's CSS coordinates to the browser window's DIPs.
+    return { windowPointDip: { x: event.screenX - view.screenX, y: event.screenY - view.screenY },
+        windowSizeDip: { width: view.outerWidth, height: view.outerHeight },
+        clientPoint: { x: event.clientX, y: event.clientY }, devicePixelRatio: view.devicePixelRatio };
+}
+
+type PendingReturn = CursorFollow & { lockOrigin: Point; expiresAt?: number; resolving?: true; trace?: CursorTrace };
 const returnLifetimeMs = 100;
 
 export class PointerLockCursorReturn {
@@ -35,21 +49,27 @@ export class PointerLockCursorReturn {
 
     get waitingForUnlock(): boolean { return this.pending !== null; }
 
-    finish(release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError = "", trace?: CursorTrace): void {
+    finish(release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError = "", trace?: CursorTrace,
+        cancellation?: string): void {
         if (lockOrigin) {
             this.cancel("Another drag released the cursor.");
             this.guard.begin(lockOrigin);
         }
-        trace?.log("Finished pointer session", { release, lockOrigin, hasDestination: !!follow, lockError });
+        trace?.log("Finished pointer session", { release, lockOrigin, hasDestination: !!follow, lockError, cancellation });
+        if (!release && cancellation) {
+            this.skipped(cancellation, trace);
+            return;
+        }
         if (!follow) return;
         if (!release || !lockOrigin) {
             this.skipped(release ? lockError || "The drag used pointer capture."
                 : "The drag ended before a normal pointer-lock release.", trace);
             return;
         }
-        const pending: PendingReturn = { ...follow, lockOrigin, expiresAt: Date.now() + returnLifetimeMs, trace };
+        const expiresAt = "windowReference" in follow ? undefined : Date.now() + returnLifetimeMs;
+        const pending: PendingReturn = { ...follow, lockOrigin, expiresAt, trace };
         this.pending = pending;
-        this.timer = setTimeout(() => {
+        if (expiresAt !== undefined) this.timer = setTimeout(() => {
             if (this.pending === pending) this.cancel(pending.resolving
                 ? "The release destination was unavailable before the cursor return deadline."
                 : "The browser did not finish releasing pointer lock in time.");
@@ -73,7 +93,7 @@ export class PointerLockCursorReturn {
     private sendPending(pending: PendingReturn, center: Point | null): void {
         if (this.pending !== pending) return;
         this.clearPending();
-        if (Date.now() >= pending.expiresAt || this.locked()) {
+        if ((pending.expiresAt !== undefined && Date.now() >= pending.expiresAt) || this.locked()) {
             this.skipped(this.locked() ? "Another gesture acquired pointer lock."
                 : "The cursor return request expired before the graph finished rendering.", pending.trace);
             return;
@@ -86,31 +106,45 @@ export class PointerLockCursorReturn {
             pending.trace?.log("Destination matches the original object position", { center });
             return;
         }
-        const { screenOrigin, scale, lockOrigin, expiresAt, policy } = pending;
+        // The point's worker reply and layout can take longer than the native
+        // request lifetime. Start that clock when the destination is ready.
+        const expiresAt = pending.expiresAt ?? Date.now() + returnLifetimeMs;
+        if ("windowReference" in pending) {
+            const { windowSizeDip, windowPointDip, clientPoint, devicePixelRatio } = pending.windowReference;
+            const offsetPixels = { x: (center.x - clientPoint.x) * devicePixelRatio,
+                y: (center.y - clientPoint.y) * devicePixelRatio };
+            this.submit(pending, center, { destination: { windowSizeDip, windowPointDip, offsetPixels }, expiresAt });
+            return;
+        }
+        const { screenOrigin, scale, lockOrigin } = pending;
         const dx = Math.round((center.x - lockOrigin.x) * scale);
         const dy = Math.round((center.y - lockOrigin.y) * scale);
         if (!dx && !dy) {
             pending.trace?.log("Destination is already at the lock origin", { center });
             return;
         }
-        const requestId = ++this.nextRequestId;
-        this.submitted = { requestId, trace: pending.trace };
         // Window zoom can affect viewport scale without changing screenX/Y.
         const warp = {
             originX: Math.round(screenOrigin.x * scale), originY: Math.round(screenOrigin.y * scale),
             screenOrigin: { x: Math.round(screenOrigin.x), y: Math.round(screenOrigin.y) },
             deltaX: dx, deltaY: dy, expiresAt,
         };
-        pending.trace?.log("Sending cursor return to the extension", { requestId, center, warp });
-        this.send({ type: "returnCursor", requestId, policy, warp, ...(pending.trace && { traceId: pending.trace.id }) });
+        this.submit(pending, center, warp);
+    }
+
+    private submit({ policy, trace }: PendingReturn, center: Point, warp: CursorWarp): void {
+        const requestId = ++this.nextRequestId;
+        this.submitted = { requestId, trace };
+        trace?.log("Sending cursor return to the extension", { requestId, center, warp });
+        this.send({ type: "returnCursor", requestId, policy, warp, ...(trace && { traceId: trace.id }) });
     }
 
     complete(requestId: number): void {
         if (requestId !== this.submitted?.requestId) return;
-        this.submitted.trace?.log("Webview received native move confirmation", { requestId });
+        this.submitted.trace?.log("Webview received native cursor return acknowledgment", { requestId });
         this.submitted = null;
-        // The native cursor has moved. The lock origin is no longer a safe
-        // place to redirect events while the renderer catches up.
+        // X11 processed the warp. The lock origin is no longer the place to
+        // redirect events while the renderer catches up.
         this.guard.end();
     }
 

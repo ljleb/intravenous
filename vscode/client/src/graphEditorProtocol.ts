@@ -15,12 +15,16 @@ import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefiniti
 import type { PresentationArtifact } from "./presentationPlugin";
 import type { InteractionRecording } from "./clientInteractionTrace";
 
-export type CursorWarp = {
+export type CursorWindowDestination = {
+    windowSizeDip: { width: number; height: number };
+    windowPointDip: { x: number; y: number };
+    offsetPixels: { x: number; y: number };
+};
+export type CursorWarp = { expiresAt: number } & ({ destination: CursorWindowDestination } | {
     originX: number; originY: number;
     screenOrigin?: { x: number; y: number };
     deltaX: number; deltaY: number;
-    expiresAt: number;
-};
+});
 export type CursorReturnPolicy = "presentationPoint" | "playhead" | "wrapped";
 export type TraceDetails = Record<string, unknown>;
 export type TraceLog = (step: string, details?: TraceDetails) => void;

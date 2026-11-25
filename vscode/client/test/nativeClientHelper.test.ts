@@ -29,7 +29,7 @@ function fakeChild() {
         crash: () => events.emit("close", 1, null) };
 }
 
-const cursorWarp = (): CursorWarp => ({ originX: 100, originY: 100, deltaX: 20, deltaY: -20, expiresAt: Date.now() + 100 });
+const cursorWarp = () => ({ originX: 100, originY: 100, deltaX: 20, deltaY: -20, expiresAt: Date.now() + 100 });
 const warpMessages = (run: ReturnType<typeof fakeChild>) => run.messages.filter(({ method }) => method === "native.warpCursor");
 
 test("the helper starts eagerly and drops cursor warps across a crash and restart", (t) => {
@@ -128,6 +128,22 @@ test("cursor return preserves both coordinate pairs and can request a hidden cur
     assert.deepEqual(warpMessages(run).map(({ params }) => params), [
         request, { ...request, hideCursor: true }, { ...request, hideCursor: true, followPointer: true },
     ]);
+});
+
+test("point cursor return dispatches a window destination and rejects invalid geometry", (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 1000 });
+    const run = fakeChild();
+    const logs: string[] = [];
+    const helper = new NativeClientHelper(() => run.child, (message) => logs.push(message));
+    t.after(() => helper.dispose());
+    helper.start();
+    run.ready();
+    const request = { destination: { windowSizeDip: { width: 1280, height: 720 },
+        windowPointDip: { x: 100, y: 150 }, offsetPixels: { x: -20.5, y: 15.25 } }, expiresAt: 1100 } satisfies CursorWarp;
+    helper.warpCursor(request);
+    helper.warpCursor({ ...request, destination: { ...request.destination, windowSizeDip: { width: 1280, height: 0 } } });
+    assert.deepEqual(warpMessages(run).map(({ params }) => params), [request]);
+    assert.match(logs[0], /coordinates were invalid/);
 });
 
 test("cursor return only confirms a move accepted by the helper before expiry", async (t) => {

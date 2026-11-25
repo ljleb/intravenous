@@ -13,7 +13,7 @@ export class KnobPointerLock<Delta = number> {
         private readonly moved: (pointerId: number, delta: Delta) => void,
         // lockOrigin is set when a granted pointer lock ends with the drag: the
         // visible cursor returns there, whatever position the host reports next.
-        private readonly finished: (pointerId: number, point: Point | null, lockOrigin: Point | null) => void,
+        private readonly finished: (pointerId: number, point: Point | null, lockOrigin: Point | null, cancellation?: string) => void,
         private readonly failed: (message: string) => void) {}
 
     start(pointerId: number, origin: Point, mouse = true): void {
@@ -61,7 +61,7 @@ export class KnobPointerLock<Delta = number> {
             this.request();
         } else if (session?.granted) {
             this.session = null;
-            this.finished(session.pointerId, null, session.origin);
+            this.finished(session.pointerId, null, session.origin, "The browser released pointer lock before the editor received a button release.");
         }
     }
     error(message = "Pointer lock was denied; dragging remains limited to the screen bounds."): void {
@@ -77,7 +77,7 @@ export class KnobPointerLock<Delta = number> {
     }
     move(delta: Delta, held?: { buttons: number; mask: number }): boolean {
         if (!this.session?.granted || this.exiting || !this.host.locked()) return false;
-        if (held && !(held.buttons & held.mask)) this.cancel();
+        if (held && !(held.buttons & held.mask)) this.release(this.session.pointerId, this.session.origin);
         else this.moved(this.session.pointerId, delta);
         return true;
     }
@@ -100,13 +100,13 @@ export class KnobPointerLock<Delta = number> {
             this.exit();
         }
     }
-    cancel(): void {
+    cancel(reason?: string): void {
         const session = this.session;
         this.session = null;
         try {
             if (session) {
                 const ownsLock = session.granted || (this.host.locked() && this.requesting?.session === session);
-                this.finished(session.pointerId, null, ownsLock ? session.origin : null);
+                this.finished(session.pointerId, null, ownsLock ? session.origin : null, reason);
             }
         } finally {
             this.exit();

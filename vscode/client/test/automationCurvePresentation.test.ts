@@ -301,6 +301,8 @@ test("a tension handle edits the segment and keeps its stable hit target", (t) =
     const present = harness(t);
     const target = present().targets?.find(({ id }) => id === firstTension);
     assert.ok(target?.cursor === "ew-resize");
+    assert.equal(target.drag, "relative");
+    assert.equal(target.cursorReturn, undefined);
     const x = target.x + target.width / 2, y = target.y + target.height / 2;
     present([gesture(firstTension, "begin", x, y)]);
     const draft = present([gesture(firstTension, "move", x - 25, y + 300)], { clockMs: 90 });

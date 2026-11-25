@@ -379,6 +379,9 @@ cancellation, or window blur also cancels. A new connection still requires a
 compatible destination. See the
 [previous release rule](./historical/vue_connection_release_before_incompatible_drop_disconnect_2026-11-24.md).
 
+Empty space inside a port column counts as editor space, including the strip
+that opens its continuation on hover.
+
 The editor operates on the selected connection record and port, not an
 aggregate drawn wire. Other connections and endpoints remain unchanged.
 For a record connecting `A.out` to both `B.in` and `C.in`, removing the `B.in`
@@ -393,6 +396,9 @@ upsert and expose an intermediate disconnected generation. The editor checks
 the current record before submission and rejects a stale gesture. Any future
 edit that needs several record changes must use one coordinated project action.
 The completed gesture is one future undo entry.
+
+If the project revision advances before the write, the editor can reread the
+scope and retry after verifying the captured connection again.
 
 When GraphJit rejects a feedback cycle, show a compilation error in the graph
 editor and mark the participating connections and their sockets red. Include

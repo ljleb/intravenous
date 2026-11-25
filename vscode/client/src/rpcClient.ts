@@ -14,7 +14,9 @@ type PendingRequest = {
 
 type ResultChunk = { transferId: string; offset: number; nextOffset: number | null; text: string };
 type RpcReply = { id?: number; result?: unknown; resultChunk?: ResultChunk;
-    error?: { message?: string; data?: { currentRevision?: number } } };
+    error?: { code?: number; message?: string; data?: { currentRevision?: number } } };
+
+export class StaleProjectRevisionError extends Error {}
 
 export class JsonRpcSocketClient {
     private readonly socketPath: string | null;
@@ -119,6 +121,7 @@ export class JsonRpcSocketClient {
         const revision = (reply.result as { sessionRevision?: number } | undefined)?.sessionRevision
             ?? reply.error?.data?.currentRevision;
         if (typeof revision === "number") this.revisionHandler?.(revision);
+        if (reply.error?.code === -32009) throw new StaleProjectRevisionError(reply.error.message);
         if (reply.error) throw new Error(reply.error.message || "unknown JSON-RPC error");
         return reply;
     }

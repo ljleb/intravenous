@@ -946,6 +946,7 @@ TEST(SocketRpcServer, RejectsAStaleMutationAfterThePriorMutationCommits)
     auto const stale = nlohmann::ordered_json::parse(
         harness.read_response(61));
     EXPECT_TRUE(stale.contains("error"));
+    EXPECT_EQ(stale["error"]["code"], -32009);
     EXPECT_EQ(stale["error"]["data"]["currentRevision"], 1);
     EXPECT_TRUE(
         stale["error"]["message"].get<std::string>().contains(

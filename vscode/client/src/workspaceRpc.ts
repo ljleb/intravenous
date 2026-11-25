@@ -1,8 +1,9 @@
 import { recordedEventTimestampsOperation, type ObservationInterest, type ObservationCapability } from "./observations";
 import type { ManualControlId } from "./manualControls";
-import { JsonRpcSocketClient } from "./rpcClient";
+import { JsonRpcSocketClient, StaleProjectRevisionError } from "./rpcClient";
+import { connectionEndMutation, type GraphConnectionEdit } from "./graphConnectionEditing";
 import { SymbolicNode, SourceSpan } from "./graphModel";
-import { laneViewReadBatchSize, type GraphScope, type ProjectEditReceipt } from "./graphScope";
+import { graphScopeWithChildren, laneViewReadBatchSize, type GraphScope, type ProjectEditReceipt } from "./graphScope";
 import type { NodeAddress } from "./graphScope";
 import { validateNodeEventTarget, type NodeEventProtocol, type SerializedNodeEvent } from "./nodeEvents";
 import { NodeEventInteractions } from "./nodeEventInteractions";
@@ -249,6 +250,25 @@ export class WorkspaceRpc {
     deleteGraphConnection(connectionId: string, expectedRevision?: number): Promise<void> {
         return this.client.request(
             "graphConnections.delete", this.mutationParams({ connectionId }, expectedRevision));
+    }
+
+    async editGraphConnectionEnd(edit: GraphConnectionEdit, expanded: NodeAddress[]): Promise<void> {
+        const attempts = 4;
+        for (let attempt = 0; ; ++attempt) {
+            const beforeRead = this.currentRevision();
+            const scope = graphScopeWithChildren(await this.getGraphScope(expanded));
+            const mutation = connectionEndMutation(scope, edit);
+            const revision = scope.sessionRevision ?? beforeRead;
+            try {
+                if (mutation?.type === "delete") await this.deleteGraphConnection(mutation.id, revision);
+                else if (mutation?.type === "upsert") await this.upsertGraphConnection(mutation.connection, revision);
+                return;
+            } catch (error) {
+                if (!(error instanceof StaleProjectRevisionError) || attempt + 1 >= attempts) throw error;
+                // The server rejected the write before applying it. Recheck the
+                // captured connection against a fresh scope before trying again.
+            }
+        }
     }
 
     applyProjectEdit(operations: Array<{ method: string; params: Record<string, unknown> }>, expectedRevision?: number | null): Promise<ProjectEditReceipt> {

@@ -785,10 +785,12 @@ folded groups. Sockets without knobs use the knob column in editable rows and
 their continuations. Native runtime and pointer layout checks need the rebuilt
 application.
 
-`WorkspaceSession.editGraphConnectionEnd` reads the current scope before
-submission and captures the session revision before that read. A notification
-between the read and submission cannot make an old edit pass the revision
-check. `connectionEndMutation` rejects stale records, preserves other
+`WorkspaceRpc.editGraphConnectionEnd` submits each mutation against the revision
+of the scope it read. The server reports a revision conflict with code `-32009`
+before applying the edit. The client rereads and validates the captured
+connection before retrying, with up to four write attempts. The
+[previous revision check](./historical/vue_connection_edits_before_revision_retry_2026-11-24.md)
+is preserved. `connectionEndMutation` rejects stale records, preserves other
 endpoints and channel selections, and returns either one upsert with the same
 ID or a deletion when one side becomes empty. It never submits delete followed
 by upsert. Undo remains unimplemented; each completed gesture is intended to
@@ -802,6 +804,11 @@ Light TypeScript tests cover release decisions, both moved directions, multiple
 connection choices, stale records, channel selections, wildcard port selectors,
 and preservation of other endpoints. Build, test execution, and manual pointer
 checks remain for the owner.
+
+`portConnectionStress.test.ts` randomizes release targets, port kinds, nested
+scopes, matchers, and revision races. It sends the resulting edits through
+`JsonRpcSocketClient` over an in-memory connection. Set `IV_PORT_STRESS_SEED`
+to replay one seed.
 
 #### Classified scope state
 
@@ -3999,11 +4006,15 @@ parent-death signal also stops it if the host dies during a display call.
 The extension restarts a lost helper with backoff and cancels retries on
 shutdown.
 
-The application setting `intravenous.warpCursorAfterPointDrag` enables the
-X11 prototype. The editor sends a short-lived request after pointer lock
-ends. The helper checks the restored pointer position before moving it.
-Requests expire and do not cross helper restarts. Native Wayland windows
-are outside the prototype.
+The application setting `intravenous.warpCursorAfterPointDrag` enables
+cursor return after a point drag. The editor sends the final projected point
+after pointer lock ends. The release event relates the webview coordinates to
+the browser window. The helper uses the focused X11 window's dimensions to
+convert the destination and passes it to `XWarpPointer`. The point request's
+expiration starts once its worker reply has been projected into the window.
+A new press, editor focus loss, or Escape cancels a pending return. Requests
+do not cross helper restarts. Native Wayland windows are outside the prototype.
+[Earlier point cursor return](./historical/vue_point_cursor_return_before_window_destination_2026-11-25.md).
 
 Cursor return is now enabled by default. An explicit `false` setting disables
 it. If the local extension host or native helper lacks platform or display
@@ -4013,12 +4024,19 @@ cursor to the wrapped position. Some XWayland servers require this step.
 When the desktop process ID is available, middle-button release checks that
 the focused X11 window belongs to VS Code. The helper applies the offset to
 the current cursor position and checks that the move stays in that window.
-The X11 helper checks the result of each cursor move. The output channel
-reports failed requests and explains why they stop. If the dragged automation
+The X11 helper reads back the cursor position for playhead and middle-button
+moves and acknowledges point moves after the X11 server processes the request.
+The output channel reports failed requests and explains why they stop. If the dragged automation
 point leaves the visible lane, the editor sends the cursor to the nearest
 visible edge of the lane. It leaves the point at its edited position.
 Playhead and presentation point drags use the same viewport clipping in
 `visibleCursorDestination`. Controls over the target do not block the move.
+`GraphEditor.vue` accepts mouse release before the browser delivers its matching
+pointer lock change. For a presentation point, trusted relative movement with
+the drag button up can also finish the drag. A canceled point drag reports the
+reason in the output channel, including cancellation requested by the presentation.
+Bézier tension handles use relative pointer lock and let the browser restore the
+cursor on release.
 [Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
 [Retired trace commands](./historical/vue_cursor_return_trace_commands_before_removal_2026-11-19.md).
 

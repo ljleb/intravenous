@@ -23,6 +23,7 @@ export function presentationDrag(event: PointerEvent, bounds: Pick<DOMRect, "lef
     return {
         lock: target.drag === "absolute" ? false : undefined,
         trace: options?.trace,
+        cursorReturnPolicy: options?.cursorReturn ? "presentationPoint" : undefined,
         hideCursor: options?.hideCursor,
         begin: () => send("begin") !== false,
         hint: options?.hint,

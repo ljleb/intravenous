@@ -1,5 +1,5 @@
 import { addressKey, matchingScopePorts, oppositePortDirection, resolveScopePorts, scopeNodeForAddress, type GraphPortMatcher, type GraphScope,
-    type GraphScopeConnection, type NodeAddress } from "./graphScope";
+    type GraphScopeConnection, type GraphScopePort, type NodeAddress } from "./graphScope";
 import { isGeneratedSnapConnection, isTimelineSnapAddress, timelineGridMode } from "./timelineSnap";
 
 export type GraphPortEndpoint = {
@@ -30,9 +30,8 @@ function resolveEndpoint(scope: GraphScope, endpoint: GraphPortEndpoint) {
     if (!port) throw new Error("The selected port changed; select it again");
     return port;
 }
-function endpointType(scope: GraphScope, endpoint: GraphPortEndpoint): string {
-    const port = resolveEndpoint(scope, endpoint);
-    const type = endpoint.kind === "sample" ? port.channelType : port.eventType;
+function portType(port: GraphScopePort, kind: GraphPortEndpoint["kind"]): string {
+    const type = kind === "sample" ? port.channelType : port.eventType;
     if (!type) throw new Error("The selected port type is unavailable");
     return type;
 }
@@ -55,8 +54,8 @@ function matchesPort(scope: GraphScope, matcher: GraphPortMatcher, port: GraphPo
         && (matcher.port.index === undefined || matcher.port.index === port.index);
 }
 export function connectionEndsAtPort(scope: GraphScope, port: GraphPortEndpoint): GraphConnectionEnd[] {
-    return scope.connections.filter(({ connection, sourceOwned }) => !sourceOwned && connection.kind === port.kind
-        && (port.direction === "input" ? connection.inputs : connection.outputs)
+    return scope.connections.filter((entry) => !entry.sourceOwned && !isGeneratedSnapConnection(entry) && entry.connection.kind === port.kind
+        && (port.direction === "input" ? entry.connection.inputs : entry.connection.outputs)
             .some((matcher) => matchesPort(scope, matcher, port)))
         .map((connection) => ({ connection, port }));
 }
@@ -85,16 +84,12 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     }
     if (current.sourceOwned) throw new Error("Edit this connection in the module source");
     if (isGeneratedSnapConnection(current)) throw new Error("The ruler manages this connection");
-    const originalType = endpointType(scope, end.port);
+    const original = resolveEndpoint(scope, end.port);
     const connection = current.connection;
     if (connection.kind !== end.port.kind) throw new Error("The selected connection changed; select it again");
-    if (target) {
-        if (target.kind !== end.port.kind || target.direction !== end.port.direction) {
-            throw new Error("Move the connection end to a port of the same kind and direction");
-        }
-        resolveEndpoint(scope, target);
-        if (sameGraphPort(end.port, target)) return null;
-    }
+    if (target && (target.kind !== end.port.kind || target.direction !== end.port.direction))
+        throw new Error("Move the connection end to a port of the same kind and direction");
+    if (target && sameGraphPort(end.port, target)) return null;
     const side = end.port.direction === "input" ? "inputs" : "outputs";
     const typeField = end.port.direction === "input" ? "targetType" : "sourceType";
     const matchers: GraphPortMatcher[] = [];
@@ -120,7 +115,8 @@ export function connectionEndMutation(scope: GraphScope, edit: GraphConnectionEd
     let type = connection[typeField];
     if (!type || !connection.sourceType || !connection.targetType) throw new Error("The selected connection type is unavailable");
     if (target) {
-        const targetType = endpointType(scope, target);
+        const originalType = portType(original, end.port.kind);
+        const targetType = portType(resolveEndpoint(scope, target), target.kind);
         const otherEnds = connection[side].some((matcher) => !matchesPort(scope, matcher, end.port)
             || resolveScopePorts(scope, matcher, connection.kind, end.port.direction)
                 .some(({ node, port }) => !sameGraphPort({ address: node.address, kind: connection.kind,
@@ -150,7 +146,7 @@ export function canContinuePortConnection(scope: GraphScope | null, port: GraphP
     if (isTimelineSnapAddress(port.address) && timelineGridMode(scope) !== "custom") return false;
     // Moving back to the pickup port is a no-op after checking the captured connection.
     if (end) return canMoveConnectionEnd(scope, end, port);
-    try { endpointType(scope, port); return true; }
+    try { portType(resolveEndpoint(scope, port), port.kind); return true; }
     catch { return false; }
 }
 
@@ -162,8 +158,8 @@ export function connectionFromPorts(scope: GraphScope, id: string,
     }
     const output = first.direction === "output" ? first : second;
     const input = first.direction === "input" ? first : second;
-    const sourceType = endpointType(scope, output);
-    const targetType = endpointType(scope, input);
+    const sourceType = portType(resolveEndpoint(scope, output), output.kind);
+    const targetType = portType(resolveEndpoint(scope, input), input.kind);
     if (isTimelineSnapAddress(input.address)) requireCustomBeatInput(scope, sourceType);
     return { connectionId: id, kind: output.kind, sourceType, targetType,
         outputs: [matcherFor(output)], inputs: [matcherFor(input)] };

@@ -273,7 +273,7 @@ function pointMarks(curve: PresentationTimelineCurve, points: ReturnType<typeof 
         marks.push({ type: "circle", id: String(mark + 1), x, y, radius: point.selected ? 3.2 : 2.6, ink: "input", target });
         if (!point.tensionTarget) continue;
         const handle = y + (y < height / 2 ? 15 : -15), id = String(point.tensionTarget);
-        handles.push({ ...box(x, handle, 6), id, drag: "absolute", context: true, hideCursor: true, cursor: "ew-resize",
+        handles.push({ ...box(x, handle, 6), id, drag: "relative", context: true, hideCursor: true, cursor: "ew-resize",
             hint: `Tension ${decimal(point.tension, 2)}` });
         marks.push({ type: "polyline", id: String(point.tensionMark), ink: "input", opacity: .22, points: [{ x, y }, { x, y: handle }] },
             { type: "polyline", id: String(point.tensionMark + 1), ink: "input", opacity: .25 + point.tension * .75,

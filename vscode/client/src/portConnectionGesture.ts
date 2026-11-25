@@ -14,6 +14,21 @@ export type PortConnectionDrag = {
 export type PortConnectionResult = { type: "create"; first: GraphPortEndpoint; second: GraphPortEndpoint }
     | { type: "edit"; edit: GraphConnectionEdit };
 
+export function destinationHandle(hit: Element | null): HTMLElement | null {
+    return hit?.closest<HTMLElement>("[data-port-endpoint]")
+        ?? hit?.closest("[data-port-drop-target]")?.querySelector<HTMLElement>("[data-port-endpoint]") ?? null;
+}
+
+export function portConnectionDrop(hit: Element | null, surface: Element | null) {
+    const encoded = destinationHandle(hit)?.dataset.portEndpoint;
+    const target = encoded ? JSON.parse(encoded) as GraphPortEndpoint : null;
+    // A port group can span the whole lane height. Its hover area is blank
+    // graph space, even when it allows a continuation to open.
+    const emptyEditorSpace = !target && !!hit && !!surface?.contains(hit)
+        && !hit.closest(".port-panel, [data-port-control]:not(.port-column-hover), button, input, select, textarea, a, label, summary, [contenteditable], [role=button], [role=slider], [role=dialog], .package-dialog-backdrop");
+    return { target, emptyEditorSpace };
+}
+
 export function beginPortConnection(port: GraphPortEndpoint, pointerId: number,
     button: number, position: PortPointerPosition, edit?: GraphConnectionEnd): PortConnectionDrag | null {
     return button === 0 ? { pointerId, port, start: position, end: position, moved: false, edit } : null;

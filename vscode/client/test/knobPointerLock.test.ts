@@ -10,13 +10,14 @@ function harness(delayedExit = false) {
     const moves: Array<[number, number]> = [];
     const ends: Array<[number, Point | null]> = [];
     const lockOrigins: Array<Point | null> = [];
+    const cancellations: Array<string | undefined> = [];
     const errors: string[] = [];
     const owner = new KnobPointerLock({
         request: () => { ++requests; }, exit: () => { ++exits; if (!delayedExit) locked = false; }, locked: () => locked,
-    }, (id, delta) => moves.push([id, delta]), (id, point, origin) => {
-        ends.push([id, point]); lockOrigins.push(origin);
+    }, (id, delta) => moves.push([id, delta]), (id, point, origin, cancellation) => {
+        ends.push([id, point]); lockOrigins.push(origin); cancellations.push(cancellation);
     }, (error) => errors.push(error));
-    return { owner, moves, ends, lockOrigins, errors, exits: () => exits, requests: () => requests,
+    return { owner, moves, ends, lockOrigins, cancellations, errors, exits: () => exits, requests: () => requests,
         lock: (value: boolean, announce = true) => { locked = value; if (announce) owner.changed(); } };
 }
 
@@ -73,17 +74,30 @@ test("focus loss ends the drag without retaining hover and always releases the p
     assert.equal(exits(), 1);
 });
 
-test("locked motion with the middle button up recovers a missed release", () => {
-    const { owner, ends, moves, lock, lockOrigins, exits } = harness();
+test("locked point movement that reports the drag button up finishes once at the lock origin", () => {
+    const { owner, ends, moves, lock, lockOrigins, cancellations, exits } = harness();
     const origin = { x: 20, y: 30 };
     owner.start(7, origin); lock(true);
-    assert.equal(owner.move(5, { buttons: 4, mask: 4 }), true);
-    assert.equal(owner.move(8, { buttons: 1, mask: 4 }), true);
+    assert.equal(owner.move(5, { buttons: 1, mask: 1 }), true);
+    assert.equal(owner.move(8, { buttons: 2, mask: 1 }), true);
     owner.release(7, origin);
     assert.deepEqual(moves, [[7, 5]]);
-    assert.deepEqual(ends, [[7, null]]);
+    assert.deepEqual(ends, [[7, origin]]);
     assert.deepEqual(lockOrigins, [origin]);
+    assert.deepEqual(cancellations, [undefined]);
     assert.equal(exits(), 1);
+});
+
+test("button release still finishes normally when the browser clears its lock before dispatching the change", () => {
+    const { owner, ends, lock, lockOrigins, cancellations } = harness();
+    const origin = { x: 20, y: 30 };
+    owner.start(7, origin); lock(true);
+    lock(false, false);
+    owner.release(7, { x: 40, y: 50 });
+    owner.changed();
+    assert.deepEqual(ends, [[7, origin]]);
+    assert.deepEqual(lockOrigins, [origin]);
+    assert.deepEqual(cancellations, [undefined]);
 });
 
 test("a failing finish callback still exits pointer lock", () => {
@@ -97,9 +111,10 @@ test("a failing finish callback still exits pointer lock", () => {
 });
 
 test("an external unlock finishes once, and a denied request keeps bounded dragging available", () => {
-    const { owner, ends, errors, lock } = harness();
+    const { owner, ends, cancellations, errors, lock } = harness();
     owner.start(1, { x: 20, y: 30 }); lock(true); lock(false);
     assert.deepEqual(ends, [[1, null]]);
+    assert.deepEqual(cancellations, ["The browser released pointer lock before the editor received a button release."]);
     owner.start(2, { x: 10, y: 10 }); owner.error("denied");
     assert.deepEqual(errors, ["denied"]);
     assert.equal(owner.suppressPointerCancellation(), false);

@@ -9,10 +9,12 @@ import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConne
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { KnobLimits } from "../../src/knobScrub";
 import type { StatusHint } from "../../src/statusBarText";
+import type { CursorReturnPolicy } from "../../src/graphEditorProtocol";
 import type { CursorFollow, CursorFollowTarget, CursorTrace } from "./cursorReturn";
 
 export type ObjectDrag = {
     trace?: CursorTrace;
+    cursorReturnPolicy?: CursorReturnPolicy;
     lock?: false;
     hideCursor?: boolean;
     begin?: () => boolean;
@@ -56,7 +58,7 @@ type GraphEditorContext = {
     profileGraphUi: <T>(label: string, run: () => T) => T;
     elementAtPointer: () => Element | null;
     takeCursorReturnTrace: () => CursorTrace | undefined;
-    startObjectDrag: (event: PointerEvent, drag: ObjectDrag) => (() => void) | undefined;
+    startObjectDrag: (event: PointerEvent, drag: ObjectDrag) => ((reason?: string) => void) | undefined;
     refreshPointerHint: () => void;
     historyPending: Readonly<Ref<boolean>>;
     registerPresentationInterrupt: (interrupt: (reason: "history" | "disconnected") => void) => () => void;

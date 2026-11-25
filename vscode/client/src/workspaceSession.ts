@@ -35,7 +35,7 @@ import { Duplex } from "stream";
 import { JsonRpcSocketClient } from "./rpcClient";
 import type { JsonRpcSend } from "./clientInteractionTrace";
 import { spawnWorkspaceServer } from "./workspaceServerProcess";
-import { connectionEndMutation, connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { connectionFromPorts, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
@@ -242,13 +242,7 @@ export class WorkspaceSession {
 
     async editGraphConnectionEnd(edit: GraphConnectionEdit, expanded: NodeAddress[]): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
-        const rpc = this.rpc;
-        // Bind the mutation to a revision from before the read. A notification
-        // arriving between the read and the write must not validate an old edit.
-        const revision = this.lastSessionRevision;
-        const mutation = connectionEndMutation(graphScopeWithChildren(await rpc.getGraphScope(expanded)), edit);
-        if (mutation?.type === "delete") await rpc.deleteGraphConnection(mutation.id, revision);
-        else if (mutation?.type === "upsert") await rpc.upsertGraphConnection(mutation.connection, revision);
+        await this.rpc.editGraphConnectionEnd(edit, expanded);
     }
 
     private definitionCatalog?: { rpc: WorkspaceRpc; pending: Promise<NodeDefinitionCatalog> };

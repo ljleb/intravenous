@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Duplex } from "node:stream";
 import { JsonRpcSocketClient } from "./rpcClient";
-import type { CursorWarp, TraceLog } from "./graphEditorProtocol";
+import type { CursorWarp, CursorWindowDestination, TraceLog } from "./graphEditorProtocol";
 
 const initialRestartDelayMs = 1000;
 const maximumRestartDelayMs = 30000;
@@ -10,6 +10,26 @@ const readyTimeoutMs = 10000;
 
 type RunningHelper = { child: ChildProcess; socket: Duplex | null; rpc: JsonRpcSocketClient | null;
     readyTimer?: NodeJS.Timeout; readyAt?: number; cursorWarp: boolean; cursorWarpResult: boolean };
+
+function validWindowDestination(destination: CursorWindowDestination | undefined): boolean {
+    const size = destination?.windowSizeDip;
+    const point = destination?.windowPointDip;
+    const offset = destination?.offsetPixels;
+    return !!size && Number.isSafeInteger(size.width) && size.width > 0 && Number.isSafeInteger(size.height) && size.height > 0
+        && !!point && Number.isFinite(point.x) && Number.isFinite(point.y)
+        && !!offset && Number.isFinite(offset.x) && Number.isFinite(offset.y);
+}
+
+function warpCoordinates(request: CursorWarp) {
+    if ("destination" in request)
+        return validWindowDestination(request.destination) ? { destination: request.destination } : undefined;
+    const { originX, originY, screenOrigin, deltaX, deltaY } = request;
+    if (![originX, originY, deltaX, deltaY].every(Number.isSafeInteger)
+        || (screenOrigin !== undefined && (!Number.isSafeInteger(screenOrigin?.x) || !Number.isSafeInteger(screenOrigin?.y)))
+        || Math.abs(deltaX) > 32767 || Math.abs(deltaY) > 32767) return;
+    return { originX, originY, deltaX, deltaY,
+        ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }) };
+}
 
 // The local extension host owns this process. Each launch has its own
 // inherited connection and requests from that connection are never replayed.
@@ -80,7 +100,7 @@ export class NativeClientHelper {
     } = {}): void {
         const run = this.running;
         const now = Date.now();
-        if (!request) return;
+        if (!request || typeof request !== "object") return;
         const skipped = (detail: string) => {
             trace?.("Native cursor return skipped", { reason: detail });
             this.log(`Cursor return skipped. ${detail}`);
@@ -92,15 +112,13 @@ export class NativeClientHelper {
                 skipped("The helper is not ready for cursor return.");
             return;
         }
-        const { originX, originY, screenOrigin, deltaX, deltaY, expiresAt } = request;
-        if (![originX, originY, deltaX, deltaY, expiresAt].every(Number.isSafeInteger) || expiresAt <= now || expiresAt > now + 100
-            || (screenOrigin !== undefined && (!Number.isSafeInteger(screenOrigin?.x) || !Number.isSafeInteger(screenOrigin?.y)))
-            || Math.abs(deltaX) > 32767 || Math.abs(deltaY) > 32767) {
+        const { expiresAt } = request;
+        const coordinates = warpCoordinates(request);
+        if (!coordinates || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + 100) {
             skipped(`The native request expired or its coordinates were invalid. Remaining time: ${expiresAt - now} ms.`);
             return;
         }
-        const params = { originX, originY, deltaX, deltaY, expiresAt,
-            ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }),
+        const params = { ...coordinates, expiresAt,
             ...(hideCursor && { hideCursor: true }),
             ...(followPointer && { followPointer: true }),
             ...(trace && { trace: true }) };

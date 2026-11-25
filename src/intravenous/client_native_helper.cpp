@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,18 @@ bool parse_int(std::string_view text, int& result)
 
 #if defined(IV_CLIENT_HELPER_X11)
 using Json = nlohmann::json;
+
+std::int64_t now_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+bool skip_cursor_return(const char* reason)
+{
+    std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
+    return false;
+}
 
 struct CursorWarpRange {
     std::int64_t begin, end;
@@ -81,18 +94,69 @@ Window focused_editor_window(Display* display, Window root, int editor_pid)
     return None;
 }
 
+bool warp_cursor_to_window_point(Display* display, bool cursor_hiding_supported, int editor_pid,
+    Json const& destination, std::int64_t expires_at, bool trace)
+{
+    const auto component = [&](const char* group, const char* key) {
+        const auto object = destination.find(group);
+        if (object != destination.end() && object->is_object()) {
+            const auto number = object->find(key);
+            if (number != object->end() && number->is_number()) return number->get<double>();
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+    const auto width_dip = component("windowSizeDip", "width"), height_dip = component("windowSizeDip", "height");
+    if (!(width_dip > 0 && height_dip > 0 && std::isfinite(width_dip) && std::isfinite(height_dip)))
+        return skip_cursor_return("The browser window size is invalid.");
+
+    const auto root = DefaultRootWindow(display);
+    const auto window = editor_pid > 1 ? focused_editor_window(display, root, editor_pid) : None;
+    XWindowAttributes attributes{};
+    if (window == None || !XGetWindowAttributes(display, window, &attributes))
+        return skip_cursor_return("The focused X11 window does not belong to VS Code.");
+
+    // The window dimensions convert Chromium screen DIPs. The offset from the
+    // release event to the rendered point already includes the webview zoom.
+    const auto x = std::round(component("windowPointDip", "x") * attributes.width / width_dip + component("offsetPixels", "x"));
+    const auto y = std::round(component("windowPointDip", "y") * attributes.height / height_dip + component("offsetPixels", "y"));
+    if (!(x >= 0 && x < attributes.width && x <= std::numeric_limits<std::int16_t>::max()
+            && y >= 0 && y < attributes.height && y <= std::numeric_limits<std::int16_t>::max()))
+        return skip_cursor_return("The control point is outside the focused VS Code window.");
+    if (expires_at <= now_ms()) return skip_cursor_return("The request expired while locating the target window.");
+    if (trace) std::fprintf(stderr, "Cursor return trace. X11 window %lu, size %d x %d, destination (%.0f, %.0f).\n",
+        window, attributes.width, attributes.height, x, y);
+
+#if defined(IV_CLIENT_HELPER_XFIXES)
+    if (cursor_hiding_supported) XFixesHideCursor(display, root);
+#endif
+    XWarpPointer(display, None, window, 0, 0, 0, 0, static_cast<int>(x), static_cast<int>(y));
+#if defined(IV_CLIENT_HELPER_XFIXES)
+    if (cursor_hiding_supported) XFixesShowCursor(display, root);
+#else
+    (void)cursor_hiding_supported;
+#endif
+    XSync(display, False);
+    return true;
+}
+
 bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid, Json const& message)
 {
     auto const params = message.find("params");
     if (params == message.end() || !params->is_object()) return false;
-    for (auto const* field : {"originX", "originY", "deltaX", "deltaY", "expiresAt"}) {
+    const auto expiry = params->find("expiresAt");
+    if (expiry == params->end() || !expiry->is_number_integer()) return false;
+    const auto expires_at = expiry->get<std::int64_t>();
+    const auto received_at = now_ms();
+    if (expires_at <= received_at || expires_at > received_at + 100)
+        return skip_cursor_return("The request expired before the native helper received it.");
+    const bool trace = params->contains("trace") && params->at("trace") == true;
+    if (auto const destination = params->find("destination"); destination != params->end())
+        return warp_cursor_to_window_point(display, cursor_hiding_supported, editor_pid, *destination, expires_at, trace);
+
+    for (auto const* field : {"originX", "originY", "deltaX", "deltaY"}) {
         auto const value = params->find(field);
         if (value == params->end() || !value->is_number_integer()) return false;
     }
-    const auto now = [] { return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count(); };
-    const auto expires_at = params->at("expiresAt").get<std::int64_t>();
-    const auto received_at = now();
 
     const auto origin_x = params->at("originX").get<std::int64_t>();
     const auto origin_y = params->at("originY").get<std::int64_t>();
@@ -108,13 +172,8 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     const auto delta_y = params->at("deltaY").get<std::int64_t>();
     const bool hide_cursor = params->contains("hideCursor") && params->at("hideCursor") == true;
     const bool follow_pointer = params->contains("followPointer") && params->at("followPointer") == true;
-    const bool trace = params->contains("trace") && params->at("trace") == true;
     int root_x = 0, root_y = 0, window_x = 0, window_y = 0;
-    const auto skipped = [](const char* reason) {
-        std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
-        return false;
-    };
-    if (expires_at <= received_at || expires_at > received_at + 100) return skipped("The request expired before the native helper received it.");
+    const auto skipped = skip_cursor_return;
     const auto valid_coordinate = [](std::int64_t value) {
         return value >= std::numeric_limits<std::int16_t>::min() && value <= std::numeric_limits<std::int16_t>::max();
     };
@@ -197,7 +256,7 @@ bool warp_cursor(Display* display, bool cursor_hiding_supported, int editor_pid,
     const auto source_width = source_x.end - source_x.begin - 1;
     const auto source_height = source_y.end - source_y.begin - 1;
     const bool relative_warp = follow_pointer && source_width > 0 && source_height > 0;
-    if (expires_at <= now()) return skipped("The request expired while locating the target window.");
+    if (expires_at <= now_ms()) return skipped("The request expired while locating the target window.");
 
     // Some XWayland servers emulate warps only while the cursor is hidden.
     // Queue hide, warp, and show on the same X connection so a renderer's

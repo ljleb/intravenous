@@ -1,10 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { CursorReturnMessage, CursorReturnPolicy } from "../src/graphEditorProtocol";
+import type { Point } from "../src/graphScope";
 import { PointerLockExitGuard } from "../src/pointerLockExitGuard";
+import type { PresentationInput, PresentationSnapshot } from "../src/presentationPlugin";
+import { PresentationPluginSession } from "../src/presentationPluginSession";
 import { timelineSampleFraction } from "../src/timelineGeometry";
 import { timelineSampleAt, timelineSampleCount, timelineSamples } from "../src/timelineSamples";
-import { cursorWarpAnchor, PointerLockCursorReturn, presentationCursorPoint, visibleCursorDestination } from "../webview/graph/cursorReturn";
+import { cursorWarpAnchor, cursorWindowReference, PointerLockCursorReturn, presentationCursorPoint,
+    visibleCursorDestination } from "../webview/graph/cursorReturn";
+import { presentationDrag } from "../webview/presentation/presentationDrag";
 
 const origin = { x: 10, y: 20 };
 const anchor = cursorWarpAnchor({ pointerType: "mouse", screenX: 100, screenY: 200 }, 1.5)!;
@@ -30,7 +35,7 @@ function harness() {
 
 test("object and wrapped drags share one native request after unlock and render", (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
-    const policies: (CursorReturnPolicy | undefined)[] = [undefined, "presentationPoint", "playhead", "wrapped"];
+    const policies: (CursorReturnPolicy | undefined)[] = [undefined, "playhead", "wrapped"];
     for (const policy of policies) {
         const { cursor, guard, unlock, render, messages } = harness();
         cursor.finish(origin, origin, { ...anchor, destination, policy });
@@ -51,6 +56,20 @@ test("object and wrapped drags share one native request after unlock and render"
     }
 });
 
+test("a point return uses the release event's window mapping and the final CSS position", (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+    const { cursor, render, unlock, messages } = harness();
+    const windowReference = cursorWindowReference({ screenX: 4908, screenY: 407, clientX: 312, clientY: 200 },
+        { screenX: 3840, screenY: 0, outerWidth: 1920, outerHeight: 1080, devicePixelRatio: 1.44 });
+    cursor.finish(origin, origin, { windowReference, policy: "presentationPoint", destination: () => ({ x: 362, y: 225 }) });
+    unlock();
+    render.shift()!();
+    assert.deepEqual(messages, [{ type: "returnCursor", requestId: 1, policy: "presentationPoint", warp: {
+        destination: { windowSizeDip: { width: 1920, height: 1080 }, windowPointDip: { x: 1068, y: 407 },
+            offsetPixels: { x: 72, y: 36 } }, expiresAt: 1100,
+    } }]);
+});
+
 test("a new press or an expired unlock cannot move the native cursor", (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
     const { cursor, render, unlock, messages } = harness();
@@ -68,13 +87,13 @@ test("a new press or an expired unlock cannot move the native cursor", (t) => {
         detail: "The browser did not finish releasing pointer lock in time." });
 });
 
-test("cursor return waits for the release frame and ignores replies that arrive after its deadline", async (t) => {
+test("playhead return waits for its destination and ignores replies after its deadline", async (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
     const { cursor, render, unlock, messages } = harness();
     let reply!: (point: ReturnType<typeof destination>) => void;
     const delayed = () => new Promise<ReturnType<typeof destination>>((resolve) => { reply = resolve; });
 
-    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "presentationPoint" });
+    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "playhead" });
     unlock();
     cursor.unlocked();
     assert.equal(render.length, 1);
@@ -84,7 +103,7 @@ test("cursor return waits for the release frame and ignores replies that arrive 
     await Promise.resolve();
     assert.equal(messages[0].type, "returnCursor");
 
-    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "presentationPoint" });
+    cursor.finish(origin, origin, { ...anchor, destination: delayed, policy: "playhead" });
     cursor.unlocked();
     render.shift()!();
     t.mock.timers.tick(100);
@@ -92,6 +111,89 @@ test("cursor return waits for the release frame and ignores replies that arrive 
     await Promise.resolve();
     assert.equal(messages.length, 2);
     assert.equal(messages[1].type, "cursorReturnSkipped");
+});
+
+test("fast point drags fuzz release, unlock, render, worker reply, and interruption timing", async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+    let seed = 50712;
+    const pick = (limit: number) => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return Math.floor(seed / 2 ** 32 * limit);
+    };
+    const snapshot: PresentationSnapshot = {
+        node: { definitionId: "test.curve", arguments: [], ports: [] }, revision: 1, mode: "editable", editable: true,
+        viewport: { width: 600, height: 100, time: { beginSample: "0", beginFraction: 0, spanSamples: 48000 } },
+        observations: {}, state: null,
+    };
+    const windowReference = { windowSizeDip: { width: 1000, height: 500 }, windowPointDip: { x: 200, y: 180 },
+        clientPoint: origin, devicePixelRatio: 1.25 };
+    for (let iteration = 0; iteration < 256; ++iteration) {
+        const { cursor, unlock, guard, render, messages } = harness();
+        let sendWorkerReply!: () => void;
+        const worker = new Promise<void>((resolve) => { sendWorkerReply = resolve; });
+        let completeCursor!: (point: Point | null) => void;
+        const released = new Promise<Point | null>((resolve) => { completeCursor = resolve; });
+        let finish: PresentationInput | undefined;
+        const session = new PresentationPluginSession(async (_view, inputs) => {
+            const last = inputs.at(-1);
+            assert.ok(last?.type === "gesture" && last.phase === "finish");
+            assert.deepEqual(last.point, expected);
+            assert.deepEqual(last.viewport, snapshot.viewport);
+            await worker;
+            return { drag: { cursor: { x: Math.abs(last.point.x) % 600, y: Math.abs(last.point.y) % 100 } } };
+        }, () => {}, (frame, _, inputs) => {
+            const point = frame.drag?.cursor;
+            if (finish && inputs.includes(finish)) completeCursor(point && "x" in point ? point : null);
+        }, (error) => { throw error; });
+        session.update(snapshot);
+        const drag = presentationDrag({ clientX: origin.x, clientY: origin.y } as PointerEvent,
+            { left: 0, top: 0 }, { id: "point" }, (input) => {
+                const queued = session.input(input);
+                if (input.phase === "finish") finish = queued;
+            }, { cursorReturn: () => ({ policy: "presentationPoint", destination: () => released }) });
+        drag.begin?.();
+        const expected = { ...origin };
+        for (let remaining = 10 + pick(420); remaining > 0; --remaining) {
+            const delta = { x: pick(2001) - 1000, y: pick(2001) - 1000 };
+            drag.moveBy(delta);
+            expected.x += delta.x;
+            expected.y += delta.y;
+        }
+        const follow = drag.finish(origin, origin);
+        assert.ok(follow);
+        cursor.finish(origin, origin, { ...follow, windowReference });
+        const flush = session.flush();
+        const releaseAt = Date.now();
+        const unlockAt = pick(160);
+        const renderAt = unlockAt + 1 + pick(180);
+        const workerAt = pick(400);
+        const readyAt = Math.max(renderAt, workerAt);
+        const cancelReason = pick(4) === 0 ? "A new pointer press arrived." : undefined;
+        const events = [
+            { time: unlockAt, run: unlock },
+            { time: unlockAt + pick(60), run: () => { guard.classify({ type: "mousemove", movementX: 800 }); } },
+            { time: renderAt, run: () => render.shift()?.() },
+            { time: workerAt, run: () => { sendWorkerReply(); return flush; } },
+        ];
+        if (cancelReason) events.push({ time: pick(readyAt), run: () => cursor.cancel(cancelReason) });
+        for (const { time, run } of events.sort((a, b) => a.time - b.time)) {
+            t.mock.timers.tick(releaseAt + time - Date.now());
+            await run();
+        }
+        const detail = `seed 50712, iteration ${iteration}, unlock ${unlockAt}, render ${renderAt}, worker ${workerAt}`;
+        assert.equal(messages.length, 1, detail);
+        assert.equal(cursor.waitingForUnlock, false, detail);
+        if (cancelReason) assert.deepEqual(messages[0], { type: "cursorReturnSkipped", detail: cancelReason }, detail);
+        else {
+            const [message] = messages;
+            assert.equal(message.type, "returnCursor", detail);
+            assert.ok("destination" in message.warp, detail);
+            assert.deepEqual(message.warp.destination.offsetPixels, {
+                x: (Math.abs(expected.x) % 600 - origin.x) * 1.25, y: (Math.abs(expected.y) % 100 - origin.y) * 1.25,
+            }, detail);
+            assert.equal(message.warp.expiresAt, releaseAt + readyAt + 100, detail);
+        }
+    }
 });
 
 test("playhead tracing follows one cursor return through unlock and native confirmation", (t) => {
@@ -109,7 +211,7 @@ test("playhead tracing follows one cursor return through unlock and native confi
     }
     cursor.complete(1);
     assert.deepEqual(steps, ["Finished pointer session", "Browser released pointer lock",
-        "Sending cursor return to the extension", "Webview received native move confirmation"]);
+        "Sending cursor return to the extension", "Webview received native cursor return acknowledgment"]);
 });
 
 test("capture fallback, canceled drags and non-mouse input never submit a cursor return", () => {
@@ -120,6 +222,15 @@ test("capture fallback, canceled drags and non-mouse input never submit a cursor
     assert.equal(cursor.waitingForUnlock, false);
     assert.deepEqual(messages, [{ type: "cursorReturnSkipped", detail: "Pointer lock denied" },
         { type: "cursorReturnSkipped", detail: "The drag ended before a normal pointer-lock release." }]);
+});
+
+test("a canceled point drag reports its cause without requesting a release frame or cursor move", () => {
+    const { cursor, messages, unlock, render } = harness();
+    const detail = "Control-point drag canceled. The presentation requested cancellation.";
+    cursor.finish(null, origin, undefined, "", undefined, detail);
+    unlock();
+    assert.deepEqual(render, []);
+    assert.deepEqual(messages, [{ type: "cursorReturnSkipped", detail }]);
 });
 
 test("playheads and presentation points can land under controls within the visible surface", (t) => {

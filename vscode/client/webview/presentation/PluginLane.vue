@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, toRaw, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, toRaw, watch } from "vue";
 import { addressKey } from "../../src/graphScope";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { PresentationLaneEdits } from "../../src/presentationLaneEdits";
@@ -64,7 +64,7 @@ const worker = new ReloadableWasmPresentation(createWebPresentationWorker,
         replacementError.value = reason === undefined ? "" : String(reason).slice(0, 512);
         if (reason !== undefined) report("reload", reason);
     });
-let cancelDrag: (() => void) | undefined;
+let cancelDrag: ((reason?: string) => void) | undefined;
 const dragging = ref(false);
 const panelOpen = ref(false);
 const menu = useContextPopover<string>();
@@ -130,7 +130,7 @@ const laneEdits = new PresentationLaneEdits({
     fail: (reason) => {
         editError.value = String(reason).slice(0, 512);
         report("edit", reason);
-        cancelDrag?.();
+        cancelDrag?.(`The point edit failed. ${editError.value}`);
     },
 });
 const edits = laneEdits.queue;
@@ -142,7 +142,7 @@ function fail(reason: unknown) {
     settleCursorReply();
     session.dispose();
     edits.dispose();
-    cancelDrag?.();
+    cancelDrag?.(`The presentation stopped. ${error.value}`);
     laneEdits.closeGestures();
     worker.dispose();
 }
@@ -161,7 +161,7 @@ function accept(next: PresentationFrame, draw: boolean, inputs: readonly Present
     if (active.value && draw) frame.value = next;
     wake.follow(next);
     waking.value = wake.pending;
-    if (next.cancelDrag) cancelDrag?.();
+    if (next.cancelDrag) cancelDrag?.("The presentation requested cancellation.");
     if (dragging.value) editor?.refreshPointerHint();
     if (contextRequest && inputs.includes(contextRequest)) contextRequest = undefined;
     if (draw && !contextRequest && menu.key.value !== null && !next.contextMenu) menu.close(true);
@@ -293,10 +293,10 @@ function pointerDown(event: PointerEvent) {
             marks: (timelineMarks?.value ?? []).map(({ index }) => String(index)),
             playhead: playback?.backgroundPlayhead.value?.toString(),
         };
-        if (input.phase === "finish" && target.cursorReturn) {
-            released = new Promise((resolve) => { cursorReply = { input, resolve }; });
+        const queued = session.input(input, input.phase === "begin" || input.phase === "finish" || input.phase === "cancel" ? "immediate" : "frame");
+        if (queued?.type === "gesture" && queued.phase === "finish" && target.cursorReturn) {
+            released = new Promise((resolve) => { cursorReply = { input: queued, resolve }; });
         }
-        session.input(input, input.phase === "begin" || input.phase === "finish" || input.phase === "cancel" ? "immediate" : "frame");
         if (input.phase === "finish" || input.phase === "cancel") {
             cancelDrag = undefined;
             dragging.value = false;
@@ -320,9 +320,9 @@ function pointerDown(event: PointerEvent) {
                 trace?.log("Resolved presentation point destination", { point, requested, destination });
                 return destination;
             };
-            const point = frame.value?.drag?.cursor;
-            trace?.log("Presentation release frame", { point, waitingForWorker: !!released, cancelled: frame.value?.cancelDrag ?? false });
-            if (released || point) return { destination: () => released ? released.then(locate) : locate(point),
+            const reply = released;
+            trace?.log("Presentation release frame", { waitingForWorker: !!reply });
+            if (reply) return { destination: () => reply.then((point) => nextTick(() => locate(point))),
                 policy: "presentationPoint" };
         } : undefined,
     }));
@@ -355,7 +355,7 @@ const unregisterInterrupt = editor?.registerPresentationInterrupt((reason) => {
     menu.close();
     settleCursorReply();
     session.interrupt(reason, laneEdits.interrupt());
-    cancelDrag?.();
+    cancelDrag?.(reason === "history" ? "Undo or redo interrupted the presentation." : "The project disconnected.");
 });
 watch(editable, (enabled) => { if (!enabled) menu.close(); });
 function itemShortcut(event: KeyboardEvent) {
@@ -405,7 +405,7 @@ onBeforeUnmount(() => {
     wake.cancel();
     session.dispose();
     edits.dispose();
-    cancelDrag?.();
+    cancelDrag?.("The presentation lane was removed.");
     worker.dispose();
     laneEdits.closeGestures();
 });

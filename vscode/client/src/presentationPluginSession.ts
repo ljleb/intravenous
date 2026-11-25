@@ -71,16 +71,18 @@ export class PresentationPluginSession {
         this.viewport = JSON.stringify(snapshot.viewport);
     }
 
-    input(input: PresentationInput, pacing: "frame" | "immediate" = "frame"): void {
+    input(input: PresentationInput, pacing: "frame" | "immediate" = "frame"): PresentationInput | undefined {
         if (this.closed) return;
         if (this.inputs.length >= 512) {
             this.stop(new Error("Presentation input queue exceeded its limit"));
             return;
         }
-        this.inputs.push(input.type === "gesture" && !input.viewport && this.snapshot?.viewport.time
-            ? { ...input, viewport: this.snapshot.viewport } : input);
+        const queued = input.type === "gesture" && !input.viewport && this.snapshot?.viewport.time
+            ? { ...input, viewport: this.snapshot.viewport } : input;
+        this.inputs.push(queued);
         if (pacing === "immediate") void this.flush();
         else this.request();
+        return queued;
     }
 
     interrupt(reason: "history" | "disconnected", replies: PresentationInput[] = [],

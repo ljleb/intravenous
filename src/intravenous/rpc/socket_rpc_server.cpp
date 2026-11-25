@@ -1077,6 +1077,7 @@ struct SocketRpcServer::Impl {
 
     void process_command(Command command)
     {
+        struct StaleRevision : std::runtime_error { using std::runtime_error::runtime_error; };
         std::optional<int> request_id;
         std::optional<Json> snapshot_result;
         std::string response;
@@ -1102,7 +1103,7 @@ struct SocketRpcServer::Impl {
                     auto const current = current_revision();
                     if (request.expected_revision
                         && *request.expected_revision != current) {
-                        throw std::runtime_error(
+                        throw StaleRevision(
                             "stale project session revision: expected "
                             + std::to_string(*request.expected_revision)
                             + ", current " + std::to_string(current));
@@ -1142,6 +1143,8 @@ struct SocketRpcServer::Impl {
             }
             route_known = true;
             response = std::move(route.response);
+        } catch (StaleRevision const& error) {
+            response = jsonrpc_error(request_id, -32009, error.what());
         } catch (std::exception const& error) {
             // Payload validation can fail before parse_socket_rpc_request()
             // returns. Preserve a valid envelope ID so the client can finish
