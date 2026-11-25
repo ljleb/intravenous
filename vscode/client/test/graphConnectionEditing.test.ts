@@ -122,7 +122,7 @@ test("hover feedback permits either drag direction without changing the graph", 
     for (const [first, second] of [[output, input], [input, output]]) {
         const drag = movePortConnection(beginPortConnection(first, 1, 0, { x: 0, y: 0 })!, 1, 1, { x: 100, y: 50 })!;
         assert.equal(canDropPortConnection(graph, drag, second), true);
-        assert.ok(finishPortConnection(drag, 1, drag.end, second));
+        assert.ok(finishPortConnection(graph, drag, 1, drag.end, second));
         assert.equal(canDropPortConnection(graph, drag, first), false);
         assert.equal(canDropPortConnection(graph, drag, { ...second, kind: "event" }), false);
         assert.equal(canDropPortConnection(graph, drag, null), false);
@@ -146,11 +146,16 @@ test("reattachment feedback rejects the original port, stale records and shared 
     graph.connections[0].connection.inputs.push(matcher(cInput));
     const shared = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(graph))!;
     assert.equal(canDropPortConnection(graph, shared, cInput), false);
+    const disconnected = finishPortConnection(graph, shared, 1, { x: 100, y: 50 }, cInput);
+    assert.ok(disconnected?.type === "edit");
+    assert.equal(disconnected.edit.target, null);
+    assert.deepEqual(replacement(graph, disconnected.edit.end, disconnected.edit.target).inputs, [matcher(cInput)]);
     const originalGraph = connectedScope();
     const originalDrag = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(originalGraph))!;
     const staleGraph = structuredClone(originalGraph);
     staleGraph.connections[0].connection.sourceType = "mono";
     assert.equal(canDropPortConnection(staleGraph, originalDrag, cInput), false);
+    assert.equal(finishPortConnection(staleGraph, originalDrag, 1, { x: 100, y: 50 }, cInput), null);
 });
 
 test("in-progress connection gestures survive unrelated scope updates and reject stale endpoints", () => {
@@ -164,7 +169,7 @@ test("in-progress connection gestures survive unrelated scope updates and reject
         ...updated.connections[0].connection, connectionId: "unrelated", inputs: [matcher(cInput)],
     } });
     assert.equal(canContinuePortConnection(updated, rewire.port, rewire.edit), true);
-    assert.ok(finishPortConnection(rewire, 1, rewire.end, cInput));
+    assert.ok(finishPortConnection(updated, rewire, 1, rewire.end, cInput));
     assert.equal(canContinuePortConnection(updated, output), true);
     assert.equal(canContinuePortConnection({ ...updated, editable: false }, rewire.port, rewire.edit), false);
     assert.equal(canContinuePortConnection({ ...updated, connections: [] }, rewire.port, rewire.edit), false);

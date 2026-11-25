@@ -55,6 +55,10 @@ IV_SUBSCRIBE_LINKER_EVENT(
     &ProjectGraph::handle_socket_rpc_upsert_manual_control)
 IV_SUBSCRIBE_LINKER_EVENT(
     socket_rpc_project_graph_bridge,
+    iv_socket_rpc_toggle_manual_input_event,
+    &ProjectGraph::handle_socket_rpc_toggle_manual_input)
+IV_SUBSCRIBE_LINKER_EVENT(
+    socket_rpc_project_graph_bridge,
     iv_socket_rpc_delete_manual_control_event,
     &ProjectGraph::handle_socket_rpc_delete_manual_control)
 IV_SUBSCRIBE_LINKER_EVENT(

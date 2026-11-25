@@ -66,6 +66,8 @@ namespace iv {
         void (*)(DeleteGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcUpsertManualControlEvent =
         void (*)(UpsertManualControlRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcToggleManualInputEvent =
+        void (*)(ToggleManualInputRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcDeleteManualControlEvent =
         void (*)(DeleteManualControlRequest const&, SocketRpcAckResponseBuilder&);
     using SocketRpcSetManualControlHoverEvent =
@@ -126,6 +128,7 @@ namespace iv {
     IV_DECLARE_LINKER_EVENT(SocketRpcUpsertGraphConnectionEvent, iv_socket_rpc_upsert_graph_connection_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteGraphConnectionEvent, iv_socket_rpc_delete_graph_connection_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcUpsertManualControlEvent, iv_socket_rpc_upsert_manual_control_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcToggleManualInputEvent, iv_socket_rpc_toggle_manual_input_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcDeleteManualControlEvent, iv_socket_rpc_delete_manual_control_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcSetManualControlHoverEvent, iv_socket_rpc_set_manual_control_hover_event);
     IV_DECLARE_LINKER_EVENT(SocketRpcBeginManualControlInteractionEvent, iv_socket_rpc_begin_manual_control_interaction_event);

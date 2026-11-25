@@ -21,6 +21,7 @@
 #include <numeric>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -547,10 +548,28 @@ struct RoutedSampleConnection {
     std::size_t authored_connection_index = 0;
 };
 
+// Used only when replaying routing to explain a rejected SCC. Keeping the
+// configured indices here also recovers connections through structural ports.
+struct FeedbackConnections {
+    BackgroundEvaluationPlan const& graph;
+    std::vector<bool> const& failed_components;
+    std::set<GraphJitConnectionReference> connections{};
+
+    bool contains_edge(NodeBundleHandle source, NodeBundleHandle target) const
+    {
+        auto const& nodes = graph.bundle_to_semantic_node;
+        if (source >= nodes.size() || target >= nodes.size() || !nodes[source] || !nodes[target])
+            return false;
+        auto const component = graph.semantic_nodes[*nodes[source]].scc;
+        return failed_components[component] && component == graph.semantic_nodes[*nodes[target]].scc;
+    }
+};
+
 struct ResolvedSampleContribution {
     std::vector<std::pair<SampleOutputChannelId, float>> source_terms{};
     std::optional<ConfiguredSampleConnectionDetach> detach{};
     float output_coefficient = 1.0f;
+    std::vector<std::pair<SampleOutputChannelId, std::size_t>> origins{};
 };
 
 struct ResolvedSampleChannel {
@@ -594,6 +613,7 @@ std::expected<ResolvedSampleChannel, std::string> detach_sample_channel(
                 source,
                 coefficient * contribution.output_coefficient);
         }
+        detached.origins.insert(detached.origins.end(), contribution.origins.begin(), contribution.origins.end());
     }
     channel.contributions.clear();
     channel.contributions.push_back(std::move(detached));
@@ -625,6 +645,8 @@ void add_sample_channel(
                     coefficient * contribution.output_coefficient
                         * base_coefficient);
             }
+            if (!contribution.origins.empty())
+                found->origins.insert(found->origins.end(), contribution.origins.begin(), contribution.origins.end());
             continue;
         }
         auto detached = contribution;
@@ -740,7 +762,8 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
     StructuralSampleRouteIndex const& routing,
     std::vector<ManualSampleRoutePlan>& manual_routes,
     ConnectionView view,
-    bool public_coverage_inputs = false)
+    bool public_coverage_inputs = false,
+    FeedbackConnections* feedback = nullptr)
 {
     auto const authored = graph.connections.configured_sample_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
@@ -904,6 +927,12 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                     source_channel % source_width,
                     target_channel);
                 if (coefficient == 0.0f) continue;
+                if (feedback) {
+                    auto const index = static_cast<std::size_t>(connection - authored.data());
+                    for (auto& contribution : resolved->contributions)
+                        for (auto const& [source, _] : contribution.source_terms)
+                            contribution.origins.emplace_back(source, index);
+                }
                 add_sample_channel(result, *resolved, coefficient);
             }
         }
@@ -982,6 +1011,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             });
         if (!source_crossed_structure && !target_crossed_structure
             && uniform_direct_detach) {
+            if (feedback && std::ranges::any_of(connection.source_channels, [&](auto const& source) {
+                    return feedback->contains_edge(source.channel.bundle, connection.target_channels.front().bundle);
+                }))
+                feedback->connections.insert({PortKind::sample, connection_index});
             routes.push_back(RoutedSampleConnection{
                 .connection = connection,
                 .authored_connection_index = connection_index,
@@ -1119,6 +1152,26 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
         for (auto const& group : groups) {
             auto target_type = channel_type_with_count(group.channels.size());
             if (!target_type) return std::unexpected(std::move(target_type.error()));
+            if (feedback) {
+                for (std::size_t input = 0; input < resolved_sources.size(); ++input) {
+                    auto const transfers = [&](std::size_t row) {
+                        return channel_conversion_coefficient(connection.source_type, connection.target_type, input, row);
+                    };
+                    for (auto const& contribution : resolved_sources[input].contributions) {
+                        for (auto const& [source, coefficient] : contribution.source_terms) {
+                            if (!feedback->contains_edge(source.bundle, group.port.node_bundle_handle)) continue;
+                            auto const base = static_cast<std::size_t>(std::ranges::find(base_sources, source) - base_sources.begin());
+                            if (!std::ranges::any_of(group.semantic_rows, [&](std::size_t row) {
+                                    return transfers(row) * contribution.output_coefficient * coefficient != 0.0f
+                                        && (has_routed_detach || complete_transform[row * base_sources.size() + base] != 0.0f);
+                                })) continue;
+                            feedback->connections.insert({PortKind::sample, connection_index});
+                            for (auto const& [origin, index] : contribution.origins)
+                                if (origin == source) feedback->connections.insert({PortKind::sample, index});
+                        }
+                    }
+                }
+            }
             auto make_base_connection = [&](std::span<SampleOutputChannelId const> channels) {
                 std::vector<ConfiguredSampleConnectionSource> sources;
                 sources.reserve(channels.size());
@@ -1828,6 +1881,7 @@ struct ResolvedEventBranch {
     EventTypeId source_type = EventTypeId::empty;
     std::vector<ConfiguredEventConnectionSource> sources{};
     EventConversionPlan conversion{};
+    std::vector<std::size_t> origins{};
 };
 
 std::expected<EventConversionPlan, std::string> plan_event_route_conversion(
@@ -1912,7 +1966,8 @@ std::expected<void, std::string> append_event_route_edge(
 }
 
 std::expected<std::vector<RoutedEventConnection>, std::string>
-build_structural_event_routes(ConfiguredGraph const& graph, bool public_coverage_inputs = false)
+build_structural_event_routes(ConfiguredGraph const& graph, bool public_coverage_inputs = false,
+    FeedbackConnections* feedback = nullptr)
 {
     auto const authored = graph.connections.configured_event_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
@@ -2062,6 +2117,8 @@ build_structural_event_routes(ConfiguredGraph const& graph, bool public_coverage
                         pop();
                         return std::unexpected(std::move(appended.error()));
                     }
+                    if (feedback)
+                        branch.origins.push_back(static_cast<std::size_t>(&connection - authored.data()));
                     result.push_back(std::move(branch));
                 }
             }
@@ -2144,6 +2201,12 @@ build_structural_event_routes(ConfiguredGraph const& graph, bool public_coverage
                     "GraphJit structural event source has an inconsistent conversion");
             }
             for (auto& source : branch.sources) {
+                if (feedback && std::ranges::any_of(route.connection.targets, [&](auto target) {
+                        return feedback->contains_edge(source.port.bundle, target.bundle);
+                    })) {
+                    feedback->connections.insert({PortKind::event, connection_index});
+                    for (auto const index : branch.origins) feedback->connections.insert({PortKind::event, index});
+                }
                 route.connection.sources.push_back(source);
                 route.sources.push_back(RoutedEventSource{
                     .source = std::move(source),
@@ -2654,17 +2717,6 @@ bool is_acyclic(std::vector<std::vector<std::size_t>> const& outgoing)
     return ready.size() == outgoing.size();
 }
 
-std::expected<void, std::string> validate_explicit_graph_is_acyclic(
-    ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan)
-{
-    if (!is_acyclic(dependency_adjacency(graph, plan, false))) {
-        return std::unexpected(
-            "GraphJit graph contains an implicit cycle; use detach() to break feedback explicitly");
-    }
-    return {};
-}
-
 std::expected<void, std::string> validate_detach_delivery_mechanisms(
     ConnectionAnalysisPlan const& plan)
 {
@@ -2723,7 +2775,8 @@ std::vector<NodeBundleHandle> detached_sample_source_bundles(
 
 std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_plan(
     ConfiguredGraph const& graph,
-    ConnectionAnalysisPlan const& plan)
+    ConnectionAnalysisPlan const& plan,
+    bool include_detached = true)
 {
     BackgroundEvaluationPlan result;
     result.bundle_to_semantic_node.resize(graph.node_bundles.size());
@@ -2750,17 +2803,19 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
         outgoing[*result.bundle_to_semantic_node[source_bundle]].push_back(
             *result.bundle_to_semantic_node[target_bundle]);
     };
-    for (auto const& connection : plan.sample_connections) {
-        if (!has_detached_source(connection)) continue;
-        for (auto const source : detached_sample_source_bundles(connection)) {
-            append_edge(source, connection.target_port.node_bundle_handle);
+    if (include_detached) {
+        for (auto const& connection : plan.sample_connections) {
+            if (!has_detached_source(connection)) continue;
+            for (auto const source : detached_sample_source_bundles(connection)) {
+                append_edge(source, connection.target_port.node_bundle_handle);
+            }
         }
-    }
-    for (auto const& connection : plan.event_connections) {
-        for (auto const& source : connection.source_plans) {
-            if (!source.detach) continue;
-            for (auto const target : connection.targets) {
-                append_edge(source.source.bundle, target.bundle);
+        for (auto const& connection : plan.event_connections) {
+            for (auto const& source : connection.source_plans) {
+                if (!source.detach) continue;
+                for (auto const target : connection.targets) {
+                    append_edge(source.source.bundle, target.bundle);
+                }
             }
         }
     }
@@ -2893,47 +2948,60 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
         }
     }
 
-    auto validate_edge = [&](NodeBundleHandle source_bundle,
-                             NodeBundleHandle target_bundle,
-                             std::string_view data,
-                             std::size_t connection_index)
-        -> std::expected<void, std::string> {
-        if (source_bundle >= result.bundle_to_semantic_node.size()
-            || target_bundle >= result.bundle_to_semantic_node.size()
-            || !result.bundle_to_semantic_node[source_bundle]
-            || !result.bundle_to_semantic_node[target_bundle]) {
-            return {};
-        }
-        auto const source = *result.bundle_to_semantic_node[source_bundle];
-        auto const target = *result.bundle_to_semantic_node[target_bundle];
-        auto const source_scc = result.semantic_nodes[source].scc;
-        if (source_scc != result.semantic_nodes[target].scc) return {};
+    return result;
+}
 
-        auto const& component = result.semantic_sccs[source_scc].nodes;
-        std::string participants;
-        for (auto const member : component) {
-            if (!participants.empty()) participants += ", ";
-            participants += std::to_string(result.semantic_nodes[member].bundle);
+void collect_feedback_connections(ConfiguredGraph const& graph,
+    StructuralSampleRouteIndex const& routing, ConnectionView view,
+    BackgroundEvaluationPlan const& components, std::vector<bool> const& failed_components,
+    std::vector<GraphJitConnectionReference>& connections)
+{
+    FeedbackConnections feedback{components, failed_components};
+    std::vector<ManualSampleRoutePlan> unused_manual_routes;
+    // Both passes repeat the routing that already succeeded for this graph.
+    // Only the origin indices are retained from the replay.
+    (void)build_structural_sample_routes(graph, routing, unused_manual_routes, view, false, &feedback);
+    (void)build_structural_event_routes(graph, false, &feedback);
+    connections.assign(feedback.connections.begin(), feedback.connections.end());
+}
+
+std::expected<void, std::string> validate_background_feedback(ConfiguredGraph const& graph,
+    StructuralSampleRouteIndex const& routing, ConnectionAnalysisPlan const& plan, ConnectionView view,
+    std::vector<GraphJitConnectionReference>* feedback_connections)
+{
+    auto const& background = plan.background;
+    std::string message;
+    std::vector<bool> failed_components;
+    auto validate_edge = [&](NodeBundleHandle source_bundle, NodeBundleHandle target_bundle,
+                             std::string_view data, std::size_t connection_index) {
+        auto const& nodes = background.bundle_to_semantic_node;
+        if (source_bundle >= nodes.size() || target_bundle >= nodes.size()
+            || !nodes[source_bundle] || !nodes[target_bundle]) return;
+        auto const component = background.semantic_nodes[*nodes[source_bundle]].scc;
+        if (component != background.semantic_nodes[*nodes[target_bundle]].scc) return;
+        if (message.empty()) {
+            std::string participants;
+            for (auto const member : background.semantic_sccs[component].nodes) {
+                if (!participants.empty()) participants += ", ";
+                participants += std::to_string(background.semantic_nodes[member].bundle);
+            }
+            message = "GraphJit background " + std::string(data) + " connection "
+                + std::to_string(connection_index) + " from bundle "
+                + std::to_string(source_bundle) + " to bundle "
+                + std::to_string(target_bundle)
+                + " participates in semantic SCC [" + participants + "]";
         }
-        return std::unexpected(
-            "GraphJit background " + std::string(data) + " connection "
-            + std::to_string(connection_index) + " from bundle "
-            + std::to_string(source_bundle) + " to bundle "
-            + std::to_string(target_bundle)
-            + " participates in semantic SCC [" + participants + "]");
+        if (feedback_connections) {
+            if (failed_components.empty()) failed_components.resize(background.semantic_sccs.size());
+            failed_components[component] = true;
+        }
     };
 
     for (auto const& connection : plan.sample_connections) {
         for (auto const& source : connection.source_channel_timings) {
             if (uses_realtime_storage(source.delivery)) continue;
-            if (auto valid = validate_edge(
-                    source.source.bundle,
-                    connection.target_port.node_bundle_handle,
-                    "sample",
-                    connection.configured_connection_index);
-                !valid) {
-                return std::unexpected(std::move(valid.error()));
-            }
+            validate_edge(source.source.bundle, connection.target_port.node_bundle_handle,
+                "sample", connection.configured_connection_index);
         }
     }
     for (auto const& connection : plan.event_connections) {
@@ -2941,17 +3009,31 @@ std::expected<BackgroundEvaluationPlan, std::string> build_semantic_background_p
             if (uses_realtime_storage(delivery.mechanism)) continue;
             auto const& source = connection.source_plans[delivery.source_index];
             auto const& target = connection.target_plans[delivery.target_index];
-            if (auto valid = validate_edge(
-                    source.source.bundle,
-                    target.target.bundle,
-                    "event",
-                    connection.configured_connection_index);
-                !valid) {
-                return std::unexpected(std::move(valid.error()));
-            }
+            validate_edge(source.source.bundle, target.target.bundle, "event", connection.configured_connection_index);
         }
     }
-    return result;
+    if (message.empty()) return {};
+    if (feedback_connections)
+        collect_feedback_connections(graph, routing, view, background, failed_components, *feedback_connections);
+    return std::unexpected(std::move(message));
+}
+
+std::expected<void, std::string> validate_explicit_graph_is_acyclic(
+    ConfiguredGraph const& graph, StructuralSampleRouteIndex const& routing,
+    ConnectionAnalysisPlan const& plan, ConnectionView view,
+    std::vector<GraphJitConnectionReference>* feedback_connections)
+{
+    if (is_acyclic(dependency_adjacency(graph, plan, false))) return {};
+    if (feedback_connections) {
+        if (auto components = build_semantic_background_plan(graph, plan, false)) {
+            std::vector<bool> failed_components;
+            for (auto const& component : components->semantic_sccs)
+                failed_components.push_back(component.cyclic);
+            collect_feedback_connections(graph, routing, view, *components, failed_components, *feedback_connections);
+        }
+    }
+    return std::unexpected(
+        "GraphJit graph contains an implicit cycle; use detach() to break feedback explicitly");
 }
 
 // Feedback SCCs are full by contract, without an independent contribution.
@@ -4940,14 +5022,18 @@ std::expected<void, std::string> inventory_routed_events(
 std::expected<void, std::string> plan_connection_semantics(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
+    StructuralSampleRouteIndex const& routing,
     ConnectionAnalysisPlan& plan,
     ConnectionView view,
     std::size_t kernel_block_size,
-    std::vector<std::size_t>& normalized_connection_indices)
+    std::vector<std::size_t>& normalized_connection_indices,
+    std::vector<GraphJitConnectionReference>* feedback_connections)
 {
     auto background = build_semantic_background_plan(graph, plan);
     if (!background) return std::unexpected(std::move(background.error()));
     plan.background = std::move(*background);
+    if (auto valid = validate_background_feedback(graph, routing, plan, view, feedback_connections); !valid)
+        return valid;
     mark_live_sequential_outputs(graph, plan, view);
     if (auto replay = derive_contextual_replayability(graph, plan); !replay)
         return replay;
@@ -4964,22 +5050,24 @@ std::expected<void, std::string> plan_connection_semantics(
 std::expected<void, std::string> validate_authored_routes(
     ConfiguredGraph const& graph,
     ResolvedPortRealization const& realization,
+    StructuralSampleRouteIndex const& routing,
     ConnectionAnalysisPlan& plan,
     std::size_t kernel_block_size,
-    SampleInputTakeovers const& takeovers)
+    std::vector<GraphJitConnectionReference>* feedback_connections)
 {
     std::vector<std::size_t> normalized_connection_indices;
-    if (auto semantics = plan_connection_semantics(graph, realization, plan,
-            ConnectionView::authored, kernel_block_size, normalized_connection_indices); !semantics) {
+    if (auto semantics = plan_connection_semantics(graph, realization, routing, plan,
+            ConnectionView::authored, kernel_block_size, normalized_connection_indices, feedback_connections); !semantics) {
         return semantics;
     }
     if (!is_acyclic(background_evaluation_adjacency(plan.background))) {
         return std::unexpected(
             "GraphJit background evaluation dependency graph contains an unresolved replay cycle");
     }
-    if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic)
+    if (auto acyclic = validate_explicit_graph_is_acyclic(
+            graph, routing, plan, ConnectionView::authored, feedback_connections); !acyclic)
         return acyclic;
-    return validate_detaches_after_takeover(graph, plan, takeovers);
+    return validate_detaches_after_takeover(graph, plan, routing.takeovers);
 }
 
 } // namespace
@@ -4990,7 +5078,8 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
     std::size_t kernel_block_size,
     std::span<std::size_t const> callback_batch_classes,
     ConfiguredBundleInventory configured_bundles,
-    std::span<std::optional<StableConcreteNodeId> const> identities)
+    std::span<std::optional<StableConcreteNodeId> const> identities,
+    std::vector<GraphJitConnectionReference>* feedback_connections)
 {
     if (kernel_block_size == 0) {
         return std::unexpected(
@@ -5055,7 +5144,7 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
         // and keep the dependency order as Sample followed by Event.
         plan.event_connections = authored.event_connections;
         auto const event_dependencies = std::span(authored.dependencies).subspan(first_event_dependency);
-        if (auto valid = validate_authored_routes(graph, port_realization, authored, kernel_block_size, routing->takeovers);
+        if (auto valid = validate_authored_routes(graph, port_realization, *routing, authored, kernel_block_size, feedback_connections);
             !valid)
             return std::unexpected(std::move(valid.error()));
         if (auto samples = inventory_routed_samples(
@@ -5072,14 +5161,15 @@ std::expected<ConnectionTopology, std::string> ConnectionTopology::build(
             return std::unexpected(std::move(events.error()));
     }
 
-    if (auto semantics = plan_connection_semantics(graph, port_realization, plan,
-            ConnectionView::effective, kernel_block_size, topology.normalized_connection_indices_); !semantics)
+    if (auto semantics = plan_connection_semantics(graph, port_realization, *routing, plan,
+            ConnectionView::effective, kernel_block_size, topology.normalized_connection_indices_, feedback_connections); !semantics)
         return std::unexpected(std::move(semantics.error()));
     if (auto scheduled = schedule_background_topology(plan.background, callback_batch_classes); !scheduled)
         return std::unexpected(std::move(scheduled.error()));
     plan_public_coverage_inputs(graph, port_realization, *routing, plan);
     plan_public_event_coverage_inputs(graph, plan.background);
-    if (auto acyclic = validate_explicit_graph_is_acyclic(graph, plan); !acyclic)
+    if (auto acyclic = validate_explicit_graph_is_acyclic(
+            graph, *routing, plan, ConnectionView::effective, feedback_connections); !acyclic)
         return std::unexpected(std::move(acyclic.error()));
     if (!has_manual_override) {
         if (auto detaches = validate_detaches_after_takeover(graph, plan, routing->takeovers); !detaches)

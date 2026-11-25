@@ -1,6 +1,6 @@
 import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
-import { ManualControlInteractions, resolveManualControl, type ManualControlId } from "./manualControls";
+import { ManualControlInteractions, type ManualControlId } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
 import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress, type ProjectEditReceipt } from "./graphScope";
 import type { GraphPresentationPatch } from "./graphEditorProtocol";
@@ -216,17 +216,11 @@ export class WorkspaceSession {
         return change;
     }
 
-    async setManualControlEnabled(control: ManualControlId, enabled: boolean, expanded: NodeAddress[]): Promise<void> {
+    async toggleManualInput(control: ManualControlId): Promise<void> {
         if (control.inputName === undefined) throw new Error("Only input knobs have an enable setting");
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
-        await this.manualControls.settled();
-        const scope = graphScopeWithChildren(await rpc.getGraphScope(expanded));
-        if (rpc !== this.rpc) throw new Error("The session changed before editing the input");
-        const descriptor = resolveManualControl(scope, control);
-        if (!descriptor?.available || descriptor.live) throw new Error("The manual input is unavailable");
-        if (descriptor.enabled === enabled) return;
-        await rpc.setManualInputEnabled(control, descriptor.value, enabled, descriptor.participation, scope.sessionRevision);
+        await rpc.toggleManualInput(control);
     }
 
     async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[]): Promise<void> {

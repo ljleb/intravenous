@@ -45,9 +45,10 @@ import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorS
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
 import { dropSelectedLanes, expandedGraphLanes, mergeLaneOrder, movableLaneSelection, moveLaneNesting, moveSelectedSiblingLanes,
     orderLanes, selectedProjectLaneIds, selectLaneRange, type LaneDestination } from "../../src/laneSelection";
-import { connectionEndKey, connectionWirePath, LaneConnectionViewport, portEndpointKey, portSlotKey,
-    resolveLaneConnectionEnds, selectedLaneConnections, selectedLaneWirePath,
-    type PortWireAnchor, type ResolvedLaneConnections, type RevealedConnectionEnd, type SelectedLaneWire } from "../../src/selectedLaneConnections";
+import { connectionEndKey, connectionWirePath, laneConnectionFeedback, LaneConnectionViewport, portEndpointKey, portSlotKey,
+    resolveLaneConnectionEnds, selectedLaneConnections, selectedLaneWireClips, selectedLaneWirePath,
+    type PortWireAnchor, type ResolvedLaneConnections, type RevealedConnectionEnd, type SelectedLaneWire,
+    type WireClip, type WireViewport } from "../../src/selectedLaneConnections";
 
 type HoveredPortGroup = { nodeKey: string; rowKey?: string; direction: "input" | "output" };
 type PreviewAnchor = PortWireAnchor & { direction: "input" | "output" };
@@ -264,8 +265,8 @@ function startObjectDrag(event: PointerEvent, drag: ObjectDrag) {
     drag.trace?.log("Pointer session started", { ...pointerLock.status(), capture: element.hasPointerCapture(event.pointerId) });
     return () => { if (objectDrag === session) pointerLock.cancel(); };
 }
-provideManualControls({ gestures: manualGestures, version: manualVersion, setEnabled: (control, enabled) => {
-    webviewApi.postMessage({ type: "setManualControlEnabled", control, enabled });
+provideManualControls({ gestures: manualGestures, version: manualVersion, toggleEnabled: (control) => {
+    webviewApi.postMessage({ type: "toggleManualInput", control });
 } });
 function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) {
     const element = surface.value;
@@ -470,6 +471,15 @@ const visibleScope = computed(() => {
     return children.size ? { ...scope, nodes: [...scope.nodes, ...children.values()] } : scope;
 });
 const wireConnections = computed(() => visibleScope.value ? resolveLaneConnectionEnds(visibleScope.value) : []);
+const connectionFeedback = computed(() => laneConnectionFeedback(wireConnections.value));
+const compilationError = computed(() => {
+    const scope = visibleScope.value;
+    if (!scope?.execution) return null;
+    const feedback = scope.connections.some((connection) => connection.feedback);
+    if (!feedback && scope.execution.phase !== "failed") return null;
+    return { message: feedback ? "A feedback loop prevents graph compilation." : scope.execution.message,
+        detail: scope.execution.message };
+});
 const wireConnectionsById = computed(() => new Map(wireConnections.value.map((entry) => [entry.id, entry])));
 const implicitOutputModules = computed(() => {
     const modules = new Set<string>();
@@ -616,22 +626,32 @@ let pendingLaneCopies: string | undefined;
 let insertedSelection: string[] = [];
 const selectedWires = shallowRef<SelectedLaneWire[]>([]);
 const movingWireId = computed(() => connectionDrag.value?.edit?.connection.id);
+const wireViewport = shallowRef<WireViewport>();
 const wireLayers = computed(() => {
     type Layer = { wire: SelectedLaneWire; index: number }[];
-    const layer = () => ({ source: [] as Layer, faint: [] as Layer, emphasized: [] as Layer });
-    const lanes = layer(), ruler = layer();
+    const groups = new Map<string, { clips: WireClip[]; source: Layer; faint: Layer; emphasized: Layer; feedback: Layer; edited: Layer }>();
+    const viewport = wireViewport.value;
+    if (!viewport) return [];
     const moving = movingWireId.value;
+    const noPopovers: readonly number[] = [];
     selectedWires.value.forEach((wire, index) => {
-        const layers = wire.target.rulerInput ? ruler : lanes;
-        const style = wire.sourceOwned ? "source"
+        const ruler = !!wire.target.rulerInput;
+        const { source, target } = wire;
+        const popovers = source.popover === undefined && target.popover === undefined ? noPopovers
+            : [...new Set([source.popover, target.popover])].filter((panel) => panel !== undefined).sort((a, b) => a - b);
+        const key = `${ruler}:${popovers.join(",")}`;
+        let layers = groups.get(key);
+        if (!layers) {
+            layers = { clips: selectedLaneWireClips(viewport, ruler, popovers), source: [], faint: [], emphasized: [], feedback: [], edited: [] };
+            groups.set(key, layers);
+        }
+        const style = wire.feedback ? (wire.feedback === "edited" ? "edited" : "feedback") : wire.sourceOwned ? "source"
             : wire.emphasized && (moving === undefined || !wire.connectionIds.includes(moving)) ? "emphasized" : "faint";
         layers[style].push({ wire, index });
     });
-    return { lanes, ruler };
+    return [...groups.values()];
 });
 const dragAnchors = shallowRef<PreviewAnchor[]>([]);
-type WireClip = { x: number; y: number; width: number; height: number };
-const wireClips = shallowRef<{ lanes: WireClip[]; ruler: WireClip[] }>({ lanes: [], ruler: [] });
 const wireOcclusions = shallowRef<WireOcclusions>({ labels: [], knobs: [] });
 let pendingWireUpdate = false;
 let disposed = false;
@@ -757,7 +777,7 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     },
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
-    scope: visibleScope, lanes, expandedModules, implicitOutputModules, toggleModule,
+    scope: visibleScope, lanes, expandedModules, implicitOutputModules, connectionFeedback, toggleModule,
     shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     cancelKnob() {
@@ -796,8 +816,10 @@ function measureLaneHeader(element: Element, measurements?: Map<Element, DOMRect
     measurements?.set(header, bounds);
     return bounds;
 }
-function measureWireAnchor(element: HTMLElement, id: string, headers?: Map<Element, DOMRect>): PreviewAnchor | null {
-    if (!element.isConnected || element.closest(".port-panel.positioning")) return null;
+function measureWireAnchor(element: HTMLElement, id: string, headers?: Map<Element, DOMRect>,
+    popovers?: ReadonlyMap<HTMLElement, number>): PreviewAnchor | null {
+    const panel = element.closest<HTMLElement>(".port-panel");
+    if (!element.isConnected || panel?.classList.contains("positioning")) return null;
     const direction = element.closest<HTMLElement>("[data-direction]")?.dataset.direction;
     if (direction !== "input" && direction !== "output") return null;
     const circles = element.querySelectorAll<HTMLElement>(".port-circle");
@@ -808,7 +830,9 @@ function measureWireAnchor(element: HTMLElement, id: string, headers?: Map<Eleme
     const left = Math.max(rect.left, header?.left ?? rect.left);
     const right = Math.min(rect.right, header?.right ?? rect.right);
     if (right <= left || !rect.height) return null;
-    const point: PreviewAnchor = { id, direction, x: direction === "input" ? right : left, y: rect.top + rect.height / 2,
+    const popover = panel ? popovers?.get(panel) : undefined;
+    const point: PreviewAnchor = { id: popover === undefined ? id : JSON.stringify([id, popover]), popover,
+        direction, x: direction === "input" ? right : left, y: rect.top + rect.height / 2,
         moduleBoundary: !!element.closest("[data-module-boundary]"),
         rulerInput: direction === "input" && !!element.closest(".timeline-snap-input") };
     const body = element.closest(".expansion-body");
@@ -889,7 +913,8 @@ function updateWires() {
     const snapInput = header?.querySelector(".timeline-snap-input [data-port-endpoint]")
         ?.closest(".timeline-snap-input")?.getBoundingClientRect();
     const top = heading ? Math.max(viewport.top, heading.bottom) : viewport.top;
-    const popovers = [...document.querySelectorAll<HTMLElement>(".port-panel")];
+    const popovers = [...document.querySelectorAll<HTMLElement>(".port-panel:not(.positioning)")];
+    const popoverIndices = new Map(popovers.map((panel, index) => [panel, index]));
     const auxiliaryRoots = header ? [header, ...popovers] : popovers;
     const revealedEnds = popovers.flatMap((panel) => [...panel.querySelectorAll<HTMLElement>("[data-connection-end]")]
         .map((element) => ({ element, end: JSON.parse(element.dataset.connectionEnd!) as RevealedConnectionEnd })));
@@ -935,7 +960,7 @@ function updateWires() {
     const implicitAnchors = new Map<string, Map<string, PreviewAnchor>>();
     const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement, rulerInput = false) => {
         const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
-        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), laneHeaders);
+        const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), laneHeaders, popoverIndices);
         if (!anchor) return;
         if (rulerInput) anchor.rulerInput = true;
         const existing = anchors.get(key);
@@ -962,7 +987,7 @@ function updateWires() {
         const anchors = implicitAnchors.get(address) ?? new Map<string, PreviewAnchor>();
         // When the continuation exposes the stub, use it in place of its folded socket.
         if (element.hasAttribute("data-port-slot") && anchors.has(row)) continue;
-        const anchor = measureWireAnchor(element, JSON.stringify(["implicit-output", row]), laneHeaders);
+        const anchor = measureWireAnchor(element, JSON.stringify(["implicit-output", row]), laneHeaders, popoverIndices);
         if (!anchor) continue;
         anchors.set(row, anchor);
         implicitAnchors.set(address, anchors);
@@ -1000,14 +1025,13 @@ function updateWires() {
     if (selectedWires.value.length || drag) {
         wireOcclusions.value = profileGraphUi("Measure wire occlusions", () =>
             measureWireOcclusions(top, viewport.bottom, occlusionRoots, laneHeaders));
-        const laneClip = { x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) };
-        const popupClips = popovers.map((element) => element.getBoundingClientRect());
-        wireClips.value = {
-            lanes: [laneClip, ...popupClips.flatMap(({ left, top: popupTop, width, bottom }) => {
-                const y = Math.max(popupTop, heading?.bottom ?? popupTop);
-                return y < bottom ? [{ x: left, y, width, height: bottom - y }] : [];
-            })],
-            ruler: [laneClip, ...(snapInput ? [snapInput] : []), ...popupClips],
+        wireViewport.value = {
+            lane: { x: viewport.left, y: top, width: viewport.width, height: Math.max(0, viewport.bottom - top) },
+            rulerInput: snapInput, rulerBottom: heading?.bottom,
+            popovers: popovers.map((element) => {
+                const { x, y, width, height } = element.getBoundingClientRect();
+                return { x, y, width, height };
+            }),
         };
     }
     const starts = drag && !drag.edit ? portAnchors(drag.port) : null;
@@ -1098,12 +1122,9 @@ function releaseConnection(event: PointerEvent) {
     const hit = document.elementFromPoint(event.clientX, event.clientY);
     const handle = destinationHandle(hit);
     const target = handle?.dataset.portEndpoint ? JSON.parse(handle.dataset.portEndpoint) as GraphPortEndpoint : null;
-    if (target && !canDropPortConnection(visibleScope.value, drag, target)) {
-        cancelConnection(); return;
-    }
-    const emptyEditorSpace = !!hit && !!surface.value?.contains(hit)
+    const emptyEditorSpace = !target && !!hit && !!surface.value?.contains(hit)
         && !hit.closest("[data-port-group], .port-panel, button, input, select, textarea, a, label, summary, [contenteditable], [role=button], [role=slider], [role=dialog], .package-dialog-backdrop");
-    const connection = finishPortConnection(drag, event.pointerId,
+    const connection = finishPortConnection(visibleScope.value, drag, event.pointerId,
         { x: event.clientX, y: event.clientY }, target, emptyEditorSpace);
     cancelConnection();
     if (connection?.type === "create") webviewApi.postMessage({ type: "connectGraphPorts", first: connection.first, second: connection.second });
@@ -1684,6 +1705,9 @@ onBeforeUnmount(() => {
             {{ state.sessionStatus === 'starting' ? 'Starting Intravenous…' : 'Restarting Intravenous…' }}
         </div>
         <div v-if="state.error" class="error" role="alert">{{ state.error }}</div>
+        <div v-if="compilationError" class="error compilation-error" role="alert" :title="compilationError.detail">
+            {{ compilationError.message }}
+        </div>
         <PresentationHost v-if="state.scope" :node="root" view-choice="editable" />
         <ManualValuePopover :entry="manualValueEntry"
             :target="valueEntryAnchor?.closest<HTMLElement>(':popover-open, [role=dialog]') ?? undefined"
@@ -1705,7 +1729,7 @@ onBeforeUnmount(() => {
         </Teleport>
         <svg v-if="selectedWires.length || connectionDrag?.moved" class="connection-wire" aria-hidden="true">
             <defs>
-                <clipPath v-for="(clips, area) in wireClips" :key="area" :id="`wire-clip-${area}`" clipPathUnits="userSpaceOnUse">
+                <clipPath v-for="({ clips }, group) in wireLayers" :key="group" :id="`wire-clip-${group}`" clipPathUnits="userSpaceOnUse">
                     <rect v-for="(clip, index) in clips" :key="index" :x="clip.x" :y="clip.y" :width="clip.width" :height="clip.height" />
                 </clipPath>
                 <mask id="wire-knob-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
@@ -1725,7 +1749,7 @@ onBeforeUnmount(() => {
                     </g>
                 </mask>
                 <template v-for="(wire, index) in selectedWires" :key="wire.key">
-                    <linearGradient v-if="!wire.sourceOwned" :id="`selected-wire-${index}`"
+                    <linearGradient v-if="!wire.sourceOwned && !wire.feedback" :id="`selected-wire-${index}`"
                         gradientUnits="userSpaceOnUse" :x1="wire.source.x" :y1="wire.source.y" :x2="wire.target.x" :y2="wire.target.y">
                         <stop offset="0" :style="{ stopColor: wireColor('output') }" />
                         <stop offset="1" :style="{ stopColor: wireColor('input') }" />
@@ -1756,6 +1780,12 @@ onBeforeUnmount(() => {
                             :d="selectedLaneWirePath(wire)" :stroke="`url(#selected-wire-${index})`"
                             :stroke-opacity="wireOpacity[layer]" />
                     </g>
+                    <g mask="url(#wire-label-fade)">
+                        <path v-for="{ wire } in layers.feedback" :key="wire.key" class="selected-wire feedback-wire"
+                            :d="selectedLaneWirePath(wire)" />
+                        <path v-for="{ wire } in layers.edited" :key="wire.key" class="selected-wire feedback-wire edited-wire"
+                            :d="selectedLaneWirePath(wire)" />
+                    </g>
                 </g>
                 <g mask="url(#wire-label-fade)">
                     <path v-for="(wire, index) in dropPreviewWires" :key="`drop-${wire.anchor.id}`" class="drop-preview-wire"
@@ -1773,11 +1803,14 @@ onBeforeUnmount(() => {
 .graph-editor :deep(> .presentation-host) { flex: 1; min-height: 0; }
 .status, .error { padding: 8px; }
 .error { color: var(--vscode-errorForeground); }
+.compilation-error { border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent); }
 .connection-wire { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
 .preview-wire { fill: none; stroke-width: 2; }
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }
 .selected-wire { fill: none; stroke-width: 1.5; }
 .selected-wire.pending { stroke-dasharray: 5 4; }
+.feedback-wire { stroke: var(--vscode-errorForeground); stroke-width: 2; }
+.feedback-wire.edited-wire { stroke-width: 3.5; }
 .package-dialog-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #0005; }
 .package-dialog { padding: 16px; display: flex; flex-wrap: wrap; gap: 8px; background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); }
 .package-dialog label { flex-basis: 100%; display: grid; gap: 5px; }

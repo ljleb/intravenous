@@ -3,6 +3,7 @@ import type { GraphLayout, NodeAddress, Point } from "../../src/graphScope";
 import type { SerializedPresentationState } from "../../src/presentationStateJson";
 import type { PresentationStateRead } from "../../src/laneViewReads";
 import type { GraphScope } from "../../src/graphScope";
+import type { laneConnectionFeedback } from "../../src/selectedLaneConnections";
 import type { GraphLane } from "../../src/laneSelection";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import type { PortConnectionDrag } from "../../src/portConnectionGesture";
@@ -47,6 +48,7 @@ type GraphEditorContext = {
     lanes: Readonly<Ref<GraphLane[]>>;
     expandedModules: Readonly<Ref<ReadonlyMap<string, NodeAddress>>>;
     implicitOutputModules: Readonly<Ref<ReadonlySet<string>>>;
+    connectionFeedback: Readonly<Ref<ReturnType<typeof laneConnectionFeedback>>>;
     toggleModule: (address: NodeAddress) => void;
     shiftHeld: Readonly<Ref<boolean>>;
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;

@@ -771,10 +771,19 @@ and port identity to attach wires to visible entry circles. Opening or closing
 the chooser splits or combines those attachments without changing the records.
 Chooser connections are visible even without a selected lane. A multi-ended
 record exposes only the pairs involving the chosen port or the selected lane.
-The graph changes only on release. Empty editor space removes the chosen end;
-a compatible port replaces it. Invalid drops and cancellation leave the graph
-unchanged. The preview stays anchored at the opposite end, including grouped
-port slots and multiple opposite endpoints.
+The graph changes only on release. Empty editor space or an incompatible port
+removes the chosen end. A compatible port replaces it. Returning to the
+original port cancels the drag. The preview stays anchored at the opposite end,
+including grouped port slots and multiple opposite endpoints.
+
+GraphJit reports configured connection indices for failed feedback components.
+`ConnectionTopology` traces the indices through Sample and Event routing on
+failure, including structural module ports. `ProjectGraph` maps them to project
+records and C++ scope connections, and marks a participating upsert from the
+failed generation. The editor uses those marks for cables, port sockets, and
+folded groups. Sockets without knobs use the knob column in editable rows and
+their continuations. Native runtime and pointer layout checks need the rebuilt
+application.
 
 `WorkspaceSession.editGraphConnectionEnd` reads the current scope before
 submission and captures the session revision before that read. A notification
@@ -2397,6 +2406,10 @@ Deferred owner requests; do not implement during this pass:
   also suggested fading the popover around crossing curves. These are alternatives
   for later visual testing, not a settled opacity rule.
 
+The wire overlay now clips unrelated cables behind an open port popover. A
+cable can cross a popover when one of its measured endpoints belongs to that
+popover. The held drag preview keeps its foreground layer.
+
 Stage 3 remains active; these reporting-page and port-style requests do not replace
 its specialized automation-presentation work or the unresolved pointer-lock defect.
 
@@ -3930,6 +3943,11 @@ port column with folded rows. `lanePortLayout()` reserves space for it only
 when some rows are folded. The socket provides the `data-port-slot` that
 `GraphEditor.vue` uses for folded cable endpoints. Revealed `NodePortRow`
 sockets take precedence when they are in view.
+
+Editable rows share the knob center across knob sizes. Standalone sockets and
+folded sockets use that center on each side. `NodePorts.vue` puts each folded
+socket at the header edge, and `NodeLane.vue` gives it pointer priority where
+it overlaps the module footer.
 
 Hover or focus within the lane header opens one continuation beneath it.
 The panel uses the measured column widths and leaves the existing rows in

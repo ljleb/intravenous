@@ -69,6 +69,7 @@ struct UpdateNodeInstancesRequest {
 struct UpsertGraphConnectionRequest { ProjectConnection connection{}; };
 struct DeleteGraphConnectionRequest { std::string connection_id{}; };
 struct UpsertManualControlRequest { ProjectManualControl control{}; };
+struct ToggleManualInputRequest { ManualControlId id{}; };
 struct DeleteManualControlRequest { ManualControlId id{}; };
 struct SetManualControlHoverRequest {
     std::string client_id{};
@@ -177,6 +178,7 @@ using SocketRpcRequestPayload = std::variant<
     UpsertGraphConnectionRequest,
     DeleteGraphConnectionRequest,
     UpsertManualControlRequest,
+    ToggleManualInputRequest,
     DeleteManualControlRequest,
     SetManualControlHoverRequest,
     BeginManualControlInteractionRequest,

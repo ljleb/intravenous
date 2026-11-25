@@ -3930,7 +3930,8 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
     auto const& configured_cost_model = input.realtime_storage_cost_model;
     auto topology = ConnectionTopology::build(
         input.graph, *port_realization, input.specialization.block_size,
-        callback_batch_classes, input.configured_bundles, input.bundle_migration_identities);
+        callback_batch_classes, input.configured_bundles, input.bundle_migration_identities,
+        input.feedback_connections);
     if (!topology) return std::unexpected(std::move(topology.error()));
     auto imports = plan_package_imports(
         input, *analysis, topology->background_topology());

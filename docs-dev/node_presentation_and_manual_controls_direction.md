@@ -370,12 +370,14 @@ The other end stays fixed. For `A.out → B.in`, moving the `B.in` end to `C.in`
 produces `A.out → C.in`. Moving the `A.out` end to `D.out` produces
 `D.out → B.in`. Sample and event ports follow the same gesture rules.
 
-The graph stays unchanged during the drag. Release in empty editor space
-removes the chosen end. Release on a compatible port of the same direction
-moves it there. Release on the original port does nothing. Release on an
-incompatible port, a grouped slot without a chosen individual port, another
-control, or outside the editor cancels. Escape, lost pointer capture,
-pointer cancellation, or window blur also cancels.
+The graph stays unchanged during the drag. Release in empty editor space or
+on an incompatible port removes the chosen end. Release on a compatible port
+of the same direction moves it there. Release on the original port does
+nothing. Release on a grouped slot without a chosen individual port, another
+control, or outside the editor cancels. Escape, lost pointer capture, pointer
+cancellation, or window blur also cancels. A new connection still requires a
+compatible destination. See the
+[previous release rule](./historical/vue_connection_release_before_incompatible_drop_disconnect_2026-11-24.md).
 
 The editor operates on the selected connection record and port, not an
 aggregate drawn wire. Other connections and endpoints remain unchanged.
@@ -391,6 +393,12 @@ upsert and expose an intermediate disconnected generation. The editor checks
 the current record before submission and rejects a stale gesture. Any future
 edit that needs several record changes must use one coordinated project action.
 The completed gesture is one future undo entry.
+
+When GraphJit rejects a feedback cycle, show a compilation error in the graph
+editor and mark the participating connections and their sockets red. Include
+source-authored connections and their folded sockets wherever they are visible.
+Use a stronger mark for the connection just added or moved if it participates
+in the failure. Highlighting follows the current configured generation.
 
 Each connection record has one `sourceType` and one `targetType`. Moving a
 whole-port end can update its side's type when it is the only end on that

@@ -141,9 +141,11 @@ normal port/knob gestures, even if their visuals appear joined. Directly shown
 inputs and temporarily expanded port lists must use the same composition.
 Place a knob's label close to its upper-right edge for inputs and its
 upper-left edge for outputs.
-Use the same socket columns and row heights for event ports and knob ports
-in editable headers and their continuations. Individual event sockets keep their
-rounded-square shape. Applied cables use solid strokes for either port kind.
+In editable headers and their continuations, center a socket without a knob
+on the knob column for its direction. Use the same row heights for both
+compositions. Individual event sockets keep their rounded-square shape.
+Applied cables use solid strokes for either port kind. See the
+[previous socket alignment](./historical/vue_ports_before_knob_column_alignment_2026-11-24.md).
 The input name must remain readable when cables cross the lane area; cable
 layout/opacity must not obscure it.
 
@@ -214,6 +216,10 @@ that has hidden ports. Cables for folded ports attach to the half socket
 while those ports are out of view. Visible rows retain their own knobs,
 sockets, names, and interactions. Their geometry stays fixed while opening
 or closing the continuation.
+
+The folded socket shares the knob center for its direction, regardless of
+which ports it represents. Its bottom touches the lane header edge, including
+on headers with a module footer. The footer remains clickable beside the socket.
 
 Hover over the input or output controls to open that column's popover.
 The gap between the columns closes the popover when the pointer enters it.

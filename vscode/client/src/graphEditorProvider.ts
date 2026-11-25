@@ -682,8 +682,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                     void panel.webview.postMessage({ type: "graphLanesInserted", duplicateRequestId: requestId, lanes: [] });
                     void vscode.window.showErrorMessage(`Cannot duplicate lanes: ${error.message}`);
                 }
-            } else if (message?.type === "setManualControlEnabled") {
-                try { await this.session.setManualControlEnabled(message.control, message.enabled, this.expandedByPanel.get(panel) ?? []); }
+            } else if (message?.type === "toggleManualInput") {
+                try { await this.session.toggleManualInput(message.control); }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change knob: ${error.message}`); }
             } else if (message?.type === "projectHistory") {
                 try {

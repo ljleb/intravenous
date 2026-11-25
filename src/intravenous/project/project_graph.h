@@ -57,6 +57,7 @@ struct UpdateNodeInstancesRequest;
 struct UpsertGraphConnectionRequest;
 struct DeleteGraphConnectionRequest;
 struct UpsertManualControlRequest;
+struct ToggleManualInputRequest;
 struct DeleteManualControlRequest;
 struct SetManualControlHoverRequest;
 struct BeginManualControlInteractionRequest;
@@ -104,7 +105,8 @@ struct ProjectGraphGeneration {
     std::unordered_map<std::string, NodeInstancePlacement> placements{};
     std::size_t source_sample_connection_count = 0;
     std::size_t source_event_connection_count = 0;
-    std::vector<std::string> applied_connection_ids{};
+    std::vector<AppliedProjectConnection> applied_connections{};
+    std::string edited_connection_id{};
     std::vector<GraphConnectionDiagnostic> connection_diagnostics{};
     // Structural interfaces are committed even while execution is queued.
     std::string execution_phase = "queued";
@@ -497,6 +499,9 @@ public:
         SocketRpcAckResponseBuilder& builder);
     void handle_socket_rpc_upsert_manual_control(
         UpsertManualControlRequest const& request,
+        SocketRpcAckResponseBuilder& builder);
+    void handle_socket_rpc_toggle_manual_input(
+        ToggleManualInputRequest const& request,
         SocketRpcAckResponseBuilder& builder);
     void handle_socket_rpc_delete_manual_control(
         DeleteManualControlRequest const& request,

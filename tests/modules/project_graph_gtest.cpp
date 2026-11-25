@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,13 @@
 #include <vector>
 
 namespace {
+std::vector<std::string> applied_ids(std::vector<iv::AppliedProjectConnection> const& connections)
+{
+    std::vector<std::string> ids;
+    for (auto const& connection : connections) ids.push_back(connection.id);
+    return ids;
+}
+
 // The snapshot record also carries ProjectGraph's reply (its publication), so
 // the handler takes it as an lvalue.
 void publish_definitions_snapshot(
@@ -2401,7 +2409,7 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_NO_THROW(connect_builder.build());
     auto generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_TRUE(generation->applied_connection_ids.empty());
+    EXPECT_TRUE(generation->applied_connections.empty());
     ASSERT_EQ(generation->connection_diagnostics.size(), 1u);
     EXPECT_EQ(connections.desired_connections().size(), 1u);
 
@@ -2415,8 +2423,7 @@ TEST_F(ProjectGraphFixture, ConnectionMutationRebuildsWholeRootAndDanglingIntent
     EXPECT_EQ(sink_builder.build(), "instance:sink");
     generation = project_graph.current_generation();
     ASSERT_TRUE(generation);
-    EXPECT_EQ(generation->applied_connection_ids,
-              std::vector<std::string>{"connection:main"});
+    EXPECT_EQ(applied_ids(generation->applied_connections), std::vector<std::string>{"connection:main"});
     EXPECT_TRUE(generation->connection_diagnostics.empty());
 }
 
@@ -2469,6 +2476,61 @@ void node_message_gesture(iv::ProjectGraph& graph, iv::NodeMessageGestureId cons
     if (result.contains("error")) throw std::runtime_error(result["error"]["message"].get<std::string>());
 }
 } // namespace
+
+TEST_F(ProjectGraphFixture, GraphScopeMarksFailedFeedbackAndDistinguishesTheEditedConnection)
+{
+    using namespace iv;
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1)});
+    ProjectAckBuilder setup;
+    in_event_source([&] { project_graph.handle_project_replace_graph({.instances = {
+        {.instance_id = "a", .definition_id = definition_id},
+        {.instance_id = "b", .definition_id = definition_id},
+        {.instance_id = "c", .definition_id = definition_id},
+    }}, setup); });
+    setup.build();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    struct RestoreCompiler {
+        ProjectGraphGraphJitRequestedEvent previous;
+        ~RestoreCompiler() { iv_runtime_project_graph_graph_jit_requested_event = previous; }
+    } restore{std::exchange(iv_runtime_project_graph_graph_jit_requested_event,
+        +[](ProjectGraphGraphJitRequest const& request) -> GraphJitCompileResult {
+            auto const connections = request.successor.graph->connections.configured_sample_connections();
+            auto const project_count = std::ranges::count(connections, false, &ConfiguredSampleConnection::source_owned);
+            if (project_count != 3) return {};
+            auto const first = connections.size() - 3;
+            return {.attempted = true, .diagnostics = {{.stage = GraphJitDiagnosticStage::lowering,
+                .message = "test feedback", .feedback_connections = {{PortKind::sample, first}, {PortKind::sample, first + 1}}}}};
+        })};
+    auto connect = [&](std::string id, std::string from, std::string to) {
+        ProjectAckBuilder response;
+        in_event_source([&] { project_graph.handle_project_upsert_graph_connection({
+            .connection = ProjectSampleConnection{.connection_id = std::move(id),
+                .outputs = {{.instance_id = std::move(from), .port = {.name = "main"}}},
+                .inputs = {{.instance_id = std::move(to), .port = {.name = "main"}}}},
+        }, response); });
+        response.build();
+        EXPECT_TRUE(project_graph.wait_for_compilation());
+    };
+    connect("unrelated", "a", "c");
+    connect("forward", "a", "b");
+    connect("return", "b", "a");
+    auto const failed = read_graph_scope(project_graph);
+    EXPECT_EQ(failed.at("execution").at("phase"), "failed");
+    auto const& wires = failed.at("connections");
+    ASSERT_EQ(wires.size(), 3u);
+    EXPECT_EQ(wires[0].at("id"), "forward");
+    EXPECT_EQ(wires[0].at("feedback"), "participant");
+    EXPECT_EQ(wires[1].at("id"), "return");
+    EXPECT_EQ(wires[1].at("feedback"), "edited");
+    EXPECT_FALSE(wires[2].contains("feedback"));
+
+    ProjectAckBuilder repaired;
+    in_event_source([&] { project_graph.handle_project_delete_graph_connection({.connection_id = "return"}, repaired); });
+    repaired.build();
+    ASSERT_TRUE(project_graph.wait_for_compilation());
+    auto const scope = read_graph_scope(project_graph);
+    for (auto const& wire : scope.at("connections")) EXPECT_FALSE(wire.contains("feedback"));
+}
 
 TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
 {
@@ -2594,8 +2656,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
         },
     }, connect); });
     ASSERT_NO_THROW(connect.build());
-    EXPECT_EQ(project_graph.current_generation()->applied_connection_ids,
-        std::vector<std::string>{"child-wire"});
+    EXPECT_EQ(applied_ids(project_graph.current_generation()->applied_connections), std::vector<std::string>{"child-wire"});
     auto const expanded_after_wiring = read_graph_scope(project_graph, {module, named, second});
     auto const& wires = expanded_after_wiring.at("connections");
     ASSERT_EQ(wires.size(), 5u);
@@ -2623,7 +2684,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const connected = project_graph.current_generation();
     ASSERT_TRUE(connected && connected->graph);
     for (auto const& connection : boundary_connections) {
-        EXPECT_TRUE(std::ranges::contains(connected->applied_connection_ids, connection.connection_id));
+        EXPECT_TRUE(std::ranges::contains(connected->applied_connections, connection.connection_id, &iv::AppliedProjectConnection::id));
         for (auto const names : {ProjectConnectionJsonNames::socket_rpc, ProjectConnectionJsonNames::project_file}) {
             EXPECT_EQ(parse_project_connection_json(project_connection_json(connection, names), names),
                 ProjectConnection{connection});
@@ -3295,9 +3356,7 @@ TEST_F(ProjectGraphFixture, ReplaceGraphReplaysNodesAndConnectionsInOneGeneratio
     ASSERT_TRUE(generation);
     EXPECT_EQ(generation->configured_generation, 1u);
     EXPECT_EQ(generation->placements.size(), 2u);
-    EXPECT_EQ(
-        generation->applied_connection_ids,
-        std::vector<std::string>{"connection:main"});
+    EXPECT_EQ(applied_ids(generation->applied_connections), std::vector<std::string>{"connection:main"});
 
     iv::ProjectAckBuilder replacement_builder;
     in_event_source([&] { return project_graph.handle_project_replace_graph(
@@ -4630,6 +4689,94 @@ TEST_F(ProjectGraphFixture, FirstManualGestureCreatesOneHistoryEntryAndUndoResto
     ASSERT_NO_THROW(redo.build());
     ASSERT_EQ(project_graph.manual_controls().size(), 1u);
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.6f});
+}
+
+TEST_F(ProjectGraphFixture, RapidManualInputTogglesAndGesturesPreserveBothFields)
+{
+    using namespace iv;
+    publish_definitions_snapshot(project_graph, {.snapshot = make_replacement_snapshot(1)});
+    using Json = nlohmann::ordered_json;
+    struct Knob {
+        ManualControlId id;
+        Sample value{};
+        bool enabled = true;
+        ManualControlParticipation participation = ManualControlParticipation::disconnected_only;
+        std::optional<ManualControlInteractionId> drag{};
+    };
+    for (auto const seed : {1u, 17u, 1849u, 0x8128u}) {
+        SCOPED_TRACE(seed);
+        std::array knobs{
+            Knob{.id = {.node = {.instance_id = "left"}, .port_name = "gain"}},
+            Knob{.id = {.node = {.instance_id = "right"}, .port_name = "gain"},
+                .value = .125f, .enabled = false, .participation = ManualControlParticipation::participate_with_connections},
+        };
+        ProjectAckBuilder load;
+        in_event_source([&] { project_graph.handle_project_replace_graph({
+            .instances = {{.instance_id = "left", .definition_id = manual_control_leaf_definition_id},
+                          {.instance_id = "right", .definition_id = manual_control_leaf_definition_id}},
+            .manual_controls = {{.id = knobs[1].id, .stored_value = knobs[1].value,
+                .participation = knobs[1].participation, .enabled = knobs[1].enabled}},
+        }, load); });
+        ASSERT_NO_THROW(load.build());
+
+        auto release = [&](Knob& knob, Sample value) {
+            ProjectAckBuilder result;
+            in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({*knob.drag, value}, result); });
+            ASSERT_NO_THROW(result.build());
+            knob.drag.reset();
+            knob.value = value;
+        };
+        auto check = [&] {
+            auto scope = read_graph_scope(project_graph);
+            for (auto const& knob : knobs) {
+                auto const& state = scope_node(scope, knob.id.node.instance_id).at("sampleInputs").at(0).at("manualControl");
+                EXPECT_EQ(state.at("enabled"), knob.enabled);
+                EXPECT_EQ(state.at("value"), static_cast<float>(knob.value));
+                EXPECT_EQ(state.at("participation"), knob.participation == ManualControlParticipation::disconnected_only
+                    ? "disconnectedOnly" : "participateWithConnections");
+            }
+        };
+        std::mt19937 random(seed);
+        unsigned toggles_during_drag = 0;
+        for (unsigned step = 0; step < 120; ++step) {
+            auto& knob = knobs[random() % knobs.size()];
+            auto const action = random() % 5;
+            SCOPED_TRACE(::testing::Message{} << "step " << step << " action " << action << " knob " << knob.id.node.instance_id);
+            Sample const value{static_cast<float>(step + 1) / 128.f};
+            if (action < 2) {
+                auto const json = Json{{"id", 1}, {"method", "manualControls.toggleInput"}, {"params", {
+                    {"node", {{"instanceId", knob.id.node.instance_id}}}, {"inputName", knob.id.port_name},
+                }}};
+                auto const request = parse_socket_rpc_request(json.dump());
+                auto const* toggle = std::get_if<ToggleManualInputRequest>(&request.payload);
+                ASSERT_NE(toggle, nullptr);
+                ASSERT_FALSE(request.expected_revision);
+                SocketRpcAckResponseBuilder result;
+                in_event_source([&] { project_graph.handle_socket_rpc_toggle_manual_input(*toggle, result); });
+                auto const reply = Json::parse(result.build(1));
+                ASSERT_TRUE(reply.contains("result")) << reply.dump();
+                knob.enabled = !knob.enabled;
+                if (knob.drag) ++toggles_during_drag;
+            } else if (!knob.drag) {
+                knob.drag = ManualControlInteractionId{.client_id = knob.id.node.instance_id, .interaction_id = std::to_string(step)};
+                ProjectAckBuilder result;
+                in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({*knob.drag, knob.id, value}, result); });
+                ASSERT_NO_THROW(result.build());
+            } else if (action == 2) {
+                LiveManualControlUpdateRequest request{.interaction = *knob.drag, .value = value};
+                project_graph.handle_live_manual_control_update(request);
+                EXPECT_TRUE(request.applied);
+            } else {
+                release(knob, value);
+            }
+            ASSERT_FALSE(HasFatalFailure());
+            check();
+        }
+        EXPECT_GT(toggles_during_drag, 0u);
+        for (auto& knob : knobs) if (knob.drag) release(knob, .875f);
+        ASSERT_FALSE(HasFatalFailure());
+        check();
+    }
 }
 
 TEST_F(ProjectGraphFixture, ReturningToImplicitDefaultRemovesTheUninterruptedGestureHistory)

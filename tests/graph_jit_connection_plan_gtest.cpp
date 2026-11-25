@@ -2472,12 +2472,47 @@ TEST(GraphJitConnectionPlan, RejectsBackgroundEdgesInWholeSemanticScc)
     event_graph.outputs();
 
     auto event_configured = std::move(event_graph).finish();
-    auto event_plan = build_connection_analysis_plan(
-        event_configured, 64);
+    auto event_ports = graph_jit::resolve_port_realization(event_configured);
+    ASSERT_TRUE(event_ports);
+    std::vector<GraphJitConnectionReference> feedback;
+    auto event_plan = graph_jit::detail::ConnectionTopology::build(
+        event_configured, *event_ports, 64, {}, {}, {}, &feedback);
     ASSERT_FALSE(event_plan.has_value());
     EXPECT_NE(event_plan.error().find("background event connection"),
         std::string::npos);
     EXPECT_NE(event_plan.error().find("semantic SCC"), std::string::npos);
+    EXPECT_EQ(feedback, (std::vector<GraphJitConnectionReference>{
+        {PortKind::event, 0}, {PortKind::event, 1}}));
+}
+
+TEST(GraphJitConnectionPlan, ReportsFeedbackThroughModulePortsWithoutMarkingIngressOrFanout)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto outside = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto source = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto input = iv::programmatic::declare_input(boundary, "in");
+        auto inside = details::configure_concrete_node<BackgroundSamplePass>(graph);
+        inside(input);
+        boundary.outputs(inside);
+    });
+    module(outside);
+    outside(module);
+    module(source);
+    sink(module);
+    graph.outputs();
+    auto configured = std::move(graph).finish();
+    ASSERT_EQ(configured.connections.sample_connection_count(), 6u);
+    auto ports = graph_jit::resolve_port_realization(configured);
+    ASSERT_TRUE(ports);
+    std::vector<GraphJitConnectionReference> feedback;
+    auto topology = graph_jit::detail::ConnectionTopology::build(configured, *ports, 64, {}, {}, {}, &feedback);
+    ASSERT_FALSE(topology);
+    EXPECT_NE(topology.error().find("semantic SCC"), std::string::npos);
+    EXPECT_EQ(feedback, (std::vector<GraphJitConnectionReference>{
+        {PortKind::sample, 0}, {PortKind::sample, 1}, {PortKind::sample, 2}, {PortKind::sample, 3}}));
 }
 
 TEST(GraphJitConnectionPlan, RejectsBackgroundSemanticSelfLoop)

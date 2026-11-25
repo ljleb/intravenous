@@ -71,10 +71,17 @@ export type GraphPortMatcher = NodeAddress & {
     moduleBoundary?: boolean;
     port: { name?: string; index?: number; channel?: number };
 };
+export type ConnectionFeedback = "participant" | "edited";
+
+export function strongestConnectionFeedback(first?: ConnectionFeedback, second?: ConnectionFeedback): ConnectionFeedback | undefined {
+    return first === "edited" ? first : second ?? first;
+}
+
 export type GraphScopeConnection = {
     id: string;
     applied: boolean;
     sourceOwned?: boolean;
+    feedback?: ConnectionFeedback;
     hiddenSampleSourceModules?: NodeAddress[];
     connection: {
         connectionId?: string;

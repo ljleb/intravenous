@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { addressKey, type GraphScope, type GraphScopeNode, type GraphScopeConnection } from "../src/graphScope";
-import { connectionEndKey, LaneConnectionViewport, portEndpointKey, portSlotKey, resolveLaneConnectionEnds,
-    selectedLaneConnections, selectedLaneWirePath } from "../src/selectedLaneConnections";
+import { connectionEndKey, laneConnectionFeedback, LaneConnectionViewport, portEndpointKey, portSlotKey, resolveLaneConnectionEnds,
+    selectedLaneConnections, selectedLaneWireClips, selectedLaneWirePath, type WireViewport } from "../src/selectedLaneConnections";
 import type { GraphPortEndpoint } from "../src/graphConnectionEditing";
 
 function node(id: string): GraphScopeNode {
@@ -51,6 +51,48 @@ test("each selected lane emphasizes its own connections without doubling a share
     const lanes = new Set([...selected, addressKey({ instanceId: "b" })]);
     assert.deepEqual(selectedLaneConnections(resolveLaneConnectionEnds(graph), lanes, anchors([])).map((wire) => [wire.connectionIds[0], wire.emphasized]),
         [["a to b", true], ["b to c", true]]);
+});
+
+test("feedback highlights only participating wires and ports without requiring selection", () => {
+    const graph = scope([
+        { ...connection("out", "a", 0, "b", 0), feedback: "edited" },
+        { ...connection("back", "b", 0, "a", 0), sourceOwned: true, feedback: "participant" },
+        { ...connection("same folded anchors", "a", 1, "b", 1), feedback: "participant" },
+        connection("fanout", "a", 0, "c", 0),
+    ]);
+    const resolved = resolveLaneConnectionEnds(graph);
+    const wires = selectedLaneConnections(resolved, new Set(), anchors([]));
+    assert.deepEqual(wires.map(({ connectionIds, feedback }) => [connectionIds, feedback]), [
+        [["out", "same folded anchors"], "edited"], [["back"], "participant"],
+    ]);
+    const { ports } = laneConnectionFeedback(resolved);
+    assert.equal(ports.get(resolved[0].outputs[0].key), "edited");
+    assert.equal(ports.get(resolved[1].inputs[0].key), "participant");
+    assert.equal(ports.has(resolved[3].inputs[0].key), false);
+    assert.equal(laneConnectionFeedback(resolveLaneConnectionEnds(scope([connection("repaired", "a", 0, "b", 0)]))).ports.size, 0);
+});
+
+test("a popover covers unrelated cables even where their lane sockets coincide", () => {
+    const viewport: WireViewport = {
+        lane: { x: 0, y: 30, width: 100, height: 70 },
+        rulerInput: { x: 0, y: 15, width: 20, height: 15 }, rulerBottom: 30,
+        popovers: [{ x: 10, y: 20, width: 35, height: 35 }, { x: 30, y: 40, width: 25, height: 25 }],
+    };
+    const shows = (x: number, y: number, attached: number[], ruler = false) =>
+        selectedLaneWireClips(viewport, ruler, attached).some((clip) =>
+            x >= clip.x && x < clip.x + clip.width && y >= clip.y && y < clip.y + clip.height);
+    assert.equal(shows(20, 34, []), false);
+    assert.equal(shows(20, 34, [0]), true);
+    assert.equal(shows(20, 34, [1]), false);
+    assert.equal(shows(38, 45, [0]), false); // The unrelated front popover covers the cable.
+    assert.equal(shows(38, 45, [1]), true);
+    assert.equal(shows(5, 40, []), true);
+
+    assert.equal(shows(5, 22, [], true), true); // Only a ruler cable can enter the ruler socket.
+    assert.equal(shows(5, 22, []), false);
+    assert.equal(shows(12, 22, [], true), false); // An unrelated popover can cover the socket too.
+    assert.equal(shows(12, 22, [0], true), true);
+    assert.equal(shows(12, 22, [0]), false);
 });
 
 test("viewport context keeps intersecting project cables faint and selected cables emphasized", () => {

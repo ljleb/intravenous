@@ -1,9 +1,11 @@
 <script setup lang="ts">
-defineProps<{ moduleKey: string }>();
+import type { ConnectionFeedback } from "../../src/graphScope";
+
+defineProps<{ moduleKey: string; feedback?: ConnectionFeedback }>();
 </script>
 
 <template>
-    <div class="control-row implicit-output" data-direction="output">
+    <div class="control-row implicit-output" data-direction="output" :data-connection-feedback="feedback">
         <span class="direct-port-name iv-graph-header-detail">Implicit nodes</span>
         <span class="implicit-socket" :data-implicit-output="moduleKey" aria-hidden="true">
             <span class="port-circle" />
@@ -25,6 +27,8 @@ defineProps<{ moduleKey: string }>();
 .port-circle {
     width: var(--port-socket-size); height: var(--port-socket-size); border-radius: 50%;
     background: currentColor;
-    transform: translateX(var(--socket-tuck));
+    transform: translateX(var(--port-knob-center-tuck));
 }
+[data-connection-feedback] { color: var(--vscode-errorForeground); }
+[data-connection-feedback="edited"] .port-circle { outline: 1px solid currentColor; outline-offset: 2px; }
 </style>

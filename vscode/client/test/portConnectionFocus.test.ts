@@ -4,9 +4,11 @@ import { listenPortConnectionFocus } from "../src/portConnectionFocus";
 import { beginPortConnection, finishPortConnection, movePortConnection,
     type PortConnectionDrag, type PortConnectionResult } from "../src/portConnectionGesture";
 import type { GraphPortEndpoint } from "../src/graphConnectionEditing";
+import type { GraphScope } from "../src/graphScope";
 
 const output: GraphPortEndpoint = { address: { instanceId: "source" }, direction: "output", kind: "sample", index: 0, name: "out" };
 const input: GraphPortEndpoint = { address: { instanceId: "target" }, direction: "input", kind: "sample", index: 0, name: "in" };
+const graph: GraphScope = { generation: 1, editable: true, nodes: [], connections: [] };
 
 test("the recorded activation blur does not cancel a drag started by the first press", () => {
     const target = new EventTarget();
@@ -27,7 +29,7 @@ test("the recorded activation blur does not cancel a drag started by the first p
     });
     target.addEventListener("pointerup", (event) => {
         const p = pointer(event);
-        if (drag) result = finishPortConnection(drag, p.pointerId, p, input);
+        if (drag) result = finishPortConnection(graph, drag, p.pointerId, p, input);
         drag = null;
     });
 

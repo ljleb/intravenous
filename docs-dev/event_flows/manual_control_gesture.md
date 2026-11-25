@@ -77,6 +77,15 @@ uses the existing predecessor-aware graph-transition compilation. Release does
 not pre-stage a structural successor. This is the same boundary used by dynamic
 hover preparation.
 
+## Toggle an input knob
+
+Each click sends `manualControls.toggleInput` with the knob's address and input
+name. The server orders it with other edits. `ProjectGraph` reads the latest
+enabled state under its lock and flips it while preserving the stored value and
+participation. The gesture end commits its value against that same durable
+record, so it preserves a toggle that reaches the server before release. The
+client can send another click before receiving the previous revision.
+
 ## Disconnect
 
 ```mermaid

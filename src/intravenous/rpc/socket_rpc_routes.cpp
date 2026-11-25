@@ -448,6 +448,15 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
             }
             return builder.build(id);
         });
+    impl_->add<ToggleManualInputRequest>(
+        "manualControls.toggleInput", "project.write", true, false,
+        [](auto const& request, int id, Context const& context) {
+            SocketRpcAckResponseBuilder builder;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_toggle_manual_input_event, request, builder);
+            if (!builder.has_response()) builder.fail("project graph service is unavailable");
+            if (context.publish_project_graph) context.publish_project_graph(builder.take_publication());
+            return builder.build(id);
+        });
     impl_->add<DeleteManualControlRequest>(
         "manualControls.delete", "project.write", true, false,
         [](auto const& request, int id, Context const& context) {

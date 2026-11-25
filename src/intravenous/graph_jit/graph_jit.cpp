@@ -2479,6 +2479,7 @@ public:
                 .symbolic_node = graph_jit::migration_port_identity_fields(name, port) + ':' + stage.route_identity,
             };
         }
+        std::vector<GraphJitConnectionReference> feedback_connections;
         graph_jit::LoweringInput lowering_input{
             .graph = resolved_graph,
             .specialization = specialization_,
@@ -2493,12 +2494,14 @@ public:
             .configured_bundles = request.configured_bundles,
             .bundle_migration_identities = lowering_identities ? *lowering_identities : *identities,
             .observation_layout_reuse = observation_layout_reuse ? &*observation_layout_reuse : nullptr,
+            .feedback_connections = &feedback_connections,
         };
         auto lowering = graph_jit::lower_configured_graph_to_llvm(lowering_input, *output);
         if (!lowering) {
             result.diagnostics.push_back(diagnostic(
                 GraphJitDiagnosticStage::lowering,
                 std::move(lowering.error())));
+            result.diagnostics.back().feedback_connections = std::move(feedback_connections);
             return result;
         }
 

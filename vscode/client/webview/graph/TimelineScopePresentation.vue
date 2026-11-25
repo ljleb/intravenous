@@ -957,7 +957,7 @@ onBeforeUnmount(() => {
     --port-control-column: calc(var(--inline-socket-group-width) / 2);
     --port-socket-size: var(--inline-symbol-size);
     --port-handle-width: var(--compact-snap-handle-width);
-    --socket-tuck: calc(var(--port-socket-size) / 2);
+    --port-knob-center-tuck: calc(var(--port-socket-size) / 2);
     justify-content: center;
 }
 .node-column.snap-inline { grid-template-rows: minmax(0, 1fr); }

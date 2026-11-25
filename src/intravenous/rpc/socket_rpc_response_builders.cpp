@@ -589,6 +589,8 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"applied", entry.applied},
             {"sourceOwned", entry.source_owned},
         };
+        if (entry.feedback != ProjectGraphConnectionFeedback::none)
+            wire["feedback"] = entry.feedback == ProjectGraphConnectionFeedback::edited ? "edited" : "participant";
         if (!entry.hidden_sample_source_modules.empty()) {
             auto sources = Json::array();
             for (auto const& address : entry.hidden_sample_source_modules)

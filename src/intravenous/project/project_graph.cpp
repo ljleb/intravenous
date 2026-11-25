@@ -29,6 +29,7 @@
 #include <iterator>
 #include <map>
 #include <ranges>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <tuple>
@@ -877,6 +878,7 @@ void ProjectGraph::compile_graph(GraphCompileRequest request, std::stop_token st
                 checkpoint = ExecutionCheckpoint{.configured = state, .compiled = state->compiled_graph};
                 staged_control_graph_ = state->compiled_graph;
                 state->execution_phase = "staged";
+                state->execution_message.clear();
                 queue_control_compile_status_locked(request.trace, "staged");
                 // The next worker cause attaches live targets to this
                 // accepted checkpoint even when a newer edit is queued.
@@ -1881,8 +1883,13 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     }
     generation->source_sample_connection_count = connections_request.result.source_sample_count;
     generation->source_event_connection_count = connections_request.result.source_event_count;
-    generation->applied_connection_ids =
-        std::move(connections_request.result.applied_connection_ids);
+    generation->applied_connections = std::move(connections_request.result.applied_connections);
+    if (auto const* edit = std::get_if<GraphConnectionUpsertMutation>(&connections_request.mutation)) {
+        if (effect && std::ranges::any_of(effect->connections, [&](auto const& change) {
+                return change.after && project_connection_id(*change.after) == project_connection_id(edit->connection);
+            }))
+            generation->edited_connection_id = project_connection_id(edit->connection);
+    }
     generation->connection_diagnostics =
         std::move(connections_request.result.diagnostics);
     generation->node_replacements =
@@ -3685,6 +3692,35 @@ void ProjectGraph::handle_socket_rpc_upsert_manual_control(
     }
 }
 
+void ProjectGraph::handle_socket_rpc_toggle_manual_input(
+    ToggleManualInputRequest const& request,
+    SocketRpcAckResponseBuilder& builder)
+{
+    try {
+        {
+            std::scoped_lock lock(mutex_);
+            if (request.id.kind != ManualControlKind::input || !current_generation_ || !current_generation_->graph)
+                throw std::invalid_argument("The manual input is unavailable");
+            auto const& configured = current_generation_->graph->manual_controls;
+            auto const input = std::ranges::find(configured, request.id, &ConfiguredManualControl::id);
+            if (input == configured.end()) throw std::invalid_argument("The manual input is unavailable");
+
+            auto controls = manual_controls_;
+            auto saved = std::ranges::find(controls, request.id, &ProjectManualControl::id);
+            if (saved == controls.end()) {
+                controls.push_back({.id = request.id, .stored_value = input->settled_value,
+                    .participation = input->participation, .enabled = !input->enabled});
+            } else saved->enabled = !saved->enabled;
+            auto rebuilt = rebuild_locked(std::monostate{}, std::monostate{}, true, nullptr, nullptr, std::move(controls));
+            builder.set_publication(std::move(rebuilt.publication));
+        }
+        builder.succeed();
+        IV_INVOKE_LINKER_EVENT(iv_runtime_project_state_changed_event);
+    } catch (std::exception const& error) {
+        builder.fail(error.what());
+    }
+}
+
 void ProjectGraph::handle_socket_rpc_delete_manual_control(
     DeleteManualControlRequest const& request,
     SocketRpcAckResponseBuilder& builder)
@@ -3981,17 +4017,21 @@ std::string child_lane_display_name(
 
 void append_source_scope_connections(ProjectGraphScope& scope,
     ProjectGraphGeneration const& generation,
-    SourceScopePorts const& ports)
+    SourceScopePorts const& ports,
+    std::set<GraphJitConnectionReference> const& feedback)
 {
     auto const& connections = generation.graph->connections;
     std::unordered_set<std::string> ids;
     for (auto const& entry : scope.connections) ids.insert(project_connection_id(entry.connection));
-    auto append = [&](auto connection, std::string id, std::vector<NodeAddress> hidden_sources = {}) {
+    auto append = [&](auto connection, PortKind kind, std::size_t index, std::vector<NodeAddress> hidden_sources = {}) {
         if (connection.inputs.empty() || (connection.outputs.empty() && hidden_sources.empty())) return;
+        auto id = std::string(kind == PortKind::sample ? "source:sample:" : "source:event:") + std::to_string(index);
         while (!ids.insert(id).second) id.push_back('_');
         connection.connection_id = std::move(id);
         scope.connections.push_back({
             .connection = std::move(connection), .applied = true, .source_owned = true,
+            .feedback = feedback.contains({kind, index}) ? ProjectGraphConnectionFeedback::participant
+                                                        : ProjectGraphConnectionFeedback::none,
             .hidden_sample_source_modules = std::move(hidden_sources),
         });
     };
@@ -4068,7 +4108,7 @@ void append_source_scope_connections(ProjectGraphScope& scope,
             if (module && !std::ranges::contains(hidden_sources, module->address))
                 hidden_sources.push_back(module->address);
         }
-        append(std::move(connection), "source:sample:" + std::to_string(index), std::move(hidden_sources));
+        append(std::move(connection), PortKind::sample, index, std::move(hidden_sources));
     }
     auto const events = connections.configured_event_connections();
     for (std::size_t index = 0; index < generation.source_event_connection_count; ++index) {
@@ -4083,7 +4123,7 @@ void append_source_scope_connections(ProjectGraphScope& scope,
             add_child_ports(target, connection.inputs, any_lane);
             add_boundary_ports(target, connection.inputs);
         }
-        append(std::move(connection), "source:event:" + std::to_string(index));
+        append(std::move(connection), PortKind::event, index);
     }
 }
 } // namespace
@@ -4395,23 +4435,33 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 }
             }
         }
-        std::unordered_set<std::string> applied;
+        std::set<GraphJitConnectionReference> feedback;
+        std::unordered_map<std::string_view, ProjectGraphConnectionFeedback> applied;
         if (generation) {
-            applied.insert(
-                generation->applied_connection_ids.begin(),
-                generation->applied_connection_ids.end());
+            if (!configuration_failure_)
+                for (auto const& diagnostic : generation->graph_jit_diagnostics)
+                    feedback.insert(diagnostic.feedback_connections.begin(), diagnostic.feedback_connections.end());
+            for (auto const& connection : generation->applied_connections) {
+                auto status = ProjectGraphConnectionFeedback::none;
+                auto const first = feedback.lower_bound({connection.kind, connection.begin});
+                if (first != feedback.end() && first->kind == connection.kind && first->index < connection.end)
+                    status = connection.id == generation->edited_connection_id ? ProjectGraphConnectionFeedback::edited
+                                                                                : ProjectGraphConnectionFeedback::participant;
+                applied.emplace(connection.id, status);
+            }
         }
         for (auto& connection : connections.connections) {
-            auto const is_applied = applied.contains(project_connection_id(connection));
+            auto const found = applied.find(project_connection_id(connection));
             scope.connections.push_back(ProjectGraphScopeConnection{
                 .connection = std::move(connection),
-                .applied = is_applied,
+                .applied = found != applied.end(),
+                .feedback = found == applied.end() ? ProjectGraphConnectionFeedback::none : found->second,
             });
         }
         if (generation && generation->graph && (!source_ports.children.empty() || !source_ports.boundaries.empty())) {
             for (auto const& [instance, placement] : generation->placements)
                 add_visible_module(generation->graph->node_bundles, placement.root, {.instance_id = instance});
-            append_source_scope_connections(scope, *generation, source_ports);
+            append_source_scope_connections(scope, *generation, source_ports, feedback);
         }
         builder.succeed(std::move(scope));
     } catch (std::exception const& error) {

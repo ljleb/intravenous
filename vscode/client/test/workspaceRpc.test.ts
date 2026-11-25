@@ -193,7 +193,7 @@ test("session recovery reads one frozen reply through UTF-8 byte offsets", async
     } finally { client.dispose(); }
 });
 
-test("manual control gestures survive revision changes while standalone edits check their revision", async () => {
+test("manual control gestures and toggles carry no stale state or project revision", async () => {
     const calls: unknown[] = [];
     let revision = 1;
     const client = {
@@ -207,14 +207,14 @@ test("manual control gestures survive revision changes while standalone edits ch
     rpc.updateManualControl("drag", .3);
     await rpc.endManualControl("drag", .4);
     await rpc.hoverManualControl(null);
-    await rpc.setManualInputEnabled(control, .4, false, "disconnectedOnly", 7);
+    await rpc.toggleManualInput(control);
     assert.deepEqual(calls, [
         { method: "manualControls.hover", params: control },
         { method: "manualControls.begin", params: { interactionId: "drag", ...control, value: .2 } },
         { notification: "manualControls.update", params: { interactionId: "drag", value: .3 } },
         { method: "manualControls.end", params: { interactionId: "drag", value: .4 } },
         { method: "manualControls.hover", params: {} },
-        { method: "manualControls.upsert", params: { ...control, value: .4, enabled: false, participation: "disconnectedOnly", expectedRevision: 7 } },
+        { method: "manualControls.toggleInput", params: control },
     ]);
 });
 

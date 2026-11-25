@@ -88,7 +88,7 @@ export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "manualControlAction"; action: ManualControlAction }
     | { type: "deleteSelectedLanes"; instanceIds: string[] }
     | { type: "duplicateSelectedLanes"; copies: GraphLaneCopy[]; requestId: string }
-    | { type: "setManualControlEnabled"; control: ManualControlId; enabled: boolean }
+    | { type: "toggleManualInput"; control: ManualControlId }
     | { type: "projectHistory"; direction: "undo" | "redo" }
     | { type: "projectHistoryInterrupted"; requestId: number }
     | { type: "readLaneViews"; reads: Array<{ requestId: number; version: string }> }

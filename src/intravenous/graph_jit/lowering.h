@@ -153,6 +153,7 @@ struct LoweringInput {
     ConfiguredBundleInventory configured_bundles{};
     std::span<std::optional<StableConcreteNodeId> const> bundle_migration_identities{};
     ObservationLayoutReuseInput const* observation_layout_reuse = nullptr;
+    std::vector<GraphJitConnectionReference>* feedback_connections = nullptr;
 };
 
 // Names of the generated project-module operations. The realtime root is not

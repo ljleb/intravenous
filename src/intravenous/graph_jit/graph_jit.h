@@ -5,6 +5,7 @@
 #include <intravenous/graph/realtime_port_planning.h>
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/graph_jit/diagnostics.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
@@ -55,22 +56,6 @@ struct GraphJitKernelSpecialization {
     std::string target_triple{};
     std::string target_cpu{};
     std::string target_features{};
-};
-
-enum class GraphJitDiagnosticStage : std::uint8_t {
-    input_capture,
-    package_llvm,
-    lowering,
-    optimization,
-    materialization,
-};
-
-struct GraphJitDiagnostic {
-    GraphJitDiagnosticStage stage = GraphJitDiagnosticStage::input_capture;
-    std::string message{};
-    std::size_t node_bundle = static_cast<std::size_t>(-1);
-    std::string node_type_id{};
-    std::string package_root{};
 };
 
 // Zero-input/zero-output root-node execution ABI. GraphJit's realtime root is

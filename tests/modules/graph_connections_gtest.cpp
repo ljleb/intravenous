@@ -15,6 +15,13 @@
 #include <vector>
 
 namespace {
+std::vector<std::string> applied_ids(std::vector<iv::AppliedProjectConnection> const& connections)
+{
+    std::vector<std::string> ids;
+    for (auto const& connection : connections) ids.push_back(connection.id);
+    return ids;
+}
+
 iv::ConfiguredGraph make_sample_passthrough(iv::ChannelTypeId type = iv::ChannelTypeId::mono)
 {
     using namespace iv;
@@ -201,7 +208,7 @@ TEST(GraphConnections, AppliesNamedSampleConnectionAfterCompleteInstanceEmbeddin
         },
     });
 
-    ASSERT_EQ(result.applied_connection_ids, std::vector<std::string>{"sample:main"});
+    ASSERT_EQ(applied_ids(result.applied_connections), std::vector<std::string>{"sample:main"});
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -230,7 +237,7 @@ TEST(GraphConnections, SamplePortChannelSelectorRemainsDistinctFromNodePathSelec
         },
     });
 
-    EXPECT_EQ(result.applied_connection_ids.size(), 1u);
+    EXPECT_EQ(result.applied_connections.size(), 1u);
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -261,7 +268,7 @@ TEST(GraphConnections, DanglingDesiredConnectionSurvivesAndResolvesWhenInstanceA
             .inputs = {named_matcher("sink", "main")},
         },
     });
-    EXPECT_TRUE(first.applied_connection_ids.empty());
+    EXPECT_TRUE(first.applied_connections.empty());
     ASSERT_EQ(first.diagnostics.size(), 1u);
     EXPECT_EQ(connections.desired_connections().size(), 1u);
 
@@ -270,8 +277,7 @@ TEST(GraphConnections, DanglingDesiredConnectionSurvivesAndResolvesWhenInstanceA
     second_placements.emplace("source", embed_as_instance(second_root, source_graph, "source"));
     second_placements.emplace("sink", embed_as_instance(second_root, sink_graph, "sink"));
     auto second = apply(connections, second_root, second_placements);
-    EXPECT_EQ(second.applied_connection_ids,
-              std::vector<std::string>{"sample:dangling"});
+    EXPECT_EQ(applied_ids(second.applied_connections), std::vector<std::string>{"sample:dangling"});
     EXPECT_TRUE(second.diagnostics.empty());
 }
 
@@ -301,7 +307,7 @@ TEST(GraphConnections, SymbolicNodeThenOrderedMemberPathResolvesConcretePort)
             .inputs = {named_matcher("sink", "main")},
         },
     });
-    EXPECT_EQ(result.applied_connection_ids.size(), 1u);
+    EXPECT_EQ(result.applied_connections.size(), 1u);
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -335,8 +341,7 @@ TEST(GraphConnections, SetValuedSymbolicMatcherKeepsAllMembersInOneConnection)
         },
     });
 
-    EXPECT_EQ(result.applied_connection_ids,
-              std::vector<std::string>{"sample:symbolic-set"});
+    EXPECT_EQ(applied_ids(result.applied_connections), std::vector<std::string>{"sample:symbolic-set"});
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -380,7 +385,7 @@ TEST(GraphConnections, SymbolicWiresKeepDistinctRoutesFromOneConcreteChannel)
             .inputs = {named_matcher("sink", "main")},
         },
     });
-    ASSERT_EQ(result.applied_connection_ids, std::vector<std::string>{"sample:forwarded"});
+    ASSERT_EQ(applied_ids(result.applied_connections), std::vector<std::string>{"sample:forwarded"});
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -490,7 +495,7 @@ TEST(GraphConnections, DeleteRemovesDesiredConnectionBeforeResolution)
         .connection_id = "sample:delete-me",
     });
 
-    EXPECT_TRUE(result.applied_connection_ids.empty());
+    EXPECT_TRUE(result.applied_connections.empty());
     EXPECT_TRUE(result.diagnostics.empty());
     EXPECT_TRUE(connections.desired_connections().empty());
 }
@@ -515,7 +520,7 @@ TEST(GraphConnections, AppliesEventConnectionWithStructuredMatchers)
             .inputs = {named_matcher("sink", "trigger")},
         },
     });
-    EXPECT_EQ(result.applied_connection_ids.size(), 1u);
+    EXPECT_EQ(result.applied_connections.size(), 1u);
     EXPECT_TRUE(result.diagnostics.empty());
     root.outputs();
     auto configured = std::move(root).finish();
@@ -542,7 +547,7 @@ TEST(GraphConnections, TypeMismatchIsDiagnosticAndDoesNotDeleteDesiredConnection
             .inputs = {named_matcher("sink", "main")},
         },
     });
-    EXPECT_TRUE(result.applied_connection_ids.empty());
+    EXPECT_TRUE(result.applied_connections.empty());
     ASSERT_EQ(result.diagnostics.size(), 1u);
     EXPECT_EQ(connections.desired_connections().size(), 1u);
     root.outputs();
@@ -637,7 +642,7 @@ TEST(GraphConnections, TiledChildPathSelectorChoosesNodeBeforePortResolution)
             .inputs = {named_matcher("sink", "main")},
         },
     });
-    EXPECT_EQ(result.applied_connection_ids.size(), 1u);
+    EXPECT_EQ(result.applied_connections.size(), 1u);
     EXPECT_TRUE(result.diagnostics.empty());
 }
 
@@ -683,9 +688,7 @@ TEST(GraphConnections, ConfigurationReferenceAndConnectionUseTheSamePathResolver
                 .inputs = {named_matcher("sink", "main")},
             },
         });
-    EXPECT_EQ(
-        result.applied_connection_ids,
-        std::vector<std::string>{"sample:shared-reference-path"});
+    EXPECT_EQ(applied_ids(result.applied_connections), std::vector<std::string>{"sample:shared-reference-path"});
     EXPECT_TRUE(result.diagnostics.empty());
 }
 

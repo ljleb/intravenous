@@ -18,6 +18,14 @@ struct GraphConnectionDiagnostic {
     bool operator==(GraphConnectionDiagnostic const&) const = default;
 };
 
+struct AppliedProjectConnection {
+    std::string id;
+    PortKind kind;
+    // One project connection can produce multiple configured connections.
+    std::size_t begin;
+    std::size_t end;
+};
+
 // `diagnostics` describe retained intent that is not applied: a connection
 // whose matchers resolve to no ports or to incompatible ports. They do not fail
 // the configuration pass. `failure` is set when applying a resolved, compatible
@@ -26,7 +34,7 @@ struct GraphConnectionsBatchResult {
     // Project wiring appends to the builder's source-authored connections.
     std::size_t source_sample_count = 0;
     std::size_t source_event_count = 0;
-    std::vector<std::string> applied_connection_ids{};
+    std::vector<AppliedProjectConnection> applied_connections{};
     std::vector<GraphConnectionDiagnostic> diagnostics{};
     std::optional<GraphConnectionDiagnostic> failure{};
 };

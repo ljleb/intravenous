@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { addressKey, graphScopeNodeLabel, oppositePortDirection, scopeNodeForAddress, type GraphScopeConnection } from "../../src/graphScope";
+import { addressKey, graphScopeNodeLabel, oppositePortDirection, scopeNodeForAddress, strongestConnectionFeedback,
+    type ConnectionFeedback, type GraphScopeConnection } from "../../src/graphScope";
 import { canMoveConnectionEnd, connectionEndsAtPort, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { useOptionalGraphEditor } from "../graph/context";
 import { useTimelineNavigation } from "../timeline/timelineContext";
@@ -9,7 +10,7 @@ import { portDescription, portTypeSummary } from "./nodeSummary";
 import type { SemanticNode, SemanticPort, SemanticPortDirection } from "./semanticNode";
 import { acceptsPortConnection, canDropPortConnection } from "../../src/portConnectionGesture";
 import { isTimelineSnapAddress } from "../../src/timelineSnap";
-import { portSlotKey } from "../../src/selectedLaneConnections";
+import { portEndpointKey, portSlotKey } from "../../src/selectedLaneConnections";
 import ManualInput from "./ManualInput.vue";
 import ImplicitOutputPort from "./ImplicitOutputPort.vue";
 import NodePortRow from "./NodePortRow.vue";
@@ -47,6 +48,7 @@ const above = ref(false);
 const groups: Partial<Record<SemanticPortDirection, HTMLElement>> = {};
 const nodeKey = computed(() => node.value.address ? addressKey(node.value.address) : "");
 const implicitOutput = computed(() => !!props.moduleBoundary && !!editor?.implicitOutputModules.value.has(nodeKey.value));
+const implicitFeedback = computed(() => editor?.connectionFeedback.value.implicitOutputs.get(nodeKey.value));
 const implicitPort = Symbol("implicit output");
 const rowKey = ref<string>();
 const directions: SemanticPortDirection[] = ["input", "output"];
@@ -128,13 +130,17 @@ const linksByPort = computed(() => {
 const portLinks = (port: SemanticPort) => linksByPort.value.get(portKey(port)) ?? [];
 const applied = (port: SemanticPort) => portLinks(port).some((entry) => entry.applied);
 const pending = (port: SemanticPort) => portLinks(port).length > 0 && !applied(port);
+const portFeedback = (port: SemanticPort) => node.value.address
+    ? editor?.connectionFeedback.value.ports.get(portEndpointKey(endpoint(port))) : undefined;
 const groupConnections = computed(() => {
     const summarize = (direction: SemanticPortDirection) => {
         const { folded, foldedCount, implicitFolded } = layout.value[direction];
         const connected = folded.filter((port) => portLinks(port).length > 0).length + Number(implicitFolded);
         const kinds = [...new Set(folded.map((port) => port.kind))];
+        const feedback = folded.reduce<ConnectionFeedback | undefined>((status, port) =>
+            strongestConnectionFeedback(status, portFeedback(port)), implicitFolded ? implicitFeedback.value : undefined);
         return { state: connected === 0 ? "empty" : connected === foldedCount ? "full" : "partial",
-            pending: folded.some(pending), connected, kinds };
+            pending: folded.some(pending), connected, kinds, feedback };
     };
     return { input: summarize("input"), output: summarize("output") };
 });
@@ -351,11 +357,12 @@ function portStatus(port: SemanticPort) {
         ? connectionLabel(first.connection)
         : links.length ? `${links.length} ${links.length === 1 ? "connection" : "connections"}` : "";
     const name = `${port.displayName || port.name || port.index + 1} ${portDirection(port) === "input" ? "In" : "Out"}`;
-    return [name, route, pending ? `${pending} pending` : "", portTypeSummary(port)].filter(Boolean).join(" · ");
+    return [name, portFeedback(port) ? "Feedback loop" : "", route, pending ? `${pending} pending` : "",
+        portTypeSummary(port)].filter(Boolean).join(" · ");
 }
 function rowProps(port: SemanticPort) {
     return { port, endpoint: endpoint(port), hasKnob: hasKnob(port), hint: portStatus(port), connected: applied(port),
-        pending: pending(port), unavailable: destinationDirection.value === portDirection(port) && !accepts(port) };
+        pending: pending(port), feedback: portFeedback(port), unavailable: destinationDirection.value === portDirection(port) && !accepts(port) };
 }
 watch(() => editor?.hoveredPortGroup.value, (group) => {
     if (!dragPort.value) return;
@@ -459,7 +466,7 @@ onBeforeUnmount(() => {
         <div v-if="shareLabels" class="paired-port-rows">
             <div v-for="(row, index) in portRows" :key="index" class="paired-port-row" :class="{ 'two-labels': row.input && row.output }">
                 <template v-for="(port, direction) in row" :key="direction">
-                    <ImplicitOutputPort v-if="typeof port === 'symbol'" :module-key="nodeKey" />
+                    <ImplicitOutputPort v-if="typeof port === 'symbol'" :module-key="nodeKey" :feedback="implicitFeedback" />
                     <NodePortRow v-else-if="port" :key="portKey(port)" v-bind="rowProps(port)"
                         :data-port-group="direction" :data-node-key="nodeKey"
                         :data-folded-ports="layout[direction].foldedCount ? direction : undefined"
@@ -475,7 +482,7 @@ onBeforeUnmount(() => {
             <template v-if="!shareLabels">
                 <NodePortRow v-for="port in layout[direction].direct" :key="portKey(port)" v-bind="rowProps(port)"
                     @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
-                <ImplicitOutputPort v-if="layout[direction].implicitDirect" :module-key="nodeKey" />
+                <ImplicitOutputPort v-if="layout[direction].implicitDirect" :module-key="nodeKey" :feedback="implicitFeedback" />
             </template>
             <component :is="inline ? 'span' : 'button'" v-if="layout[direction].foldedCount" class="port-slot"
                 :type="inline ? undefined : 'button'" :role="inline ? 'img' : undefined"
@@ -483,12 +490,13 @@ onBeforeUnmount(() => {
                     'implicit-only': layout[direction].implicitFolded && !layout[direction].folded.length,
                     pending: groupConnections[direction].pending, unavailable: !inline && destinationDirection === direction && !groupAccepts(direction) }"
                 :data-connection-state="groupConnections[direction].state"
+                :data-connection-feedback="groupConnections[direction].feedback"
                 :data-port-slot="node.address ? portSlotKey(node.address, direction, moduleBoundary) : undefined"
                 :data-implicit-output="layout[direction].implicitFolded ? nodeKey : undefined"
                 :aria-label="`${layout[direction].foldedCount}${inline ? '' : ' more'} ${direction} ports, ${groupConnections[direction].connected} connected`"
                 :aria-expanded="inline ? undefined : expanded === direction && !chooserPort"
                 :aria-disabled="inline ? undefined : destinationDirection === direction && !groupAccepts(direction)"
-                :data-status-hint="`${layout[direction].foldedCount}${inline ? '' : ' more'} ${direction} ports · ${groupConnections[direction].connected} connected`"
+                :data-status-hint="`${layout[direction].foldedCount}${inline ? '' : ' more'} ${direction} ports · ${groupConnections[direction].connected} connected${groupConnections[direction].feedback ? ' · Feedback loop' : ''}`"
                 data-port-control v-on="inline ? {} : { click: (event: MouseEvent) => hoverPorts(event.target) }">
                 <span class="port-circle stacked-first"
                     :data-port-kind="inline || groupConnections[direction].kinds.length === 1 ? groupConnections[direction].kinds[0] : undefined" />
@@ -513,9 +521,10 @@ onBeforeUnmount(() => {
                     :class="{ 'with-knob': index === 0 && popoverHasKnob(chooserPort) }">
                     <button type="button" tabindex="-1" class="port-entry connection-choice"
                         :data-port-kind="end.port.kind"
+                        :data-connection-feedback="end.connection.feedback"
                         :data-connection-end="JSON.stringify({ connectionId: end.connection.id, port: end.port })"
                         :class="{ connected: end.connection.applied, pending: !end.connection.applied }"
-                        :data-status-hint="`${end.connection.applied ? '' : 'Pending · '}${connectionLabel(end.connection.connection)}`"
+                        :data-status-hint="`${end.connection.feedback ? 'Feedback loop · ' : end.connection.applied ? '' : 'Pending · '}${connectionLabel(end.connection.connection)}`"
                         :aria-description="`${chooserPort.name} · ${portDescription(chooserPort)}`"
                         @pointerdown="pickConnection($event, end)">
                         <span class="port-circle" /><span class="port-name">{{ connectionLabel(end.connection.connection) }}</span>
@@ -526,7 +535,7 @@ onBeforeUnmount(() => {
             <div v-else class="expansion-body" tabindex="-1" :data-direction="expanded">
                 <NodePortRow v-for="port in layout[expanded].folded" :key="portKey(port)" v-bind="rowProps(port)"
                     @handle-hover="enterPort($event, port)" @handle-leave="hoveredPort = null" @wire-start="start($event, port)" />
-                <ImplicitOutputPort v-if="layout[expanded].implicitFolded" :module-key="nodeKey" />
+                <ImplicitOutputPort v-if="layout[expanded].implicitFolded" :module-key="nodeKey" :feedback="implicitFeedback" />
             </div>
         </div>
     </Teleport>
@@ -534,11 +543,15 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .node-ports, .port-panel {
-    --port-control-column: var(--port-aligned-control-width, calc(var(--port-knob-size) + var(--output-polarity-width) - var(--output-polarity-inset)));
-    --socket-tuck: 10px;
+    --port-toggle-width: calc(var(--output-polarity-width) - var(--output-polarity-inset));
+    --port-control-column: var(--port-aligned-control-width, calc(var(--port-knob-size) + var(--port-toggle-width)));
+    --port-knob-column-size: calc(var(--port-control-column) - var(--port-toggle-width));
+    --port-knob-edge-gap: calc((var(--port-knob-column-size) - var(--port-knob-size)) / 2);
+    --knob-socket-tuck: 10px;
     --port-socket-size: 12px;
+    --port-knob-center-tuck: calc((var(--port-knob-column-size) + var(--port-socket-size)) / 2);
 }
-:is(.node-ports, .port-panel).sockets-only { --port-control-column: 0px; --socket-tuck: 0px; }
+:is(.node-ports, .port-panel).sockets-only { --port-control-column: 0px; --port-knob-center-tuck: 0px; }
 .node-ports { display: grid;
     grid-template-columns: minmax(min-content, 1fr) fit-content(calc((100% - var(--port-column-gap)) / 2));
     grid-template-rows: minmax(0, 1fr); gap: var(--port-column-gap); margin-top: 5px; min-height: 22px; }
@@ -592,8 +605,8 @@ button.port-slot { cursor: pointer; }
 .inline .stacked-second { left: calc(50% + var(--inline-stack-spacing) / 2); }
 .inline .single .stacked-first { left: 50%; }
 .port-slot.cropped {
-    --socket-center-inset: calc(var(--port-control-column) - var(--socket-tuck) + var(--port-socket-size) / 2);
-    position: absolute; bottom: 0; left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
+    --socket-center-inset: calc(var(--port-control-column) - var(--port-knob-center-tuck) + var(--port-socket-size) / 2);
+    position: absolute; bottom: calc(-1 * var(--module-footer-height, 0px)); left: calc(var(--socket-center-inset) - var(--port-handle-width) / 2);
     width: var(--port-handle-width); height: var(--folded-socket-height);
     overflow: hidden; border: 0; border-radius: 4px 4px 0 0; }
 .port-group[data-direction="output"] > .cropped { left: auto; right: calc(var(--socket-center-inset) - var(--port-handle-width) / 2); }
@@ -635,4 +648,6 @@ button.port-slot[data-hovered] { background: color-mix(in srgb, var(--port-color
 .port-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--iv-port-label-base); }
 .port-entry[data-hovered] { background: var(--vscode-list-hoverBackground); }
 .unavailable { --port-color: color-mix(in srgb, var(--port-base-color) 25%, var(--vscode-disabledForeground) 75%); color: var(--vscode-disabledForeground); }
+[data-connection-feedback] .port-circle { --port-circle-fill: var(--vscode-errorForeground); border: 0; }
+[data-connection-feedback="edited"] .port-circle { outline: 1px solid var(--vscode-errorForeground); outline-offset: 2px; }
 </style>

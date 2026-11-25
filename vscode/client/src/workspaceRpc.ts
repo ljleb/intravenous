@@ -1,5 +1,5 @@
 import { recordedEventTimestampsOperation, type ObservationInterest, type ObservationCapability } from "./observations";
-import type { ManualControlDescriptor, ManualControlId } from "./manualControls";
+import type { ManualControlId } from "./manualControls";
 import { JsonRpcSocketClient } from "./rpcClient";
 import { SymbolicNode, SourceSpan } from "./graphModel";
 import { laneViewReadBatchSize, type GraphScope, type ProjectEditReceipt } from "./graphScope";
@@ -263,9 +263,8 @@ export class WorkspaceRpc {
     hoverManualControl(control: ManualControlId | null): Promise<void> {
         return this.client.request("manualControls.hover", control ? { ...control } : {});
     }
-    setManualInputEnabled(control: ManualControlId, value: number, enabled: boolean, participation: ManualControlDescriptor["participation"],
-        revision?: number): Promise<void> {
-        return this.client.request("manualControls.upsert", this.mutationParams({ ...control, value, enabled, participation }, revision));
+    toggleManualInput(control: ManualControlId): Promise<void> {
+        return this.client.request("manualControls.toggleInput", { ...control });
     }
     beginManualControl(interactionId: string, control: ManualControlId, value: number): Promise<void> {
         return this.client.request("manualControls.begin", { interactionId, ...control, value });

@@ -6,7 +6,7 @@ import type { KnobDrag } from "../graph/context";
 import { useNode } from "./nodeContext";
 
 type Context = { gestures: ManualControlGestures; version: Ref<number>;
-    setEnabled: (control: ManualControlId, enabled: boolean) => void };
+    toggleEnabled: (control: ManualControlId) => void };
 const key: InjectionKey<Context> = Symbol("iv.manualControls");
 export function provideManualControls(context: Context): void { provide(key, context); }
 export function useOptionalManualControls(): Context | null { return inject(key, null); }
@@ -84,7 +84,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         },
         toggleEnabled() {
             if (id.value?.inputName !== undefined && descriptor.value?.available && !descriptor.value.live && !dragging.value)
-                context?.setEnabled(id.value, !descriptor.value.enabled);
+                context?.toggleEnabled(id.value);
         },
         numeric(anchor: DOMRect) {
             if (!id.value || !descriptor.value || !context || !available.value) return;

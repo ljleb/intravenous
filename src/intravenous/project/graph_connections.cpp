@@ -477,10 +477,11 @@ void apply_sample_connection(
             sources.push_back({.channel = route.channel, .node_ref_occurrence = route.node_ref_occurrence});
     }
     auto& state = details::builder_graph_state(root_builder);
+    auto const begin = state.mark().sample_connections;
     for (auto const& input : inputs) {
         state.connect_sample_sources(input.target, connection.source_type, sources, input.symbolic_node);
     }
-    result.applied_connection_ids.push_back(connection.connection_id);
+    result.applied_connections.push_back({connection.connection_id, PortKind::sample, begin, state.mark().sample_connections});
 }
 
 void apply_event_connection(
@@ -526,13 +527,14 @@ void apply_event_connection(
     }
 
     auto& state = details::builder_graph_state(root_builder);
+    auto const begin = state.mark().event_connections;
     for (auto const& input : inputs) {
         for (auto const& output : outputs) {
             EventPortRef source(root_builder, output.type, output.sources);
             state.connect_event_input(input.target, source);
         }
     }
-    result.applied_connection_ids.push_back(connection.connection_id);
+    result.applied_connections.push_back({connection.connection_id, PortKind::event, begin, state.mark().event_connections});
 }
 } // namespace
 

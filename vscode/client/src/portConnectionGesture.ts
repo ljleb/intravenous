@@ -1,4 +1,4 @@
-import { canMoveConnectionEnd, connectionFromPorts, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
+import { canContinuePortConnection, canMoveConnectionEnd, connectionFromPorts, sameGraphPort, type GraphConnectionEnd, type GraphConnectionEdit, type GraphPortEndpoint } from "./graphConnectionEditing";
 import type { GraphScope } from "./graphScope";
 import { isTimelineSnapAddress } from "./timelineSnap";
 
@@ -47,13 +47,17 @@ export function canDropPortConnection(scope: GraphScope | null, drag: PortConnec
     return true;
 }
 
-export function finishPortConnection(drag: PortConnectionDrag, pointerId: number,
+export function finishPortConnection(scope: GraphScope | null, drag: PortConnectionDrag, pointerId: number,
     position: PortPointerPosition, target: GraphPortEndpoint | null, emptyEditorSpace = false): PortConnectionResult | null {
-    if (pointerId !== drag.pointerId || !movedFromStart(drag, position)) return null;
+    if (!scope?.editable || pointerId !== drag.pointerId || !movedFromStart(drag, position)) return null;
     if (drag.edit) {
-        if (target ? !acceptsPortConnection(drag.port, target, true) || sameGraphPort(drag.port, target) : !emptyEditorSpace) return null;
-        return { type: "edit", edit: { end: drag.edit, target } };
+        if (target && sameGraphPort(drag.port, target)) return null;
+        if (target && canDropPortConnection(scope, drag, target)) return { type: "edit", edit: { end: drag.edit, target } };
+        if ((target || emptyEditorSpace) && canContinuePortConnection(scope, drag.port, drag.edit)) {
+            return { type: "edit", edit: { end: drag.edit, target: null } };
+        }
+        return null;
     }
-    if (!target || !acceptsPortConnection(drag.port, target)) return null;
+    if (!target || !canDropPortConnection(scope, drag, target)) return null;
     return { type: "create", first: drag.port, second: target };
 }

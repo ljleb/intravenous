@@ -1,7 +1,9 @@
-import { addressKey, matchingScopePorts, type GraphScope, type NodeAddress, type Point } from "./graphScope";
+import { addressKey, matchingScopePorts, strongestConnectionFeedback, type ConnectionFeedback, type GraphScope, type NodeAddress, type Point } from "./graphScope";
 import type { GraphPortEndpoint } from "./graphConnectionEditing";
 
-export type PortWireAnchor = { id: string; x: number; y: number; moduleBoundary?: boolean; rulerInput?: boolean };
+export type PortWireAnchor = { id: string; x: number; y: number; moduleBoundary?: boolean; rulerInput?: boolean; popover?: number };
+export type WireClip = { x: number; y: number; width: number; height: number };
+export type WireViewport = { lane: WireClip; rulerInput?: WireClip; rulerBottom?: number; popovers: WireClip[] };
 export type RevealedConnectionEnd = { connectionId: string; port: GraphPortEndpoint };
 export type SelectedLaneWire = {
     key: string;
@@ -11,6 +13,7 @@ export type SelectedLaneWire = {
     applied: boolean;
     emphasized: boolean;
     sourceOwned: boolean;
+    feedback?: ConnectionFeedback;
 };
 
 export function portEndpointKey(port: GraphPortEndpoint): string {
@@ -54,7 +57,7 @@ export function resolveLaneConnectionEnds(scope: GraphScope) {
         };
         const hiddenSampleSources = (entry.hiddenSampleSourceModules ?? []).map(addressKey)
             .filter((address) => nodes.has(address));
-        return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned,
+        return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned, feedback: entry.feedback,
             outputs: resolve("output"), inputs: resolve("input"), hiddenSampleSources };
     });
 }
@@ -62,6 +65,19 @@ export function resolveLaneConnectionEnds(scope: GraphScope) {
 export type ResolvedLaneConnections = ReturnType<typeof resolveLaneConnectionEnds>;
 type ResolvedLaneConnection = ResolvedLaneConnections[number];
 type ConnectionLaneSpan = { first: number; last: number; connection: ResolvedLaneConnection };
+
+export function laneConnectionFeedback(connections: ResolvedLaneConnections) {
+    const ports = new Map<string, ConnectionFeedback>();
+    const implicitOutputs = new Map<string, ConnectionFeedback>();
+    for (const { inputs, outputs, hiddenSampleSources, feedback } of connections) {
+        if (!feedback) continue;
+        for (const { key } of [...inputs, ...outputs])
+            ports.set(key, strongestConnectionFeedback(feedback, ports.get(key))!);
+        for (const key of hiddenSampleSources)
+            implicitOutputs.set(key, strongestConnectionFeedback(feedback, implicitOutputs.get(key))!);
+    }
+    return { ports, implicitOutputs };
+}
 
 export class LaneConnectionViewport {
     private readonly starts: ConnectionLaneSpan[] = [];
@@ -123,7 +139,6 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
         PortWireAnchor | readonly PortWireAnchor[] | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
     context?: { top: number; bottom: number; hiddenSourceAnchors?: ReadonlyMap<string, readonly PortWireAnchor[]> }): SelectedLaneWire[] {
-    if (!selected.size && !revealedEnds.length && !context) return [];
     const revealed = new Map<string, Set<string>>();
     for (const end of revealedEnds) {
         const ports = revealed.get(end.connectionId) ?? new Set<string>();
@@ -132,7 +147,7 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
     }
     const wires = new Map<string, SelectedLaneWire>();
     for (const entry of connections) {
-        if (!context && !revealed.has(entry.id) && !entry.outputs.some(({ address }) => selected.has(address))
+        if (!context && !entry.feedback && !revealed.has(entry.id) && !entry.outputs.some(({ address }) => selected.has(address))
             && !entry.inputs.some(({ address }) => selected.has(address))) continue;
         const resolve = (ports: typeof entry.outputs) => {
             const visible = new Map<string, { anchor: PortWireAnchor; selected: boolean; revealed: boolean }>();
@@ -169,7 +184,7 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
                 // The curve stays within the vertical span of its ports.
                 const inViewport = context && (target.rulerInput || (Math.max(source.y, target.y) >= context.top
                     && Math.min(source.y, target.y) <= context.bottom));
-                const requested = emphasized || output.revealed || input.revealed;
+                const requested = emphasized || output.revealed || input.revealed || (!context && !!entry.feedback);
                 if (!inViewport && (!requested || (context && sourceOwned))) continue;
                 const key = JSON.stringify([source.id, target.id, sourceOwned]);
                 const existing = wires.get(key);
@@ -177,8 +192,10 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
                     if (!existing.connectionIds.includes(entry.id)) existing.connectionIds.push(entry.id);
                     existing.applied = existing.applied && entry.applied;
                     existing.emphasized ||= emphasized;
+                    if (entry.feedback) existing.feedback = strongestConnectionFeedback(existing.feedback, entry.feedback);
                 } else {
-                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied, emphasized, sourceOwned });
+                    wires.set(key, { key, source, target, connectionIds: [entry.id], applied: entry.applied, emphasized, sourceOwned,
+                        ...(entry.feedback ? { feedback: entry.feedback } : {}) });
                 }
             }
         }
@@ -201,4 +218,31 @@ export function selectedLaneWirePath(wire: SelectedLaneWire): string {
 export function connectionWirePath(first: Point, second: Point): string {
     const middleX = (first.x + second.x) / 2;
     return `M ${first.x} ${first.y} C ${middleX} ${first.y}, ${middleX} ${second.y}, ${second.x} ${second.y}`;
+}
+
+function withoutPopover(clip: WireClip, popover: WireClip): WireClip[] {
+    const right = clip.x + clip.width, bottom = clip.y + clip.height;
+    const left = Math.max(clip.x, popover.x), top = Math.max(clip.y, popover.y);
+    const cutRight = Math.min(right, popover.x + popover.width), cutBottom = Math.min(bottom, popover.y + popover.height);
+    if (left >= cutRight || top >= cutBottom) return [clip];
+    return [
+        { x: clip.x, y: clip.y, width: clip.width, height: top - clip.y },
+        { x: clip.x, y: cutBottom, width: clip.width, height: bottom - cutBottom },
+        { x: clip.x, y: top, width: left - clip.x, height: cutBottom - top },
+        { x: cutRight, y: top, width: right - cutRight, height: cutBottom - top },
+    ].filter(({ width, height }) => width > 0 && height > 0);
+}
+
+export function selectedLaneWireClips(viewport: WireViewport, ruler: boolean, endpointPopovers: readonly number[]): WireClip[] {
+    let clips = ruler && viewport.rulerInput ? [viewport.lane, viewport.rulerInput] : [viewport.lane];
+    // Popovers are measured in paint order. Only the topmost popover at a
+    // point determines whether a cable can cross its surface.
+    viewport.popovers.forEach((popover, index) => {
+        clips = clips.flatMap((clip) => withoutPopover(clip, popover));
+        if (!endpointPopovers.includes(index)) return;
+        const y = ruler ? popover.y : Math.max(popover.y, viewport.rulerBottom ?? popover.y);
+        const height = popover.y + popover.height - y;
+        if (height > 0) clips.push({ ...popover, y, height });
+    });
+    return clips;
 }

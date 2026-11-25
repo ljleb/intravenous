@@ -63,12 +63,15 @@ struct ProjectGraphScopeNode {
     std::string construction_error{};
 };
 
+enum class ProjectGraphConnectionFeedback { none, participant, edited };
+
 struct ProjectGraphScopeConnection {
     ProjectConnection connection{};
     // The current generation applied the connection; false while one of its
     // endpoints is missing or the connection has not been realized yet.
     bool applied = false;
     bool source_owned = false;
+    ProjectGraphConnectionFeedback feedback = ProjectGraphConnectionFeedback::none;
     // Read-only wire anchors on enclosing module lanes for hidden sources.
     std::vector<NodeAddress> hidden_sample_source_modules{};
 };

@@ -6,6 +6,7 @@
 #include <intravenous/node/tick_replay_mode.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/graph_jit/connections/realtime_schedule_plan.h>
+#include <intravenous/graph_jit/diagnostics.h>
 #include <intravenous/graph_jit/port_realization.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include <intravenous/graph_jit/realtime_port_state_plan.h>
@@ -472,7 +473,8 @@ public:
         std::size_t kernel_block_size,
         std::span<std::size_t const> callback_batch_classes,
         ConfiguredBundleInventory configured_bundles = {},
-        std::span<std::optional<StableConcreteNodeId> const> identities = {});
+        std::span<std::optional<StableConcreteNodeId> const> identities = {},
+        std::vector<GraphJitConnectionReference>* feedback_connections = nullptr);
 
     BackgroundEvaluationPlan const& background_topology() const noexcept
     {

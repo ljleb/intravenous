@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import type { GraphPortEndpoint } from "../../src/graphConnectionEditing";
+import type { ConnectionFeedback } from "../../src/graphScope";
 import type { SemanticPort } from "./semanticNode";
 import { portDescription } from "./nodeSummary";
 import ManualInput from "./ManualInput.vue";
 
 defineProps<{ port: SemanticPort; endpoint: GraphPortEndpoint;
     hasKnob: boolean; connected: boolean; pending: boolean; unavailable: boolean;
-    hint: string }>();
+    hint: string; feedback?: ConnectionFeedback }>();
 const emit = defineEmits<{
     handleHover: [event: Event]; handleLeave: []; wireStart: [event: PointerEvent];
 }>();
@@ -14,6 +15,7 @@ const emit = defineEmits<{
 
 <template>
     <div class="control-row" :class="{ unavailable, 'with-knob': hasKnob }" :data-direction="endpoint.direction"
+        :data-connection-feedback="feedback"
         :data-port-kind="endpoint.kind" :data-port-drop-target="endpoint.direction === 'input' ? '' : undefined">
         <ManualInput v-if="hasKnob" class="port-knob" :name="port.name" :direction="port.direction" port-cutout data-port-control />
         <button type="button" tabindex="-1" class="port-handle" :class="{ connected, pending }"
@@ -32,6 +34,7 @@ const emit = defineEmits<{
 <style scoped>
 .control-row {
     --knob-size: var(--port-knob-size);
+    --socket-tuck: var(--port-knob-center-tuck);
     --handle-shift: calc(-1 * var(--socket-tuck) + (var(--port-socket-size) - var(--port-handle-width)) / 2);
     /* Keep the socket fixed even when the hit area shifts away from the knob. */
     --socket-shift: calc(-1 * var(--socket-tuck) - var(--handle-shift));
@@ -41,11 +44,11 @@ const emit = defineEmits<{
 .control-row[data-direction="output"] { grid-template-columns: minmax(0, 1fr) var(--port-handle-width) var(--port-control-column);
     --port-color: var(--iv-port-output); }
 .control-row.unavailable { --port-color: var(--vscode-disabledForeground); color: var(--vscode-disabledForeground); }
-.port-knob { grid-column: 1; grid-row: 1; justify-self: end; padding: 0; gap: 2px; }
+.port-knob { grid-column: 1; grid-row: 1; justify-self: end; margin-inline-end: var(--port-knob-edge-gap); padding: 0; gap: 2px; }
 .port-handle { position: relative; left: var(--handle-shift); grid-column: 2; grid-row: 1; display: grid;
     align-items: center; width: var(--port-handle-width); height: min(22px, var(--port-row-height)); overflow: visible;
     padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--port-color); cursor: crosshair; touch-action: none; }
-[data-direction="output"] .port-knob { grid-column: 3; justify-self: start; }
+[data-direction="output"] .port-knob { grid-column: 3; justify-self: start; margin-inline: var(--port-knob-edge-gap) 0; }
 .port-circle {
     --port-circle-fill: color-mix(in srgb, currentColor var(--iv-disconnected-port-strength), var(--vscode-editor-background));
     width: var(--port-socket-size); height: var(--port-socket-size); border-radius: 50%; box-sizing: border-box;
@@ -56,8 +59,9 @@ const emit = defineEmits<{
 /* Cut past the outer edge of the dial track (12.75 units in its 32-unit viewBox). */
 .control-row.with-knob {
     isolation: isolate;
-    --handle-shift: -4px;
-    --cutout-center: calc(var(--socket-tuck) - var(--knob-size) / 2);
+    --socket-tuck: calc(var(--knob-socket-tuck) + var(--port-knob-edge-gap));
+    --handle-shift: calc(-4px - var(--port-knob-edge-gap));
+    --cutout-center: calc(var(--knob-socket-tuck) - var(--knob-size) / 2);
     --cutout-radius: calc(var(--knob-size) * .3984375 + 1.5px);
 }
 .with-knob .port-knob { position: relative; z-index: 1; gap: 0; }
@@ -70,12 +74,15 @@ const emit = defineEmits<{
 }
 [data-direction="output"] .port-handle { left: calc(-1 * var(--handle-shift)); }
 [data-direction="output"] .port-circle {
-    --cutout-center: calc(100% - var(--socket-tuck) + var(--knob-size) / 2);
+    --cutout-center: calc(100% - var(--knob-socket-tuck) + var(--knob-size) / 2);
     justify-self: end;
     transform: translateX(calc(-1 * var(--socket-shift)));
 }
 .connected .port-circle { --port-circle-fill: currentColor; }
 .pending .port-circle { border: 2px dashed currentColor; }
+[data-connection-feedback] { --port-color: var(--vscode-errorForeground); }
+[data-connection-feedback] .port-circle { --port-circle-fill: currentColor; border: 0; }
+[data-connection-feedback="edited"] .port-circle { outline: 1px solid currentColor; outline-offset: 2px; }
 .port-handle[data-hovered] { background: color-mix(in srgb, currentColor 12%, transparent); }
 .with-knob .port-handle[data-hovered] { background: transparent; }
 .with-knob .port-handle[data-hovered] .port-circle { filter: brightness(1.25); }

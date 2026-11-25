@@ -181,8 +181,9 @@ function finishRename(commit: boolean) {
     height: min(13px, var(--header-content-height)); color: var(--vscode-icon-foreground); }
 .member-count { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: min(11px, calc(100cqh - 3px));
     font-variant-numeric: tabular-nums; line-height: 1.1; }
-.lane-label :deep(.node-ports) { flex: 1; min-height: 32px; margin-top: calc(var(--header-growth) * .2); }
-.has-module-footer :deep(.node-ports) { min-height: 0; }
+.lane-label :deep(.node-ports) { flex: 1; min-height: 0; margin-top: calc(var(--header-growth) * .2); }
+/* A folded socket overlaps the footer only where that socket takes the pointer. */
+.has-module-footer :deep(.node-ports:has(.port-slot.cropped)) { z-index: 1; }
 .port-summary { display: flex; gap: 16px; margin-top: 6px; font-size: .9em; color: var(--vscode-descriptionForeground); }
 .inline-header .lane-label {
     --header-content-height: var(--graph-lane-height);

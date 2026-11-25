@@ -525,6 +525,12 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
             },
         });
     }
+    if (method == "manualControls.toggleInput") {
+        auto id = parse_manual_control_id(params);
+        if (id.kind != ManualControlKind::input)
+            throw std::runtime_error("Only input knobs have an enable setting");
+        return parsed(ToggleManualInputRequest{.id = std::move(id)});
+    }
     if (method == "manualControls.delete") {
         return parsed(DeleteManualControlRequest{
             .id = parse_manual_control_id(params),
