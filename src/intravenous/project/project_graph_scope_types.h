@@ -69,6 +69,8 @@ struct ProjectGraphScopeConnection {
     // endpoints is missing or the connection has not been realized yet.
     bool applied = false;
     bool source_owned = false;
+    // Read-only wire anchors on enclosing module lanes for hidden sources.
+    std::vector<NodeAddress> hidden_sample_source_modules{};
 };
 
 struct ProjectGraphChildScope {

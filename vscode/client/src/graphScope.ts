@@ -75,6 +75,7 @@ export type GraphScopeConnection = {
     id: string;
     applied: boolean;
     sourceOwned?: boolean;
+    hiddenSampleSourceModules?: NodeAddress[];
     connection: {
         connectionId?: string;
         kind: "sample" | "event";

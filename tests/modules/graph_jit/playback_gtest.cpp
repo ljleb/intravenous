@@ -291,7 +291,7 @@ std::shared_ptr<iv::ConfiguredGraph const> shift_bundle_handles(
     shifted->node_bundles = std::move(bundles);
 
     iv::GraphBuilderConnections connections;
-    connections.import_child(graph->connections, offset);
+    connections.import_child(graph->connections, offset, 0);
     shifted->connections = std::move(connections);
 
     auto symbolic_nodes = graph->symbolic_nodes.records();

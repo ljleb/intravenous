@@ -82,6 +82,21 @@ test("visible C++ cable segments stay on screen regardless of selection", () => 
     }
 });
 
+test("a hidden sample source draws from the enclosing module edge", () => {
+    const hidden = connection("hidden", "a", 0, "b", 0);
+    hidden.connection.outputs = [];
+    hidden.sourceOwned = true;
+    hidden.hiddenSampleSourceModules = [{ instanceId: "a" }];
+    const endpoints = resolveLaneConnectionEnds(scope([hidden]));
+    const viewport = new LaneConnectionViewport(endpoints, ["a", "b"].map((instanceId) => addressKey({ instanceId })));
+    const moduleEdge = { id: "module-edge", x: 40, y: 20, moduleBoundary: true };
+    const wires = selectedLaneConnections(viewport.inRows(0, 1), selected, anchors([]), [],
+        { top: 0, bottom: 100, hiddenSourceAnchors: new Map([[addressKey({ instanceId: "a" }), [moduleEdge]]]) });
+    assert.equal(wires.length, 1);
+    assert.equal(wires[0].source, moduleEdge);
+    assert.equal(wires[0].emphasized, true);
+});
+
 test("the ruler input draws cables from visible and lower ports and hides ports above the viewport", () => {
     const graph = scope(["b", "c"].map((target) => ({ id: target, applied: true, connection: { kind: "event",
         outputs: [{ instanceId: "a", port: { name: "events" } }],

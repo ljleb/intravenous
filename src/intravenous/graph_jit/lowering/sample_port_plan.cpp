@@ -837,7 +837,8 @@ std::expected<SamplePortBindingPlan, std::string> plan_sample_ports(
         auto const fallback_only = connected
             && !configured.override_connections
             && configured.participation != ManualControlParticipation::participate_with_connections;
-        auto const participates = !connected || (fallback_only && binding.resolves_coverage)
+        auto const participates = configured.override_connections || !connected
+            || (fallback_only && binding.resolves_coverage)
             || configured.participation
                 == ManualControlParticipation::participate_with_connections;
         auto const control_index = plan.manual_controls.size();

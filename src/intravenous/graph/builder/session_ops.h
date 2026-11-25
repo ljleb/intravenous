@@ -21,7 +21,8 @@ struct BuilderSession;
 [[nodiscard]] SamplePortRef iv_builder_require_sample_port(
     BuilderSession*, SamplePortRef const&);
 void iv_builder_connect_sample_input(
-    BuilderSession*, NodeBundlePortId, SamplePortRef const&);
+    BuilderSession*, NodeBundlePortId, SamplePortRef const&,
+    std::optional<std::size_t> target_occurrence = {});
 void iv_builder_connect_sample_inputs(
     BuilderSession*, NodeBundlePortId, std::span<SamplePortRef const>);
 void iv_builder_connect_event_input(

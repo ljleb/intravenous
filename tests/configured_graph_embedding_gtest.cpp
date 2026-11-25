@@ -232,6 +232,7 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     _annotate_source_info_after_statement(&repeated, "first", "/tmp/child.cpp", 3, 4, "a", 2, true, false);
     auto const branch = first.node_ref();
     _annotate_source_info_after_statement(&branch, "branch", "/tmp/child.cpp", 7, 8, "c", 4, true, false);
+    second.connect_input(0, Sample{2});
     EXPECT_EQ(first.node_bundle_handle(), repeated.node_bundle_handle());
     EXPECT_EQ(first.node_bundle_handle(), branch.node_bundle_handle());
     nested.outputs("out"_P = repeated, "branch"_P = branch);
@@ -255,9 +256,11 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     };
     check_occurrences(child->node_bundles.bundle(bundle), 0, 1, 2);
     auto const child_wires = child->connections.configured_sample_connections();
-    ASSERT_EQ(child_wires.size(), 2u);
-    EXPECT_EQ(child_wires[0].source_channels[0].node_ref_occurrence, 2u);
-    EXPECT_EQ(child_wires[1].source_channels[0].node_ref_occurrence, 3u);
+    ASSERT_EQ(child_wires.size(), 3u);
+    EXPECT_EQ(child_wires[0].target_symbolic_node, 1u);
+    EXPECT_EQ(child_wires[0].target_channels.front().bundle, bundle);
+    EXPECT_EQ(child_wires[1].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(child_wires[2].source_channels[0].node_ref_occurrence, 3u);
 
     (void)root.subgraph(std::move(nested), "live");
     auto const embedded = root.embed(*child, "frozen");
@@ -266,10 +269,12 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     check_occurrences(configured.node_bundles.bundle(embedded.node_bundle(bundle)),
         embedded.symbolic_node(0), embedded.symbolic_node(1), embedded.symbolic_node(2));
     auto const wires = configured.connections.configured_sample_connections();
-    ASSERT_EQ(wires.size(), 4u);
-    EXPECT_EQ(wires[2].source_channels[0].channel.bundle, embedded.node_bundle(bundle));
-    EXPECT_EQ(wires[2].source_channels[0].node_ref_occurrence, 2u);
-    EXPECT_EQ(wires[3].source_channels[0].node_ref_occurrence, 3u);
+    ASSERT_EQ(wires.size(), 6u);
+    EXPECT_EQ(wires[3].target_symbolic_node, embedded.symbolic_node(1));
+    EXPECT_EQ(wires[3].target_channels.front().bundle, embedded.node_bundle(bundle));
+    EXPECT_EQ(wires[4].source_channels[0].channel.bundle, embedded.node_bundle(bundle));
+    EXPECT_EQ(wires[4].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(wires[5].source_channels[0].node_ref_occurrence, 3u);
 }
 
 TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)

@@ -815,7 +815,7 @@ inline NodeRef NodeRef::connect_input(size_t i, T&& value) const {
   if (source.session != _session)
     details::error("sample source belongs to another builder session");
   details::iv_builder_connect_sample_input(
-      _session, {_index, PortKind::sample, i}, source);
+      _session, {_index, PortKind::sample, i}, source, _node_ref_occurrence);
   return _clone_handle();
 }
 template<class T>

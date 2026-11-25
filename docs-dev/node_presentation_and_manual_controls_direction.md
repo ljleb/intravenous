@@ -681,6 +681,9 @@ Presentations simply rebind to the newly published compatible realization.
 
 ## Persistent manual controls
 
+The following defaults describe the current executable. The new
+[input override rule](#input-override-rule) describes the intended behavior.
+
 An eligible Sample input has an instance-owned manual value and an enable
 toggle. A connected contribution takes precedence wherever it is covered.
 Where coverage is known absent, an enabled knob supplies its stored value.
@@ -709,13 +712,6 @@ Deferred design topic, recorded 2026-11-21. The node definition can eventually
 specify whether an output port has a knob and how that knob behaves. The
 definition API and supported behaviors are open for later design.
 
-A symbolic knob stores one value and applies it to the ports in its mapping.
-An explicitly enabled or edited concrete member input takes precedence at
-its port. An enabled symbolic input takes precedence over an implicit
-member default. A temporary input drag takes precedence over settled input
-controls. If two input controls of the same specificity still overlap, the
-first saved control takes precedence.
-
 Each output gain applies to its output route. A live output gesture changes
 that gain while the other gains on the route retain their values. See the
 [output gain specialization contract](./graph_jit_direction.md#output-gain-specialization-owner-requirement-2026-11-16)
@@ -727,14 +723,64 @@ for the previous port-level fallback policy.
 The live scalar may reside in `NodeStorage`; one scalar per eligible/manual control
 is not a reason to create a separate runtime storage architecture.
 
+### Input override rule
+
+The owner accepted direct cable first on 2026-11-24. At a symbolic input,
+combine the incoming project cables wherever they supply data. Its own enabled
+knob fills known gaps and supplies the value when the input is unplugged.
+A live gesture uses the edited knob value at that input while the gesture
+is active, including when the stored knob is disabled. When the gesture
+ends, the input resumes its cable and fallback rules.
+
+At a concrete input, use the first applicable project source, in this order:
+
+1. A live gesture on the concrete knob.
+2. The combined project cables connected directly to the concrete input, wherever
+   they supply data.
+3. The concrete knob, if enabled, in known gaps or when unplugged.
+4. The combined values forwarded by the symbolic inputs mapped to the
+   concrete input, wherever those inputs supply data.
+5. The port's existing no-source behavior.
+
+Cables authored in C++ describe fixed wiring. An input gesture keeps them
+connected. At a concrete input with fixed wiring, combine the auditioned
+knob value with the C++ contributions using the input's normal combination.
+
+A covered zero is a value. Unknown cable coverage does not permit fallback.
+A symbolic input gesture changes only the value forwarded by that input.
+Other symbolic inputs keep forwarding their own values. A receiving
+Sequential input uses its own `combine_values` operation for contributions
+at the same step. A Coverage input accumulates Regions from the selected
+sources and preserves their multiplicity and overlaps. See the
+[port combination rules](random_access_port_data_direction.md#fan-in-and-overlapping-coverage-use-the-same-combiner)
+and the [earlier input precedence rules](historical/overlapping_manual_input_precedence_2026-11-24.md).
+
+For example, suppose a gapped cable supplies 110 Hz directly to an
+oscillator. Its concrete knob is enabled at 196 Hz, and two symbolic
+inputs mapped to its frequency supply 130 Hz and 180 Hz. The oscillator
+gets 110 Hz where the direct cable is present and 196 Hz in the gaps.
+Disabling the concrete knob makes the oscillator receive 310 Hz in the
+gaps. Dragging either symbolic knob changes only its contribution to
+that sum. Dragging the concrete knob replaces the input for the duration
+of its gesture.
+
+For two simultaneous edits to the same `ManualControlId`, the proposed
+rule is that the server reserves the knob for the first accepted gesture.
+It rejects a later begin before applying any value. End, cancellation,
+and client disconnect release the reservation. Only an accepted begin
+reserves the knob. Today `ProjectGraph` checks for duplicate gesture
+IDs, and `GraphExecutor` shares a live target for each knob. See
+[implementation status](implementation_fronts_direction.md#direct-cable-first-input-resolution).
+
 ### Temporary connected-input override
 
 _Updated by the repository owner on 2026-11-18. See the
 [previous override rules](historical/input_observation_and_disabled_knobs_before_2026-11-18.md#connected-input-override-and-observation-status)._
 
-Hover prepares code for a temporary override without activating it. A drag makes
-the manual value replace the incoming signal at that input, even when its stored
-knob is disabled. Release saves the value and closes the undo gesture. The
+Hover prepares code for a temporary override without activating it. A drag uses
+the manual value in place of project wiring at that input, even when its stored
+knob is disabled. C++ wiring continues to contribute. Release saves the value
+and closes the undo gesture. The
 override stays active while that client hovers over the knob. On hover leave, the
 settled code resumes when its generation activates. The authored wiring and the
 stored enable setting survive the entire interaction.

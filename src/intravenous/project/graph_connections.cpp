@@ -38,6 +38,7 @@ struct ResolvedSampleOutput {
 struct ResolvedSampleInput {
     ChannelTypeId type = ChannelTypeId::mono;
     std::variant<NodeBundlePortId, SampleInputChannelId> target{};
+    std::optional<SymbolicNodeHandle> symbolic_node{};
     bool operator==(ResolvedSampleInput const&) const = default;
 };
 
@@ -160,6 +161,7 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
                     append_unique(result, ResolvedSampleInput{
                         .type = ChannelTypeId::mono,
                         .target = member_channels[*matcher.channel],
+                        .symbolic_node = cursor.symbolic_node,
                     });
                 } else {
                     if (member_channels.size() != channel_type_info(
@@ -179,6 +181,7 @@ std::vector<ResolvedSampleInput> sample_inputs_for_cursor(
                         .type = mapping.channel_layout.channel_type,
                         .target = NodeBundlePortId{
                             first.bundle, PortKind::sample, first.port},
+                        .symbolic_node = cursor.symbolic_node,
                     });
                 }
             }
@@ -475,7 +478,7 @@ void apply_sample_connection(
     }
     auto& state = details::builder_graph_state(root_builder);
     for (auto const& input : inputs) {
-        state.connect_sample_sources(input.target, connection.source_type, sources);
+        state.connect_sample_sources(input.target, connection.source_type, sources, input.symbolic_node);
     }
     result.applied_connection_ids.push_back(connection.connection_id);
 }

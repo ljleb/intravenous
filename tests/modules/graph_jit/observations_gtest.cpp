@@ -87,12 +87,24 @@ TEST_F(GraphJitRuntimeFixture, SummedOutputObservationReducesTheMixedSamplesOnce
 
 TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOverride)
 {
-    for (bool override_connections : {false, true}) {
+    enum class InputGesture { settled, project_wire, source_owned_wire };
+    for (auto mode : {InputGesture::settled, InputGesture::project_wire, InputGesture::source_owned_wire}) {
         auto graph = std::make_shared<ConfiguredGraph>(
             *configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module"));
         auto const bundles = concrete_bundles(*graph);
         ASSERT_GE(bundles.size(), 2u);
-        if (override_connections) {
+        if (mode == InputGesture::project_wire) {
+            auto const wires = graph->connections.configured_sample_connections();
+            std::vector samples(wires.begin(), wires.end());
+            auto wire = std::ranges::find_if(samples, [&](auto const& connection) {
+                return connection.target_channels.front().bundle == bundles[1];
+            });
+            ASSERT_NE(wire, samples.end());
+            wire->source_owned = false;
+            graph->connections = GraphBuilderConnections::from_configured_connections(
+                samples, graph->connections.configured_event_connections());
+        }
+        if (mode != InputGesture::settled) {
             graph->manual_controls.push_back({
                 .id = {.node = {.instance_id = "sink"}, .port_name = "in"},
                 .input = {bundles[1], PortKind::sample, 0},
@@ -118,7 +130,9 @@ TEST_F(GraphJitRuntimeFixture, LiveInputObservationReadsTheEffectiveValueAfterOv
         ASSERT_TRUE(frame->values[0].value.captured);
         auto const level = frame->values[0].value.load<observation_details::SampleLevelState>();
         EXPECT_EQ(level.samples, 32u);
-        EXPECT_DOUBLE_EQ(level.peak, override_connections ? .25 : 34.0);
+        auto const expected = mode == InputGesture::project_wire ? .25
+            : mode == InputGesture::source_owned_wire ? 34.25 : 34.0;
+        EXPECT_DOUBLE_EQ(level.peak, expected);
     }
 }
 
@@ -557,32 +571,55 @@ TEST_F(GraphJitRuntimeFixture, StereoObservationResolvesExplicitChannelSelectors
 }
 TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequentialFallback)
 {
+    struct ExpectedRegion {
+        GlobalIndexRange range;
+        std::vector<float> values;
+    };
     struct Case {
         std::string_view module, control, observed_input;
         std::int64_t begin;
-        std::vector<GlobalIndexRange> regions;
-        std::vector<float> values;
+        std::vector<ExpectedRegion> regions;
         bool override_connections = false;
         bool public_input = false;
         std::int64_t stride = 1;
+        bool project_wire = false;
     };
     for (auto const& test : {
              Case{"iv.test.replay.coverage_manual_window", "in", "in", 18,
-                 {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}},
+                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}},
+             // The knob adds its own Region during the gesture. The fixed C++ wire still contributes.
              Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
-                 {range(18, 26)}, {.25f, .25f, .25f, .25f, .25f, .25f, .25f, .25f}, true},
-             // Both requested samples belong to the same manual Region, with no storage for the samples between them.
+                 {{range(18, 26), std::vector<float>(8, .25f)}, {range(20, 24), {4, 5, 6, 7}}}, true},
+             // A project wire yields to the gesture. Only the requested endpoints of the manual Region are sampled.
              Case{"iv.test.replay.coverage_manual_window", "coverage", "in", 18,
-                 {range(18, 26)}, {.25f, .25f}, true, false, 7},
+                 {{range(18, 26), {.25f, .25f}}}, true, false, 7, true},
              Case{"iv.test.replay.coverage_manual_window", "coverage", "coverage", 18,
-                 {range(18, 20), range(20, 24), range(24, 26)}, {.25f, .25f, 4, 5, 6, 7, .25f, .25f}, false, true},
+                 {{range(18, 20), {.25f, .25f}}, {range(20, 24), {4, 5, 6, 7}}, {range(24, 26), {.25f, .25f}}}, false, true},
              Case{"iv.test.automation.transformed_sparse_curve", "gain", "gain", 0,
-                 {range(0, 8)}, {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}},
+                 {{range(0, 8), {0, .5f, 1, 1.5f, .25f, .25f, .25f, .25f}}}},
          }) {
         SCOPED_TRACE(::testing::Message{} << test.module << " control=" << test.control
             << " observed input=" << test.observed_input << " public=" << test.public_input
-            << " stride=" << test.stride);
-        auto compiled = compile_with_manual_input(test.module, 741, test.control, .25f, test.override_connections);
+            << " stride=" << test.stride << " project wire=" << test.project_wire);
+        auto configured = configured_graph_with_manual_input(test.module, test.control, .25f, test.override_connections);
+        ASSERT_TRUE(configured);
+        if (test.project_wire) {
+            ASSERT_EQ(configured->manual_controls.size(), 1u);
+            auto const input = configured->manual_controls.front().input;
+            auto const wires = configured->connections.configured_sample_connections();
+            std::vector samples(wires.begin(), wires.end());
+            auto const wire = std::ranges::find_if(samples, [&](auto const& connection) {
+                return std::ranges::any_of(connection.target_channels, [&](auto const& channel) {
+                    return channel.bundle == input.node_bundle_handle && channel.port == input.port_index;
+                });
+            });
+            ASSERT_NE(wire, samples.end());
+            ASSERT_TRUE(wire->source_owned);
+            wire->source_owned = false;
+            configured->connections = GraphBuilderConnections::from_configured_connections(
+                samples, configured->connections.configured_event_connections());
+        }
+        auto compiled = compile_graph(configured, 741);
         ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
         auto const& graph = *compiled.compiled_graph;
         auto const& plan = graph.background_evaluation_plan;
@@ -612,7 +649,9 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
         query->kind = ObservationSourceKind::input;
         query->port = selected;
         query->operation = &*operation;
-        query->window = {index(test.begin), 8, test.values.size()};
+        constexpr std::int64_t window_length = 8;
+        auto const points = static_cast<std::size_t>((window_length - 1) / test.stride + 1);
+        query->window = {index(test.begin), window_length, points};
 
         GraphExecutor executor(resources);
         ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
@@ -628,19 +667,23 @@ TEST_F(GraphJitRuntimeFixture, BackgroundInputWaveformsUseCoverageRegionsAndSequ
         ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
         ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
         ASSERT_EQ(query->result.regions.size(), test.regions.size());
-        std::size_t value_index = 0;
-        for (auto const expected : test.regions) {
+        for (auto const& expected : test.regions) {
             auto const observed = std::ranges::find_if(query->result.regions,
-                [&](auto const& region) { return region.range == expected; });
+                [&](auto const& region) { return region.range == expected.range; });
             ASSERT_NE(observed, query->result.regions.end());
-            for (auto const& [position, value] : observed->values) {
-                ASSERT_LT(value_index, test.values.size());
-                EXPECT_EQ(position, index(test.begin + static_cast<std::int64_t>(value_index) * test.stride));
+            ASSERT_EQ(observed->values.size(), expected.values.size());
+            std::size_t value_index = 0;
+            for (std::int64_t offset = 0; offset < window_length; offset += test.stride) {
+                auto const requested = index(test.begin + offset);
+                if (!expected.range.contains(requested)) continue;
+                ASSERT_LT(value_index, expected.values.size());
+                auto const& [position, value] = observed->values[value_index];
+                EXPECT_EQ(position, requested);
                 ASSERT_TRUE(value.captured);
-                EXPECT_FLOAT_EQ(value.load<float>(), test.values[value_index++]);
+                EXPECT_FLOAT_EQ(value.load<float>(), expected.values[value_index++]);
             }
+            EXPECT_EQ(value_index, expected.values.size());
         }
-        EXPECT_EQ(value_index, test.values.size());
     }
 }
 

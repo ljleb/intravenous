@@ -760,9 +760,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             return source.channel.bundle == *control.coverage_source;
         });
     };
-    auto replaces_source = [&](SampleInputChannelId target, ConfiguredSampleConnection const& connection, bool coverage_only) {
+    auto replaces_source = [&](SampleInputChannelId target, ConfiguredSampleConnection const& connection) {
+        if (connection.source_owned) return false;
         return std::ranges::any_of(graph.manual_controls, [&](auto const& control) {
-            return overrides_connection(control, view) && (!coverage_only || control.coverage_source)
+            return overrides_connection(control, view)
                 && control.input.node_bundle_handle == target.bundle && control.input.port_index == target.port
                 && !is_coverage_source(connection, control);
         });
@@ -867,10 +868,6 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             || graph.manual_controls[*control_index].participation == ManualControlParticipation::participate_with_connections)) {
             result.contributions.push_back({.source_terms = {{output, 1.0f}}});
         }
-        if (control_index && overrides_connection(graph.manual_controls[*control_index], view)) {
-            pop();
-            return result;
-        }
         if (found == incoming_by_channel.end()) {
             pop();
             if (!result.contributions.empty()) return result;
@@ -883,7 +880,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             return std::unexpected("GraphJit structural sample boundary route has no source");
         }
         for (auto const& [connection, target_channel] : found->second) {
-            if (replaces_source(upstream_target, *connection, true)) continue;
+            if (replaces_source(upstream_target, *connection)) continue;
             auto const source_width = channel_count(connection->source_type);
             for (std::size_t source_channel = 0;
                  source_channel < connection->source_channels.size();
@@ -943,11 +940,10 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
                 else if (target.bundle == control.input.node_bundle_handle && target.port == control.input.port_index)
                     expanded.push_back({*control.coverage_source, 0, target.channel});
             }
-            // A live manual producer replaces this input's authored source.
-            // Keep the authored connections in ConfiguredGraph so restoring
-            // the connection requires no durable project edit.
+            // A live manual producer replaces project cables at this input.
+            // The configured graph keeps them for the settled specialization.
             std::erase_if(expanded, [&](SampleInputChannelId channel) {
-                return replaces_source(channel, connection, false);
+                return replaces_source(channel, connection);
             });
             target_crossed_structure = target_crossed_structure
                 || expanded.size() != 1 || expanded.front() != target
@@ -3324,8 +3320,9 @@ std::expected<void, std::string> plan_background_connections(
                         [&](auto const& connection) { return connection.target_port == port; });
                     auto control = std::ranges::find(graph.manual_controls, port, &ConfiguredManualControl::input);
                     if (connected && control != graph.manual_controls.end()
-                        && control->participation == ManualControlParticipation::participate_with_connections
-                        && !overrides_connection(*control, view)) manual_contribution = control->settled_value;
+                        && (overrides_connection(*control, view)
+                            || control->participation == ManualControlParticipation::participate_with_connections))
+                        manual_contribution = control->settled_value;
                     if (control != graph.manual_controls.end() && !manual_contribution)
                         fallback = control->settled_value;
                     else if (!connected) fallback = metadata.default_value;

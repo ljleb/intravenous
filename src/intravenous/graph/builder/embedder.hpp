@@ -31,11 +31,12 @@ public:
       std::string_view qualifier)
   {
     auto const expected_bundle_offset = parent_bundles.size();
-    auto const bundle_offset = parent_bundles.import_child(child_bundles, parent_symbolic_nodes.size());
+    auto const symbolic_offset = parent_symbolic_nodes.size();
+    auto const bundle_offset = parent_bundles.import_child(child_bundles, symbolic_offset);
     IV_ASSERT(
         bundle_offset == expected_bundle_offset,
         "embedded child bundle offset changed unexpectedly");
-    parent_connections.import_child(child_connections, bundle_offset);
+    parent_connections.import_child(child_connections, bundle_offset, symbolic_offset);
     auto symbolic_nodes = parent_symbolic_nodes.import_child(
         child_symbolic_nodes, bundle_offset, qualifier);
 

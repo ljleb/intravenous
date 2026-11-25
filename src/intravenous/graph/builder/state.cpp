@@ -137,10 +137,11 @@ bool event_connection_all(
 
 template<class Map>
 ConfiguredSampleConnection remap_sample_connection(
-    ConfiguredSampleConnection connection, Map&& map) {
+    ConfiguredSampleConnection connection, Map&& map, SymbolicNodeHandle symbolic_offset) {
   for (auto& source : connection.source_channels)
     source.channel.bundle = map(source.channel.bundle);
   for (auto& target : connection.target_channels) target.bundle = map(target.bundle);
+  if (connection.target_symbolic_node) *connection.target_symbolic_node -= symbolic_offset;
   return connection;
 }
 
@@ -848,7 +849,10 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
   auto const samples = _connections.configured_sample_connections();
   auto const events = _connections.configured_event_connections();
   for (auto index = begin.sample_connections; index < samples.size(); ++index) {
-    if (!sample_connection_all(samples[index], inside)) return std::nullopt;
+    auto const& connection = samples[index];
+    if (!sample_connection_all(connection, inside)
+        || (connection.target_symbolic_node && *connection.target_symbolic_node < record_begin))
+      return std::nullopt;
   }
   for (auto index = begin.event_connections; index < events.size(); ++index) {
     if (!event_connection_all(events[index], inside)) return std::nullopt;
@@ -861,7 +865,7 @@ std::optional<GraphBuilderInvocationSnapshot> GraphBuilderState::snapshot_conten
   auto const local = [&](NodeBundleHandle handle) { return handle - first + 1; };
   std::vector<ConfiguredSampleConnection> local_samples;
   for (auto index = begin.sample_connections; index < samples.size(); ++index) {
-    local_samples.push_back(remap_sample_connection(samples[index], local));
+    local_samples.push_back(remap_sample_connection(samples[index], local, record_begin));
   }
   std::vector<ConfiguredEventConnection> local_events;
   for (auto index = begin.event_connections; index < events.size(); ++index) {
@@ -902,7 +906,7 @@ NodeBundleHandle GraphBuilderState::import_contents(
   }
   auto const record_begin = _symbolic_nodes.size();
   auto const offset = _node_bundles.import_contents(graph.node_bundles, record_begin);
-  _connections.import_child(graph.connections, offset);
+  _connections.import_child(graph.connections, offset, record_begin);
   (void)_symbolic_nodes.import_child(
       graph.symbolic_nodes, offset, qualifier);
   index_imported_records(record_begin);
@@ -945,8 +949,10 @@ GraphBuilderState::snapshot_scope(details::BuilderScopeId id) const
       if (!sample_connection_all(connection, inside)) {
         return capture("a sample connection crosses the scope boundary");
       }
+      if (connection.target_symbolic_node && *connection.target_symbolic_node < scope.record_begin)
+        return capture("a sample connection targets an enclosing symbolic node");
       local_samples.push_back(remap_sample_connection(
-          connection, [&](NodeBundleHandle h) { return h - first; }));
+          connection, [&](NodeBundleHandle h) { return h - first; }, scope.record_begin));
     }
   }
   std::vector<ConfiguredEventConnection> local_events;
@@ -1226,7 +1232,8 @@ EventPortRef GraphBuilderState::detach_event_port(
 
 void GraphBuilderState::record_configured_sample_connection(
     NodeBundlePortId target,
-    SamplePortRef const& source)
+    SamplePortRef const& source,
+    std::optional<SymbolicNodeHandle> target_symbolic_node)
 {
   if (target.port_kind != PortKind::sample || !source.session
       || source.session != _session
@@ -1246,6 +1253,8 @@ void GraphBuilderState::record_configured_sample_connection(
       .source_channels = std::move(configured_sources),
       .target_type = descriptor.config.channel_layout.channel_type,
       .target_channels = _node_bundles.sample_input_channels(target),
+      .target_symbolic_node = target_symbolic_node,
+      .source_owned = true,
   });
 }
 
@@ -1273,6 +1282,7 @@ void GraphBuilderState::record_configured_sample_connection(
       .source_channels = std::move(configured_sources),
       .target_type = ChannelTypeId::mono,
       .target_channels = {target},
+      .source_owned = true,
   });
 }
 
@@ -1305,14 +1315,23 @@ void GraphBuilderState::record_configured_event_connection(
 }
 
 void GraphBuilderState::connect_sample_input(
-    NodeBundlePortId target, SamplePortRef const& source)
+    NodeBundlePortId target, SamplePortRef const& source,
+    std::optional<std::size_t> target_occurrence)
 {
-  record_configured_sample_connection(target, source);
+  std::optional<SymbolicNodeHandle> symbolic_node;
+  if (target_occurrence) {
+    auto const occurrences = _node_bundles.bundle(target.node_bundle_handle).node_ref_occurrences();
+    if (*target_occurrence >= occurrences.size())
+      details::error("sample connection target occurrence is out of bounds");
+    symbolic_node = occurrences[*target_occurrence].symbolic_node_handle;
+  }
+  record_configured_sample_connection(target, source, symbolic_node);
 }
 
 void GraphBuilderState::connect_sample_sources(
     std::variant<NodeBundlePortId, SampleInputChannelId> target,
-    ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources)
+    ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources,
+    std::optional<SymbolicNodeHandle> target_symbolic_node)
 {
   for (auto const& source : sources) {
     auto const channel = source.channel;
@@ -1327,6 +1346,7 @@ void GraphBuilderState::connect_sample_sources(
   ConfiguredSampleConnection connection{
       .source_type = source_type,
       .source_channels = {sources.begin(), sources.end()},
+      .target_symbolic_node = target_symbolic_node,
   };
   if (auto const* port = std::get_if<NodeBundlePortId>(&target)) {
     connection.target_type = _node_bundles.resolve_sample_input(*port)
@@ -1370,6 +1390,7 @@ void GraphBuilderState::connect_sample_input(
       .source_channels = std::move(configured_sources),
       .target_type = type,
       .target_channels = std::move(targets),
+      .source_owned = true,
   });
 }
 

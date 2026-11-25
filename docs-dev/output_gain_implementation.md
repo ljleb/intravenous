@@ -515,3 +515,12 @@ read the underlying output. Named `SamplePortRef` expressions select existing
 routes and have no independent output gain. The multi-declarator limitation
 above still applies. The configured graph archive and native package ABI
 both changed to carry the new source information.
+
+## Displaying source-authored sample connections
+
+`graph.getScope` uses `ConfiguredSampleConnectionSource::node_ref_occurrence`
+to locate the selected symbolic lane. If the selected lane is hidden, the
+scope provides its enclosing visible module as a drawing anchor. The wire
+ends at the module edge without claiming a public port. Concrete member
+rows use their canonical `NodeAddress` for selection, so both visible copies
+select together.

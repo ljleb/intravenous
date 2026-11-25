@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 6;
+inline constexpr std::uint32_t archive_version = 7;
 
 class Writer {
 public:
@@ -1001,6 +1001,9 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
         });
         write_enum(writer, value.target_type);
         write_values<SampleInputChannelId>(writer, value.target_channels, write_input_channel);
+        writer.flag(value.target_symbolic_node.has_value());
+        if (value.target_symbolic_node) writer.size(*value.target_symbolic_node);
+        writer.flag(value.source_owned);
     });
     auto const events = configured.connections.configured_event_connections();
     writer.list(events, [&](ConfiguredEventConnection const& value) {
@@ -1204,6 +1207,8 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
         result.target_type = read_enum<ChannelTypeId>(reader);
         result.target_channels =
             read_values<SampleInputChannelId>(reader, read_input_channel);
+        if (reader.flag()) result.target_symbolic_node = reader.size();
+        result.source_owned = reader.flag();
         return result;
     });
     auto event_connections = read_list<ConfiguredEventConnection>(reader, [&] {
@@ -1252,9 +1257,21 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             throw std::runtime_error("configured graph archive has an invalid sample output occurrence");
         }
     };
-    for (auto const& connection : sample_connections)
+    for (auto const& connection : sample_connections) {
         for (auto const& source : connection.source_channels)
             validate_occurrence(source.channel, source.node_ref_occurrence);
+        if (!connection.target_symbolic_node) continue;
+        auto const symbol = *connection.target_symbolic_node;
+        if (symbol >= symbolic_nodes.size() || connection.target_channels.empty()
+            || !std::ranges::all_of(connection.target_channels, [&](auto target) {
+                return target.bundle < bundles.size()
+                    && std::ranges::any_of(symbolic_nodes[symbol].sample_inputs, [&](auto const& input) {
+                        return std::ranges::contains(input.channels, target);
+                    });
+            })) {
+            throw std::runtime_error("configured graph archive has an invalid symbolic sample target");
+        }
+    }
     for (auto const& record : symbolic_nodes)
         for (auto const& expression : record.sample_output_routes)
             for (auto const& route : expression)

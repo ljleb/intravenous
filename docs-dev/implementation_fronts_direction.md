@@ -2635,6 +2635,58 @@ continuity from Front 6, durable project mutations from Front 10, and graph acti
 from Front 8. Front 12 can improve later scoped construction but does not block Front
 14.
 
+### Direct cable first input resolution
+
+**Implementation friction (2026-11-24, unresolved).** The accepted
+[input override rule](node_presentation_and_manual_controls_direction.md#input-override-rule)
+requires an independently wired symbolic input and a coverage-dependent
+choice at each concrete input. The initial assumption was that the existing
+manual fallback and module-input resolution could express both operations.
+
+`sample_inputs_for_cursor()` and `GraphBuilderState::connect_sample_sources()`
+now retain the selected symbolic input in
+`ConfiguredSampleConnection::target_symbolic_node` alongside the physical
+`target_channels`. `configure_manual_controls()` records the corresponding
+`ConfiguredManualControl::input_symbolic_node`. `GraphJit::Impl::compile_impl()`
+still selects one control per physical input. Retaining several controls in that
+loop alone would still leave project cables in one set of contributions at the
+concrete receiver.
+
+The owner clarified that C++ wiring is fixed. The configured graph records it
+in `ConfiguredSampleConnection::source_owned`. Effective connection analysis
+keeps these wires during a gesture. A Sequential module input now receives its
+wires individually at its resolution stage, preserving their origin for this
+decision. A live knob participates alongside any retained sources. This change
+awaits native runtime tests.
+
+`resolve_module_inputs()` provides an independently scheduled Sequential
+input for a package boundary. At the concrete receiver, `SampleConnectionPlan`
+and `stage_sample_timelines()` combine one set of contributions.
+`BackgroundEvaluationCallFrame::observe_sequential_sample_input()` likewise
+uses one binding and one fallback value. A compiler-generated selector that
+copies both groups into its own dense timelines would introduce additional
+history storage and staging. A selector that uses its own generic combiner
+could change the concrete node's `combine_values` semantics. The existing
+Coverage manual producer can fill gaps with a scalar. Using it to replace
+Regions with dense values would lose their multiplicity and overlaps.
+
+With the destination recorded, the next dependency is preserving separate
+project contributions through connection analysis. The owner approved retaining
+direct and symbolic contributions in distinct groups in the receiver's
+connection plan. Realtime staging, background replay, and observations
+would use that plan with the receiver's combiner. Coverage planning would
+expose only the selected Regions at each position. The compiler should
+fold the choice where coverage or the absence of a group is known so an
+ordinary input with a single group continues to use its normal binding.
+
+The remaining implementation order is Fronts 3/4/7 coverage-aware input
+planning and execution, then Front 14 gesture wiring and observation.
+The execution regression should cover direct cable on,
+known gap, unknown coverage, covered zero, and local gestures at both
+inputs. It should check the values delivered to Tick and observed through
+background replay, and check Region overlap at a Coverage receiver. The
+explicit additive participation policy for settled controls remains in use.
+
 ## Front 15: RPC route layer and multi-client project session server
 
 **Primary ownership:** transport/session infrastructure around typed application APIs.

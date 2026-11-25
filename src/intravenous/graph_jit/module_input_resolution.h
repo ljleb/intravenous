@@ -25,22 +25,6 @@ inline ConfiguredGraph resolve_module_inputs(ConfiguredGraph const& authored)
     std::map<NodeBundleHandle, NodeBundleHandle> boundary_owners;
     auto const bundle_count = authored.node_bundles.size();
     auto const authored_samples = authored.connections.configured_sample_connections();
-    // Public input channels with an authored contribution, after the tiled
-    // expansion that structural routing applies to targets.
-    std::vector<SampleInputChannelId> connected;
-    auto collect_target = [&](auto&& self, SampleInputChannelId target) -> void {
-        auto const& bundle = authored.node_bundles.bundle(target.bundle);
-        if (bundle.is_tiled()) {
-            auto const members = bundle.tiled_members();
-            if (target.channel < members.size())
-                self(self, SampleInputChannelId{members[target.channel], target.port, 0});
-            return;
-        }
-        connected.push_back(target);
-    };
-    for (auto const& connection : authored_samples) {
-        for (auto const target : connection.target_channels) collect_target(collect_target, target);
-    }
     for (NodeBundleHandle bundle = 0; bundle < bundle_count; ++bundle) {
         auto const boundary = authored.node_bundles.bundle(bundle).subgraph_boundary_handle();
         if (!boundary) continue;
@@ -86,52 +70,33 @@ inline ConfiguredGraph resolve_module_inputs(ConfiguredGraph const& authored)
                     {bundle, PortKind::event, port}));
         }
     }
-    // Authored connections keep targeting the public input, so structural
-    // routing still sums its contributions, with their conversions and
-    // detaches, as at any module boundary. Internal consumers read the stage,
-    // and the stage reads the boundary's internal side of the public input.
+    // Each wire enters the resolution stage separately. This preserves the
+    // wire's origin through conversion and lets the stage's input gesture
+    // keep C++ wires while replacing project wires. Internal consumers read
+    // the resolved stream.
+    auto sample_input_stage = [&](auto&& self, SampleInputChannelId target)
+        -> std::optional<SampleInputChannelId> {
+        auto const& bundle = authored.node_bundles.bundle(target.bundle);
+        if (bundle.is_tiled()) {
+            auto const members = bundle.tiled_members();
+            if (target.channel >= members.size()) return {};
+            return self(self, SampleInputChannelId{members[target.channel], target.port, 0});
+        }
+        auto const stage = sample_inputs.find({target.bundle, target.port});
+        if (stage == sample_inputs.end()) return {};
+        return SampleInputChannelId{stage->second, 0, target.channel};
+    };
     std::vector<ConfiguredSampleConnection> samples(authored_samples.begin(), authored_samples.end());
     for (auto& connection : samples) {
+        for (auto& target : connection.target_channels) {
+            if (auto stage = sample_input_stage(sample_input_stage, target)) target = *stage;
+        }
         for (auto& source : connection.source_channels) {
             auto owner = boundary_owners.find(source.channel.bundle);
             if (owner == boundary_owners.end()) continue;
             auto stage = sample_inputs.find({owner->second, source.channel.port});
             if (stage != sample_inputs.end())
                 source.channel = {stage->second, 0, source.channel.channel};
-        }
-    }
-    for (auto const& [input, stage] : sample_inputs) {
-        auto const [owner, port] = input;
-        auto const boundary = *authored.node_bundles.bundle(owner).subgraph_boundary_handle();
-        NodeBundlePortId const stage_input{stage, PortKind::sample, 0};
-        auto const targets = graph.node_bundles.sample_input_channels(stage_input);
-        auto const type = graph.node_bundles.resolve_sample_input(stage_input)
-            .config.channel_layout.channel_type;
-        std::vector<std::size_t> present;
-        for (std::size_t channel = 0; channel < targets.size(); ++channel) {
-            if (std::ranges::contains(connected, SampleInputChannelId{owner, port, channel}))
-                present.push_back(channel);
-        }
-        // A disconnected public input leaves the stage input disconnected, so
-        // its default or manual value applies.
-        if (present.size() == targets.size()) {
-            ConfiguredSampleConnection connection{
-                .source_type = type,
-                .target_type = type,
-                .target_channels = {targets.begin(), targets.end()},
-            };
-            for (std::size_t channel = 0; channel < targets.size(); ++channel)
-                connection.source_channels.push_back({.channel = {boundary, port, channel}});
-            samples.push_back(std::move(connection));
-        } else {
-            for (auto const channel : present) {
-                samples.push_back({
-                    .source_type = ChannelTypeId::mono,
-                    .source_channels = {{.channel = {boundary, port, channel}}},
-                    .target_type = ChannelTypeId::mono,
-                    .target_channels = {targets[channel]},
-                });
-            }
         }
     }
     auto expand_event_target = [&](auto&& self, EventInputPortId target,

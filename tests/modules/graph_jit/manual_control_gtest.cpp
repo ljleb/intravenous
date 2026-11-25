@@ -94,6 +94,17 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
     auto const module_handle = module.node_bundle_handle();
     graph.outputs();
     auto configured = iv::details::take_built_graph(session.get());
+    if (connected) {
+        auto const wires = configured.connections.configured_sample_connections();
+        std::vector samples(wires.begin(), wires.end());
+        auto wire = std::ranges::find_if(samples, [&](auto const& connection) {
+            return connection.target_channels.front().bundle == module_handle;
+        });
+        if (wire == samples.end()) throw std::runtime_error("module fixture has no incoming wire");
+        wire->source_owned = false;
+        configured.connections = iv::GraphBuilderConnections::from_configured_connections(
+            samples, configured.connections.configured_event_connections());
+    }
     configured.manual_controls.push_back({
         .id = {.node = {.instance_id = "module"}, .port_name = "value"},
         .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
@@ -224,6 +235,46 @@ TEST_F(GraphJitRuntimeFixture, ModuleOverrideMigratesConsumedHistoryAndRestoresI
         }
         EXPECT_FLOAT_EQ(probe->history_before_slice[2], .75f);
         EXPECT_FLOAT_EQ(probe->history_before_slice[4], probe_index < 2 ? .25f : .75f);
+        ++probe_index;
+    }
+    EXPECT_EQ(probe_index, 3u);
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleOverrideKeepsCppWiringAndReplacesProjectWiring)
+{
+    auto graph = std::make_shared<iv::ConfiguredGraph>(
+        *configured_module_manual_fanout(*revision, false, false, true));
+    auto& control = graph->manual_controls.front();
+    control.override_connections = true;
+    auto const wires = graph->connections.configured_sample_connections();
+    std::vector samples(wires.begin(), wires.end());
+    auto const incoming = std::ranges::find_if(samples, [&](auto const& connection) {
+        return connection.target_channels.front().bundle == control.input.node_bundle_handle;
+    });
+    ASSERT_NE(incoming, samples.end());
+    ASSERT_FALSE(incoming->source_owned);
+    auto cpp_wire = *incoming;
+    cpp_wire.source_owned = true;
+    samples.push_back(std::move(cpp_wire));
+    graph->connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, graph->connections.configured_event_connections());
+
+    auto compiled = compile_graph(graph, 395);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& layout = compiled.compiled_graph->node_layout;
+    auto storage = layout.create_storage(resources);
+    storage.initialize();
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+
+    std::size_t probe_index = 0;
+    for (std::size_t node = 0; node < layout.nodes.size(); ++node) {
+        if (layout.nodes[node].state_size != sizeof(ManualControlSliceProbeStateMirror)) continue;
+        auto const* probe = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(node));
+        ASSERT_NE(probe, nullptr);
+        ASSERT_EQ(probe->value_count, 4u);
+        for (std::size_t i = 0; i < probe->value_count; ++i)
+            EXPECT_FLOAT_EQ(probe->values[i], probe_index < 2 ? 1.f : .75f);
         ++probe_index;
     }
     EXPECT_EQ(probe_index, 3u);

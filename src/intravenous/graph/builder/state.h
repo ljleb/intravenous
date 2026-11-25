@@ -154,9 +154,11 @@ public:
   // ---- refs and connections ---------------------------------------------
   [[nodiscard]] SamplePortRef require_sample_port(SamplePortRef const&) const;
   [[nodiscard]] EventPortRef require_event_port(EventPortRef const&) const;
-  void connect_sample_input(NodeBundlePortId target, SamplePortRef const& source);
+  void connect_sample_input(NodeBundlePortId target, SamplePortRef const& source,
+      std::optional<std::size_t> target_occurrence = {});
   void connect_sample_sources(std::variant<NodeBundlePortId, SampleInputChannelId> target,
-      ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources);
+      ChannelTypeId source_type, std::span<ConfiguredSampleConnectionSource const> sources,
+      std::optional<SymbolicNodeHandle> target_symbolic_node);
   void connect_sample_input(NodeBundlePortId target, std::span<SamplePortRef const> sources);
   void connect_event_input(NodeBundlePortId target, EventPortRef const& source);
   bool sample_input_is_connected(NodeBundlePortId target) const;
@@ -247,7 +249,8 @@ public:
   ConfiguredGraph finish() const &;
   ConfiguredGraph finish() &&;
 
-  void record_configured_sample_connection(NodeBundlePortId, SamplePortRef const&);
+  void record_configured_sample_connection(NodeBundlePortId, SamplePortRef const&,
+      std::optional<SymbolicNodeHandle> target_symbolic_node = {});
   void record_configured_sample_connection(SampleInputChannelId, SamplePortRef const&);
   void record_configured_event_connection(NodeBundlePortId, EventPortRef const&);
 

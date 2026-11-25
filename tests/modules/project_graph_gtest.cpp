@@ -2480,9 +2480,10 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
         named(input);
         named._annotate_source_info("source-local:/tmp/module_children.cpp:1@named", "/tmp/module_children.cpp", 1, 2, "named");
         auto second = details::configure_concrete_node<Pass>(graph);
-        second(named);
         second._annotate_source_info("second", "/tmp/module_children.cpp", 3, 4);
-        named._annotate_source_info("alias", "/tmp/module_children.cpp", 5, 6);
+        auto const alias = named;
+        alias._annotate_source_info("alias", "/tmp/module_children.cpp", 5, 6);
+        second(alias);
         auto anonymous = details::configure_concrete_node<Pass>(graph);
         anonymous(second);
         graph.outputs("main"_P = anonymous, "tap"_P = second);
@@ -2545,17 +2546,32 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const matches = resolve_node_address(*generation->graph, generation->placements, address);
     ASSERT_EQ(matches.size(), 1u);
     EXPECT_EQ(matches.front().kind, ProjectNodePathMatch::Kind::bundle);
+    auto const selected_symbol = resolve_node_address(*generation->graph, generation->placements, named);
+    ASSERT_EQ(selected_symbol.size(), 1u);
+    ASSERT_EQ(selected_symbol.front().kind, ProjectNodePathMatch::Kind::symbolic_node);
+    auto const& controls = generation->graph->manual_controls;
+    auto const symbolic_knob = std::ranges::find(controls,
+        ManualControlId{.node = named, .port_name = "in"}, &ConfiguredManualControl::id);
+    auto const concrete_knob = std::ranges::find(controls,
+        ManualControlId{.node = address, .port_name = "in"}, &ConfiguredManualControl::id);
+    ASSERT_NE(symbolic_knob, controls.end());
+    ASSERT_NE(concrete_knob, controls.end());
+    EXPECT_EQ(symbolic_knob->input, concrete_knob->input);
+    EXPECT_EQ(symbolic_knob->input_symbolic_node, selected_symbol.front().symbolic_node);
+    EXPECT_FALSE(concrete_knob->input_symbolic_node);
     EXPECT_EQ(child.at("sampleOutputs").size(), 1u);
     EXPECT_TRUE(read_graph_scope(project_graph, {address}).at("childScopes").at(0).at("nodes").empty());
     auto const& source_wires = expanded.at("connections");
-    ASSERT_EQ(source_wires.size(), 3u) << expanded.dump();
+    ASSERT_EQ(source_wires.size(), 4u) << expanded.dump();
     for (auto const& wire : source_wires) EXPECT_TRUE(wire.at("sourceOwned").get<bool>());
     auto const& boundary_source = source_wires.at(0).at("connection").at("outputs").at(0);
     EXPECT_EQ(boundary_source.at("instanceId"), "module");
     EXPECT_EQ(boundary_source.at("moduleBoundary"), true);
     EXPECT_EQ(boundary_source.at("port").at("index"), 0);
-    EXPECT_EQ(source_wires.at(1).at("connection").at("outputs").at(0).at("path"), member.at("address").at("path"));
-    auto const& boundary_target = source_wires.at(2).at("connection").at("inputs").at(0);
+    auto const& wired_outputs = source_wires.at(1).at("connection").at("outputs");
+    ASSERT_EQ(wired_outputs.size(), 1u);
+    EXPECT_EQ(wired_outputs.at(0).at("path"), children.at(2).at("address").at("path"));
+    auto const& boundary_target = source_wires.at(3).at("connection").at("inputs").at(0);
     EXPECT_EQ(boundary_target.at("instanceId"), "module");
     EXPECT_EQ(boundary_target.at("moduleBoundary"), true);
     EXPECT_EQ(boundary_target.at("port").at("index"), 1);
@@ -2579,7 +2595,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
         std::vector<std::string>{"child-wire"});
     auto const expanded_after_wiring = read_graph_scope(project_graph, {module, named, second});
     auto const& wires = expanded_after_wiring.at("connections");
-    ASSERT_EQ(wires.size(), 4u);
+    ASSERT_EQ(wires.size(), 5u);
     EXPECT_EQ(wires.at(0).at("id"), "child-wire");
     EXPECT_FALSE(wires.at(0).at("sourceOwned").get<bool>());
     EXPECT_TRUE(wires.at(1).at("sourceOwned").get<bool>());
@@ -2616,13 +2632,18 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     ASSERT_TRUE(boundary);
     auto const configured = connected->graph->connections.configured_sample_connections()
         .subspan(connected->source_sample_connection_count);
+    EXPECT_TRUE(std::ranges::none_of(configured, &ConfiguredSampleConnection::source_owned));
+    auto const resolved_second = resolve_node_address(*connected->graph, connected->placements, second);
+    ASSERT_EQ(resolved_second.size(), 1u);
+    ASSERT_EQ(resolved_second.front().kind, ProjectNodePathMatch::Kind::symbolic_node);
     EXPECT_TRUE(std::ranges::any_of(configured, [&](auto const& wire) {
         return wire.source_channels.size() == 1 && wire.source_channels.front().channel.bundle == *boundary
-            && wire.source_channels.front().channel.port == 0;
+            && wire.source_channels.front().channel.port == 0
+            && wire.target_symbolic_node == resolved_second.front().symbolic_node;
     }));
     EXPECT_TRUE(std::ranges::any_of(configured, [&](auto const& wire) {
         return wire.target_channels.size() == 1 && wire.target_channels.front().bundle == *boundary
-            && wire.target_channels.front().port == 1;
+            && wire.target_channels.front().port == 1 && !wire.target_symbolic_node;
     }));
 }
 
@@ -2654,6 +2675,54 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases
     EXPECT_EQ(alias->at("sourceOwned"), true);
     EXPECT_EQ(alias->at("connection").at("outputs").at(0).at("port").at("index"), 0);
     EXPECT_EQ(alias->at("connection").at("inputs").size(), 1u);
+}
+
+TEST_F(ProjectGraphFixture, GraphScopeAnchorsHiddenSampleSourcesAtTheirModule)
+{
+    using namespace iv;
+    auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
+        using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
+        auto const hidden = details::configure_concrete_node<Pass>(graph);
+        hidden._annotate_source_info("hidden", "/tmp/hidden_wire.cpp", 1, 2, "hidden", 1, true, true);
+        auto const shown = hidden;
+        shown._annotate_source_info("shown", "/tmp/hidden_wire.cpp", 3, 4);
+        auto const consumer = details::configure_concrete_node<Pass>(graph);
+        auto const constant = graph.node<Constant>(Sample{.5f});
+        consumer(hidden);
+        consumer(constant);
+        consumer._annotate_source_info("consumer", "/tmp/hidden_wire.cpp", 5, 6);
+        graph.outputs("main"_P = consumer);
+    };
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
+    ProjectStringBuilder create;
+    in_event_source([&] { project_graph.handle_project_create_node_instance(
+        {.instance_id = "module", .definition_id = definition_id}, create); });
+    ASSERT_EQ(create.build(), "module");
+    ASSERT_FALSE(project_graph.configuration_failure());
+    EXPECT_TRUE(read_graph_scope(project_graph).at("connections").empty());
+
+    NodeAddress const module{.instance_id = "module"};
+    auto const scope = read_graph_scope(project_graph, {module});
+    auto const& lanes = scope.at("childScopes").at(0).at("nodes");
+    auto const lane = std::ranges::find_if(lanes, [](auto const& node) {
+        return node.value("childSourceLabel", "") == std::string_view{"consumer"};
+    });
+    ASSERT_NE(lane, lanes.end()) << scope.dump();
+    auto const consumer = parse_node_address_json(lane->at("address"), ProjectConnectionJsonNames::socket_rpc);
+    auto const expanded = read_graph_scope(project_graph, {module, consumer});
+    auto const& member = expanded.at("childScopes").at(1).at("nodes").at(0).at("address");
+    auto const& wires = expanded.at("connections");
+    ASSERT_EQ(wires.size(), 3u) << expanded.dump();
+    for (auto const& wire : wires | std::views::take(2)) {
+        EXPECT_TRUE(wire.at("sourceOwned").get<bool>());
+        EXPECT_TRUE(wire.at("connection").at("outputs").empty());
+        ASSERT_EQ(wire.at("hiddenSampleSourceModules").size(), 1u);
+        EXPECT_EQ(wire.at("hiddenSampleSourceModules").at(0), expanded.at("nodes").at(0).at("address"));
+        auto const& inputs = wire.at("connection").at("inputs");
+        EXPECT_TRUE(std::ranges::any_of(inputs, [&](auto const& input) {
+            return input.at("instanceId") == member.at("instanceId") && input.at("path") == member.at("path");
+        })) << wire.dump();
+    }
 }
 
 TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutATile)

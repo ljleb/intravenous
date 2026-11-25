@@ -92,7 +92,12 @@ struct ArchiveFixture {
         projection._annotate_source_info("archive-port", "/tmp/archive-module.cpp", 5, 6);
         auto const source_handle = source.node_bundle_handle();
         auto const pass = iv::details::configure_concrete_node<Pass>(graph);
-        pass(gain);
+        pass._annotate_source_info("archive-pass", "/tmp/archive-module.cpp", 7, 9,
+            "pass", 3, true);
+        auto const pass_alias = pass;
+        pass_alias._annotate_source_info("archive-pass-alias", "/tmp/archive-module.cpp", 10, 12,
+            "pass_alias", 4, true);
+        pass_alias(gain);
         pass._annotate_input_source_info(
             PortKind::sample, "", "archive-pass", "/tmp/archive-module.cpp", 10, 18);
         graph.outputs("gain_out"_P = pass, "main"_P = projection);
@@ -155,6 +160,16 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsNativeScalarsAndRejectsCorruption)
     auto const main = decoded.connections.configured_sample_connections().back().source_channels.front();
     EXPECT_EQ(main.node_ref_occurrence, route.node_ref_occurrence);
     EXPECT_EQ(main.channel, route.channel);
+
+    auto const& sample_connections = decoded.connections.configured_sample_connections();
+    auto const& pass_input = sample_connections.front();
+    EXPECT_TRUE(pass_input.source_owned);
+    ASSERT_TRUE(pass_input.target_symbolic_node);
+    auto const& pass_alias = decoded.symbolic_nodes.record(*pass_input.target_symbolic_node);
+    EXPECT_EQ(pass_alias.source_identity, "archive-pass-alias");
+    ASSERT_EQ(pass_alias.sample_inputs.size(), 1u);
+    EXPECT_EQ(pass_input.target_channels, pass_alias.sample_inputs.front().channels);
+    EXPECT_FALSE(sample_connections.back().target_symbolic_node);
 
     auto const symbolic_record = std::ranges::find_if(
         decoded.symbolic_nodes.records(),

@@ -263,9 +263,10 @@ try {
     throw;
 }
 void iv_builder_connect_sample_input(
-    BuilderSession* value, NodeBundlePortId target, SamplePortRef const& source)
+    BuilderSession* value, NodeBundlePortId target, SamplePortRef const& source,
+    std::optional<std::size_t> target_occurrence)
 try {
-    session(value).connect_sample_input(target, source);
+    session(value).connect_sample_input(target, source, target_occurrence);
 } catch (...) {
     // An exception leaving a session operation fails the session.
     record_builder_failure(value, std::current_exception(), {});

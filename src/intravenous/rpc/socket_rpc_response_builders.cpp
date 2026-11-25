@@ -582,13 +582,20 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     }
     auto connections = Json::array();
     for (auto const& entry : result->connections) {
-        connections.push_back({
+        Json wire{
             {"id", project_connection_id(entry.connection)},
             {"connection", project_connection_json(
                 entry.connection, ProjectConnectionJsonNames::socket_rpc)},
             {"applied", entry.applied},
             {"sourceOwned", entry.source_owned},
-        });
+        };
+        if (!entry.hidden_sample_source_modules.empty()) {
+            auto sources = Json::array();
+            for (auto const& address : entry.hidden_sample_source_modules)
+                sources.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
+            wire["hiddenSampleSourceModules"] = std::move(sources);
+        }
+        connections.push_back(std::move(wire));
     }
     auto timelines = Json::array();
     for (auto const& address : result->timeline_nodes)

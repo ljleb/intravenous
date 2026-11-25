@@ -52,8 +52,10 @@ export function resolveLaneConnectionEnds(scope: GraphScope) {
             }
             return [...ports.values()];
         };
+        const hiddenSampleSources = (entry.hiddenSampleSourceModules ?? []).map(addressKey)
+            .filter((address) => nodes.has(address));
         return { id: entry.id, applied: entry.applied, sourceOwned: !!entry.sourceOwned,
-            outputs: resolve("output"), inputs: resolve("input") };
+            outputs: resolve("output"), inputs: resolve("input"), hiddenSampleSources };
     });
 }
 
@@ -76,15 +78,18 @@ export class LaneConnectionViewport {
             else rows.set(address, { first: index, last: index });
         });
         for (const connection of connections) {
-            if (!connection.inputs.length || !connection.outputs.length) continue;
+            if (!connection.inputs.length || (!connection.outputs.length && !connection.hiddenSampleSources.length)) continue;
             let first = Infinity;
             let last = -Infinity;
-            for (const { address } of [...connection.inputs, ...connection.outputs]) {
+            const include = (address: string) => {
                 const row = rows.get(address);
                 // A ruler socket is outside the flow of lane rows.
                 first = Math.min(first, row?.first ?? -Infinity);
                 last = Math.max(last, row?.last ?? Infinity);
-            }
+            };
+            for (const { address } of connection.inputs) include(address);
+            for (const { address } of connection.outputs) include(address);
+            for (const address of connection.hiddenSampleSources) include(address);
             if (Number.isFinite(first)) this.starts.push({ first, last, connection });
             else this.visible.add(connection);
         }
@@ -117,7 +122,7 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
     anchorFor: (port: GraphPortEndpoint, connectionId: string) =>
         PortWireAnchor | readonly PortWireAnchor[] | null,
     revealedEnds: readonly RevealedConnectionEnd[] = [],
-    context?: { top: number; bottom: number }): SelectedLaneWire[] {
+    context?: { top: number; bottom: number; hiddenSourceAnchors?: ReadonlyMap<string, readonly PortWireAnchor[]> }): SelectedLaneWire[] {
     if (!selected.size && !revealedEnds.length && !context) return [];
     const revealed = new Map<string, Set<string>>();
     for (const end of revealedEnds) {
@@ -147,6 +152,10 @@ export function selectedLaneConnections(connections: Iterable<ResolvedLaneConnec
             return [...visible.values()];
         };
         const outputs = resolve(entry.outputs);
+        for (const address of entry.hiddenSampleSources) {
+            for (const anchor of context?.hiddenSourceAnchors?.get(address) ?? [])
+                outputs.push({ anchor, selected: selected.has(address), revealed: false });
+        }
         if (!outputs.length) continue;
         const inputs = resolve(entry.inputs);
         for (const output of outputs) {

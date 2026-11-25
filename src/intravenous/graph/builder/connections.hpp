@@ -139,6 +139,11 @@ struct ConfiguredSampleConnection {
   std::vector<ConfiguredSampleConnectionSource> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
+  // The selected symbolic member input. An empty handle selects the bundle
+  // port directly. All target channels belong to the same member port.
+  std::optional<SymbolicNodeHandle> target_symbolic_node{};
+  // Authored by C++ graph construction. An input gesture cannot replace it.
+  bool source_owned = false;
   bool operator==(ConfiguredSampleConnection const&) const = default;
 };
 
@@ -214,7 +219,8 @@ public:
       GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
 
   constexpr void import_child(
-      GraphBuilderConnections const&, size_t node_bundle_offset);
+      GraphBuilderConnections const&, size_t node_bundle_offset,
+      size_t symbolic_node_offset);
   constexpr size_t sample_connection_count() const {
     return _configured_sample_connections.size();
   }
@@ -466,11 +472,13 @@ GraphBuilderConnections::collect_symbolic_sample_output_families(
 }
 
 constexpr void GraphBuilderConnections::import_child(
-    GraphBuilderConnections const& child, size_t bundle_offset) {
+    GraphBuilderConnections const& child, size_t bundle_offset,
+    size_t symbolic_offset) {
   for (auto connection : child._configured_sample_connections) {
     for (auto& source : connection.source_channels)
       source.channel.bundle += bundle_offset;
     for (auto& channel : connection.target_channels) channel.bundle += bundle_offset;
+    if (connection.target_symbolic_node) *connection.target_symbolic_node += symbolic_offset;
     _configured_sample_connections.push_back(std::move(connection));
   }
   for (auto connection : child._configured_event_connections) {

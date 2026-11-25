@@ -81,6 +81,11 @@ test("expanded module children follow their parents and cannot be duplicated on 
     const memberRows = withAliases.filter(({ node }) => addressKey(node.address) === tileKey);
     assert.equal(memberRows.length, 2);
     assert.notEqual(memberRows[0].rowKey, memberRows[1].rowKey);
+    const laneKeys = withAliases.map(({ node }) => addressKey(node.address));
+    for (const row of memberRows) {
+        const click = selectLaneRange(new Set(), laneKeys, null, addressKey(row.node.address));
+        assert.deepEqual(withAliases.filter(({ node }) => click.selected.has(addressKey(node.address))), memberRows);
+    }
     assert.equal(graphScopeWithChildren(scope).nodes.filter(({ address }) => addressKey(address) === tileKey).length, 1);
 
     child.isModule = true;

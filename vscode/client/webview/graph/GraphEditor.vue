@@ -884,9 +884,11 @@ function updateWires() {
     let candidates: Iterable<ResolvedLaneConnections[number]> = connections;
     let anchorRoots: readonly ParentNode[] = [document];
     let occlusionRoots: readonly ParentNode[] = anchorRoots;
+    let rowsByAddress: Map<string, HTMLElement[]> | undefined;
     const container = timeline?.querySelector<HTMLElement>(":scope > .lanes");
     if (container && !drag) {
         const lanes = readWireLaneLayout(container, connections);
+        rowsByAddress = lanes.byAddress;
         const laneBounds = container.getBoundingClientRect();
         // Use the rendered height so fractional CSS pixels cannot shift
         // the viewport range after scrolling through many rows.
@@ -916,6 +918,24 @@ function updateWires() {
     const slots = new Map<string, PreviewAnchor[]>();
     const connectionEnds = new Map<string, PreviewAnchor[]>();
     const laneHeaders = new Map<Element, DOMRect>();
+    const hiddenSourceAnchors = new Map<string, PreviewAnchor[]>();
+    const hiddenSources = new Set<string>();
+    for (const { hiddenSampleSources } of candidates)
+        for (const address of hiddenSampleSources) hiddenSources.add(address);
+    if (hiddenSources.size && container) {
+        const rows = rowsByAddress ?? readWireLaneLayout(container, connections).byAddress;
+        for (const address of hiddenSources) {
+            const anchors: PreviewAnchor[] = [];
+            for (const row of rows.get(address) ?? []) {
+                if (row.querySelector("[data-module-boundary]")) continue;
+                const header = row.querySelector(".lane-label");
+                const bounds = header && measureLaneHeader(header, laneHeaders);
+                if (bounds?.height) anchors.push({ id: JSON.stringify(["hidden-source", row.dataset.laneRow]),
+                    direction: "output", x: bounds.right, y: bounds.top + bounds.height / 2, moduleBoundary: true });
+            }
+            if (anchors.length) hiddenSourceAnchors.set(address, anchors);
+        }
+    }
     const addAnchor = (anchors: Map<string, PreviewAnchor[]>, key: string, kind: string, element: HTMLElement) => {
         const row = element.closest<HTMLElement>("[data-lane-row]")?.dataset.laneRow;
         const anchor = measureWireAnchor(element, JSON.stringify([kind, key, row]), laneHeaders);
@@ -944,7 +964,7 @@ function updateWires() {
     const anchorFor = (port: GraphPortEndpoint, connectionId: string) =>
         connectionEnds.get(connectionEndKey(connectionId, port)) ?? portAnchors(port);
     selectedWires.value = profileGraphUi("Route connections", () => selectedLaneConnections(candidates, selectedLanes.value,
-        anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom }));
+        anchorFor, revealedEnds.map(({ end }) => end), { top, bottom: viewport.bottom, hiddenSourceAnchors }));
     if (selectedWires.value.length || drag) {
         wireOcclusions.value = profileGraphUi("Measure wire occlusions", () =>
             measureWireOcclusions(top, viewport.bottom, occlusionRoots, laneHeaders));

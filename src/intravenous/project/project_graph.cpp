@@ -1504,6 +1504,7 @@ void configure_manual_controls(
         bool const output_gain = control.id.kind == ManualControlKind::output_gain;
         std::vector<NodeBundleHandle> bundles;
         std::unordered_map<NodeBundleHandle, SymbolicNodeHandle> output_symbols;
+        std::unordered_map<NodeBundleHandle, SymbolicNodeHandle> input_symbols;
         if (output_gain) {
             // A public tiled output is one multichannel output. Keep its
             // identity rather than applying several unrelated member gains.
@@ -1525,7 +1526,17 @@ void configure_manual_controls(
                     }
                 }
             }
-        } else bundles = concrete_node_address_matches(finished_graph, matches);
+        } else {
+            for (auto const& match : matches) {
+                auto const members = concrete_node_address_matches(finished_graph,
+                    std::span{&match, 1});
+                for (auto member : members) {
+                    if (!std::ranges::contains(bundles, member)) bundles.push_back(member);
+                    if (match.kind == ProjectNodePathMatch::Kind::symbolic_node)
+                        input_symbols.try_emplace(member, match.symbolic_node);
+                }
+            }
+        }
         if (bundles.empty()) {
             if (!control.enabled) continue;
             diagnostics.push_back({
@@ -1582,11 +1593,13 @@ void configure_manual_controls(
                     .settled_value = control.stored_value, .output = resolved.port,
                     .output_symbolic_node = symbol != output_symbols.end() ? std::optional{symbol->second} : std::nullopt});
             } else {
+                auto const symbol = input_symbols.find(resolved.port.node_bundle_handle);
                 finished_graph.manual_controls.push_back({
                     .id = control.id, .input = resolved.port,
                     .concrete_selection_index = resolved.selection_index,
                     .settled_value = control.stored_value,
                     .participation = control.participation,
+                    .input_symbolic_node = symbol != input_symbols.end() ? std::optional{symbol->second} : std::nullopt,
                     .requires_preparation = resolved.requires_preparation,
                     .enabled = control.enabled,
                     .authored = control_index < controls.size(),
@@ -3895,9 +3908,23 @@ void classify_scope_node(
     }
 }
 
-struct SourceScopeOutputAliases {
-    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<ProjectNodePortMatcher>> sample;
-    std::map<std::pair<NodeBundleHandle, std::size_t>, std::vector<ProjectNodePortMatcher>> event;
+struct SourceScopeModule {
+    NodeBundleHandle begin;
+    std::size_t count;
+    NodeAddress address;
+};
+
+struct SourceScopeLane {
+    NodeAddress address;
+    std::optional<SymbolicNodeHandle> symbol;
+};
+
+struct SourceScopePorts {
+    std::unordered_map<NodeBundleHandle, std::vector<SourceScopeLane>> children;
+    std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> boundaries;
+    std::map<std::tuple<NodeBundleHandle, std::size_t, std::size_t>, std::vector<ProjectNodePortMatcher>> sample_aliases;
+    std::map<std::pair<NodeBundleHandle, std::size_t>, std::vector<ProjectNodePortMatcher>> event_aliases;
+    std::vector<SourceScopeModule> modules;
 };
 
 std::string unqualified_child_type(std::string_view type)
@@ -3950,67 +3977,107 @@ std::string child_lane_display_name(
 
 void append_source_scope_connections(ProjectGraphScope& scope,
     ProjectGraphGeneration const& generation,
-    std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> const& children,
-    std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> const& boundaries,
-    SourceScopeOutputAliases const& aliases)
+    SourceScopePorts const& ports)
 {
     auto const& connections = generation.graph->connections;
     std::unordered_set<std::string> ids;
     for (auto const& entry : scope.connections) ids.insert(project_connection_id(entry.connection));
-    auto append = [&](auto connection, std::string id) {
-        if (connection.inputs.empty() || connection.outputs.empty()) return;
+    auto append = [&](auto connection, std::string id, std::vector<NodeAddress> hidden_sources = {}) {
+        if (connection.inputs.empty() || (connection.outputs.empty() && hidden_sources.empty())) return;
         while (!ids.insert(id).second) id.push_back('_');
         connection.connection_id = std::move(id);
         scope.connections.push_back({
             .connection = std::move(connection), .applied = true, .source_owned = true,
+            .hidden_sample_source_modules = std::move(hidden_sources),
         });
     };
-    auto add_port = [](auto port, auto const& addresses, std::vector<ProjectNodePortMatcher>& endpoints,
+    auto add_port = [](NodeAddress const& address, std::size_t index, std::vector<ProjectNodePortMatcher>& endpoints,
                        bool module_boundary = false) {
-        auto const found = addresses.find(port.bundle);
-        if (found == addresses.end()) return;
-        for (auto const& address : found->second) {
-            ProjectNodePortMatcher matcher{
-                .instance_id = address.instance_id, .path = address.path, .port = {.index = port.port},
-                .module_boundary = module_boundary,
-            };
-            if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(std::move(matcher));
+        ProjectNodePortMatcher matcher{
+            .instance_id = address.instance_id, .path = address.path, .port = {.index = index},
+            .module_boundary = module_boundary,
+        };
+        if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(std::move(matcher));
+    };
+    auto add_child_ports = [&](auto port, auto& endpoints, auto accepts) {
+        auto const found = ports.children.find(port.bundle);
+        if (found == ports.children.end()) return false;
+        bool matched = false;
+        for (auto const& lane : found->second) {
+            if (!accepts(lane.symbol)) continue;
+            add_port(lane.address, port.port, endpoints);
+            matched = true;
         }
+        return matched;
+    };
+    auto add_boundary_ports = [&](auto port, auto& endpoints) {
+        auto const found = ports.boundaries.find(port.bundle);
+        if (found == ports.boundaries.end()) return false;
+        for (auto const& address : found->second) add_port(address, port.port, endpoints, true);
+        return !found->second.empty();
+    };
+    auto const any_lane = [](auto) { return true; };
+    std::unordered_map<NodeBundleHandle, SourceScopeModule const*> enclosing_modules;
+    auto enclosing_module = [&](NodeBundleHandle bundle) {
+        auto [entry, inserted] = enclosing_modules.try_emplace(bundle, nullptr);
+        if (inserted) for (auto const& module : ports.modules) {
+            if (bundle >= module.begin && bundle - module.begin < module.count
+                    && (!entry->second || module.count < entry->second->count))
+                entry->second = &module;
+        }
+        return entry->second;
     };
     auto add_aliases = [](auto const& index, auto key, std::vector<ProjectNodePortMatcher>& endpoints) {
         auto const found = index.find(key);
-        if (found == index.end()) return;
+        if (found == index.end()) return false;
         for (auto const& matcher : found->second)
             if (!std::ranges::contains(endpoints, matcher)) endpoints.push_back(matcher);
+        return !found->second.empty();
     };
     auto const samples = connections.configured_sample_connections();
     for (std::size_t index = 0; index < generation.source_sample_connection_count; ++index) {
         auto const& wiring = samples[index];
         ProjectSampleConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
-        for (auto const& source : wiring.source_channels) {
-            add_port(source.channel, children, connection.outputs);
-            add_port(source.channel, boundaries, connection.outputs, true);
-            add_aliases(aliases.sample, std::tuple{source.channel.bundle, source.channel.port, source.channel.channel},
-                connection.outputs);
-        }
         for (auto const target : wiring.target_channels) {
-            add_port(target, children, connection.inputs);
-            add_port(target, boundaries, connection.inputs, true);
+            add_child_ports(target, connection.inputs, any_lane);
+            add_boundary_ports(target, connection.inputs);
         }
-        append(std::move(connection), "source:sample:" + std::to_string(index));
+        if (connection.inputs.empty()) continue;
+        std::vector<NodeAddress> hidden_sources;
+        for (auto const& source : wiring.source_channels) {
+            auto const channel = source.channel;
+            bool visible;
+            if (source.node_ref_occurrence) {
+                auto const occurrences = generation.graph->node_bundles.bundle(channel.bundle).node_ref_occurrences();
+                if (*source.node_ref_occurrence >= occurrences.size()) continue;
+                auto const symbol = occurrences[*source.node_ref_occurrence].symbolic_node_handle;
+                visible = add_child_ports(channel, connection.outputs, [&](auto lane) { return symbol == lane; });
+            } else {
+                auto const child = add_child_ports(channel, connection.outputs, [](auto lane) { return !lane; });
+                auto const boundary = add_boundary_ports(channel, connection.outputs);
+                auto const alias = add_aliases(ports.sample_aliases, std::tuple{channel.bundle, channel.port, channel.channel},
+                    connection.outputs);
+                visible = child || boundary || alias;
+            }
+            if (visible) continue;
+            auto const* module = enclosing_module(channel.bundle);
+            if (module && !std::ranges::contains(hidden_sources, module->address))
+                hidden_sources.push_back(module->address);
+        }
+        append(std::move(connection), "source:sample:" + std::to_string(index), std::move(hidden_sources));
     }
     auto const events = connections.configured_event_connections();
     for (std::size_t index = 0; index < generation.source_event_connection_count; ++index) {
         auto const& wiring = events[index];
         ProjectEventConnection connection{.source_type = wiring.source_type, .target_type = wiring.target_type};
         for (auto const& source : wiring.sources) {
-            add_port(source.port, children, connection.outputs);
-            add_port(source.port, boundaries, connection.outputs, true);
-            add_aliases(aliases.event, std::pair{source.port.bundle, source.port.port}, connection.outputs);
+            add_child_ports(source.port, connection.outputs, any_lane);
+            add_boundary_ports(source.port, connection.outputs);
+            add_aliases(ports.event_aliases, std::pair{source.port.bundle, source.port.port}, connection.outputs);
         }
         for (auto const target : wiring.targets) {
-            add_port(target, children, connection.inputs);
-            add_port(target, boundaries, connection.inputs, true);
+            add_child_ports(target, connection.inputs, any_lane);
+            add_boundary_ports(target, connection.inputs);
         }
         append(std::move(connection), "source:event:" + std::to_string(index));
     }
@@ -4126,9 +4193,17 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             for (auto const& port : node.interface.sample_inputs) describe(port, ManualControlKind::input);
             for (auto const& port : node.interface.sample_outputs) describe(port, ManualControlKind::output_gain);
         };
-        std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> expanded_children;
-        std::unordered_map<NodeBundleHandle, std::vector<NodeAddress>> expanded_boundaries;
-        SourceScopeOutputAliases expanded_aliases;
+        SourceScopePorts source_ports;
+        auto add_visible_module = [&](GraphBuilderNodeBundles const& bundles, NodeBundleHandle handle,
+                                      NodeAddress const& address) {
+            auto append = [&](NodeBundle const& bundle) {
+                if (bundle.is_subgraph())
+                    source_ports.modules.push_back({bundle.subgraph_child_begin(), bundle.subgraph_child_count(), address});
+            };
+            auto const& bundle = bundles.bundle(handle);
+            append(bundle);
+            if (bundle.is_tiled()) for (auto member : bundle.tiled_members()) append(bundles.bundle(member));
+        };
         std::unordered_map<std::string_view, std::string_view> leaf_names_by_type;
         if (!request.expanded.empty() && generation && generation->graph && generation->definitions) {
             for (auto const& [id, entry] : generation->definitions->by_id) {
@@ -4156,7 +4231,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             if (matches.front().kind == ProjectNodePathMatch::Kind::bundle) {
                 if (auto const boundary = graph.node_bundles.bundle(matches.front().bundle).subgraph_boundary_handle()) {
                     child_scope.has_boundary = true;
-                    expanded_boundaries[*boundary].push_back(address);
+                    source_ports.boundaries[*boundary].push_back(address);
                 }
             }
             for (auto const& child : project_child_nodes(graph, matches.front())) {
@@ -4176,9 +4251,9 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                             child_address.path = std::move(*path);
                         }
                     }
-                    auto& addresses = expanded_children[child.bundle];
-                    if (!std::ranges::contains(addresses, child_address))
-                        addresses.insert(addresses.begin(), child_address);
+                    auto& lanes = source_ports.children[child.bundle];
+                    if (!std::ranges::contains(lanes, child_address, &SourceScopeLane::address))
+                        lanes.insert(lanes.begin(), SourceScopeLane{child_address, std::nullopt});
                 } else {
                     auto const declaration = std::ranges::find_if(record->source_infos,
                         [](SourceInfo const& info) {
@@ -4203,22 +4278,28 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                                 return ProjectNodePortMatcher{.instance_id = child_address.instance_id,
                                     .path = child_address.path, .port = {.index = port_index}};
                             };
-                            for (auto const& output : record->sample_outputs) for (auto const channel : output.channels) {
-                                if (includes_bundle(channel.bundle))
-                                    expanded_aliases.sample[{channel.bundle, channel.port, channel.channel}].push_back(matcher(output.index));
+                            for (auto const& expression : record->sample_output_routes) for (auto const& route : expression) {
+                                auto const channel = route.channel;
+                                if (!route.node_ref_occurrence && includes_bundle(channel.bundle))
+                                    source_ports.sample_aliases[{channel.bundle, channel.port, channel.channel}].push_back(matcher(0));
                             }
                             for (auto const& output : record->event_outputs) for (auto const port : output.node_bundle_ports) {
                                 if (includes_bundle(port.node_bundle_handle))
-                                    expanded_aliases.event[{port.node_bundle_handle, port.port_index}].push_back(matcher(output.index));
+                                    source_ports.event_aliases[{port.node_bundle_handle, port.port_index}].push_back(matcher(output.index));
                             }
                         } else {
                             // NodeRef mappings preserve their member port indexes.
-                            for (auto const index : members)
-                                expanded_children[record->node_bundle_handles[index]].push_back(child_address);
+                            for (auto const index : members) {
+                                auto const bundle = record->node_bundle_handles[index];
+                                source_ports.children[bundle].push_back({child_address, child.symbolic_node});
+                                if (bundle == child.bundle)
+                                    add_visible_module(graph.node_bundles, bundle, child_address);
+                            }
                         }
                     }
                 }
                 auto const& bundle = graph.node_bundles.bundle(child.bundle);
+                if (!record) add_visible_module(graph.node_bundles, child.bundle, child_address);
                 auto const* registered = graph.node_bundles.registered_node_type_identity(child.bundle);
                 auto const definition_id = bundle.is_subgraph() ? bundle.subgraph_kind()
                     : registered ? std::string_view(registered->node_type_id) : std::string_view{};
@@ -4323,9 +4404,10 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                 .applied = is_applied,
             });
         }
-        if (generation && generation->graph && (!expanded_children.empty() || !expanded_boundaries.empty()
-                || !expanded_aliases.sample.empty() || !expanded_aliases.event.empty())) {
-            append_source_scope_connections(scope, *generation, expanded_children, expanded_boundaries, expanded_aliases);
+        if (generation && generation->graph && (!source_ports.children.empty() || !source_ports.boundaries.empty())) {
+            for (auto const& [instance, placement] : generation->placements)
+                add_visible_module(generation->graph->node_bundles, placement.root, {.instance_id = instance});
+            append_source_scope_connections(scope, *generation, source_ports);
         }
         builder.succeed(std::move(scope));
     } catch (std::exception const& error) {

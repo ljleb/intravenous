@@ -378,7 +378,7 @@ try {
             details::error("too many sample inputs");
         }
         details::iv_builder_connect_sample_input(
-            _session, {_index, PortKind::sample, input_port}, input.source);
+            _session, {_index, PortKind::sample, input_port}, input.source, _node_ref_occurrence);
     }
 
     for (size_t i = 0; i < event_inputs.size; ++i) {
