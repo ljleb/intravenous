@@ -1,3 +1,4 @@
+#include <intravenous/basic_nodes/resampling.h>
 #include <intravenous/graph/builder/node_bundles.hpp>
 #include <intravenous/graph/configured_graph.hpp>
 #include <intravenous/graph_jit/port_realization.h>
@@ -135,6 +136,25 @@ struct AbsolutePaceAnchor {
         ctx.input<"in">().pace().absolute() = factor;
     }
     void tick_block(iv::TickBlockContext<AbsolutePaceAnchor> const&) const {}
+};
+
+struct PacedCoverageSource {
+    std::uint64_t factor = 1;
+
+    static constexpr auto outputs()
+    {
+        return std::array{iv::output<iv::Sample>(
+            {"out", "Out"}, iv::OutputProduction::coverage)};
+    }
+
+    void constrain_ports(iv::ConstrainPortsContext<PacedCoverageSource>& ctx) const
+    {
+        ctx.output<"out">().pace().absolute() = factor;
+    }
+
+    void tock_coverage(iv::TockCoverageContext<PacedCoverageSource>&) const {}
+    void propagate_forward_coverage(
+        iv::PropagateForwardCoverageContext<PacedCoverageSource>&) const {}
 };
 
 struct OrdinaryIdentity {
@@ -639,6 +659,51 @@ TEST(PortRealization, AbsolutePaceAnchorFixesTheComponentScale)
     EXPECT_EQ(realized->output(source, 0).absolute_pace, iv::PortPace(8));
     EXPECT_EQ(realized->execution_rate(downstream), iv::PortPace(8));
     EXPECT_EQ(realized->input(downstream, 0).absolute_pace, iv::PortPace(8));
+}
+
+TEST(PortRealization, IndependentResamplerPaceFollowsTheSourceThroughAModule)
+{
+    using namespace iv;
+    ConfiguredGraph graph;
+    auto const boundary = graph.node_bundles.append_boundary();
+    graph.node_bundles.bundle(boundary).append_boundary_sample_input({
+        .name = "source",
+        .access = default_coverage_input_properties(continuous_value_types<Sample>),
+    });
+    graph.node_bundles.bundle(boundary).append_boundary_sample_output({
+        .name = "out",
+        .production = default_sequential_output_properties(continuous_value_types<Sample>),
+    });
+    auto const resampler = append(graph, LinearResampler{});
+    auto const module = graph.node_bundles.append_subgraph(boundary, resampler, 1, "resampler");
+    auto const source = append(graph, PacedCoverageSource{.factor = 8});
+    auto const sink = append(graph, AbsolutePaceAnchor{.factor = 2});
+    std::array connections{
+        mono_connection(boundary, 0, resampler, 1),
+        mono_connection(resampler, 0, boundary, 0),
+        mono_connection(source, 0, module, 0),
+        mono_connection(module, 0, sink, 0),
+    };
+    for (auto& connection : connections)
+        graph.connections.record_configured_sample_connection(std::move(connection));
+
+    auto realized = graph_jit::resolve_port_realization(graph);
+    if (!realized) FAIL() << realized.error();
+    EXPECT_EQ(realized->execution_rate(module), PortPace(2));
+    EXPECT_EQ(realized->execution_rate(resampler), PortPace(2));
+    EXPECT_EQ(realized->input(resampler, 0).absolute_pace, PortPace(2));
+    EXPECT_EQ(realized->input(resampler, 1).absolute_pace, PortPace(8));
+    EXPECT_EQ(realized->input(resampler, 1).local_pace, PortPace(4));
+    EXPECT_EQ(realized->input(module, 0).absolute_pace, PortPace(8));
+    EXPECT_EQ(realized->output(boundary, 0).absolute_pace, PortPace(8));
+    EXPECT_EQ(realized->output(module, 0).absolute_pace, PortPace(2));
+
+    auto const incompatible = append(graph, PacedCoverageSource{.factor = 4});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(incompatible, 0, module, 0));
+    auto conflicting = graph_jit::resolve_port_realization(graph);
+    ASSERT_FALSE(conflicting.has_value());
+    EXPECT_NE(conflicting.error().find("absolute pace anchor"), std::string::npos);
 }
 
 TEST(PortRealization, RejectsConflictingAbsolutePaceAnchors)

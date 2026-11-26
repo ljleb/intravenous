@@ -484,6 +484,14 @@ exponent one greater than the oversampler's input-domain exponent; it does not p
 the false contradiction `2 == 1`. Exponent differences around a cycle must sum to zero.
 Otherwise graph compilation rejects the revision.
 
+A continuous Region or Coverage input can declare `pace().independent()`
+in `constrain_ports`. Its absolute pace follows the connected producers.
+Every producer that feeds that input must resolve to the same absolute pace.
+GraphJit follows this rule through the public ports and boundary ports of
+subgraphs. An explicit local pace constraint on the path still applies.
+A disconnected independent input uses project pace unless an absolute pace
+constraint sets its rate.
+
 After all local ratios and connections have been applied, each connected rate
 component has at most one remaining degree of freedom: uniform scaling of every
 absolute pace in that component. An explicit `pace().absolute()` constraint fixes that

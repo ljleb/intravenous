@@ -1126,6 +1126,13 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                                            "has no complete route");
                 }
             }
+            // The Sequential replay adapter resolves values through its
+            // routes. Its selected positions can be a strict subset of an
+            // upstream Region, so there are no Region identities to match.
+            if (port.input_access == InputAccessKind::sequential) {
+                adapters.push_back(std::move(adapter));
+                continue;
+            }
             struct VisitedRegionView {
                 std::span<ContinuousRegionStorageView const> regions;
                 std::size_t read_latency;

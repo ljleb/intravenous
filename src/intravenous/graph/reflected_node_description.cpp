@@ -153,6 +153,9 @@ ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
             static_cast<NodePortConstraints*>(state)
                 ->absolute_pace_anchors.push_back({port, pace});
         },
+        .set_independent_pace = +[](void* state, PortConstraintRef port) {
+            static_cast<NodePortConstraints*>(state)->independent_paces.push_back(port);
+        },
         .event_count_context = std::addressof(description()),
         .set_event_count_bound = +[](void* opaque, PortConstraintRef port, std::size_t count) {
             auto& description = *static_cast<ReflectedNodeDescription*>(opaque);

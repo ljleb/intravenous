@@ -18,6 +18,36 @@
 
 namespace iv {
     namespace details {
+        template<typename Node>
+        consteval std::size_t reflected_sample_input_count()
+        {
+            if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+                return count_continuous_ports(Node::inputs());
+            } else {
+                return 0;
+            }
+        }
+
+        template<typename Node>
+        inline constexpr std::size_t reflected_sample_input_count_v =
+            reflected_sample_input_count<Node>();
+
+        // Region and Coverage inputs keep their declared indices in the
+        // reflected binding array. Their data lives in random_access_inputs.
+        template<typename Node>
+        consteval auto reflected_sample_input_random_access_mask()
+        {
+            std::array<bool, reflected_sample_input_count_v<Node>> result{};
+            if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
+                std::size_t sample_index = 0;
+                for_each_port_config(Node::inputs(), [&](auto const& config) {
+                    if (is_continuous(config))
+                        result[sample_index++] = is_random_access(config);
+                });
+            }
+            return result;
+        }
+
         template<typename Node, bool HasRecording =
             (static_recording_sample_output_count_v<Node> != 0
                 || static_recording_event_output_count_v<Node> != 0)>
@@ -1060,8 +1090,10 @@ namespace iv {
                     "pointwise tick() received incompatible port paces");
                 pace = candidate;
             };
-            for (auto const& input : ports.continuous_inputs) {
-                accept(input.absolute_pace_exponent);
+            constexpr auto random_access = reflected_sample_input_random_access_mask<Node>();
+            for (std::size_t input = 0; input < random_access.size(); ++input) {
+                if (!random_access[input])
+                    accept(ports.continuous_inputs[input].absolute_pace_exponent);
             }
             for (auto const& output : ports.continuous_outputs) {
                 accept(output.absolute_pace_exponent);

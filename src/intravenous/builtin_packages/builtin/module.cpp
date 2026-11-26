@@ -88,18 +88,21 @@ void configure_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation
         connect(iv::details::configure_concrete_node<iv::DeferredLinearResamplerNode<Channels, Layout>>(
             graph, preparation_samples));
     } else {
-        connect(iv::details::configure_concrete_node<iv::LinearResamplerNode<Channels, Layout>>(graph));
+        connect(iv::details::configure_concrete_node<iv::LinearResamplerNode<Channels, Layout>>(
+            graph));
     }
 }
 
 void linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
 {
-    configure_linear_resampler<iv::ChannelTypeId::mono, iv::SampleStreamLayout::planar>(graph, preparation_samples);
+    configure_linear_resampler<iv::ChannelTypeId::mono, iv::SampleStreamLayout::planar>(
+        graph, preparation_samples);
 }
 
 void stereo_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
 {
-    configure_linear_resampler<iv::ChannelTypeId::stereo, iv::SampleStreamLayout::interleaved>(graph, preparation_samples);
+    configure_linear_resampler<iv::ChannelTypeId::stereo, iv::SampleStreamLayout::interleaved>(
+        graph, preparation_samples);
 }
 } // namespace
 

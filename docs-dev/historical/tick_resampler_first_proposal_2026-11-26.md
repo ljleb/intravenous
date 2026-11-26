@@ -7,6 +7,12 @@ anchored every port and Transport Position to the project sample rate.
 The second version let `position` and `out` resolve together. It still anchored
 `source` to project rate.
 
+An intermediate proposal added a second constructor argument,
+`source_pace_exponent`, to set the source pace relative to `position` and
+`out`. Zero meant equal rates, `1` meant twice the output rate, and `-1`
+meant half. The [current resampler](../random_access_port_data_direction.md#live-resampling-from-computed-sources)
+gets the source grid from its connected producers.
+
 The replay contract in [Coverage and Background Evaluation](../coverage_and_background_evaluation.md)
 originally excluded nonzero port history, output latency, and internal latency.
 The replay summary in [Sequential Port Storage Planning](../sequential_port_storage_planning.md)

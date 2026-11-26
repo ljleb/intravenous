@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <tuple>
 
@@ -86,6 +87,7 @@ struct LinearResamplerNode {
     void constrain_ports(ConstrainPortsContext<LinearResamplerNode>& ctx) const
     {
         ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
+        ctx.template input<"source">().pace().independent();
     }
 
     void tick(TickSampleContext<LinearResamplerNode> const& ctx) const
@@ -115,7 +117,9 @@ struct DeferredLinearResamplerNode {
     };
 
     std::size_t preparation_samples;
-    explicit DeferredLinearResamplerNode(std::size_t samples) : preparation_samples(samples) {
+    explicit DeferredLinearResamplerNode(std::size_t samples)
+        : preparation_samples(samples)
+    {
         if (samples == 0) throw std::invalid_argument("computed resampling needs preparation samples");
     }
 
@@ -130,6 +134,7 @@ struct DeferredLinearResamplerNode {
 
     void constrain_ports(ConstrainPortsContext<DeferredLinearResamplerNode>& ctx) const {
         ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
+        ctx.template input<"source">().pace().independent();
         ctx.template output<"out">().latency() = preparation_samples;
     }
 

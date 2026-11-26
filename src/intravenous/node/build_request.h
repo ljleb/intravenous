@@ -84,16 +84,6 @@ std::size_t declare_node(
 }
 
 template<typename Node>
-consteval std::size_t reflected_sample_input_count()
-{
-    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
-        return count_continuous_ports(Node::inputs());
-    } else {
-        return 0;
-    }
-}
-
-template<typename Node>
 consteval std::size_t reflected_sample_output_count()
 {
     if constexpr (has_outputs<Node> && has_constexpr_port_configs<Node>) {
@@ -104,10 +94,6 @@ consteval std::size_t reflected_sample_output_count()
         return 0;
     }
 }
-
-template<typename Node>
-inline constexpr std::size_t reflected_sample_input_count_v =
-    reflected_sample_input_count<Node>();
 
 template<typename Node>
 inline constexpr std::size_t reflected_sample_output_count_v =
@@ -142,23 +128,6 @@ inline constexpr std::size_t reflected_event_input_count_v =
 template<typename Node>
 inline constexpr std::size_t reflected_event_output_count_v =
     reflected_event_output_count<Node>();
-
-// A Random Access input keeps its declared entry in the reflected Sequential
-// binding array, but that entry has no Sequential storage: the node-facing
-// access reads only the callback's RandomAccess*InputPort view.
-template<typename Node>
-consteval auto reflected_sample_input_random_access_mask()
-{
-    std::array<bool, reflected_sample_input_count_v<Node>> result{};
-    if constexpr (has_inputs<Node> && has_constexpr_port_configs<Node>) {
-        std::size_t sample_index = 0;
-        for_each_port_config(Node::inputs(), [&](auto const& config) {
-            if (!is_continuous(config)) return;
-            result[sample_index++] = is_random_access(config);
-        });
-    }
-    return result;
-}
 
 template<typename Node>
 consteval auto reflected_event_input_random_access_mask()
@@ -408,8 +377,8 @@ IV_FORCEINLINE void initialize_reflected_event_inputs(
 {
     static_assert(N == sizeof...(I));
     (([&] {
-        // See reflected_sample_input_random_access_mask(). A Random Access
-        // entry keeps its default EventInputPort, which node code never sees.
+        // A Random Access entry keeps its default EventInputPort, which node
+        // code never sees.
         if constexpr (!reflected_event_input_random_access_mask<Node>()[I]) {
             auto const& binding = ctx.event_input_bindings.pointer[I].storage;
             auto const read_index = binding.persistent_ring

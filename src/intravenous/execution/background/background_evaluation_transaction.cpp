@@ -883,9 +883,10 @@ class BackgroundEvaluationTransaction::Impl {
                 auto const& port = plan.ports[required.port];
                 if (port.input_access == InputAccessKind::sequential) {
                     selection.binding_coverage[*slot].include(positional_requirement(required));
-                    auto const& coverage = selection.binding_coverage[*slot];
-                    selection.binding_regions[*slot].assign(
-                        coverage.begin(), coverage.end());
+                    if (port.kind == PortKind::event) {
+                        auto const& coverage = selection.binding_coverage[*slot];
+                        selection.binding_regions[*slot].assign(coverage.begin(), coverage.end());
+                    }
                 } else {
                     auto const regions = prepared_->requested_input_regions(required.port);
                     selection.binding_input_regions[*slot].assign(regions.begin(), regions.end());

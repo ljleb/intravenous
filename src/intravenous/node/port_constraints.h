@@ -106,6 +106,7 @@ struct NodePortConstraints {
     std::vector<PortPaceEqualityConstraint> pace_equalities {};
     std::vector<PortPaceAnchorConstraint> pace_anchors {};
     std::vector<AbsolutePortPaceAnchorConstraint> absolute_pace_anchors {};
+    std::vector<PortConstraintRef> independent_paces {};
     std::vector<PortHistoryEqualityConstraint> history_equalities {};
     std::vector<PortHistoryAnchorConstraint> history_anchors {};
     std::vector<PortLatencyEqualityConstraint> latency_equalities {};
@@ -129,6 +130,7 @@ struct ReflectedPortConstraintSink {
 #undef IV_PORT_CONSTRAINT_CALLBACKS
     void (*anchor_absolute_pace)(
         void*, PortConstraintRef, PortPace) = nullptr;
+    void (*set_independent_pace)(void*, PortConstraintRef) = nullptr;
     void* event_count_context = nullptr;
     void (*set_event_count_bound)(void*, PortConstraintRef, std::size_t) = nullptr;
 
@@ -223,6 +225,14 @@ public:
         requires std::same_as<Property, PortPaceProperty>
     {
         return {sink(), port_};
+    }
+
+    void independent() const requires std::same_as<Property, PortPaceProperty>
+    {
+        auto const& target = sink();
+        if (!target.set_independent_pace)
+            throw std::logic_error("port-constraint sink has no independent-pace callback");
+        target.set_independent_pace(target.state, port_);
     }
 };
 

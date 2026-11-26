@@ -2,18 +2,18 @@
 
 #include <array>
 
-struct RandomAccessReplayNode {
+struct WindowedReplayNode {
     static constexpr auto replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs()
     {
-        return std::array{iv::event_input({"input", "Input"}, iv::EventTypeId::trigger, iv::InputAccess::region,
-            iv::InputContentAccess::complete_buffer)};
+        return std::array{iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::coverage,
+            iv::InputContentAccess::windowed)};
     }
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>({"output", "Output"})};
     }
-    void tick_block(iv::TickBlockContext<RandomAccessReplayNode> const&) const {}
+    void tick_block(iv::TickBlockContext<WindowedReplayNode> const&) const {}
 };
 
-IV_NODE("iv.test.invalid_replay_random_access_event", RandomAccessReplayNode, "Invalid replay random access event");
+IV_NODE("iv.test.invalid_replay_windowed_input", WindowedReplayNode, "Invalid replay windowed input");

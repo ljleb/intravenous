@@ -2789,16 +2789,30 @@ TEST_F(GraphJitRuntimeFixture, DeferredTickInputBatchFreezesExactTapsAndReturnsI
 
 TEST_F(GraphJitRuntimeFixture, LiveResamplerReadsCompleteBuffersWithoutAddingLatency)
 {
-    for (auto const* module : {"iv.test.resampler.complete_buffer",
-                              "iv.test.resampler.fast_complete_buffer",
-                              "iv.test.resampler.fast_source"}) {
-        SCOPED_TRACE(module);
-        auto compiled = compile(module, 3015);
+    struct Case {
+        char const* module;
+        std::uint64_t source_pace;
+        std::uint64_t output_pace;
+    };
+    for (auto const test : std::array{
+        Case{"iv.test.resampler.complete_buffer", 1, 1},
+        Case{"iv.test.resampler.fast_complete_buffer", 1, 2},
+        Case{"iv.test.resampler.fast_source", 2, 1},
+    }) {
+        SCOPED_TRACE(test.module);
+        auto compiled = compile(test.module, 3015);
         ASSERT_TRUE(compiled.succeeded())
             << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
         auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled.compiled_graph);
-        EXPECT_TRUE(graph->background_evaluation_plan.tick_sequential_inputs.empty());
-        ASSERT_EQ(graph->background_evaluation_plan.tick_runtime.random_access_sample_inputs.size(), 1u);
+        auto const& plan = graph->background_evaluation_plan;
+        EXPECT_TRUE(plan.tick_sequential_inputs.empty());
+        auto const& inputs = plan.tick_runtime.random_access_sample_inputs;
+        ASSERT_EQ(inputs.size(), 1u);
+        auto const& source = plan.ports[inputs.front().port];
+        EXPECT_EQ(source.absolute_pace_exponent, iv::PortPace{test.source_pace}.exponent());
+        auto const& out = graph->port_realization.output(source.configured_port.node_bundle_handle, 0);
+        EXPECT_EQ(out.absolute_pace, iv::PortPace{test.output_pace});
+        EXPECT_EQ(out.latency, 0u);
         observed_playback_root = graph->root_operations.tick_block.function;
         observed_playback_calls = 0;
         graph->root_operations.tick_block.function = &count_playback_root;

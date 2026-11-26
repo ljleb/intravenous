@@ -75,11 +75,11 @@ expect_invalid(
 
 expect_invalid(
     invalid_replayable_node.cpp
-    "IV_NODE intrinsically replayable nodes must author a Tick callback")
+    "have no State or authored reverse coverage callbacks")
 
 expect_invalid(
     invalid_replay_random_access.cpp
-    "have no State, Random Access inputs, or authored reverse coverage callbacks")
+    "use complete buffers for Region/Coverage inputs")
 
 expect_invalid(
     invalid_replay_coverage_callbacks.cpp

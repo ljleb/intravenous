@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 10;
+inline constexpr std::uint32_t archive_version = 11;
 
 class Writer {
 public:
@@ -626,6 +626,9 @@ inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
         write_port_constraint_ref(w, anchor.port);
         w.pod(anchor.value.exponent());
     });
+    w.list(value.independent_paces, [&](auto const& port) {
+        write_port_constraint_ref(w, port);
+    });
     write_equalities(value.history_equalities);
     write_sizes(value.history_anchors);
     write_equalities(value.latency_equalities);
@@ -699,6 +702,8 @@ inline NodePortConstraints read_port_constraints(Reader& r)
                 .value = PortPace::from_exponent(exponent),
             };
         });
+    result.independent_paces =
+        read_list<PortConstraintRef>(r, [&] { return read_port_constraint_ref(r); });
     result.history_equalities =
         read_equalities.template operator()<PortHistoryEqualityConstraint>();
     result.history_anchors =

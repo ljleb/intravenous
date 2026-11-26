@@ -3806,7 +3806,12 @@ std::expected<void, std::string> plan_background_connections(
 
         for (auto const& source : connection.source_channel_timings) {
             background.sample_deliveries.push_back(source.delivery);
-            background.sample_read_latencies.push_back(target_replay ? 0 : source.read_latency);
+            // Region and Coverage reads address finalized values at their
+            // published positions. Replay accounts for finalization latency
+            // by running more callbacks, just as recording does before publish.
+            auto const reads_finalized_positions = target_replay
+                || source.destination_access == PlannedDestinationAccess::random_access;
+            background.sample_read_latencies.push_back(reads_finalized_positions ? 0 : source.read_latency);
             auto const background_source = !uses_realtime_storage(source.delivery)
                 || target_replay || tracks_coverage_for_bundle(source.source.bundle);
             if (!background_source) {

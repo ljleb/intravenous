@@ -685,6 +685,12 @@ compiled root block size. It is also the output finalization latency, measured
 in project samples. The source can then be computed or buffered. The deferred
 callback requires project-rate `position` and `out`.
 
+GraphJit gets the `source` sample grid from the connected producers.
+For example, a buffer at twice the project rate supplies two source samples
+per project sample while `position` and `out` can stay at project rate.
+See [the port pace rules](graph_jit_direction.md) and the
+[earlier constructor-based proposal](historical/tick_resampler_first_proposal_2026-11-26.md).
+
 The deferred resampler uses `ctx.request_input<"source">()` for the exact tap
 positions. It keeps these taps and their weights in `State` until they are due.
 The background evaluator prepares only those positions. The foreground stalls

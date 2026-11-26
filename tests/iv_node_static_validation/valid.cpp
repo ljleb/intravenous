@@ -203,9 +203,16 @@ static_assert(iv::details::replay_declaration_is_valid_v<
 IV_NODE("iv.test.valid_replayable_block_node", ValidReplayableBlockNode, "Valid replayable block node");
 
 struct ValidRandomAccessTickNode {
+    static constexpr auto replay_mode = iv::TickReplayMode::enabled;
+
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
+        return std::tuple{
+            iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::region,
+                iv::InputContentAccess::complete_buffer),
+            iv::event_input({"events", "Events"}, iv::EventTypeId::trigger, iv::InputAccess::region,
+                iv::InputContentAccess::complete_buffer),
+        };
     }
     static constexpr auto outputs()
     {

@@ -9,6 +9,8 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace iv::graph_jit {
 namespace detail {
@@ -139,6 +141,11 @@ public:
     {
         return variables_[root(variable)].value;
     }
+
+    [[nodiscard]] std::size_t representative(std::size_t variable)
+    {
+        return root(variable);
+    }
 };
 
 class WeightedRateSolver {
@@ -178,7 +185,14 @@ public:
     {
         variables_.reserve(count);
         for (std::size_t index = 0; index < count; ++index)
-            variables_.push_back({.parent = index});
+            static_cast<void>(add());
+    }
+
+    [[nodiscard]] std::size_t add()
+    {
+        auto const index = variables_.size();
+        variables_.push_back({.parent = index});
+        return index;
     }
 
     // Constrain exponent(second) - exponent(first) == difference.
@@ -247,7 +261,7 @@ public:
     }
 
     [[nodiscard]] std::expected<void, std::string>
-    default_unanchored_components()
+    default_unanchored_components(std::size_t bundle_count)
     {
         // Union roots and bundle handles are construction details and therefore
         // cannot define graph semantics. Normalize every wholly unanchored
@@ -256,7 +270,7 @@ public:
         // difference remains unchanged.
         std::vector<std::optional<PortPace>> minimum_difference(
             variables_.size());
-        for (std::size_t variable = 0; variable < variables_.size(); ++variable) {
+        for (std::size_t variable = 0; variable < bundle_count; ++variable) {
             auto found = find(variable);
             if (!found) return std::unexpected(std::move(found.error()));
             auto& minimum = minimum_difference[found->root];
@@ -272,6 +286,11 @@ public:
                 PortPace{}, *minimum_difference[root]);
             if (!rate) return std::unexpected(std::move(rate.error()));
             variables_[root].absolute_rate = *rate;
+        }
+        // A component containing only independent ports defaults to project pace.
+        for (std::size_t root = bundle_count; root < variables_.size(); ++root) {
+            if (variables_[root].parent == root && !variables_[root].absolute_rate)
+                variables_[root].absolute_rate = PortPace{};
         }
         return {};
     }
@@ -826,9 +845,100 @@ class PortRealizationSolver {
         return port.pace ? paces_.value(*port.pace).value_or(PortPace{}) : PortPace{};
     }
 
-    [[nodiscard]] std::expected<std::vector<PortPace>, std::string> solve_rates()
+    using IndependentPaceVariables = std::unordered_map<std::size_t, std::size_t>;
+
+    [[nodiscard]] std::expected<IndependentPaceVariables, std::string>
+    add_independent_pace_variables(WeightedRateSolver& rates)
+    {
+        std::vector<std::size_t> independent;
+        for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
+            auto const* constraints = bundles_[bundle].authored_constraints;
+            if (!constraints) continue;
+            for (auto ref : constraints->independent_paces) {
+                auto input = port(bundle, ref);
+                if (!input) return std::unexpected(std::move(input.error()));
+                if (ref.kind != PortKind::sample || ref.direction != PortConstraintDirection::input
+                    || is_sequential(graph_.node_bundles.resolve_sample_input(
+                        {bundle, PortKind::sample, ref.port_index}).config)) {
+                    return std::unexpected("independent pace requires a continuous Region or Coverage input: "
+                        + port_name(bundle, ref));
+                }
+                independent.push_back(paces_.representative(*(**input).pace));
+            }
+        }
+        if (independent.empty()) return IndependentPaceVariables{};
+
+        std::unordered_set<std::size_t> local_equalities;
+        for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
+            auto const* constraints = bundles_[bundle].authored_constraints;
+            if (!constraints) continue;
+            for (auto const& equality : constraints->pace_equalities) {
+                auto first = port(bundle, equality.first);
+                if (!first) return std::unexpected(std::move(first.error()));
+                local_equalities.insert(paces_.representative(*(**first).pace));
+            }
+        }
+        auto has_local_constraint = [&](std::size_t pace) {
+            return paces_.value(pace).has_value() || local_equalities.contains(pace);
+        };
+        for (auto pace : independent) {
+            if (has_local_constraint(pace))
+                return std::unexpected("independent pace conflicts with an authored local pace constraint");
+        }
+
+        // A module interface forwards the absolute grid of an independent
+        // input. The public port and the inner boundary already share a pace
+        // representative. Follow upstream interface wires until a producer
+        // or an explicitly constrained local pace supplies the grid.
+        std::unordered_multimap<std::size_t, std::size_t> upstream_interfaces;
+        for (auto const& connection : graph_.connections.configured_sample_connections()) {
+            for (auto const& source : connection.source_channels) {
+                auto const& owner = graph_.node_bundles.bundle(source.channel.bundle);
+                auto const& interface = owner.is_tiled()
+                    ? graph_.node_bundles.bundle(owner.tiled_members().front()) : owner;
+                if (!interface.is_boundary() && !interface.is_subgraph()) continue;
+                auto const source_pace = paces_.representative(
+                    *bundles_[source.channel.bundle].outputs[source.channel.port].pace);
+                if (has_local_constraint(source_pace)) continue;
+                for (auto const& target : connection.target_channels) {
+                    if (takeovers_.replaces(connection, target)) continue;
+                    auto const target_pace = paces_.representative(
+                        *bundles_[target.bundle].inputs[target.port].pace);
+                    upstream_interfaces.emplace(target_pace, source_pace);
+                }
+            }
+        }
+        IndependentPaceVariables result;
+        for (std::size_t index = 0; index < independent.size(); ++index) {
+            auto const pace = independent[index];
+            auto const [entry, inserted] = result.try_emplace(pace);
+            if (!inserted) continue;
+            entry->second = rates.add();
+            auto const [begin, end] = upstream_interfaces.equal_range(pace);
+            for (auto it = begin; it != end; ++it)
+                independent.push_back(it->second);
+        }
+        return result;
+    }
+
+    struct ResolvedRates {
+        std::vector<PortPace> execution;
+        std::unordered_map<std::size_t, PortPace> independent;
+    };
+
+    [[nodiscard]] std::expected<ResolvedRates, std::string> solve_rates()
     {
         WeightedRateSolver rates(bundles_.size());
+        auto independent = add_independent_pace_variables(rates);
+        if (!independent) return std::unexpected(std::move(independent.error()));
+        auto endpoint = [&](NodeBundleHandle bundle, PortVariables const& port) {
+            if (!independent->empty()) {
+                auto const found = independent->find(paces_.representative(*port.pace));
+                if (found != independent->end())
+                    return std::pair{found->second, PortPace{}};
+            }
+            return std::pair{static_cast<std::size_t>(bundle), resolved_local_pace(port)};
+        };
         for (NodeBundleHandle handle = 0; handle < bundles_.size(); ++handle) {
             auto const& bundle = graph_.node_bundles.bundle(handle);
             if (bundle.is_tiled()) {
@@ -849,18 +959,18 @@ class PortRealizationSolver {
         }
         for (auto const& connection : graph_.connections.configured_sample_connections()) {
             for (auto const& source : connection.source_channels) {
-                auto const source_pace = resolved_local_pace(
+                auto const [source_rate, source_pace] = endpoint(source.channel.bundle,
                     bundles_.at(source.channel.bundle)
                         .outputs.at(source.channel.port));
                 for (auto const& target : connection.target_channels) {
                     if (takeovers_.replaces(connection, target)) continue;
-                    auto const target_pace = resolved_local_pace(
+                    auto const [target_rate, target_pace] = endpoint(target.bundle,
                         bundles_.at(target.bundle).inputs.at(target.port));
                     auto difference = subtract_exponents(source_pace, target_pace);
                     if (!difference)
                         return std::unexpected(std::move(difference.error()));
                     auto result = rates.unite(
-                        source.channel.bundle, target.bundle, *difference,
+                        source_rate, target_rate, *difference,
                         "continuous connection pace");
                     if (!result) return std::unexpected(std::move(result.error()));
                 }
@@ -878,22 +988,22 @@ class PortRealizationSolver {
                         "absolute pace constraint requires a continuous port: "
                         + port_name(bundle, anchor.port));
                 }
-                auto execution_rate = subtract_exponents(
-                    anchor.value, resolved_local_pace(**target));
+                auto const [variable, offset] = endpoint(bundle, **target);
+                auto execution_rate = subtract_exponents(anchor.value, offset);
                 if (!execution_rate)
                     return std::unexpected(std::move(execution_rate.error()));
                 auto result = rates.anchor(
-                    bundle,
+                    variable,
                     *execution_rate,
                     "authored absolute pace constraint for "
                         + port_name(bundle, anchor.port));
                 if (!result) return std::unexpected(std::move(result.error()));
             }
         }
-        if (auto result = rates.default_unanchored_components(); !result)
+        if (auto result = rates.default_unanchored_components(bundles_.size()); !result)
             return std::unexpected(std::move(result.error()));
-        std::vector<PortPace> result;
-        result.reserve(bundles_.size());
+        ResolvedRates result;
+        result.execution.reserve(bundles_.size());
         for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
             auto rate = rates.rate(bundle);
             if (!rate) return std::unexpected(std::move(rate.error()));
@@ -901,7 +1011,12 @@ class PortRealizationSolver {
                 *rate, "resolved node execution domain");
             if (!supported)
                 return std::unexpected(std::move(supported.error()));
-            result.push_back(*rate);
+            result.execution.push_back(*rate);
+        }
+        for (auto const& [pace, variable] : *independent) {
+            auto rate = rates.rate(variable);
+            if (!rate) return std::unexpected(std::move(rate.error()));
+            result.independent.emplace(pace, *rate);
         }
         return result;
     }
@@ -912,7 +1027,7 @@ class PortRealizationSolver {
         PortVariables const& variables,
         PortConstraintDirection direction,
         std::size_t port,
-        PortPace execution_rate)
+        ResolvedRates const& rates)
     {
         auto const domain = type_variables_[type_root(*variables.value_type)].domain;
         auto const selected = domain.sole_type();
@@ -942,8 +1057,18 @@ class PortRealizationSolver {
                 port_name(bundle, ref) + " has unrepresentable audio sample support for "
                 + std::string(value_type.name));
         }
-        auto const local_pace = resolved_local_pace(variables);
+        auto const execution_rate = rates.execution[bundle];
+        auto local_pace = resolved_local_pace(variables);
         auto absolute_pace = add_exponents(execution_rate, local_pace);
+        if (!rates.independent.empty()) {
+            auto const found = rates.independent.find(paces_.representative(*variables.pace));
+            if (found != rates.independent.end()) {
+                absolute_pace = found->second;
+                auto relative = subtract_exponents(*absolute_pace, execution_rate);
+                if (!relative) return std::unexpected(std::move(relative.error()));
+                local_pace = *relative;
+            }
+        }
         if (!absolute_pace) return std::unexpected(std::move(absolute_pace.error()));
         auto supported = require_supported_exponent(
             *absolute_pace, port_name(bundle, ref));
@@ -984,18 +1109,18 @@ public:
 
         std::vector<ResolvedPortRealization::Bundle> resolved(bundles_.size());
         for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
-            resolved[bundle].execution_rate = (*execution_rates)[bundle];
+            resolved[bundle].execution_rate = execution_rates->execution[bundle];
             for (std::size_t port = 0; port < bundles_[bundle].inputs.size(); ++port) {
                 auto value = resolve_continuous(
                     bundle, bundles_[bundle].inputs[port],
-                    PortConstraintDirection::input, port, (*execution_rates)[bundle]);
+                    PortConstraintDirection::input, port, *execution_rates);
                 if (!value) return std::unexpected(std::move(value.error()));
                 resolved[bundle].inputs.push_back(*value);
             }
             for (std::size_t port = 0; port < bundles_[bundle].outputs.size(); ++port) {
                 auto value = resolve_continuous(
                     bundle, bundles_[bundle].outputs[port],
-                    PortConstraintDirection::output, port, (*execution_rates)[bundle]);
+                    PortConstraintDirection::output, port, *execution_rates);
                 if (!value) return std::unexpected(std::move(value.error()));
                 resolved[bundle].outputs.push_back(*value);
             }

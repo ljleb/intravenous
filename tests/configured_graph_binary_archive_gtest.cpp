@@ -653,6 +653,19 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
     EXPECT_EQ(constrained_nodes, 1u);
 }
 
+TEST(ConfiguredGraphBinaryArchive, RoundTripsIndependentPaceConstraint)
+{
+    using namespace iv;
+    NodePortConstraints const constraints{
+        .independent_paces = {{PortConstraintDirection::input, PortKind::sample, 1}},
+    };
+    binary_wire_details::Writer writer;
+    binary_wire_details::write_port_constraints(writer, constraints);
+    auto const payload = std::move(writer).take();
+    binary_wire_details::Reader reader(payload);
+    EXPECT_EQ(binary_wire_details::read_port_constraints(reader), constraints);
+}
+
 TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
 {
     std::array const outputs {
