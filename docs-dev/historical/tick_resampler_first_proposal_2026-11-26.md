@@ -13,6 +13,10 @@ An intermediate proposal added a second constructor argument,
 meant half. The [current resampler](../random_access_port_data_direction.md#live-resampling-from-computed-sources)
 gets the source grid from its connected producers.
 
+The first version of inferred source pacing used `pace().independent()`
+in `constrain_ports`. [The current port pace rules](../graph_jit_direction.md)
+use assignment syntax.
+
 The replay contract in [Coverage and Background Evaluation](../coverage_and_background_evaluation.md)
 originally excluded nonzero port history, output latency, and internal latency.
 The replay summary in [Sequential Port Storage Planning](../sequential_port_storage_planning.md)

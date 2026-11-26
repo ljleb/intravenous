@@ -87,7 +87,7 @@ struct LinearResamplerNode {
     void constrain_ports(ConstrainPortsContext<LinearResamplerNode>& ctx) const
     {
         ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
-        ctx.template input<"source">().pace().independent();
+        ctx.template input<"source">().pace() = iv::independent_pace;
     }
 
     void tick(TickSampleContext<LinearResamplerNode> const& ctx) const
@@ -134,7 +134,7 @@ struct DeferredLinearResamplerNode {
 
     void constrain_ports(ConstrainPortsContext<DeferredLinearResamplerNode>& ctx) const {
         ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
-        ctx.template input<"source">().pace().independent();
+        ctx.template input<"source">().pace() = iv::independent_pace;
         ctx.template output<"out">().latency() = preparation_samples;
     }
 

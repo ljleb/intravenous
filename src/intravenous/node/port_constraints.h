@@ -55,6 +55,12 @@ public:
     constexpr bool operator==(PortPace const&) const = default;
 };
 
+namespace details {
+struct IndependentPortPace {};
+}
+
+inline constexpr details::IndependentPortPace independent_pace{};
+
 struct PortConstraintRef {
     PortConstraintDirection direction = PortConstraintDirection::input;
     PortKind kind = PortKind::sample;
@@ -227,12 +233,14 @@ public:
         return {sink(), port_};
     }
 
-    void independent() const requires std::same_as<Property, PortPaceProperty>
+    PortPropertyConstraint& operator=(details::IndependentPortPace)
+        requires std::same_as<Property, PortPaceProperty>
     {
         auto const& target = sink();
         if (!target.set_independent_pace)
             throw std::logic_error("port-constraint sink has no independent-pace callback");
         target.set_independent_pace(target.state, port_);
+        return *this;
     }
 };
 
