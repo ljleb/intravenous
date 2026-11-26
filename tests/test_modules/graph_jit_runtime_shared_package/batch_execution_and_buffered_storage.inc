@@ -79,7 +79,7 @@ struct NativeBatchAliasingProbe {
             ++state.tick_batch_calls;
             state.last_lane_count = context.size();
             state.configured_id = lane.node().id;
-            for (auto& sample : lane.template output<"out">().block()) {
+            for (auto sample : lane.template output<"out">().block()) {
                 sample = static_cast<float>(lane.node().id);
             }
         }
@@ -254,9 +254,7 @@ struct NativeBatchActivityProbe {
             auto& state = lane.state();
             ++state.tick_batch_calls;
             state.tick_lane_total += context.size();
-            for (auto& sample : lane.template output<"out">().block()) {
-                sample = {};
-            }
+            lane.template output<"out">().clear_block();
         }
     }
 
@@ -267,9 +265,7 @@ struct NativeBatchActivityProbe {
             auto& state = lane.state();
             ++state.skip_batch_calls;
             state.skip_lane_total += context.size();
-            for (auto& sample : lane.template output<"out">().block()) {
-                sample = {};
-            }
+            lane.template output<"out">().clear_block();
         }
     }
 };
@@ -304,7 +300,7 @@ struct ActivityStepSource {
     {
         auto output = ctx.output<"out">().block();
         auto const value = ctx.index.whole().bits() < 128 ? 0.0f : 1.0f;
-        for (auto& sample : output) sample = value;
+        for (auto sample : output) sample = value;
     }
 };
 
@@ -332,14 +328,14 @@ struct ActivityProbe {
     {
         ++ctx.state().tick_calls;
         auto output = ctx.output<"out">().block();
-        for (auto& sample : output) sample = {};
+        for (auto sample : output) sample.clear();
     }
 
     void skip_block(iv::SkipBlockContext<ActivityProbe> const& ctx) const
     {
         ++ctx.state().skip_calls;
         auto output = ctx.output<"out">().block();
-        for (auto& sample : output) sample = {};
+        for (auto sample : output) sample.clear();
     }
 };
 
@@ -369,7 +365,7 @@ struct ActivityTypeDefaultProbe {
     {
         ++ctx.state().tick_calls;
         auto output = ctx.output<"out">().block();
-        for (auto& sample : output) sample = {};
+        for (auto sample : output) sample.clear();
     }
 
     void skip_block(
@@ -377,7 +373,7 @@ struct ActivityTypeDefaultProbe {
     {
         ++ctx.state().skip_calls;
         auto output = ctx.output<"out">().block();
-        for (auto& sample : output) sample = {};
+        for (auto sample : output) sample.clear();
     }
 };
 

@@ -503,6 +503,12 @@ private:
     std::vector<std::size_t> normalized_connection_indices_{};
 };
 
+// Choose the project-sample lead for each input from its authored producers.
+std::expected<std::vector<std::size_t>, std::string> resolve_tick_preparation_leads(
+    ConfiguredGraph const& graph,
+    std::span<NodeBundlePortId const> inputs,
+    std::size_t kernel_block_size);
+
 // Pure host-side topology/temporal/storage-requirement analysis. It does not
 // require LLVM or resolved package implementations and is intentionally usable
 // before the current lowering capability gate. That lets connected graphs be

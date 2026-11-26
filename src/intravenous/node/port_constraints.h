@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <concepts>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -75,6 +76,16 @@ struct PortHistoryProperty { using value_type = std::size_t; };
 struct PortLatencyProperty { using value_type = std::size_t; };
 struct CoverageOrderingProperty { using value_type = CoverageOrdering; };
 
+enum class PreparationLeadTarget : std::uint8_t { history, latency };
+
+struct PortPreparationLeadEquality {
+    PortConstraintRef target {};
+    PortConstraintRef source {};
+    PreparationLeadTarget property = PreparationLeadTarget::history;
+    std::size_t additional_samples = 0;
+    constexpr bool operator==(PortPreparationLeadEquality const&) const = default;
+};
+
 template<class Property>
 struct PortPropertyEqualityConstraint {
     PortConstraintRef first {};
@@ -117,6 +128,8 @@ struct NodePortConstraints {
     std::vector<PortHistoryAnchorConstraint> history_anchors {};
     std::vector<PortLatencyEqualityConstraint> latency_equalities {};
     std::vector<PortLatencyAnchorConstraint> latency_anchors {};
+    std::vector<PortConstraintRef> preparation_leads {};
+    std::vector<PortPreparationLeadEquality> preparation_lead_equalities {};
     std::vector<CoverageOrderingEqualityConstraint> ordering_equalities {};
     std::vector<CoverageOrderingAnchorConstraint> ordering_anchors {};
     constexpr bool operator==(NodePortConstraints const&) const = default;
@@ -137,6 +150,8 @@ struct ReflectedPortConstraintSink {
     void (*anchor_absolute_pace)(
         void*, PortConstraintRef, PortPace) = nullptr;
     void (*set_independent_pace)(void*, PortConstraintRef) = nullptr;
+    void (*request_preparation_lead)(void*, PortConstraintRef) = nullptr;
+    void (*equal_preparation_lead)(void*, PortPreparationLeadEquality) = nullptr;
     void* event_count_context = nullptr;
     void (*set_event_count_bound)(void*, PortConstraintRef, std::size_t) = nullptr;
 
@@ -168,6 +183,38 @@ struct ReflectedPortConstraintSink {
         }();
         if (!callback) throw std::logic_error("port-constraint sink has no anchor callback");
         callback(state, port, value);
+    }
+};
+
+class PortPreparationLead {
+    ReflectedPortConstraintSink const* sink_;
+    PortConstraintRef port_;
+    std::size_t additional_samples_ = 0;
+
+    template<class> friend class PortPropertyConstraint;
+
+public:
+    PortPreparationLead(ReflectedPortConstraintSink const& sink, PortConstraintRef port)
+        : sink_(&sink), port_(port)
+    {
+        if (!sink.request_preparation_lead)
+            throw std::logic_error("port-constraint sink has no preparation lead callback");
+        sink.request_preparation_lead(sink.state, port);
+    }
+
+    template<std::integral Count>
+        requires (!std::same_as<Count, bool>)
+    [[nodiscard]] friend PortPreparationLead operator+(PortPreparationLead lead, Count samples)
+    {
+        if constexpr (std::signed_integral<Count>) {
+            if (samples < 0)
+                throw std::invalid_argument("preparation lead can only add a nonnegative sample count");
+        }
+        auto const additional = static_cast<std::make_unsigned_t<Count>>(samples);
+        if (additional > std::numeric_limits<std::size_t>::max() - lead.additional_samples_)
+            throw std::overflow_error("additional preparation samples exceed the supported range");
+        lead.additional_samples_ += static_cast<std::size_t>(additional);
+        return lead;
     }
 };
 
@@ -218,6 +265,18 @@ public:
     PortPropertyConstraint& operator=(value_type value)
     {
         sink().template anchor<Property>(port_, value);
+        return *this;
+    }
+    PortPropertyConstraint& operator=(PortPreparationLead lead)
+        requires (std::same_as<Property, PortHistoryProperty> || std::same_as<Property, PortLatencyProperty>)
+    {
+        auto const& target = sink();
+        if (&target != lead.sink_) throw std::logic_error("port constraints belong to different contexts");
+        if (!target.equal_preparation_lead)
+            throw std::logic_error("port-constraint sink has no preparation lead equality callback");
+        constexpr auto property = std::same_as<Property, PortHistoryProperty>
+            ? PreparationLeadTarget::history : PreparationLeadTarget::latency;
+        target.equal_preparation_lead(target.state, {port_, lead.port_, property, lead.additional_samples_});
         return *this;
     }
     template<RegisteredContinuousValue T>
@@ -276,7 +335,8 @@ public:
     [[nodiscard]] constexpr ContinuousValueSizeConstraint size() const noexcept requires (Continuous && Dimensioned) { return {*sink_, port_}; }
     [[nodiscard]] constexpr PortPaceConstraint pace() const noexcept requires Continuous { return {*sink_, port_}; }
     [[nodiscard]] constexpr PortHistoryConstraint history() const noexcept requires HasHistory { return {*sink_, port_}; }
-    [[nodiscard]] constexpr PortLatencyConstraint latency() const noexcept requires HasLatency { return {*sink_, port_}; }
+    [[nodiscard]] constexpr PortLatencyConstraint latency() const noexcept requires (HasLatency && IsOutput) { return {*sink_, port_}; }
+    [[nodiscard]] PortPreparationLead preparation_lead() const requires (HasLatency && !IsOutput) { return {*sink_, port_}; }
     [[nodiscard]] constexpr CoverageOrderingConstraint ordering() const noexcept requires HasOrdering { return {*sink_, port_}; }
     [[nodiscard]] EventCountBound max_event_count() const requires (!Continuous && IsOutput) { return {*sink_, port_}; }
 };
@@ -342,7 +402,7 @@ public:
             if constexpr (continuous) return details::static_input_port_index<Node, Name>();
             else return details::static_event_input_port_index<Node, Name>();
         }();
-        return PortConstraint<continuous, dimensioned, sequential, false, coverage, false>(
+        return PortConstraint<continuous, dimensioned, sequential, continuous && !sequential, coverage, false>(
             sink_, {PortConstraintDirection::input, kind, port});
     }
 

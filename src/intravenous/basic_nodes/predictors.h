@@ -114,7 +114,7 @@ namespace iv {
         void constrain_ports(ConstrainPortsContext<TanhResidualPredictor>& ctx) const
         {
             ctx.template input<"">().history() = Order - 1;
-            ctx.template output<"">().history() = LookAhead + ArOrder;
+            ctx.template output<"">().history() = LookAhead + ArOrder + 1;
         }
 
         void declare(DeclarationContext<TanhResidualPredictor> const& ctx) const
@@ -217,7 +217,7 @@ namespace iv {
         void constrain_ports(ConstrainPortsContext<TanhResidualAR2Predictor>& ctx) const
         {
             ctx.template input<"">().history() = Order - 1;
-            ctx.template output<"">().history() = LookAhead + ArOrder;
+            ctx.template output<"">().history() = LookAhead + ArOrder + 1;
         }
 
         void declare(DeclarationContext<TanhResidualAR2Predictor> const& ctx) const

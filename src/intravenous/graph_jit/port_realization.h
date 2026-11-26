@@ -34,6 +34,7 @@ struct ResolvedContinuousPortRealization {
     PortPace absolute_pace {};
     std::size_t history = 0;
     std::size_t latency = 0;
+    std::size_t preparation_lead = 0;
     CoverageOrdering ordering = CoverageOrdering::unspecified;
 
     constexpr bool operator==(
@@ -65,7 +66,7 @@ class ResolvedPortRealization {
     {}
 
     friend std::expected<ResolvedPortRealization, std::string>
-        resolve_port_realization(ConfiguredGraph const&);
+        resolve_port_realization(ConfiguredGraph const&, std::size_t);
     friend class detail::PortRealizationSolver;
 
 public:
@@ -95,7 +96,9 @@ public:
     [[nodiscard]] PortPace execution_rate(NodeBundleHandle bundle) const;
 };
 
+// Omit the kernel block size when only port geometry is needed. Automatic
+// preparation timing is resolved only for a selected execution schedule.
 [[nodiscard]] std::expected<ResolvedPortRealization, std::string>
-resolve_port_realization(ConfiguredGraph const& graph);
+resolve_port_realization(ConfiguredGraph const& graph, std::size_t kernel_block_size = 0);
 
 } // namespace iv::graph_jit

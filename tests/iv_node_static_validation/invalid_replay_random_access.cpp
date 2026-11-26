@@ -6,8 +6,8 @@ struct WindowedReplayNode {
     static constexpr auto replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::coverage,
-            iv::InputContentAccess::windowed)};
+        return std::array{iv::event_input({"input", "Input"}, iv::EventTypeId::trigger,
+            iv::InputAccess::coverage, iv::InputContentAccess::windowed)};
     }
     static constexpr auto outputs()
     {

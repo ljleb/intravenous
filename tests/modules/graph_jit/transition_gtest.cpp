@@ -326,8 +326,8 @@ struct LatentSampleCutover {
 // Runs the scenario across one cutover the way GraphExecutor activates a
 // compiled cutover: execute the cold transfers at the cutover position, run
 // the transition root until every Sequential expiry cursor has advanced by its
-// value count, then run the steady root. Every block checks every value of the
-// source's owned window, and the consumer's latency-compensated view.
+// value count, then run the steady root. Every block checks the source's
+// readable history and the consumer's latency-compensated view.
 void expect_latent_sample_window_survives_cutover(
     iv::GraphJit& jit,
     iv::PackageRevision const& revision,
@@ -433,7 +433,7 @@ void expect_latent_sample_window_survives_cutover(
         EXPECT_EQ(source->calls, source_calls + 1);
         EXPECT_EQ(
             source->checked,
-            std::min<std::uint64_t>(static_cast<std::uint64_t>(begin), window));
+            std::min<std::uint64_t>(static_cast<std::uint64_t>(begin), scenario.source_history));
         EXPECT_EQ(source->mismatches, 0u);
         if (consumer == nullptr) return;
         auto const first =

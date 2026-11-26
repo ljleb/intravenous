@@ -9,6 +9,7 @@
 #include <intravenous/node/region_selection.h>
 #include <intravenous/node/static_port_access.h>
 #include <intravenous/node/tick_coverage.h>
+#include <intravenous/node/tick_input_request.h>
 #include <intravenous/node/traits.h>
 
 #include <algorithm>
@@ -54,8 +55,7 @@ struct RandomAccessContinuousInputPort {
     IndexCoverage const* prepared_coverage_value = nullptr;
     std::int32_t absolute_pace_exponent = 0;
     void* request_owner = nullptr;
-    bool (*request_samples)(void*, GlobalIndexRange, SamplePositionsView) noexcept = nullptr;
-    std::uint64_t request_generation = 0;
+    TickInputRequestOutcome (*request_samples)(void*, GlobalIndexRange, SamplePositionsView) noexcept = nullptr;
 
     [[nodiscard]] IndexCoverage const& prepared_coverage() const noexcept {
         return background_port_details::bound_coverage(
@@ -717,11 +717,6 @@ public:
     [[nodiscard]] constexpr std::int32_t absolute_pace_exponent() const noexcept
     {
         return port_->absolute_pace_exponent;
-    }
-
-    [[nodiscard]] constexpr std::uint64_t request_generation() const noexcept
-    {
-        return port_->request_generation;
     }
 
     // A positional read selects the first logical Region that contains the

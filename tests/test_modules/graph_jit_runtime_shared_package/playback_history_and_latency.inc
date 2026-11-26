@@ -658,7 +658,7 @@ void playback_event_rewire_module(iv::GraphBuilder& graph)
 // Authors a latent Tick sample output whose newest values stay provisional
 // until its next tick revises them through OutputPort::update(). Before
 // authoring, it checks every value of its owned window, the last
-// history + latency values before this tick, against the value it authored or
+// values in its declared history before this tick, against the value it authored or
 // revised for that position. The newest min(latency, block size) values of
 // each block are provisional, so the fixture runs equal-sized blocks only.
 template<class State, class Output>
@@ -674,7 +674,7 @@ void author_latent_window(
     auto const provisional_value = [](std::int64_t position) {
         return -1.0f - static_cast<float>(position);
     };
-    auto const window = output.history() + output.latency();
+    auto const window = output.history();
     auto const pending = std::min(output.latency(), block_size);
     ++state.calls;
     state.checked = 0;

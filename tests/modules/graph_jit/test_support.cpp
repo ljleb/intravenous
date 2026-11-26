@@ -37,7 +37,7 @@ build_connection_analysis_plan(
     iv::ConfiguredGraph const& graph,
     std::size_t kernel_block_size)
 {
-    auto port_realization = iv::graph_jit::resolve_port_realization(graph);
+    auto port_realization = iv::graph_jit::resolve_port_realization(graph, kernel_block_size);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
     }

@@ -894,6 +894,9 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
             return output.replayed_tick_output && output.kind == PortKind::sample
                 && output.output_latency != 0;
         });
+        auto const has_deferred_input = std::ranges::any_of(background_node.inputs, [&](auto port) {
+            return plan.connections.background.ports[port].deferred_tick_lead != 0;
+        });
         emit_when_active(
             node,
             BackgroundNodeActivity::evaluate,
@@ -967,7 +970,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     advance);
 
                 builder.SetInsertPoint(invoke);
-                if (has_latent_output) {
+                if (has_latent_output || has_deferred_input) {
                     auto load_pointer = [&](std::size_t offset, char const* name) {
                         auto* address = byte_offset_pointer(builder, node_frame, offset, name);
                         return builder.CreateLoad(pointer_type, address);

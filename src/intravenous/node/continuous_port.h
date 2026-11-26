@@ -541,6 +541,46 @@ public:
     }
 };
 
+template<class Value>
+class TickOutputCell {
+    Value* value_;
+
+public:
+    explicit constexpr TickOutputCell(Value& value) noexcept : value_(&value) {}
+    constexpr TickOutputCell(TickOutputCell const&) noexcept = default;
+    TickOutputCell& operator=(TickOutputCell const&) = delete;
+
+    constexpr void operator=(Value const& value) const noexcept { *value_ = value; }
+    constexpr void clear() const noexcept { *value_ = Value{}; }
+};
+
+class TickFFTOutputCell {
+    MutableFFTBlock value_;
+
+public:
+    explicit constexpr TickFFTOutputCell(MutableFFTBlock value) noexcept : value_(value) {}
+    constexpr TickFFTOutputCell(TickFFTOutputCell const&) noexcept = default;
+    TickFFTOutputCell& operator=(TickFFTOutputCell const&) = delete;
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return value_.size(); }
+    [[nodiscard]] constexpr TickOutputCell<FFTBin> operator[](std::size_t bin) const noexcept
+    {
+        return TickOutputCell{value_[bin]};
+    }
+
+    constexpr void operator=(FFTBlock value) const noexcept
+    {
+        IV_ASSERT(size() == value.size(), "FFT output block size does not match its resolved value size");
+        for (std::size_t bin = 0; bin < size(); ++bin) value_[bin] = value[bin];
+    }
+
+    constexpr void clear() const noexcept { ContinuousValueType<FFTBlock>::clear_value(value_); }
+};
+
+template<RegisteredContinuousValue Value>
+using TickOutputWriteReference = std::conditional_t<
+    std::same_as<Value, FFTBlock>, TickFFTOutputCell, TickOutputCell<Value>>;
+
 template<RegisteredContinuousValue Value, bool Mutable>
 class ContinuousValueBlockView {
     using Extension = ContinuousValueType<Value>;
@@ -572,7 +612,7 @@ class ContinuousValueBlockView {
 public:
     using reference = std::conditional_t<
         Mutable,
-        typename Extension::mutable_reference,
+        TickOutputWriteReference<Value>,
         typename Extension::const_reference>;
 
     class iterator {
@@ -651,14 +691,14 @@ public:
                 ring_storage_->channels[ring_channel_],
                 ring_storage_->geometry};
             if constexpr (Mutable) {
-                return access.write(ring_begin_index_ + index);
+                return reference{access.write(ring_begin_index_ + index)};
             } else {
                 return access.read(ring_begin_index_ + index);
             }
         }
         auto elements = elements_at(index);
         if constexpr (Mutable) {
-            return Extension::write_value(elements);
+            return reference{Extension::write_value(elements)};
         } else {
             return Extension::read_value(elements);
         }
@@ -667,7 +707,7 @@ public:
     // Dense storage elements underlying the transported values. For Sample
     // this is the ordinary contiguous sample span required by FFT libraries;
     // for FFTBlock it is the concatenated canonical complex-bin storage.
-    [[nodiscard]] constexpr auto elements() const noexcept
+    [[nodiscard]] constexpr auto elements() const noexcept requires (!Mutable)
     {
         using SpanElement = std::conditional_t<Mutable, Element, Element const>;
         if (count_ == 0) return std::span<SpanElement>{};
@@ -861,7 +901,7 @@ class ContinuousOutputPort {
 public:
     using value_type = Value;
     using const_reference = typename Extension::const_reference;
-    using mutable_reference = typename Extension::mutable_reference;
+    using write_reference = TickOutputWriteReference<Value>;
     using block_type = ContinuousValueBlockView<Value, true>;
 
     constexpr ContinuousOutputPort() noexcept = default;
@@ -892,7 +932,7 @@ public:
             "continuous output value type does not match its resolved binding");
     }
 
-    [[nodiscard]] constexpr mutable_reference value(
+    [[nodiscard]] constexpr write_reference value(
         std::size_t offset,
         std::size_t channel = 0) const noexcept
     {
@@ -902,16 +942,16 @@ public:
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
-        return access.write(sequential_begin_index_ + offset);
+        return write_reference{access.write(sequential_begin_index_ + offset)};
     }
 
     [[nodiscard]] constexpr const_reference get(
         std::size_t offset = 0,
         std::size_t channel = 0) const noexcept
     {
-        IV_ASSERT(storage_ != nullptr
-                && offset <= history_ + latency_,
-            "continuous output retained offset is out of bounds");
+        IV_ASSERT(storage_ != nullptr && history_ != 0
+                && (offset < cursor_ || offset - cursor_ < history_),
+            "continuous output read lies outside its declared history");
         IV_ASSERT(channel < channel_count(storage_->channel_layout),
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
@@ -919,7 +959,7 @@ public:
         return access.read(sequential_begin_index_ + cursor_ - 1 - offset);
     }
 
-    [[nodiscard]] constexpr mutable_reference update_value(
+    [[nodiscard]] constexpr write_reference update_value(
         std::size_t offset = 0,
         std::size_t channel = 0) const noexcept
     {
@@ -929,7 +969,7 @@ public:
             "continuous output channel is out of bounds");
         ContinuousChannelStorageAccess<Value> access{
             storage_->channels[channel], storage_->geometry};
-        return access.write(sequential_begin_index_ + cursor_ - 1 - offset);
+        return write_reference{access.write(sequential_begin_index_ + cursor_ - 1 - offset)};
     }
 
     [[nodiscard]] constexpr block_type block(
@@ -956,12 +996,7 @@ public:
     {
         IV_ASSERT(cursor_ < block_size_,
             "FFT output authored more blocks than its projected block");
-        auto destination = this->value(cursor_++);
-        IV_ASSERT(destination.size() == value.size(),
-            "FFT output block size does not match its resolved value size");
-        for (std::size_t bin = 0; bin < value.size(); ++bin) {
-            destination[bin] = value[bin];
-        }
+        this->value(cursor_++) = value;
     }
 
     constexpr void update(
@@ -979,12 +1014,7 @@ public:
         std::size_t channel = 0) const noexcept
     requires std::same_as<Value, FFTBlock>
     {
-        auto destination = update_value(offset, channel);
-        IV_ASSERT(destination.size() == value.size(),
-            "FFT output update size does not match its resolved value size");
-        for (std::size_t bin = 0; bin < value.size(); ++bin) {
-            destination[bin] = value[bin];
-        }
+        update_value(offset, channel) = value;
     }
 
     [[nodiscard]] constexpr FractionalGlobalIndex begin() const noexcept

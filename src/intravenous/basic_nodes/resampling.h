@@ -27,153 +27,79 @@ struct TransportPosition {
     }
 };
 
-namespace details {
-
-template<ChannelTypeId Channels, class Source, class Write>
-void resample_linear(Source const& source, std::optional<GlobalLatticeInterpolation> taps, Write write)
-{
-    if (!taps) {
-        for (std::size_t channel = 0; channel < channel_count(Channels); ++channel)
-            write(channel, Sample{});
-        return;
-    }
-    auto window_at = [&](GlobalIndex index) {
-        auto window = source.prepared_window_at(index);
-        IV_ASSERT(window || !source.coverage().contains(index),
-            "a covered resampler tap must be prepared before Tick");
-        return window;
-    };
-    auto const left = window_at(taps->lower);
-    auto const right = taps->fraction ? window_at(taps->upper) : std::nullopt;
-    auto const weight = static_cast<double>(taps->fraction) * 0x1p-64;
-    for (std::size_t channel = 0; channel < channel_count(Channels); ++channel) {
-        auto const a = left ? left->at(taps->lower, channel).value : 0.f;
-        auto const b = right ? right->at(taps->upper, channel).value : 0.f;
-        write(channel, taps->fraction
-            ? Sample{static_cast<float>(std::lerp(static_cast<double>(a), static_cast<double>(b), weight))}
-            : Sample{a});
-    }
-}
-
-template<ChannelTypeId Channels, SampleStreamLayout Layout, InputContentAccess Content>
-constexpr auto linear_resampler_inputs()
-{
-    return std::tuple{
-        input<FractionalGlobalIndex>({"position", "Position"}, InputAccess::sequential),
-        input<Sample>({"source", "Source"}, InputAccess::coverage,
-            Content, {.channel_layout = {Channels, Layout}}),
-    };
-}
-
-} // namespace details
-
-template<ChannelTypeId Channels, SampleStreamLayout Layout>
-struct LinearResamplerNode {
+struct LinearResampler {
     static constexpr auto replay_mode = TickReplayMode::enabled;
-
-    static constexpr ChannelLayout layout{Channels, Layout};
+    static constexpr auto layout = mono_planar_channel_layout;
 
     static constexpr auto inputs()
     {
-        return details::linear_resampler_inputs<Channels, Layout, InputContentAccess::complete_buffer>();
+        return std::tuple{
+            input<FractionalGlobalIndex>({"position", "Position"}, InputAccess::sequential),
+            input<Sample>({"source", "Source"}, InputAccess::coverage, InputContentAccess::windowed),
+        };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>({"out", "Out"}, OutputProduction::sequential,
-            {.channel_layout = layout})};
+        return std::array{output<Sample>({"out", "Out"}, OutputProduction::sequential)};
     }
 
-    void constrain_ports(ConstrainPortsContext<LinearResamplerNode>& ctx) const
+    void constrain_ports(ConstrainPortsContext<LinearResampler>& ctx) const
     {
-        ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
-        ctx.template input<"source">().pace() = iv::independent_pace;
+        ctx.input<"position">().pace() = ctx.output<"out">().pace();
+        auto const lead = ctx.input<"source">().preparation_lead();
+        ctx.input<"position">().history() = lead;
+        ctx.input<"source">().pace() = independent_pace;
+        ctx.output<"out">().latency() = lead;
     }
 
-    void tick(TickSampleContext<LinearResamplerNode> const& ctx) const
+    void tick(TickSampleContext<LinearResampler> const& ctx) const
     {
-        auto const out = ctx.template output<"out">();
-        auto const source = ctx.template input<"source">();
-        auto const taps = ctx.template input_has_coverage<"position">()
-            ? interpolate_global_lattice(ctx.template input<"position">().get(), source.absolute_pace_exponent())
+        auto const position = ctx.input<"position">();
+        auto const source = ctx.input<"source">();
+        auto const out = ctx.output<"out">();
+        auto const lead = out.latency();
+        auto const next = ctx.input_has_coverage<"position">()
+            ? interpolate_global_lattice(position.get(), source.absolute_pace_exponent())
             : std::nullopt;
-        details::resample_linear<Channels>(source, taps,
-            [&](std::size_t channel, Sample value) { out(channel) = value; });
+        if (lead == 0) {
+            out() = next ? interpolate(source, *next) : Sample{};
+            return;
+        }
+
+        std::array<GlobalIndex, 2> taps{};
+        std::size_t tap_count = 0;
+        if (next) {
+            taps = {next->lower, next->upper};
+            tap_count = next->fraction ? 2 : 1;
+        }
+        auto const request = ctx.request_input<"source">({
+            .individual_positions = std::span{taps}.first(tap_count),
+        });
+        if (!request.due.empty() && !request.due.begin()->positions.empty()) {
+            auto const due = interpolate_global_lattice(
+                position.get(lead), source.absolute_pace_exponent());
+            if (due) out.update(interpolate(request.input, *due), lead - 1);
+        }
+        out() = Sample{};
+    }
+
+private:
+    static Sample interpolate(details::StaticBackgroundContinuousInputAccess<Sample, InputAccessKind::coverage> const& source,
+        GlobalLatticeInterpolation taps)
+    {
+        auto sample_at = [&](GlobalIndex index) {
+            auto const window = source.prepared_window_at(index);
+            IV_ASSERT(window || !source.coverage().contains(index),
+                "a covered resampler tap must be prepared before Tick");
+            return window ? window->at(index, 0).value : 0.f;
+        };
+        auto const a = sample_at(taps.lower);
+        if (taps.fraction == 0) return Sample{a};
+        auto const b = sample_at(taps.upper);
+        auto const weight = static_cast<double>(taps.fraction) * 0x1p-64;
+        return Sample{static_cast<float>(std::lerp(static_cast<double>(a), static_cast<double>(b), weight))};
     }
 };
-
-template<ChannelTypeId Channels, SampleStreamLayout Layout>
-struct DeferredLinearResamplerNode {
-    struct PendingTaps {
-        GlobalLatticeInterpolation taps{};
-        bool present = false;
-    };
-
-    struct State {
-        std::span<PendingTaps> pending;
-        std::size_t cursor = 0;
-        std::size_t samples_submitted = 0;
-        std::uint64_t generation = 0;
-    };
-
-    std::size_t preparation_samples;
-    explicit DeferredLinearResamplerNode(std::size_t samples)
-        : preparation_samples(samples)
-    {
-        if (samples == 0) throw std::invalid_argument("computed resampling needs preparation samples");
-    }
-
-    static constexpr auto inputs() {
-        return details::linear_resampler_inputs<Channels, Layout, InputContentAccess::windowed>();
-    }
-    static constexpr auto outputs() { return LinearResamplerNode<Channels, Layout>::outputs(); }
-
-    void declare(DeclarationContext<DeferredLinearResamplerNode> const& ctx) const {
-        ctx.template local_array<&State::pending>(preparation_samples);
-    }
-
-    void constrain_ports(ConstrainPortsContext<DeferredLinearResamplerNode>& ctx) const {
-        ctx.template input<"position">().pace() = ctx.template output<"out">().pace();
-        ctx.template input<"source">().pace() = iv::independent_pace;
-        ctx.template output<"out">().latency() = preparation_samples;
-    }
-
-    void tick(TickSampleContext<DeferredLinearResamplerNode> const& ctx) const
-    {
-        auto& state = ctx.state();
-        auto const source = ctx.template input<"source">();
-        if (state.generation != source.request_generation()) {
-            state.generation = source.request_generation();
-            state.cursor = 0;
-            state.samples_submitted = 0;
-        }
-        auto const out = ctx.template output<"out">();
-        auto& pending = state.pending[state.cursor];
-        if (state.samples_submitted == preparation_samples) {
-            details::resample_linear<Channels>(source, pending.present ? std::optional{pending.taps} : std::nullopt,
-                [&](std::size_t channel, Sample value) { out.update(value, preparation_samples - 1, channel); });
-        } else {
-            ++state.samples_submitted;
-        }
-        pending.present = false;
-        if (ctx.template input_has_coverage<"position">()) {
-            auto const next = interpolate_global_lattice(ctx.template input<"position">().get(),
-                source.absolute_pace_exponent());
-            if (next) {
-                std::array const positions{next->lower, next->upper};
-                if (ctx.template request_input<"source">({.individual_positions =
-                        std::span{positions}.first(next->fraction ? 2 : 1)})) {
-                    pending = {.taps = *next, .present = true};
-                }
-            }
-        }
-        for (std::size_t channel = 0; channel < channel_count(Channels); ++channel)
-            out(channel) = Sample{};
-        if (++state.cursor == preparation_samples) state.cursor = 0;
-    }
-};
-
-using LinearResampler = LinearResamplerNode<ChannelTypeId::mono, SampleStreamLayout::planar>;
-using StereoLinearResampler = LinearResamplerNode<ChannelTypeId::stereo, SampleStreamLayout::interleaved>;
 
 } // namespace iv

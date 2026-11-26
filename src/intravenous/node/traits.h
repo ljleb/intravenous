@@ -518,7 +518,8 @@ namespace iv {
                     if constexpr (!has_inputs<Node>) return true;
                     else return !any_port_config(Node::inputs(), [](auto const& config) {
                         if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential)
-                            return config.content_access != InputContentAccess::complete_buffer;
+                            return !is_continuous(config)
+                                && config.content_access != InputContentAccess::complete_buffer;
                         return false;
                     });
                 }()

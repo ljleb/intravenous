@@ -1,4 +1,5 @@
 #include <intravenous/graph_jit/port_realization.h>
+#include <intravenous/graph_jit/connection_plan.h>
 #include <intravenous/graph_jit/sample_input_takeovers.h>
 
 #include <intravenous/graph/configured_graph.hpp>
@@ -312,6 +313,7 @@ struct PortVariables {
     std::optional<std::size_t> history {};
     std::optional<std::size_t> latency {};
     std::optional<std::size_t> ordering {};
+    std::optional<std::size_t> preparation_lead {};
 };
 
 struct BundleVariables {
@@ -320,6 +322,7 @@ struct BundleVariables {
     std::vector<PortVariables> event_inputs {};
     std::vector<PortVariables> event_outputs {};
     NodePortConstraints const* authored_constraints = nullptr;
+    bool has_tick = false;
 };
 
 [[nodiscard]] std::string describe(ContinuousValueTypeSet domain)
@@ -338,6 +341,7 @@ struct BundleVariables {
 
 class PortRealizationSolver {
     ConfiguredGraph const& graph_;
+    std::size_t kernel_block_size_;
     SampleInputTakeovers takeovers_;
     std::vector<TypeVariable> type_variables_ {};
     ScalarEquivalenceSolver<std::size_t> sizes_ {};
@@ -502,6 +506,7 @@ class PortRealizationSolver {
                 auto const handle = visited++;
                 auto& result = bundles_[handle];
                 result.authored_constraints = view.port_constraints;
+                result.has_tick = view.operations && view.operations->runtime.tick_block;
                 auto const& bundle = graph_.node_bundles.bundle(handle);
                 for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
                     auto const config = graph_.node_bundles.resolve_sample_input(
@@ -602,6 +607,66 @@ class PortRealizationSolver {
             IV_APPLY_SCALAR(latency, latency, latencies_);
             IV_APPLY_SCALAR(ordering, ordering, orderings_);
 #undef IV_APPLY_SCALAR
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<void, std::string> apply_preparation_leads()
+    {
+        std::vector<NodeBundlePortId> inputs;
+        for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
+            auto const* constraints = bundles_[bundle].authored_constraints;
+            if (!constraints) continue;
+            for (auto ref : constraints->preparation_leads) {
+                auto input = port(bundle, ref);
+                if (!input) return std::unexpected(std::move(input.error()));
+                NodeBundlePortId const id{bundle, ref.kind, ref.port_index};
+                if (!bundles_[bundle].has_tick || ref.kind != PortKind::sample
+                    || ref.direction != PortConstraintDirection::input)
+                    return std::unexpected("preparation lead requires a continuous Tick input");
+                auto const config = graph_.node_bundles.resolve_sample_input(id).config;
+                if (!is_random_access(config) || config.content_access != InputContentAccess::windowed)
+                    return std::unexpected("preparation lead requires a windowed Region or Coverage input: "
+                        + port_name(bundle, ref));
+                if ((**input).preparation_lead) continue;
+                (**input).preparation_lead = 0;
+                inputs.push_back(id);
+            }
+        }
+        if (kernel_block_size_ != 0 && !inputs.empty()) {
+            auto leads = resolve_tick_preparation_leads(graph_, inputs, kernel_block_size_);
+            if (!leads) return std::unexpected(std::move(leads.error()));
+            for (std::size_t index = 0; index < inputs.size(); ++index) {
+                auto const& id = inputs[index];
+                bundles_[id.node_bundle_handle].inputs[id.port_index].preparation_lead = (*leads)[index];
+            }
+        }
+        for (NodeBundleHandle bundle = 0; bundle < bundles_.size(); ++bundle) {
+            auto const* constraints = bundles_[bundle].authored_constraints;
+            if (!constraints) continue;
+            for (auto const& equality : constraints->preparation_lead_equalities) {
+                auto source = port(bundle, equality.source);
+                if (!source) return std::unexpected(std::move(source.error()));
+                if (!(**source).preparation_lead)
+                    return std::unexpected("timing constraint references an undeclared preparation lead");
+                auto target = port(bundle, equality.target);
+                if (!target) return std::unexpected(std::move(target.error()));
+                auto const is_history = equality.property == PreparationLeadTarget::history;
+                auto const variable = is_history ? (**target).history : (**target).latency;
+                if (!variable)
+                    return std::unexpected("invalid preparation lead equality for "
+                        + port_name(bundle, equality.target));
+                // Geometry-only queries have no scheduling quantum.
+                if (kernel_block_size_ == 0) continue;
+                auto const lead = *(**source).preparation_lead;
+                if (equality.additional_samples > std::numeric_limits<std::size_t>::max() - lead)
+                    return std::unexpected("preparation lead constraint exceeds the supported sample count for "
+                        + port_name(bundle, equality.target));
+                auto& solver = is_history ? histories_ : latencies_;
+                auto result = solver.anchor(*variable, lead + equality.additional_samples,
+                    "preparation lead constraint for " + port_name(bundle, equality.target));
+                if (!result) return result;
+            }
         }
         return {};
     }
@@ -1081,6 +1146,7 @@ class PortRealizationSolver {
             .absolute_pace = *absolute_pace,
             .history = variables.history ? histories_.value(*variables.history).value_or(0) : 0,
             .latency = variables.latency ? latencies_.value(*variables.latency).value_or(0) : 0,
+            .preparation_lead = variables.preparation_lead.value_or(0),
             .ordering = variables.ordering ? orderings_.value(*variables.ordering).value_or(CoverageOrdering::unspecified) : CoverageOrdering::unspecified,
         };
     }
@@ -1096,12 +1162,14 @@ class PortRealizationSolver {
     }
 
 public:
-    explicit PortRealizationSolver(ConfiguredGraph const& graph) : graph_(graph), takeovers_(graph) {}
+    PortRealizationSolver(ConfiguredGraph const& graph, std::size_t kernel_block_size)
+        : graph_(graph), kernel_block_size_(kernel_block_size), takeovers_(graph) {}
 
     [[nodiscard]] std::expected<ResolvedPortRealization, std::string> solve()
     {
         if (auto result = initialize(); !result) return std::unexpected(std::move(result.error()));
         if (auto result = apply_authored_constraints(); !result) return std::unexpected(std::move(result.error()));
+        if (auto result = apply_preparation_leads(); !result) return std::unexpected(std::move(result.error()));
         if (auto result = apply_bundle_constraints(); !result) return std::unexpected(std::move(result.error()));
         if (auto result = apply_connection_constraints(); !result) return std::unexpected(std::move(result.error()));
         auto execution_rates = solve_rates();
@@ -1175,9 +1243,9 @@ PortPace ResolvedPortRealization::execution_rate(NodeBundleHandle bundle) const
 }
 
 std::expected<ResolvedPortRealization, std::string>
-resolve_port_realization(ConfiguredGraph const& graph)
+resolve_port_realization(ConfiguredGraph const& graph, std::size_t kernel_block_size)
 {
-    return detail::PortRealizationSolver(graph).solve();
+    return detail::PortRealizationSolver(graph, kernel_block_size).solve();
 }
 
 } // namespace iv::graph_jit

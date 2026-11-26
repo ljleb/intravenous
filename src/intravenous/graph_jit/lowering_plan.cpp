@@ -3752,7 +3752,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         }
     }
 
-    auto port_realization = resolve_port_realization(input.graph);
+    auto port_realization = resolve_port_realization(input.graph, input.specialization.block_size);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
     }
@@ -3937,23 +3937,11 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
         auto const& configured = input.graph.node_bundles.bundle(bundle);
         if (intrinsically_replayable[bundle]) {
             for (std::size_t port = 0;
-                 port < configured.sample_input_count(); ++port) {
-                if (port_realization->input(bundle, port).history != 0)
-                    return std::unexpected(
-                        "intrinsically replayable node resolves nonzero Sequential input history");
-            }
-            for (std::size_t port = 0;
                  port < configured.sample_output_count(); ++port) {
                 auto const& output = port_realization->output(bundle, port);
                 if (output.history != 0)
                     return std::unexpected(
                         "intrinsically replayable node resolves nonzero Tick output history");
-            }
-            for (std::size_t port = 0;
-                 port < configured.event_input_count(); ++port) {
-                if (port_realization->event_input(bundle, port).history != 0)
-                    return std::unexpected(
-                        "intrinsically replayable node resolves nonzero Sequential event-input history");
             }
             for (std::size_t port = 0;
                  port < configured.event_output_count(); ++port) {

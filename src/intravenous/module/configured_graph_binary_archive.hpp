@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 11;
+inline constexpr std::uint32_t archive_version = 13;
 
 class Writer {
 public:
@@ -633,6 +633,13 @@ inline void write_port_constraints(Writer& w, NodePortConstraints const& value)
     write_sizes(value.history_anchors);
     write_equalities(value.latency_equalities);
     write_sizes(value.latency_anchors);
+    w.list(value.preparation_leads, [&](auto port) { write_port_constraint_ref(w, port); });
+    w.list(value.preparation_lead_equalities, [&](auto const& equality) {
+        write_port_constraint_ref(w, equality.target);
+        write_port_constraint_ref(w, equality.source);
+        write_enum(w, equality.property);
+        w.size(equality.additional_samples);
+    });
     write_equalities(value.ordering_equalities);
     w.list(value.ordering_anchors, [&](auto const& anchor) {
         write_port_constraint_ref(w, anchor.port);
@@ -712,6 +719,15 @@ inline NodePortConstraints read_port_constraints(Reader& r)
         read_equalities.template operator()<PortLatencyEqualityConstraint>();
     result.latency_anchors =
         read_sizes.template operator()<PortLatencyAnchorConstraint>();
+    result.preparation_leads = read_list<PortConstraintRef>(r, [&] { return read_port_constraint_ref(r); });
+    result.preparation_lead_equalities = read_list<PortPreparationLeadEquality>(r, [&] {
+        auto const target = read_port_constraint_ref(r);
+        auto const source = read_port_constraint_ref(r);
+        auto const property = read_enum<PreparationLeadTarget>(r);
+        if (property != PreparationLeadTarget::history && property != PreparationLeadTarget::latency)
+            throw std::runtime_error("configured graph archive has an invalid preparation lead target");
+        return PortPreparationLeadEquality{target, source, property, r.size()};
+    });
     result.ordering_equalities =
         read_equalities.template operator()<CoverageOrderingEqualityConstraint>();
     result.ordering_anchors = read_list<CoverageOrderingAnchorConstraint>(r, [&] {

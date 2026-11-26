@@ -757,7 +757,8 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
     std::vector<ManualSampleRoutePlan>& manual_routes,
     ConnectionView view,
     bool public_coverage_inputs = false,
-    FeedbackConnections* feedback = nullptr)
+    FeedbackConnections* feedback = nullptr,
+    std::map<NodeBundlePortId, std::size_t, NodeBundlePortIdLess> const* selected_inputs = nullptr)
 {
     auto const authored = graph.connections.configured_sample_connections();
     auto const root_boundary = graph.public_ports.boundary_handle();
@@ -780,6 +781,8 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
     };
 
     auto is_terminal_target = [&](SampleInputChannelId target) {
+        if (selected_inputs && !selected_inputs->contains({target.bundle, PortKind::sample, target.port}))
+            return false;
         auto const& bundle = graph.node_bundles.bundle(target.bundle);
         if (public_coverage_inputs)
             return bundle.is_subgraph() && input_access(graph.node_bundles.resolve_sample_input(
@@ -967,7 +970,7 @@ build_structural_sample_routes(ConfiguredGraph const& graph,
             if (*resolved != target) append_coverage(target);
             target_crossed_structure = target_crossed_structure
                 || expanded.size() != 1 || expanded.front() != target
-                || (public_coverage_inputs && !is_terminal_target(target));
+                || ((public_coverage_inputs || selected_inputs) && !is_terminal_target(target));
             has_terminal_target = has_terminal_target
                 || std::ranges::any_of(expanded, is_terminal_target);
             expanded_targets.push_back(std::move(expanded));
@@ -3409,22 +3412,27 @@ std::expected<void, std::string> plan_background_connections(
                 sample_layout = config.channel_layout;
                 configured_input_access = input_access(config);
                 configured_content_access = config.content_access;
-                if (roles.random_access_input && planned_node.tick_execution
-                    && config.content_access == InputContentAccess::windowed) {
-                    for (std::size_t i = 0; i < planned_node.sample_output_count; ++i) {
-                        auto const& output = realization.output(port.node_bundle_handle, i);
-                        if (output.absolute_pace != PortPace{})
-                            return std::unexpected("deferred Tick input requires project-rate outputs");
-                        deferred_tick_lead = std::max(deferred_tick_lead, output.latency);
-                    }
-                    for (std::size_t i = 0; i < planned_node.event_output_count; ++i)
-                        deferred_tick_lead = std::max(deferred_tick_lead,
-                            realization.event_output(port.node_bundle_handle, i).latency);
-                    if (deferred_tick_lead < kernel_block_size)
-                        return std::unexpected("deferred Tick input needs output latency of at least one root block");
-                }
                 auto const& resolved = realization.input(
                     port.node_bundle_handle, port.port_index);
+                auto const windowed_tick = roles.random_access_input && planned_node.tick_execution
+                    && config.content_access == InputContentAccess::windowed;
+                if (windowed_tick && resolved.preparation_lead != 0) {
+                    deferred_tick_lead = resolved.preparation_lead;
+                    if (deferred_tick_lead < kernel_block_size)
+                        return std::unexpected("deferred Tick input needs a preparation lead of at least one root block");
+                    if (realization.execution_rate(port.node_bundle_handle) != PortPace{})
+                        return std::unexpected("deferred Tick input requires project-rate execution");
+                    for (std::size_t i = 0; i < planned_node.sample_output_count; ++i) {
+                        if (realization.output(port.node_bundle_handle, i).absolute_pace != PortPace{})
+                            return std::unexpected("deferred Tick input requires project-rate outputs");
+                    }
+                } else if (windowed_tick) {
+                    // A call with no lead can only read an already available
+                    // buffer. The ordinary complete-buffer validation applies.
+                    configured_content_access = InputContentAccess::complete_buffer;
+                } else if (resolved.preparation_lead != 0) {
+                    return std::unexpected("input preparation lead requires a windowed continuous Tick input");
+                }
                 continuous_geometry = *continuous_value_storage_geometry(
                     resolved.value_type, resolved.size);
                 absolute_pace_exponent = resolved.absolute_pace.exponent();
@@ -5299,6 +5307,42 @@ std::expected<ConnectionAnalysisPlan, std::string> ConnectionTopology::build_ana
         };
     }
     return plan;
+}
+
+std::expected<std::vector<std::size_t>, std::string> resolve_tick_preparation_leads(
+    ConfiguredGraph const& graph,
+    std::span<NodeBundlePortId const> inputs,
+    std::size_t kernel_block_size)
+try {
+    std::vector<std::size_t> leads(inputs.size());
+    if (inputs.empty()) return leads;
+
+    auto routing = index_structural_sample_routes(graph);
+    if (!routing) return std::unexpected(std::move(routing.error()));
+    std::map<NodeBundlePortId, std::size_t, NodeBundlePortIdLess> requested;
+    for (std::size_t index = 0; index < inputs.size(); ++index)
+        requested.emplace(inputs[index], index);
+    std::vector<ManualSampleRoutePlan> manual_routes;
+    // Resolve through structural ports and keep gesture overrides from
+    // changing the callback's timing while the authored routes stay valid.
+    auto routes = build_structural_sample_routes(
+        graph, *routing, manual_routes, ConnectionView::authored, false, nullptr, &requested);
+    if (!routes) return std::unexpected(std::move(routes.error()));
+    for (auto const& route : *routes) {
+        auto const target = route.connection.target_channels.front();
+        auto const found = requested.find({target.bundle, PortKind::sample, target.port});
+        if (found == requested.end()) continue;
+        auto const needs_preparation = std::ranges::any_of(route.connection.source_channels,
+            [&](auto const& source) {
+                auto const channel = source.channel;
+                return !is_buffered(graph.node_bundles.resolve_sample_output(
+                    {channel.bundle, PortKind::sample, channel.port}).config);
+            });
+        if (needs_preparation) leads[found->second] = kernel_block_size;
+    }
+    return leads;
+} catch (std::exception const& error) {
+    return std::unexpected("GraphJit could not resolve Tick input preparation: " + std::string(error.what()));
 }
 
 std::expected<ConnectionAnalysisPlan, std::string> build_connection_analysis_plan(

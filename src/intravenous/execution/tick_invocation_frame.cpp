@@ -935,13 +935,16 @@ public:
         GlobalIndex execution_begin{};
         GlobalIndex project_begin{};
 
-        static bool submit(void* opaque, GlobalIndexRange block, SamplePositionsView positions) noexcept
+        static TickInputRequestOutcome submit(
+            void* opaque, GlobalIndexRange block, SamplePositionsView positions) noexcept
         {
             auto& slot = *static_cast<SampleSlot*>(opaque);
-            if (!slot.requests) return false;
+            if (!slot.requests) return {};
             auto const begin = slot.execution_begin.advanced_by(slot.project_begin.forward_distance_to(block.begin));
-            return slot.requests->submit({.port = slot.port, .execution = {begin, block.extent},
+            GlobalIndexRange const execution{begin, block.extent};
+            auto const submitted = slot.requests->submit({.port = slot.port, .execution = execution,
                 .first_due = begin.advanced_by(slot.request_lead), .positions = positions});
+            return {submitted, slot.requests->due(slot.port, execution)};
         }
     };
 
@@ -1215,7 +1218,6 @@ public:
                 .absolute_pace_exponent = port.absolute_pace_exponent,
                 .request_owner = &selected,
                 .request_samples = selected.request_lead ? &SampleSlot::submit : nullptr,
-                .request_generation = selected_generation,
             };
         }
 

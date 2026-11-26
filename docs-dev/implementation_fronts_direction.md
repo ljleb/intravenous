@@ -106,7 +106,7 @@ cross the signed ordering seam. [Complete-buffer API](./random_access_port_data_
 `BackgroundPropagationWorkspace::replay_reverse_coverage` now includes each
 output's finalization latency in its Sequential input demand. The replay call
 frame runs those extra positions and publishes only the selected output range.
-This supports Tick nodes with zero history and bounded output latency.
+This supports Tick nodes with bounded input history and output latency.
 The replay root resets pending output scratch before a disjoint range. It
 retains values across adjacent callback blocks of the same range.
 
@@ -136,15 +136,14 @@ the ticket for the prepared prefix.
 `TickInvocationWorkspace` binds the queue to continuous windowed inputs.
 `GraphExecutor` keeps their demand in each replacement snapshot until the last
 consuming sample runs. It gates Tick on the ticket carried by the adopted
-snapshot. The resampler stores its pending taps through a foreground seek.
+snapshot. The queue retains pending tap requests across a foreground seek.
 The worker selects the live graph's coherent data version when it prepares
 those taps. [Earlier request transport](./historical/tick_resampler_first_proposal_2026-11-26.md)
 
 Changing the compiled execution generation starts a new request queue and
 primes the deferred resampler again. A compatible steady-code replacement
 uses the same queue. Transferring pending requests and their selected source
-data through structural cutover remains open. Early execution and replay
-discovery also remain open.
+data through structural cutover remains open.
 
 Design requirements for the deferred branch:
 
@@ -154,7 +153,7 @@ Design requirements for the deferred branch:
    Resolve a fixed output finalization lead for live coordinate requests.
    Any request produced inside Tick needs a deadline in a later callback.
 2. Support `request_input()` in Tick with a fixed, executor-owned realtime
-   reserve. The declared preparation lead identifies when the request is due
+   reserve. The scheduled preparation lead identifies when the request is due
    in physical Sequential execution order, including across split callbacks.
    Node code can retain coordinates with Sequential input history or `State`.
    The executor can reserve descriptors and payload for a graph without
@@ -176,22 +175,30 @@ Design requirements for the deferred branch:
    background worker misses a deadline, report a playback underrun without
    advancing the graph. Distinguish that failure from a known source gap.
 
-The earlier alternative is to derive coordinates ahead of time from Tock or
-replayable Tick and prepare their source taps before foreground execution.
-It can eliminate the finalization lead when the coordinate stream really is
-available off-thread. It cannot serve coordinates first produced from live
-inputs. Proving that earlier readiness and implementing live request delivery
-are separate dependencies. Both can eventually share sparse background demand
-and prepared-window access.
+The builtins now use one `LinearResampler` Tick callback. It has no node
+`State`. The stereo module routes each channel through that same node type.
+GraphJit chooses the lead from the authored producers and the compiled root
+block size. `constrain_ports()` ties `position` history and `out` latency to
+that value. With positive lead, the callback submits an empty request for a
+known gap in `position`. It checks the original due request and reads the
+corresponding fractional coordinate from the input's Sequential history.
+This preserves the distinction between an uncovered position and a valid
+coordinate of zero across a foreground seek.
 
-`BackgroundEvaluationTransaction::prepare_evaluation()` seals input views before
-the imported Tick callback runs. A replay callback that requests computed source
-values would produce that demand after the views are already sealed. Selecting a
-whole source buffer would defeat sparse demand. A separate resampler callback
-would duplicate the coordinate and tap selection. A replay implementation needs
-a discovery step before the final evaluation. It can reuse the transaction's
-existing recursive discovery and selected data version. Live Tick already
-delivers requests from coordinates that only exist during foreground playback.
+Background replay splits a range at the compiled block limit or the smallest
+resolved input preparation lead. Before each block, its call frame collects
+due requests by port. `BackgroundEvaluationTransaction` prepares those
+positions in one nested evaluation against the selected data version. The
+next Tick callback can consume those values and submit another request.
+The call frame drops requests due beyond the last callback of the current
+range, including its output finalization tail.
+
+This path keeps a replay node on the current worker until its selected ranges
+finish. It batches the due ports for one callback. It does not suspend the
+generated background traversal to run several independent replay nodes in
+parallel. Early Tick, handoff of pending requests across structural cutover,
+and scheduling by measured fetch cost remain open.
+[Earlier replay discovery options](./historical/tick_resampler_first_proposal_2026-11-26.md#replay-discovery-before-the-deadline-pipeline)
 
 `BackgroundEvaluationTransaction` currently passes positional `IndexCoverage`
 to `make_tick_materialization_snapshot`. The positional branch reads strided

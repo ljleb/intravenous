@@ -54,6 +54,7 @@ TEST(DeferredTickInputRequests, AFixedPrefixRetainsExactCoordinatesUntilTheyRend
         .requests = 2,
         .runs = 1,
         .positions = 2,
+        .ports = 8,
     }};
     const auto signed_seam = std::numeric_limits<std::int64_t>::min();
     const auto before_seam = std::numeric_limits<std::int64_t>::max();
@@ -99,6 +100,43 @@ TEST(DeferredTickInputRequests, AFixedPrefixRetainsExactCoordinatesUntilTheyRend
     EXPECT_EQ(remaining.end - remaining.begin, 1u);
     ASSERT_EQ(queue.requests(remaining.begin).size(), 1u);
     EXPECT_EQ(queue.requests(remaining.begin)[0].positions.runs[0], run);
+}
+
+TEST(DeferredTickInputRequests, DueResultsFollowPortAndExecutionRange)
+{
+    iv::DeferredTickInputRequests queue{1, {
+        .callbacks = 4, .requests = 4, .positions = 4, .ports = 2,
+    }};
+    std::array const taps{index(-200), index(-199)};
+    ASSERT_TRUE(queue.begin_callback(range(100, 104)));
+    ASSERT_TRUE(queue.submit({.port = 0, .execution = range(100, 104),
+        .first_due = index(104), .positions = {.individual_positions = taps}}));
+    ASSERT_TRUE(queue.submit({.port = 1, .execution = range(100, 104),
+        .first_due = index(106)}));
+    ASSERT_TRUE(queue.publish_callback());
+    ASSERT_TRUE(queue.begin_callback(range(104, 108)));
+    ASSERT_TRUE(queue.submit({.port = 0, .execution = range(104, 108),
+        .first_due = index(108)}));
+    ASSERT_TRUE(queue.publish_callback());
+    auto const selected = queue.select();
+    ASSERT_TRUE(queue.complete(selected));
+    ASSERT_TRUE(queue.adopt(selected.end));
+
+    EXPECT_TRUE(queue.due(1, range(104, 106)).empty());
+    auto const first = queue.due(0, range(104, 106));
+    ASSERT_EQ(std::ranges::distance(first), 1);
+    EXPECT_TRUE(std::ranges::equal(first.begin()->positions.individual_positions, taps));
+    auto const latter = queue.due(0, range(106, 109));
+    ASSERT_EQ(std::ranges::distance(latter), 2);
+    EXPECT_TRUE(std::next(latter.begin())->positions.empty());
+    auto const other = queue.due(1, range(106, 109));
+    ASSERT_EQ(std::ranges::distance(other), 1);
+    EXPECT_EQ(other.begin()->due_range(), range(106, 110));
+    queue.release_rendered(index(110));
+    auto const empty_request = queue.due(0, range(110, 112));
+    ASSERT_EQ(std::ranges::distance(empty_request), 1);
+    EXPECT_TRUE(empty_request.begin()->positions.empty());
+    EXPECT_TRUE(queue.due(1, range(110, 112)).empty());
 }
 
 std::vector<iv::GlobalIndexRange> coverage_regions(

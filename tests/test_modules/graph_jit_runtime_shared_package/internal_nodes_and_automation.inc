@@ -198,12 +198,12 @@ IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module, "C
 constexpr auto resampler_source_begin = iv::GlobalIndex::from_signed(
     std::numeric_limits<std::int64_t>::max() - 1);
 
-template<int Pace, bool Stereo = true, iv::OutputRealization Realization = iv::OutputRealization::buffered>
+template<int Pace, iv::OutputRealization Realization = iv::OutputRealization::buffered,
+    bool RejectTailDemand = false>
 struct ResamplerSource {
     static constexpr auto outputs() {
         return std::array{iv::output<iv::Sample>({"out", "Out"},
-            iv::OutputProduction::coverage, Realization,
-            {.channel_layout = Stereo ? iv::StereoLinearResampler::layout : iv::LinearResampler::layout})};
+            iv::OutputProduction::coverage, Realization)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<ResamplerSource>& ctx) const {
@@ -211,10 +211,11 @@ struct ResamplerSource {
     }
 
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ResamplerSource>& ctx) const {
-        std::array const regions{
-            iv::GlobalIndexRange{resampler_source_begin, 3},
-            iv::GlobalIndexRange{resampler_source_begin.advanced_by(4), 2},
-        };
+        std::array<iv::GlobalIndexRange, RejectTailDemand ? 3 : 2> regions{};
+        regions[0] = {resampler_source_begin, 3};
+        regions[1] = {resampler_source_begin.advanced_by(4), 2};
+        if constexpr (RejectTailDemand)
+            regions[2] = {iv::GlobalIndex::from_signed(100000), 1};
         auto out = ctx.template output<"out">();
         out.publish(regions);
         if (ctx.local_state_changed) for (auto range : regions) out.change(range);
@@ -223,16 +224,18 @@ struct ResamplerSource {
     void tock_coverage(iv::TockCoverageContext<ResamplerSource>& ctx) const {
         for (auto run : ctx.template output<"out">().prepared_runs()) {
             for (std::size_t slot = 0; slot < run.size(); ++slot) {
+                if constexpr (RejectTailDemand)
+                    IV_ASSERT(run.position(slot) != iv::GlobalIndex::from_signed(100000),
+                        "replay evaluated taps due after its final callback");
                 auto const offset = resampler_source_begin.forward_distance_to(run.position(slot));
                 auto const value = 2.f * static_cast<float>(offset + 1);
                 run.value(slot, 0) = iv::Sample{value};
-                if constexpr (Stereo) run.value(slot, 1) = iv::Sample{-2.f * value};
             }
         }
     }
 };
 
-template<int Pace, int SourcePace>
+template<int Pace, int SourcePace, bool Tail = false>
 struct ResamplerPositions {
     static constexpr auto replay_mode = iv::TickReplayMode::enabled;
 
@@ -245,6 +248,13 @@ struct ResamplerPositions {
     }
 
     void tick(iv::TickSampleContext<ResamplerPositions> const& ctx) const {
+        if constexpr (Tail) {
+            if (ctx.value_index >= 8) {
+                ctx.template output<"position">().push(iv::FractionalGlobalIndex::from_global(
+                    iv::GlobalIndex::from_signed(100000)));
+                return;
+            }
+        }
         constexpr std::array<std::uint64_t, 8> whole_offsets{4, 1, 4, 2, 3, 6, 1, 4};
         auto const slot = ctx.value_index % whole_offsets.size();
         auto fraction = slot < 5 ? std::uint64_t{1} << 63 : 0;
@@ -261,14 +271,14 @@ struct ResamplerPositions {
 struct ResamplerProbe {
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>({"in", "In"},
-            iv::InputAccess::sequential, {.channel_layout = iv::StereoLinearResampler::layout})};
+            iv::InputAccess::sequential)};
     }
 
     void tick(iv::TickSampleContext<ResamplerProbe> const& ctx) const {
         constexpr std::array expected{11.f, 5.f, 11.f, 3.f, 5.f, 0.f, 4.f, 10.f};
         auto const value = expected[ctx.value_index % expected.size()];
         auto const in = ctx.input<"in">();
-        IV_ASSERT(in.get(0, 0).value == value && in.get(0, 1).value == -2.f * value,
+        IV_ASSERT(in.get().value == value,
             "resampler must deliver the addressed samples at the current output position");
     }
 };
@@ -278,7 +288,7 @@ void complete_buffer_resampler_module(iv::GraphBuilder& graph) {
     using namespace iv;
     auto source = iv::details::configure_concrete_node<ResamplerSource<SourcePace>>(graph);
     auto position = iv::details::configure_concrete_node<ResamplerPositions<Pace, SourcePace>>(graph);
-    auto resampler = iv::details::configure_concrete_node<iv::StereoLinearResampler>(graph);
+    auto resampler = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
     auto probe = iv::details::configure_concrete_node<ResamplerProbe>(graph);
     resampler("position"_P = position, "source"_P = source);
     probe(resampler);
@@ -290,7 +300,7 @@ IV_MODULE("iv.test.resampler.fast_source", (complete_buffer_resampler_module<1, 
 
 void replay_complete_buffer_resampler_module(iv::GraphBuilder& graph) {
     using namespace iv;
-    auto source = details::configure_concrete_node<ResamplerSource<1, false>>(graph);
+    auto source = details::configure_concrete_node<ResamplerSource<1>>(graph);
     auto position = details::configure_concrete_node<ResamplerPositions<1, 1>>(graph);
     auto resampler = details::configure_concrete_node<LinearResampler>(graph);
     auto window = graph.node<"iv.test.replay.window">(std::int64_t{0}, std::uint64_t{8});
@@ -299,6 +309,18 @@ void replay_complete_buffer_resampler_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.resampler.replay", replay_complete_buffer_resampler_module, "Complete buffer resampler replay");
+
+void replay_computed_resampler_module(iv::GraphBuilder& graph) {
+    using namespace iv;
+    auto source = details::configure_concrete_node<ResamplerSource<1, OutputRealization::computed, true>>(graph);
+    auto position = details::configure_concrete_node<ResamplerPositions<1, 1, true>>(graph);
+    auto resampler = details::configure_concrete_node<LinearResampler>(graph);
+    auto window = graph.node<"iv.test.replay.window">(std::int64_t{0}, std::uint64_t{8});
+    resampler("position"_P = position, "source"_P = source);
+    window(resampler);
+    graph.outputs();
+}
+IV_MODULE("iv.test.resampler.computed_replay", replay_computed_resampler_module, "Computed resampler replay");
 
 struct DeferredResamplerProbe {
     struct State { std::size_t samples = 0; };
@@ -318,10 +340,9 @@ struct DeferredResamplerProbe {
 
 void deferred_resampler_module(iv::GraphBuilder& graph) {
     using namespace iv;
-    auto source = details::configure_concrete_node<ResamplerSource<1, false, OutputRealization::computed>>(graph);
+    auto source = details::configure_concrete_node<ResamplerSource<1, OutputRealization::computed>>(graph);
     auto position = details::configure_concrete_node<ResamplerPositions<1, 1>>(graph);
-    auto resampler = details::configure_concrete_node<
-        DeferredLinearResamplerNode<ChannelTypeId::mono, SampleStreamLayout::planar>>(graph, std::size_t{64});
+    auto resampler = details::configure_concrete_node<LinearResampler>(graph);
     auto probe = details::configure_concrete_node<DeferredResamplerProbe>(graph);
     resampler("position"_P = position, "source"_P = source);
     probe(resampler);

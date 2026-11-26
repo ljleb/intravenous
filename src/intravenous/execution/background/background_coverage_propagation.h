@@ -17,6 +17,8 @@ namespace iv {
 // output position. Keep this execution range separate from output demand.
 [[nodiscard]] IndexCoverage replay_callback_coverage(
     IndexCoverage const& output, std::size_t latency);
+[[nodiscard]] IndexCoverage replay_input_coverage(
+    IndexCoverage const& callbacks, std::size_t history);
 
 // Generation-local roots for one exact coverage-propagation operation. Port
 // and node indices come from the bound CompiledGraph's immutable background
@@ -519,7 +521,14 @@ public:
             BackgroundCoverageState const& coverage,
             CoveragePropagationRequest const& request,
             BackgroundCoverageDemandExpansion expansion = {},
-            BackgroundCoverageDiscovery discovery = {});
+            BackgroundCoverageDiscovery discovery = {},
+            std::span<PropagatedOutputChange const> selected_changes = {});
+    [[nodiscard]] PreparedCoveragePropagation prepare_replay_inputs(
+        CompiledGraphBackgroundOperations const& operations,
+        PreparedCoveragePropagation const& candidate,
+        std::span<InputCoverageRequest const> requests,
+        BackgroundCoverageDemandExpansion expansion,
+        BackgroundCoverageDiscovery discovery);
     [[nodiscard]] CoveragePropagationResult
     commit(BackgroundCoverageState& coverage,
            PreparedCoveragePropagation&& prepared) noexcept;

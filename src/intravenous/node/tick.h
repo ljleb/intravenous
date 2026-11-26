@@ -94,7 +94,8 @@ namespace iv {
         }
 
         template<fixed_string Name>
-        [[nodiscard]] bool request_input_samples(GlobalIndexRange execution, SamplePositionsView positions) const noexcept
+        [[nodiscard]] TickInputRequestOutcome request_input_samples(
+            GlobalIndexRange execution, SamplePositionsView positions) const noexcept
         {
             constexpr auto declaration = details::static_input_declaration_index<Node, Name>();
             static_assert(details::static_input_port_kind_at<Node, declaration>() == PortKind::sample
@@ -102,7 +103,8 @@ namespace iv {
                 "Tick request_input requires a Region or Coverage continuous input");
             constexpr auto slot = details::static_random_access_input_port_index_at<Node, declaration>();
             auto const& port = _ports.random_access_inputs[slot];
-            return !port.request_samples || port.request_samples(port.request_owner, execution, positions);
+            if (!port.request_samples || execution.empty()) return {};
+            return port.request_samples(port.request_owner, execution, positions);
         }
 
         template<size_t Index>
@@ -499,10 +501,13 @@ namespace iv {
         }
 
         template<fixed_string Name>
-        [[nodiscard]] bool request_input(SamplePositionsView positions) const noexcept
+        [[nodiscard]] auto request_input(SamplePositionsView positions) const noexcept
         {
-            return index.fraction() == 0
-                && this->template request_input_samples<Name>({index.whole(), 1}, positions);
+            auto const request = index.fraction() == 0
+                ? this->template request_input_samples<Name>({index.whole(), 1}, positions)
+                : TickInputRequestOutcome{};
+            return TickInputRequestResult{
+                request.submitted, request.due, this->template input<Name>()};
         }
 
         // Tests whether a connected Sequential source supplies the current
@@ -680,10 +685,13 @@ namespace iv {
         );
 
         template<fixed_string Name>
-        [[nodiscard]] bool request_input(SamplePositionsView positions) const noexcept
+        [[nodiscard]] auto request_input(SamplePositionsView positions) const noexcept
         {
-            return index.fraction() == 0
-                && this->template request_input_samples<Name>({index.whole(), block_size}, positions);
+            auto const request = index.fraction() == 0
+                ? this->template request_input_samples<Name>({index.whole(), block_size}, positions)
+                : TickInputRequestOutcome{};
+            return TickInputRequestResult{
+                request.submitted, request.due, this->template input<Name>()};
         }
 
         [[nodiscard]] GlobalIndex event_index() const noexcept

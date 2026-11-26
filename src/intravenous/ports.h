@@ -1224,7 +1224,7 @@ namespace iv {
 
         IV_FORCEINLINE constexpr Sample get(size_t offset = 0, size_t channel = 0) const
         {
-            if (offset > _latency + _history) return 0.0f;
+            IV_ASSERT(offset < _history, "sample output read lies outside its declared history");
             size_t const idx = (
                 _position + _storage.latency + buffer_size() - 1 - offset
             ) & (buffer_size() - 1);
@@ -1263,9 +1263,9 @@ namespace iv {
             _direct_write_extent = 0;
         }
 
-        IV_FORCEINLINE constexpr BlockView<Sample> get_block(size_t block_size, size_t sample_offset = 0) const
+        IV_FORCEINLINE constexpr BlockView<Sample const> get_block(size_t block_size, size_t sample_offset = 0) const
         {
-            size_t const available = _latency + _history + 1;
+            size_t const available = _history;
             if (sample_offset >= available) {
                 return {};
             }
@@ -1274,7 +1274,7 @@ namespace iv {
                 _position + _storage.latency + buffer_size() - (sample_offset + count)
             ) & (buffer_size() - 1);
 
-            return _storage.channel_block(0, start, count);
+            return static_cast<BlockView<Sample const>>(_storage.channel_block(0, start, count));
         }
 
         IV_FORCEINLINE constexpr void push(Sample value)
@@ -1317,6 +1317,8 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(std::span<Sample const> samples)
         {
             if (samples.empty()) return;
+            IV_ASSERT(samples.size() <= std::min(_history, _latency),
+                "sample output accumulation requires both readable history and a writable latency window");
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
@@ -1330,6 +1332,8 @@ namespace iv {
         IV_FORCEINLINE constexpr void accumulate_block(BlockView<Sample const> samples)
         {
             if (samples.empty()) return;
+            IV_ASSERT(samples.size() <= std::min(_history, _latency),
+                "sample output accumulation requires both readable history and a writable latency window");
             size_t const start = (
                 _position + _storage.latency + buffer_size() - samples.size()
             ) & (buffer_size() - 1);
@@ -1384,12 +1388,6 @@ namespace iv {
         IV_FORCEINLINE constexpr size_t position() const
         {
             return _position;
-        }
-
-        IV_FORCEINLINE constexpr BlockView<Sample const> current_block(size_t block_size) const
-        {
-            size_t const start = (_position + buffer_size() - block_size) & (buffer_size() - 1);
-            return static_cast<BlockView<Sample const>>(_storage.channel_block(0, start, block_size));
         }
 
         // The primary output writes the source-layout ring once.  Converted
@@ -1724,16 +1722,6 @@ namespace iv {
             return _latency;
         }
 
-        bool empty_in_block(
-            GlobalIndex block_index, size_t block_size) const
-        {
-            if (!_shared_data) {
-                return true;
-            }
-            return EventInputPort(*_shared_data)
-                .get_block(block_index, block_size)
-                .size() == 0;
-        }
     };
 
     enum class InputAccessKind : std::uint8_t {

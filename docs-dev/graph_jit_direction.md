@@ -1752,6 +1752,15 @@ that genuinely survive audio-root calls are different and may use ordinary
 
 ## Port history and latency are node-owned semantic state
 
+Output history grants reads of earlier values. Output latency grants writes to
+pending positions. Both windows end at the current position and can overlap.
+For example, a node that revises and reads its two newest pending values
+declares history of two and latency of two. With zero history,
+`ContinuousOutputPort::get()` rejects reads even when latency is positive.
+The current output block exposes write-only cells, which also prevent reads
+of provisional data left by earlier callbacks.
+[Earlier read rule](./historical/tick_resampler_first_proposal_2026-11-26.md)
+
 Port history and latency are configured/resolved **effect requirements**, not declarations that a
 particular connection buffer must exist. Their graph-revision semantics must be
 observationally equivalent to a simple conceptual implementation in which each
@@ -1922,15 +1931,16 @@ require materialized data. Tock/persisted uses the same canonical persisted-data
 Tick/persisted. Per-channel tiling preserves each member's contract without implicit
 retention.
 
-`TickReplayMode` declares strictly pointwise replay. A replayable Tick node
-has no `State`, history, latency, Random Access inputs, or authored coverage
-propagation callbacks. Use Tock for positional shifts and other position-addressed
-operations. See [the preserved erroneous wording](./historical/tick_replay_and_playback_coverage_before_pointwise_correction_2026-11-17.md).
+`TickReplayMode` declares deterministic replay without node `State` or output
+history. Replay can bind bounded Sequential input history and resolve
+Region or Coverage input requests. It can run past a requested range to finalize output
+latency. See [the replay contract](./coverage_and_background_evaluation.md#13-authored-port-schema-retention-and-replayability)
+and [the earlier restrictions](./historical/tick_resampler_first_proposal_2026-11-26.md).
 
 GraphJit reuses the **existing** generated and LLVM-imported `tick_block()` wrapper in
-background evaluation. It generates same-position forward and reverse coverage
-propagation from the replay declaration. Upstream availability determines whether
-each output can actually replay.
+background evaluation. It generates forward and reverse coverage propagation
+from the replay declaration and resolved port constraints. Upstream availability
+determines whether each output can replay.
 
 The planned batch normalization removes the callback-spelling restriction from the
 long-term replay model. Replay eligibility should be stated against normalized
@@ -1956,11 +1966,10 @@ reader pins are released.
 The same preparation rule applies to Tick nodes with Random Access inputs, including
 replayable ones. Before the generated root enters an audio-thread `tick_block()`
 invocation, every Random Access port is already bound to its callback-pinned persisted
-or `TickMaterializationSnapshot` Region/Coverage view. Tick execution performs no Tock
-work, dependency discovery, request-driven materialization, or waiting. During
-background replay, the transaction may recursively run required Tock/replay work, but
-it completes and installs the planned immutable Random Access views **before** invoking
-the imported Tick wrapper.
+or `TickMaterializationSnapshot` Region/Coverage view. Tick can submit positions
+for later callbacks. The worker prepares their values and coverage before delivery.
+During background replay, the worker prepares due requests between Tick calls.
+The imported Tick wrapper always receives its selected input view before it runs.
 
 Storage selection is performed over **overlapping port subsets**, not
 one connection at a time. GraphJit partitions source/target channel incidence into

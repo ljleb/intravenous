@@ -1,6 +1,6 @@
 #pragma once
 
-#include <intravenous/sample_positions.h>
+#include <intravenous/node/tick_input_request.h>
 
 #include <algorithm>
 #include <atomic>
@@ -28,14 +28,10 @@ public:
         std::size_t requests = 0;
         std::size_t runs = 0;
         std::size_t positions = 0;
+        std::size_t ports = 0;
     };
 
-    struct Request {
-        std::size_t port = 0;
-        GlobalIndexRange execution{};
-        GlobalIndex first_due{};
-        SamplePositionsView positions{};
-    };
+    using Request = TickInputRequest;
 
     struct Batch {
         Ticket begin = 0;
@@ -88,6 +84,11 @@ private:
     Storage<Request> requests_{};
     Storage<SamplePositionRun> runs_{};
     Storage<GlobalIndex> positions_{};
+    struct PortRequests {
+        Request* last = nullptr;
+        Request const* next_due = nullptr;
+    };
+    std::vector<PortRequests> ports_{};
     std::atomic<Ticket> published_{0};
     std::atomic<Ticket> prepared_{0};
     std::atomic<GlobalIndex::storage_type> rendered_{0};
@@ -110,7 +111,7 @@ private:
 
 public:
     DeferredTickInputRequests(std::uint64_t generation, Capacity capacity)
-        : generation_(generation)
+        : generation_(generation), ports_(capacity.ports)
     {
         if (!std::has_single_bit(capacity.callbacks) || !std::has_single_bit(capacity.requests)
             || (capacity.runs && !std::has_single_bit(capacity.runs))
@@ -143,10 +144,16 @@ public:
     [[nodiscard]] bool submit(Request request) noexcept
     {
         auto const positions = request.positions;
-        if (!open_ || request.execution.empty()
+        if (!open_ || request.port >= ports_.size() || request.execution.empty()
             || !callback_execution_.contains(request.execution)
             || callback_execution_.end().forward_distance_to(request.first_due) >= (Ticket{1} << 63)
             || !std::ranges::all_of(positions.runs, &SamplePositionRun::valid)) {
+            submission_failed_ = true;
+            return false;
+        }
+        auto& port = ports_[request.port];
+        if (port.last && port.last->due_range() != request.due_range()
+            && port.last->due_range().end().signed_distance_to(request.first_due) < 0) {
             submission_failed_ = true;
             return false;
         }
@@ -171,9 +178,29 @@ public:
             || begin.forward_distance_to(due_end) > begin.forward_distance_to(open_->last_due_end)) {
             open_->last_due_end = due_end;
         }
-        (void)requests_.store(*request_at, {&request, 1});
+        request.next_for_port = nullptr;
+        auto& stored = requests_.store(*request_at, {&request, 1}).front();
+        if (port.last) port.last->next_for_port = &stored;
+        if (!port.next_due) port.next_due = &stored;
+        port.last = &stored;
         ++open_->request_count;
         return true;
+    }
+
+    // Foreground only, after admitting the callback. The selected snapshot
+    // covers every due request before the callback begins.
+    [[nodiscard]] TickInputDueRequests due(std::size_t input, GlobalIndexRange execution) noexcept
+    {
+        if (input >= ports_.size() || execution.empty()) return {};
+        auto& next = ports_[input].next_due;
+        while (next && next->due_range().end().signed_distance_to(execution.begin) >= 0)
+            next = next->next_for_port;
+        std::size_t count = 0;
+        for (auto const* request = next;
+             request && request->first_due.signed_distance_to(execution.end()) > 0;
+             request = request->next_for_port)
+            ++count;
+        return {next, count};
     }
 
     [[nodiscard]] bool submission_failed() const noexcept { return submission_failed_; }
@@ -234,6 +261,11 @@ public:
         while (retired_ != adopted_) {
             auto const& selected = frame(retired_);
             if (selected.last_due_end.forward_distance_to(execution_end) >= (Ticket{1} << 63)) break;
+            for (auto const& request : requests(retired_)) {
+                auto& port = ports_[request.port];
+                if (port.next_due == &request) port.next_due = request.next_for_port;
+                if (port.last == &request) port.last = nullptr;
+            }
             requests_.begin = selected.request_begin + selected.request_count;
             runs_.begin = selected.run_end;
             positions_.begin = selected.position_end;

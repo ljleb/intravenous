@@ -73,36 +73,27 @@ IV_NODE("builtin.sampler", iv::Sampler, "Sampler");
 IV_NODE("builtin.transport_position", iv::TransportPosition, "Transport Position");
 
 namespace {
-template<iv::ChannelTypeId Channels, iv::SampleStreamLayout Layout>
-void configure_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples)
+void linear_resampler(iv::GraphBuilder& graph)
 {
-    using Source = std::conditional_t<Channels == iv::ChannelTypeId::mono, iv::Sample, iv::stereo>;
     auto const position = graph.input<iv::FractionalGlobalIndex>({"position", "Position"});
-    auto const source = graph.input<Source>({"source", "Source"}, iv::InputAccess::coverage);
-    auto connect = [&](auto const& resampler) {
-        resampler.connect_input("position", position);
-        resampler.connect_input("source", source);
-        graph.outputs(resampler);
-    };
-    if (preparation_samples) {
-        connect(iv::details::configure_concrete_node<iv::DeferredLinearResamplerNode<Channels, Layout>>(
-            graph, preparation_samples));
-    } else {
-        connect(iv::details::configure_concrete_node<iv::LinearResamplerNode<Channels, Layout>>(
-            graph));
-    }
+    auto const source = graph.input<iv::Sample>({"source", "Source"}, iv::InputAccess::coverage);
+    auto const resampler = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
+    resampler.connect_input("position", position);
+    resampler.connect_input("source", source);
+    graph.outputs(resampler);
 }
 
-void linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
+void stereo_linear_resampler(iv::GraphBuilder& graph)
 {
-    configure_linear_resampler<iv::ChannelTypeId::mono, iv::SampleStreamLayout::planar>(
-        graph, preparation_samples);
-}
-
-void stereo_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
-{
-    configure_linear_resampler<iv::ChannelTypeId::stereo, iv::SampleStreamLayout::interleaved>(
-        graph, preparation_samples);
+    auto const position = graph.input<iv::FractionalGlobalIndex>({"position", "Position"});
+    auto const source = graph.input<iv::stereo>({"source", "Source"}, iv::InputAccess::coverage);
+    auto const left = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
+    auto const right = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
+    left.connect_input("position", position);
+    right.connect_input("position", position);
+    left.connect_input("source", source[iv::stereo::left]);
+    right.connect_input("source", source[iv::stereo::right]);
+    graph.outputs(graph.tile<iv::stereo>(left, right));
 }
 } // namespace
 

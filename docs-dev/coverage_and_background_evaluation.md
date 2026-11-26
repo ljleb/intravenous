@@ -2058,19 +2058,32 @@ or synchronous batch form as specified in
 
 Replay invokes `tick()`, `tick_block()`, or `tick_block_batch()` through
 `do_tick_block()`. The replay contract requires deterministic, side-effect-free
-evaluation under a fixed version. It requires zero history, zero internal
-latency, and no `State` or `TockState`.
+evaluation under a fixed version. It requires zero output history, zero
+internal latency, and no `State` or `TockState`.
+Sequential inputs can declare bounded history. Replay requests the covered part
+of that history before each callback range and binds those values in the ordinary
+Tick input view. Known gaps use the input's usual fallback. An input change can
+affect later output positions up to the declared history length.
 An output can declare latency if its values can be finalized by replaying through
-that many positions past the requested range. Node code must be able to start
-at the requested range without relying on earlier pending output values.
+that many positions past the requested range. Each replay range starts with
+its own input history and fresh scratch for pending output values.
 Replay publishes only the requested output values.
-Disjoint replay ranges start with fresh scratch for pending output values.
 Reverse propagation still selects the full finalization window for each range.
 The foreground playhead supplies no state to this evaluation.
+Output latency permits revising pending values. Reading any earlier output
+requires declared output history, which excludes the node from replay.
 
-Replay accepts Region and Coverage inputs with complete buffers. It uses the
-selected version of each whole source buffer. A source change can affect any
-output position because the node chooses which source positions to read.
+Replay accepts complete Region and Coverage buffers and windowed continuous
+inputs with a preparation lead. A source change can affect any output position
+because the node chooses which source positions to read.
+
+For a windowed continuous input, the callback can submit tap positions and
+receive earlier results in the same call. Replay prepares due taps from the
+selected data version before the next callback needs them. Replay can stop
+when all demanded output has finalized. Requests due beyond that range
+do not extend it. A replayable callback must be able to start with its
+declared Sequential input history and an empty request queue. A chain of
+requests that needs earlier results indefinitely requires a stored boundary.
 [Earlier replay restrictions](./historical/tick_resampler_first_proposal_2026-11-26.md)
 
 Whole-project GraphJit validation resolves per-channel connections and semantic

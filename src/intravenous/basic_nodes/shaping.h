@@ -75,6 +75,7 @@ namespace iv {
         {
             ctx.input<"in">().history() = 1;
             ctx.output<"anti_aliased">().latency() = 1;
+            ctx.output<"anti_aliased">().history() = 1;
         }
 
         void tick(TickSampleContext<Warper> const& state) const
@@ -159,6 +160,7 @@ namespace iv {
             ctx.input<"phase_offset">().history() = 1;
             ctx.input<"frequency">().history() = 1;
             ctx.output<"out">().latency() = 1;
+            ctx.output<"out">().history() = 1;
         }
 
         void tick(TickSampleContext<SawOscillator> const& ctx) const

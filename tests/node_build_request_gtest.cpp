@@ -133,6 +133,34 @@ iv::ReflectedContinuousOutputPortBinding sample_output_binding(
     };
 }
 
+TEST(TickOutputPort, LatencyAllowsRevisionAndHistoryAllowsReading)
+{
+    std::array<iv::Sample, 8> samples{};
+    auto binding = sample_output_binding(samples);
+    binding.latency = 2;
+    auto const begin = iv::FractionalGlobalIndex::from_global(index(4));
+    iv::details::ContinuousOutputPort<iv::Sample> write_only{binding, begin, 4, 4, 2};
+    static_assert(!std::is_convertible_v<decltype(write_only.value(0)), iv::Sample>);
+    static_assert(!std::is_convertible_v<decltype(write_only.block()[0]), iv::Sample>);
+    static_assert(!std::is_convertible_v<decltype(write_only.update_value()), iv::Sample>);
+    write_only.update(iv::Sample{3}, 1);
+    write_only.block()[0] = iv::Sample{5};
+    EXPECT_FLOAT_EQ(samples[2].value, 3.f);
+    EXPECT_FLOAT_EQ(samples[4].value, 5.f);
+#if GTEST_HAS_DEATH_TEST
+    EXPECT_DEATH(static_cast<void>(write_only.get(1)), "outside its declared history");
+    write_only.push(iv::Sample{6});
+    EXPECT_DEATH(static_cast<void>(write_only.get()), "outside its declared history");
+#endif
+
+    binding.history = 2;
+    iv::details::ContinuousOutputPort<iv::Sample> readable{binding, begin, 4, 4, 2};
+    EXPECT_FLOAT_EQ(readable.get(1).value, 3.f);
+#if GTEST_HAS_DEATH_TEST
+    EXPECT_DEATH(static_cast<void>(readable.get(2)), "outside its declared history");
+#endif
+}
+
 struct BatchOnlyTickNode {
     int id = 0;
     static inline std::vector<int>* calls = nullptr;
@@ -175,7 +203,7 @@ struct ReflectedBatchOutputNode {
     {
         for (auto lane : context) {
             auto output = lane.template output<"output">().block();
-            for (auto& sample : output) sample = lane.node().value;
+            for (auto sample : output) sample = lane.node().value;
         }
     }
 
@@ -184,7 +212,7 @@ struct ReflectedBatchOutputNode {
     {
         for (auto lane : context) {
             auto output = lane.template output<"output">().block();
-            for (auto& sample : output) sample = -lane.node().value;
+            for (auto sample : output) sample = -lane.node().value;
         }
     }
 };

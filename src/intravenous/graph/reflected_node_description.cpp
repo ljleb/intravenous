@@ -156,6 +156,13 @@ ReflectedPortConstraintSink NodeDescriptionSink::port_constraint_sink() const
         .set_independent_pace = +[](void* state, PortConstraintRef port) {
             static_cast<NodePortConstraints*>(state)->independent_paces.push_back(port);
         },
+        .request_preparation_lead = +[](void* state, PortConstraintRef port) {
+            auto& requests = static_cast<NodePortConstraints*>(state)->preparation_leads;
+            if (!std::ranges::contains(requests, port)) requests.push_back(port);
+        },
+        .equal_preparation_lead = +[](void* state, PortPreparationLeadEquality equality) {
+            static_cast<NodePortConstraints*>(state)->preparation_lead_equalities.push_back(equality);
+        },
         .event_count_context = std::addressof(description()),
         .set_event_count_bound = +[](void* opaque, PortConstraintRef port, std::size_t count) {
             auto& description = *static_cast<ReflectedNodeDescription*>(opaque);

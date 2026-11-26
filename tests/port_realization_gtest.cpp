@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -138,23 +139,40 @@ struct AbsolutePaceAnchor {
     void tick_block(iv::TickBlockContext<AbsolutePaceAnchor> const&) const {}
 };
 
+template<iv::OutputRealization Realization = iv::OutputRealization::computed>
 struct PacedCoverageSource {
     std::uint64_t factor = 1;
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            {"out", "Out"}, iv::OutputProduction::coverage)};
+            {"out", "Out"}, iv::OutputProduction::coverage, Realization)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<PacedCoverageSource>& ctx) const
     {
-        ctx.output<"out">().pace().absolute() = factor;
+        ctx.template output<"out">().pace().absolute() = factor;
     }
 
     void tock_coverage(iv::TockCoverageContext<PacedCoverageSource>&) const {}
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<PacedCoverageSource>&) const {}
+};
+
+struct PreparationLeadWithExtraHistory {
+    std::size_t extra_history = 2;
+
+    static constexpr auto inputs() { return iv::LinearResampler::inputs(); }
+    static constexpr auto outputs() { return iv::LinearResampler::outputs(); }
+
+    void constrain_ports(iv::ConstrainPortsContext<PreparationLeadWithExtraHistory>& ctx) const
+    {
+        auto const lead = ctx.input<"source">().preparation_lead();
+        ctx.input<"position">().history() = lead + extra_history;
+        ctx.output<"out">().latency() = lead + 3;
+    }
+
+    void tick_block(iv::TickBlockContext<PreparationLeadWithExtraHistory> const&) const {}
 };
 
 struct OrdinaryIdentity {
@@ -676,7 +694,7 @@ TEST(PortRealization, IndependentResamplerPaceFollowsTheSourceThroughAModule)
     });
     auto const resampler = append(graph, LinearResampler{});
     auto const module = graph.node_bundles.append_subgraph(boundary, resampler, 1, "resampler");
-    auto const source = append(graph, PacedCoverageSource{.factor = 8});
+    auto const source = append(graph, PacedCoverageSource<>{.factor = 8});
     auto const sink = append(graph, AbsolutePaceAnchor{.factor = 2});
     std::array connections{
         mono_connection(boundary, 0, resampler, 1),
@@ -698,12 +716,64 @@ TEST(PortRealization, IndependentResamplerPaceFollowsTheSourceThroughAModule)
     EXPECT_EQ(realized->output(boundary, 0).absolute_pace, PortPace(8));
     EXPECT_EQ(realized->output(module, 0).absolute_pace, PortPace(2));
 
-    auto const incompatible = append(graph, PacedCoverageSource{.factor = 4});
+    for (std::size_t block_size : {64u, 128u}) {
+        auto scheduled = graph_jit::resolve_port_realization(graph, block_size);
+        if (!scheduled) FAIL() << scheduled.error();
+        EXPECT_EQ(scheduled->input(resampler, 1).preparation_lead, block_size);
+        EXPECT_EQ(scheduled->input(resampler, 0).history, block_size);
+        EXPECT_EQ(scheduled->output(resampler, 0).latency, block_size);
+    }
+
+    auto const incompatible = append(graph, PacedCoverageSource<>{.factor = 4});
     graph.connections.record_configured_sample_connection(
         mono_connection(incompatible, 0, module, 0));
     auto conflicting = graph_jit::resolve_port_realization(graph);
     ASSERT_FALSE(conflicting.has_value());
     EXPECT_NE(conflicting.error().find("absolute pace anchor"), std::string::npos);
+}
+
+TEST(PortRealization, BufferedResamplerSourceNeedsNoPreparation)
+{
+    using namespace iv;
+    ConfiguredGraph graph;
+    auto const source = append(graph, PacedCoverageSource<OutputRealization::buffered>{});
+    auto const resampler = append(graph, LinearResampler{});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(source, 0, resampler, 1));
+
+    auto scheduled = graph_jit::resolve_port_realization(graph, 128);
+    if (!scheduled) FAIL() << scheduled.error();
+    EXPECT_EQ(scheduled->input(resampler, 1).preparation_lead, 0u);
+    EXPECT_EQ(scheduled->input(resampler, 0).history, 0u);
+    EXPECT_EQ(scheduled->output(resampler, 0).latency, 0u);
+}
+
+TEST(PortRealization, AddsSamplesToTheResolvedPreparationLead)
+{
+    using namespace iv;
+    ConfiguredGraph graph;
+    auto const source = append(graph, PacedCoverageSource<>{});
+    auto const computed = append(graph, PreparationLeadWithExtraHistory{});
+    auto const unconnected = append(graph, PreparationLeadWithExtraHistory{});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(source, 0, computed, 1));
+
+    auto scheduled = graph_jit::resolve_port_realization(graph, 64);
+    if (!scheduled) FAIL() << scheduled.error();
+    EXPECT_EQ(scheduled->input(computed, 1).preparation_lead, 64u);
+    EXPECT_EQ(scheduled->input(computed, 0).history, 66u);
+    EXPECT_EQ(scheduled->output(computed, 0).latency, 67u);
+    EXPECT_EQ(scheduled->input(unconnected, 1).preparation_lead, 0u);
+    EXPECT_EQ(scheduled->input(unconnected, 0).history, 2u);
+    EXPECT_EQ(scheduled->output(unconnected, 0).latency, 3u);
+
+    auto const overflowing = append(graph, PreparationLeadWithExtraHistory{
+        .extra_history = std::numeric_limits<std::size_t>::max()});
+    graph.connections.record_configured_sample_connection(
+        mono_connection(source, 0, overflowing, 1));
+    auto invalid = graph_jit::resolve_port_realization(graph, 64);
+    ASSERT_FALSE(invalid);
+    EXPECT_NE(invalid.error().find("preparation lead constraint exceeds"), std::string::npos);
 }
 
 TEST(PortRealization, RejectsConflictingAbsolutePaceAnchors)

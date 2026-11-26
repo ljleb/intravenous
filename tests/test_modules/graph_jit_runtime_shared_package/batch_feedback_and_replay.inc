@@ -34,9 +34,9 @@ struct NativeBatchFeedbackProbe {
             state.last_lane_count = context.size();
             state.configured_id = lane.node().id;
             for (std::size_t i = 0; i < output.size(); ++i) {
-                output[i] = input[i] + static_cast<float>(lane.node().id);
                 state.last_input = input[i];
-                state.last_output = output[i];
+                state.last_output = state.last_input + static_cast<float>(lane.node().id);
+                output[i] = iv::Sample{state.last_output};
             }
         }
     }
@@ -750,6 +750,46 @@ void replay_latent_sample_module(iv::GraphBuilder& graph) {
     graph.outputs();
 }
 IV_MODULE("iv.test.replay.latent_sample_module", replay_latent_sample_module, "Latent sample replay module");
+
+struct ReplayInputHistory {
+    static constexpr auto replay_mode = iv::TickReplayMode::enabled;
+    static constexpr auto inputs() {
+        return std::tuple{
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
+        };
+    }
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>({"history_value", "History value"})};
+    }
+    void constrain_ports(iv::ConstrainPortsContext<ReplayInputHistory>& ctx) const {
+        ctx.input<"in">().history() = 2;
+        ctx.input<"trigger">().history() = 3;
+    }
+    void tick_block(iv::TickBlockContext<ReplayInputHistory> const& ctx) const {
+        auto const values = ctx.input<"in">().block_extended();
+        auto const trigger = ctx.input<"trigger">();
+        auto const out = ctx.output<"history_value">().block();
+        for (std::size_t frame = 0; frame < out.size(); ++frame) {
+            auto const now = ctx.index.whole().advanced_by(frame);
+            auto const events = trigger.events(now.retreated_by(3), 3);
+            out[frame] = iv::Sample{values[frame].value + static_cast<float>(events.size())};
+        }
+    }
+};
+IV_NODE("iv.test.replay.input_history", ReplayInputHistory, "Replay input history");
+
+void replay_input_history_module(iv::GraphBuilder& graph) {
+    auto const samples = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto const events = graph.node<"iv.test.graph_jit.state_context.single_region_event_source">();
+    auto const delayed = graph.node<"iv.test.replay.input_history">();
+    auto const window = graph.node<"iv.test.replay.window">(std::int64_t{22}, std::uint64_t{13});
+    delayed.connect_input("in", samples);
+    delayed.connect_input("trigger", events);
+    window(delayed);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.input_history_module", replay_input_history_module, "Input history replay module");
 
 void coverage_manual_window_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();

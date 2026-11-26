@@ -648,8 +648,8 @@ meaning is a coordinate used by nodes that explicitly choose to sample another i
 #### Complete-buffer Tick resampling
 
 `Linear Resampler` and `Stereo Linear Resampler` take a Sequential
-`FractionalGlobalIndex` on `position` and `Coverage<Sample>` with
-`InputContentAccess::complete_buffer` on `source`. `position` and `out` have
+`FractionalGlobalIndex` on `position` and `Coverage<Sample>` on `source`.
+GraphJit selects complete-buffer access when their preparation lead is zero. `position` and `out` have
 equal pace. The interpolator selects its two taps on the resolved sample grid of
 `source`. `Transport Position` emits the exact invocation coordinate at its
 resolved pace. An authored Tick node can generate any coordinate sequence through
@@ -678,12 +678,12 @@ requires project-rate `position` and `out`. The source sample grid is independen
 
 #### Live resampling from computed sources
 
-`Linear Resampler` and `Stereo Linear Resampler` accept a
-`preparation_samples` constructor argument. Zero uses complete buffers and adds
-zero latency. A positive count selects deferred Tick and must be at least the
-compiled root block size. It is also the output finalization latency, measured
-in project samples. The source can then be computed or buffered. The deferred
-callback requires project-rate `position` and `out`.
+`Linear Resampler` and `Stereo Linear Resampler` take no preparation argument.
+GraphJit follows the authored source routes through module boundaries. It
+chooses zero project samples when the source is unconnected or all producers
+are buffered. If any producer is computed, it chooses one compiled realtime
+root block in project samples. Deferred Tick currently requires project-rate
+`position` and `out`.
 
 GraphJit gets the `source` sample grid from the connected producers.
 For example, a buffer at twice the project rate supplies two source samples
@@ -691,12 +691,30 @@ per project sample while `position` and `out` can stay at project rate.
 See [the port pace rules](graph_jit_direction.md) and the
 [earlier constructor-based proposal](historical/tick_resampler_first_proposal_2026-11-26.md).
 
-The deferred resampler uses `ctx.request_input<"source">()` for the exact tap
-positions. It keeps these taps and their weights in `State` until they are due.
-The background evaluator prepares only those positions. The foreground stalls
-at the deadline if an adopted snapshot still lacks the required result.
-Requests from executed callbacks keep their original coordinates across seeks.
-The deferred callback runs live. The complete-buffer callback supports replay.
+In `constrain_ports()`, the node gets a constraint value from
+`ctx.input<"source">().preparation_lead()`. It assigns that value to the
+Sequential history of `position` and the finalization latency of `out`.
+GraphJit resolves all three before it plans storage and initializes Tick.
+Both modes run the same callback. With a zero lead, it reads the published
+buffer directly. With a positive lead, it submits requests for a later call.
+
+An algorithm can add a nonnegative sample count to the lead constraint. For
+example, on a project-rate `position` port, `history() = lead + 2` retains two
+more positions before the position associated with a due request. The extra
+history has no effect on the request deadline.
+
+`ctx.request_input<"source">()` submits exact tap positions. It returns
+due requests and a view of their prepared values and coverage. An empty
+due list means there is no result to consume. A due request with no taps
+means the earlier position was uncovered. A request with taps can still
+resolve to a gap in the source. A covered tap that misses the deadline
+prevents the foreground callback from running.
+
+Replay prepares due taps off the audio thread and runs the same callback
+through the last position needed to finalize the selected output. It drops
+requests whose deadlines fall beyond that position. Foreground requests
+keep their original source coordinates when playback seeks.
+[Earlier resampler designs](./historical/tick_resampler_first_proposal_2026-11-26.md)
 
 Curve authoring should likewise keep curve definition separate from evaluated value
 representation. One curve clip/event representation may be sampled/evaluated into

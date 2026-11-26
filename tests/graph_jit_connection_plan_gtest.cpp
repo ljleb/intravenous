@@ -1039,7 +1039,7 @@ build_connection_analysis_plan(
     std::span<std::size_t const> callback_batch_classes = {},
     std::span<iv::NodeBundleHandle const> callback_elision_candidates = {})
 {
-    auto port_realization = iv::graph_jit::resolve_port_realization(graph);
+    auto port_realization = iv::graph_jit::resolve_port_realization(graph, kernel_block_size);
     if (!port_realization) {
         return std::unexpected(std::move(port_realization.error()));
     }

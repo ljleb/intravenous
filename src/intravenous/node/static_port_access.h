@@ -835,7 +835,7 @@ namespace iv::details {
             return _port.get(offset, channel);
         }
 
-        constexpr BlockView<Sample> get_block(
+        constexpr BlockView<Sample const> get_block(
             size_t block_size, size_t sample_offset = 0) const
         {
             return _port.get_block(block_size, sample_offset);
@@ -1327,7 +1327,7 @@ namespace iv::details {
             for (std::size_t channel = 0; channel < channels; ++channel) {
                 auto values = port_.block(channel);
                 for (std::size_t index = 0; index < values.size(); ++index) {
-                    ContinuousValueType<Value>::clear_value(values[index]);
+                    values[index].clear();
                 }
             }
         }

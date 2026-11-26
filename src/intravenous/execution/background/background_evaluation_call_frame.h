@@ -4,6 +4,7 @@
 #include <intravenous/graph_jit/background_evaluation_call.h>
 #include <intravenous/graph_jit/background_evaluation_plan.h>
 #include <intravenous/node/layout.h>
+#include <intravenous/execution/background/background_coverage_propagation.h>
 #include <intravenous/execution/background/background_storage_realization.h>
 
 #include <cstddef>
@@ -44,6 +45,9 @@ struct BackgroundEvaluationCallFrameSelection {
     // empty, every scheduled position must be selected.
     std::vector<IndexCoverage> binding_upstream_coverage{};
     graph_jit::SequentialInputCombineFunction combine_sequential_input = nullptr;
+    void* replay_input_owner = nullptr;
+    void (*prepare_replay_inputs)(void*, std::span<InputCoverageRequest const>,
+        std::span<BackgroundDiscoveredInput>) = nullptr;
     std::size_t sample_rate = 48000;
 };
 

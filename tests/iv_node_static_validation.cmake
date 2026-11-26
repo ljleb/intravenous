@@ -79,7 +79,7 @@ expect_invalid(
 
 expect_invalid(
     invalid_replay_random_access.cpp
-    "use complete buffers for Region/Coverage inputs")
+    "use complete buffers for Region/Coverage event inputs")
 
 expect_invalid(
     invalid_replay_coverage_callbacks.cpp

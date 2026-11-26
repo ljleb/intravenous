@@ -2297,6 +2297,87 @@ TEST_F(GraphJitRuntimeFixture, ReplayFinalizesOutputLatencyWithoutPublishingTheE
     }
 }
 
+TEST_F(GraphJitRuntimeFixture, ReplayBindsSequentialSampleAndEventInputHistory)
+{
+    auto compiled = compile("iv.test.replay.input_history_module", 3015);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const port = [&](std::string_view name) {
+        auto const found = std::ranges::find(plan.ports, name, &iv::graph_jit::BackgroundPortPlan::name);
+        EXPECT_NE(found, plan.ports.end());
+        return static_cast<iv::graph_jit::BackgroundPortIndex>(found - plan.ports.begin());
+    };
+    auto const window = port("window");
+    auto const history = port("history_value");
+    auto const samples = port("single_region_sample_source_output");
+    auto const events = port("single_region_event_source_output");
+    ASSERT_LT(window, plan.ports.size());
+    ASSERT_LT(history, plan.ports.size());
+    ASSERT_LT(samples, plan.ports.size());
+    ASSERT_LT(events, plan.ports.size());
+
+    iv::PersistedDataStore data;
+    auto reader = data.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    auto const requested = index_coverage({{22, 26}, {31, 35}});
+    roots.output_demands.push_back({.port = window, .required = requested});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto result = transaction.execute();
+    ASSERT_TRUE(result) << result.error();
+    ASSERT_EQ(result->status, iv::BackgroundEvaluationStatus::committed);
+    auto const demand = [&](iv::graph_jit::BackgroundPortIndex index) {
+        auto const& requirements = result->coverage.output_requirements;
+        auto const found = std::ranges::find(requirements, index, &iv::RequiredOutputCoverage::port);
+        return found == requirements.end() ? iv::IndexCoverage{} : found->required;
+    };
+    EXPECT_EQ(demand(history), requested);
+    EXPECT_EQ(demand(samples), index_coverage({{20, 24}}));
+    EXPECT_EQ(demand(events), index_coverage({{30, 34}}));
+
+    auto const stored = std::ranges::find_if(plan.storage.ports, [&](auto const& storage) {
+        return storage.output_port == window
+            && storage.storage == iv::graph_jit::PortStorageKind::persisted_data;
+    });
+    ASSERT_NE(stored, plan.storage.ports.end());
+    auto const output = data.resolve_output(iv::persisted_output_id(plan,
+        static_cast<iv::graph_jit::PortStorageIndex>(stored - plan.storage.ports.begin()),
+        graph.project_generation));
+    auto pinned = reader.pin();
+    for (auto const [begin, expected] : std::array{
+            std::pair{22, std::array{4.f, 5.f, 6.f, 7.f}},
+            std::pair{31, std::array{1.f, 1.f, 1.f, 1.f}}}) {
+        for (std::size_t offset = 0; offset < expected.size(); ++offset) {
+            auto const position = index(begin).advanced_by(offset);
+            auto const* region = pinned->find_sample_region(output, position);
+            ASSERT_NE(region, nullptr);
+            EXPECT_FLOAT_EQ(region->at(position, 0).value, expected[offset]);
+        }
+    }
+
+    auto const changed = propagation.prepare(graph.background_operations, coverage,
+        {.output_changes = {{
+            .port = samples,
+            .coverage = index_coverage({{20, 24}}),
+            .changed = index_coverage({{23, 24}}),
+            .regions = {{index(20), 4}},
+            .finalized = true,
+        }}});
+    auto const& changes = changed.result().output_changes;
+    auto const history_change = std::ranges::find(
+        changes, history, &iv::PropagatedOutputChange::port);
+    ASSERT_NE(history_change, changes.end());
+    EXPECT_EQ(history_change->changed, index_coverage({{23, 26}}));
+}
+
 TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManualFallback)
 {
     auto compiled = compile_with_manual_input("iv.test.replay.live_union_fallback", 3010, "gain", .25f);
@@ -2692,45 +2773,48 @@ TEST_F(GraphJitRuntimeFixture, OutputlessTickSinkPreparesItsCompleteRandomAccess
 
 TEST_F(GraphJitRuntimeFixture, BackgroundResamplerReplaysExactFractionalPositions)
 {
-    auto compiled = compile("iv.test.resampler.replay", 3016);
-    ASSERT_TRUE(compiled.succeeded())
-        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
-    auto const& graph = *compiled.compiled_graph;
-    auto const& plan = graph.background_evaluation_plan;
-    auto const window = std::ranges::find(plan.ports, "window", &iv::graph_jit::BackgroundPortPlan::name);
-    ASSERT_NE(window, plan.ports.end());
-    auto const output = static_cast<iv::graph_jit::BackgroundPortIndex>(window - plan.ports.begin());
+    for (auto const* module : {"iv.test.resampler.replay", "iv.test.resampler.computed_replay"}) {
+        SCOPED_TRACE(module);
+        auto compiled = compile(module, 3016);
+        ASSERT_TRUE(compiled.succeeded())
+            << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+        auto const& graph = *compiled.compiled_graph;
+        auto const& plan = graph.background_evaluation_plan;
+        auto const window = std::ranges::find(plan.ports, "window", &iv::graph_jit::BackgroundPortPlan::name);
+        ASSERT_NE(window, plan.ports.end());
+        auto const output = static_cast<iv::graph_jit::BackgroundPortIndex>(window - plan.ports.begin());
 
-    iv::PersistedDataStore data;
-    auto reader = data.register_reader();
-    auto states = graph.tock_state_layout.create_storage(resources);
-    states.initialize();
-    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
-    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
-    iv::CoveragePropagationRequest roots;
-    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
-        roots.locally_changed_nodes.push_back(node);
-    auto const span = index_coverage({{0, 8}});
-    roots.output_demands.push_back({.port = output, .required = span});
-    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
-        {.semantic_version = 1, .roots = std::move(roots)}};
-    auto prepared = transaction.execute();
-    ASSERT_TRUE(prepared) << prepared.error();
-    ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
+        iv::PersistedDataStore data;
+        auto reader = data.register_reader();
+        auto states = graph.tock_state_layout.create_storage(resources);
+        states.initialize();
+        iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+        iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+        iv::CoveragePropagationRequest roots;
+        for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+            roots.locally_changed_nodes.push_back(node);
+        auto const span = index_coverage({{0, 8}});
+        roots.output_demands.push_back({.port = output, .required = span});
+        iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data,
+            {.semantic_version = 1, .roots = std::move(roots)}};
+        auto prepared = transaction.execute();
+        ASSERT_TRUE(prepared) << prepared.error();
+        ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
 
-    auto const persisted = std::ranges::find_if(plan.storage.ports, [&](auto const& port) {
-        return port.output_port == output && port.storage == iv::graph_jit::PortStorageKind::persisted_data;
-    });
-    ASSERT_NE(persisted, plan.storage.ports.end());
-    auto const handle = data.resolve_output(iv::persisted_output_id(plan,
-        static_cast<iv::graph_jit::PortStorageIndex>(persisted - plan.storage.ports.begin()),
-        graph.project_generation));
-    auto pinned = reader.pin();
-    auto const* region = pinned->find_sample_region(handle, index(0));
-    ASSERT_NE(region, nullptr);
-    constexpr std::array expected{11.f, 5.f, 11.f, 3.f, 5.f, 0.f, 4.f, 10.f};
-    for (std::size_t offset = 0; offset < expected.size(); ++offset)
-        EXPECT_FLOAT_EQ(region->at(index(0).advanced_by(offset), 0).value, expected[offset]);
+        auto const persisted = std::ranges::find_if(plan.storage.ports, [&](auto const& port) {
+            return port.output_port == output && port.storage == iv::graph_jit::PortStorageKind::persisted_data;
+        });
+        ASSERT_NE(persisted, plan.storage.ports.end());
+        auto const handle = data.resolve_output(iv::persisted_output_id(plan,
+            static_cast<iv::graph_jit::PortStorageIndex>(persisted - plan.storage.ports.begin()),
+            graph.project_generation));
+        auto pinned = reader.pin();
+        auto const* region = pinned->find_sample_region(handle, index(0));
+        ASSERT_NE(region, nullptr);
+        constexpr std::array expected{11.f, 5.f, 11.f, 3.f, 5.f, 0.f, 4.f, 10.f};
+        for (std::size_t offset = 0; offset < expected.size(); ++offset)
+            EXPECT_FLOAT_EQ(region->at(index(0).advanced_by(offset), 0).value, expected[offset]);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, DeferredTickInputBatchFreezesExactTapsAndReturnsItsTicket)
@@ -2748,7 +2832,7 @@ TEST_F(GraphJitRuntimeFixture, DeferredTickInputBatchFreezesExactTapsAndReturnsI
     auto const first = index(std::numeric_limits<std::int64_t>::max() - 1);
     std::array const taps{first, first.advanced_by(2), first.advanced_by(3)};
     iv::DeferredTickInputRequests queue{graph->project_generation, {
-        .callbacks = 2, .requests = 1, .positions = 4}};
+        .callbacks = 2, .requests = 1, .positions = 4, .ports = plan.ports.size()}};
     ASSERT_TRUE(queue.begin_callback({index(0), 2}));
     ASSERT_TRUE(queue.submit({.port = port, .execution = {index(0), 2}, .first_due = index(2),
         .positions = {.individual_positions = taps}}));

@@ -326,7 +326,8 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
         auto const requests = std::bit_ceil(samples * deferred_ports);
         deferred_inputs = std::make_unique<DeferredTickInputRequests>(graph.project_generation,
             DeferredTickInputRequests::Capacity{.callbacks = std::bit_ceil(samples),
-                .requests = requests, .runs = requests * 4, .positions = requests * 4});
+                .requests = requests, .runs = requests * 4, .positions = requests * 4,
+                .ports = plan.ports.size()});
     }
     auto const requirements = tick_invocation.producer_requirements();
     producer_reserves.reserve(requirements.size());

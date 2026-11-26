@@ -1528,6 +1528,8 @@ class BackgroundEvaluationTransaction::Impl {
     {
         PlaybackPreparationMetrics::Interval timing{PlaybackPreparationPhase::prepare_evaluation};
         auto binding = binding_selection();
+        binding.replay_input_owner = this;
+        binding.prepare_replay_inputs = &prepare_replay_inputs;
         auto storage = storage_selection(binding, *working_data_, prepares_tick_materialization);
         expand_output_binding_selection(binding, storage);
         std::vector<PersistedPayloadSelection> needed;
@@ -1642,8 +1644,13 @@ class BackgroundEvaluationTransaction::Impl {
                         requested.include(binding.binding_coverage[binding_slot]);
                 }
             }
-            auto set = frame->set_replay_regions(
-                slot, replay_regions(requested, replay.maximum_block_size));
+            auto maximum = replay.maximum_block_size;
+            for (auto const input_slot : replay.input_bindings) {
+                auto const port = runtime.bindings[input_slot].port;
+                auto const lead = plan.ports[port].deferred_tick_lead;
+                if (lead != 0) maximum = std::min(maximum, lead);
+            }
+            auto set = frame->set_replay_regions(slot, replay_regions(requested, maximum));
             if (!set) throw std::runtime_error(set.error());
         }
         if (auto sealed = frame->seal(); !sealed) {
@@ -1652,6 +1659,41 @@ class BackgroundEvaluationTransaction::Impl {
 
         return std::make_shared<Evaluation>(Evaluation{
             .realization = std::move(realization), .frame = std::move(frame)});
+    }
+
+    static void prepare_replay_inputs(void* opaque,
+        std::span<InputCoverageRequest const> demands,
+        std::span<BackgroundDiscoveredInput> results)
+    {
+        auto& self = *static_cast<Impl*>(opaque);
+        auto const& graph = *self.graph_;
+        BackgroundPropagationWorkspace scope{
+            graph.background_evaluation_plan, graph.specialization.sample_rate};
+        auto selected = scope.prepare_replay_inputs(graph.background_operations, *self.prepared_,
+            demands, {.data = &self, .sparse_sample_budget = self.sparse_sample_budget(),
+                .expand_output = &expand_output_demand, .cached_output = &cached_output},
+            {.data = &self, .materialize = &materialize_discovery,
+                .read_events = &discover_indexed_events});
+        auto previous = std::move(self.prepared_);
+        auto payload = std::move(self.prepared_payload_);
+        self.prepared_.emplace(std::move(selected));
+        try {
+            auto evaluation = self.prepare_evaluation();
+            graph.background_operations.evaluate(&evaluation->frame->call());
+            if (auto complete = evaluation->frame->validate_evaluation(); !complete)
+                throw std::runtime_error(complete.error());
+            for (std::size_t index = 0; index < demands.size(); ++index) {
+                if (demands[index].sample_positions.empty()) continue;
+                results[index] = {.owner = evaluation,
+                    .continuous = evaluation->frame->discovery_continuous_input(demands[index].port)};
+            }
+        } catch (...) {
+            self.prepared_ = std::move(previous);
+            self.prepared_payload_ = std::move(payload);
+            throw;
+        }
+        self.prepared_ = std::move(previous);
+        self.prepared_payload_ = std::move(payload);
     }
 
     static BackgroundDiscoveredInput materialize_discovery(void* opaque,
