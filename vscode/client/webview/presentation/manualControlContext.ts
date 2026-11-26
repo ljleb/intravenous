@@ -51,7 +51,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),
             defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue),
-            scrubSpeed: finite(metadata?.scrubSpeed) };
+            scrubSpeed: finite(metadata?.scrubSpeed), circular: metadata?.circular };
     });
     const available = computed(() => !!context && !!id.value && canEditManualControl(id.value, descriptor.value)
         && typeof value.value === "number" && Number.isFinite(value.value));
@@ -70,7 +70,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         },
         applyValue(value: number, signed = false) {
             if (!context || !id.value || !descriptor.value) return;
-            context.gestures.applyValue(id.value, descriptor.value, value, !signed);
+            context.gestures.applyValue(id.value, descriptor.value, value, !signed, limits.value);
         },
         invert() {
             if (!context || !id.value || !descriptor.value || !available.value) return;

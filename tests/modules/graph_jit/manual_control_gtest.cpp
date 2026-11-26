@@ -512,6 +512,53 @@ TEST_F(GraphJitRuntimeFixture,
     EXPECT_EQ(sums, (std::array<float, 2>{6.0f, 8.0f}));
 }
 
+TEST_F(GraphJitRuntimeFixture, CircularModuleKnobRampsAcrossTheSeamAndTakesTheIncreasingHalfTurn)
+{
+    using namespace iv;
+    auto const base = configured_module_graph(*revision, "iv.test.graph_jit.circular_manual_control_slice");
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<ConfiguredGraph>(*base);
+    std::optional<NodeBundlePortId> azimuth;
+    for (NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        auto const& node = graph->node_bundles.bundle(bundle);
+        if (!node.is_subgraph()) continue;
+        for (std::size_t port = 0; port < node.sample_input_count(); ++port) {
+            NodeBundlePortId const input{bundle, PortKind::sample, port};
+            if (graph->node_bundles.resolve_sample_input(input).config.name == "azimuth")
+                azimuth = input;
+        }
+    }
+    ASSERT_TRUE(azimuth);
+    graph->manual_controls.push_back({
+        .id = {.node = {.instance_id = "circular"}, .port_name = "azimuth"},
+        .input = *azimuth, .settled_value = Sample{179}, .dynamic = true,
+    });
+    auto const compiled = compile_graph(graph, 271);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& executable = *compiled.compiled_graph;
+    ASSERT_EQ(executable.manual_controls.size(), 1u);
+    auto const& control = executable.manual_controls.front();
+    EXPECT_EQ(control.configured.circular_range, (CircularSampleRange{Sample{-180}, Sample{180}}));
+    auto storage = executable.node_layout.create_storage(resources);
+    storage.initialize();
+    auto* runtime = reinterpret_cast<ManualControlRuntimeState*>(
+        storage.buffer().data() + control.state_storage_offset);
+    auto const* probe = find_unique_state<ManualControlSliceProbeStateMirror>(executable.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    auto tick = [&](float target, GlobalIndex position) {
+        std::atomic_ref(runtime->target_bits).store(std::bit_cast<std::uint32_t>(target));
+        executable.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, position, 4);
+        EXPECT_FLOAT_EQ(std::bit_cast<float>(runtime->effective_bits), target);
+    };
+    tick(-179.0f, index(0));
+    tick(1.0f, index(4));
+    tick(-179.0f, index(8));
+    ASSERT_EQ(probe->value_count, 12u);
+    EXPECT_EQ(probe->values, (std::array{179.5f, -180.f, -179.5f, -179.f,
+        -134.f, -89.f, -44.f, 1.f, 46.f, 91.f, 136.f, -179.f}));
+}
+
 TEST_F(GraphJitRuntimeFixture, ManualControlStateFollowsTheMatchedNodeWhenSelectionOrderChanges)
 {
     auto const base = configured_module_graph(*revision, graph_jit_reused_sample_arena_module_id);

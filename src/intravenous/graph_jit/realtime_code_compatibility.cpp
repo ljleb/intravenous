@@ -207,6 +207,7 @@ bool compatible_steady_realtime_layout(
             || lhs.configured.concrete_selection_index
                 != rhs.configured.concrete_selection_index
             || lhs.configured.participation != rhs.configured.participation
+            || lhs.configured.circular_range != rhs.configured.circular_range
             || lhs.state_storage_offset != rhs.state_storage_offset) {
             return false;
         }

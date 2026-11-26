@@ -1423,8 +1423,17 @@ void stage_manual_control_sample_timelines(
         if (values == 0) continue;
         auto const target_bits = frame.manual_control_latches[control_index].target_bits;
         auto const effective_bits = frame.manual_control_latches[control_index].effective_bits;
-        auto const target_value = std::bit_cast<float>(target_bits);
-        auto const effective_value = std::bit_cast<float>(effective_bits);
+        auto target_value = std::bit_cast<float>(target_bits);
+        auto effective_value = std::bit_cast<float>(effective_bits);
+        auto const* circular = control.configured.dynamic && control.configured.circular_range
+            && (control.configured.enabled || control.configured.override_connections)
+            ? &*control.configured.circular_range : nullptr;
+        double circular_delta = 0;
+        if (circular) {
+            target_value = circular->canonical(Sample{target_value}).value;
+            effective_value = circular->canonical(Sample{effective_value}).value;
+            circular_delta = circular->shortest_delta(Sample{effective_value}, Sample{target_value});
+        }
         auto const callback_values = project_lattice(
             callback_index, callback_size, pace).value_count;
         auto const callback_prefix = projected_prefix(callback_index, slice_index, pace);
@@ -1464,10 +1473,16 @@ void stage_manual_control_sample_timelines(
                 }
                 auto value = target_value;
                 if (control.configured.dynamic) {
-                    auto const ratio
-                        = static_cast<float>(callback_prefix + value_index + 1)
-                        / static_cast<float>(callback_values);
-                    value = effective_value + (target_value - effective_value) * ratio;
+                    auto const progress = callback_prefix + value_index + 1;
+                    if (circular) {
+                        if (progress < callback_values) {
+                            auto const ratio = static_cast<double>(progress) / static_cast<double>(callback_values);
+                            value = circular->wrap_adjacent(effective_value + circular_delta * ratio).value;
+                        }
+                    } else {
+                        auto const ratio = static_cast<float>(progress) / static_cast<float>(callback_values);
+                        value = effective_value + (target_value - effective_value) * ratio;
+                    }
                 }
                 if (control.boundary_source) {
                     value *= control.channel_coefficients[channel];
@@ -1501,7 +1516,7 @@ void stage_manual_control_sample_timelines(
             }
         }
         if (callback_prefix + values >= callback_values) {
-            state->effective_bits = target_bits;
+            state->effective_bits = std::bit_cast<std::uint32_t>(target_value);
         } else {
             state->effective_bits = effective_bits;
         }

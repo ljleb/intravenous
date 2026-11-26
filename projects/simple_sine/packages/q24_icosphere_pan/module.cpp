@@ -72,7 +72,7 @@ struct LearnedHrtfSourceIcosphereMorton
     static constexpr auto inputs()
     {
         auto const azimuth = input<Sample>(
-            {"azimuth", "Azimuth"}, InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
+            {"azimuth", "Azimuth"}, InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180, .circular = true});
         auto const elevation = input<Sample>(
             {"elevation", "Elevation"}, InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
 
@@ -1344,7 +1344,7 @@ struct SinglePan {
 void SinglePan::build_graph(GraphBuilder& g) const
 {
     auto const in = g.input({"In"});
-    auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
+    auto const azimuth = g.input<Sample>({"Azimuth"}, {.default_value = 0, .min = -180, .max = 180, .circular = true});
     auto const elevation = g.input({"Elevation"}, 0, -180, 180);
 
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonMono>();
@@ -1362,7 +1362,7 @@ void SinglePan::build_graph(GraphBuilder& g) const
 void module_main(GraphBuilder& g)
 {
     auto const in = g.input<stereo>({"In"});
-    auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
+    auto const azimuth = g.input<Sample>({"Azimuth"}, {.default_value = 0, .min = -180, .max = 180, .circular = true});
     auto const elevation = g.input({"Elevation"}, 0, -180, 180);
     auto const spread = g.input({"Spread"}, 30, 0, 180);
 

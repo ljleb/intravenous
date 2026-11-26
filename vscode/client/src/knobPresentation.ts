@@ -1,5 +1,6 @@
 import type { ManualControlLimits } from "./manualControlGesture";
 import type { GraphScopePort, PortShape } from "./graphScope";
+import { circularKnobRange, normalizeKnobValue } from "./knobScrub";
 
 export function knobPortStatus(port?: Pick<GraphScopePort, "access" | "production" | "realization">): string {
     const shapes: Record<PortShape, string> = { sequential: "Sequential", region: "Region", coverage: "Coverage" };
@@ -26,6 +27,8 @@ export function valueScaleFraction(value: number, { min, max, defaultValue = 0 }
 }
 
 export function knobFraction(value: number, limits: ManualControlLimits): number {
+    const circular = circularKnobRange(limits);
+    if (circular) return (normalizeKnobValue(value, limits) - circular.min) / circular.span;
     return Math.max(0, Math.min(1, valueScaleFraction(value, limits)));
 }
 

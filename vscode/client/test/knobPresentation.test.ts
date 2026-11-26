@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { knobFraction, knobMagnitude, knobPortStatus, knobScrubSpeed } from "../src/knobPresentation";
+import { KnobScrub } from "../src/knobScrub";
+import { parseKnobValue } from "../src/knobValueEntry";
+
+test("a circular knob shares its endpoints and repeats the default detent each turn", () => {
+    const limits = { min: -180, max: 180, defaultValue: 0, circular: true };
+    assert.equal(knobFraction(-180, limits), knobFraction(180, limits));
+    assert.equal(knobFraction(-179, limits), knobFraction(181, limits));
+    assert.equal(parseKnobValue("540", limits), -180);
+    const scrub = new KnobScrub(1, 0, 0, limits);
+    assert.equal(scrub.move(12, 0), 0);
+    assert.equal(scrub.move(13, 0), 1);
+    assert.equal(scrub.move(192, 1), -180);
+    assert.equal(scrub.move(372, -180), 0);
+    assert.equal(scrub.move(397, 0), 1);
+    assert.equal(scrub.move(-192, 1), -180);
+});
 
 test("knob port descriptions distinguish input access from output production and storage", () => {
     assert.equal(knobPortStatus({ access: "sequential" }), "Sequential input");

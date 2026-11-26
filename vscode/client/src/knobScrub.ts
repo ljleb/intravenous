@@ -1,9 +1,24 @@
-import { ScrubSensitivity } from "./scrubSensitivity";
+import { detentHalfWidth, ScrubSensitivity } from "./scrubSensitivity";
 
 export type KnobLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number;
-    wholeByDefault?: boolean; integer?: boolean };
+    wholeByDefault?: boolean; integer?: boolean; circular?: boolean };
 
-export function clampKnobValue(value: number, { min = -Infinity, max = Infinity }: KnobLimits): number {
+export function circularKnobRange({ min, max, circular }: KnobLimits): { min: number; span: number } | undefined {
+    if (!circular || min === undefined || max === undefined || !Number.isFinite(min) ||
+        !Number.isFinite(max) || max <= min || !Number.isFinite(max - min)) return undefined;
+    return { min, span: max - min };
+}
+
+export function normalizeKnobValue(value: number, limits: KnobLimits): number {
+    const { min = -Infinity, max = Infinity } = limits;
+    const range = circularKnobRange(limits);
+    if (range && Number.isFinite(value)) {
+        if (min <= value && value < max) return value;
+        const { span } = range;
+        const remainder = ((value % span) - (min % span)) % span;
+        const wrapped = min + (remainder < 0 ? remainder + span : remainder);
+        return wrapped < max ? wrapped : min;
+    }
     return Math.max(min, Math.min(max, value));
 }
 
@@ -22,7 +37,8 @@ export class KnobScrub {
     resetAnchor(value: number): void { this.plateau = 0; this.anchor(value); }
     refresh(limits: KnobLimits, value: number): void {
         if (this.limits.defaultValue !== limits.defaultValue) this.plateau = 0;
-        if (this.limits.defaultValue !== limits.defaultValue || this.limits.min !== limits.min || this.limits.max !== limits.max)
+        if (this.limits.defaultValue !== limits.defaultValue || this.limits.min !== limits.min ||
+            this.limits.max !== limits.max || this.limits.circular !== limits.circular)
             this.anchor(value);
         this.limits = limits;
     }
@@ -31,12 +47,37 @@ export class KnobScrub {
         this.anchorPlateau = this.plateau;
         return true;
     }
+    private moveCircular(position: number, limits: KnobLimits, span: number): number {
+        let value = this.sensitivity.valueAt(position);
+        if (limits.defaultValue !== undefined && Number.isFinite(limits.defaultValue)) {
+            const target = normalizeKnobValue(limits.defaultValue, limits);
+            const speed = this.sensitivity.unitsPerPixel;
+            const anchor = normalizeKnobValue(this.sensitivity.anchorValue - target, { circular: true, min: 0, max: span });
+            const detentWidth = 2 * detentHalfWidth;
+            const anchorPixels = anchor === 0 ? this.anchorPlateau + detentHalfWidth : anchor / speed + detentWidth;
+            const periodPixels = span / speed + detentWidth;
+            // In pointer space each turn includes the full width of its
+            // default detent. This is independent of pointer event frequency.
+            const phase = normalizeKnobValue(anchorPixels + (position - this.sensitivity.anchorPosition),
+                { circular: true, min: 0, max: periodPixels });
+            this.plateau = Math.min(phase, detentWidth) - detentHalfWidth;
+            if (phase <= detentWidth) return target;
+            value = target + (phase - detentWidth) * speed;
+        }
+        if (limits.wholeByDefault || limits.integer) {
+            const step = limits.integer ? 1 : Math.min(1, this.sensitivity.multiplier);
+            value = Math.round(value / step) * step;
+        }
+        return normalizeKnobValue(value, limits);
+    }
     move(position: number, current: number, limits = this.limits): number {
         if (position === this.position && limits === this.limits) return current;
         this.position = position;
+        const circular = circularKnobRange(limits);
+        if (circular) return this.moveCircular(position, limits, circular.span);
         let value = this.sensitivity.valueAt(position);
         const target = limits.defaultValue;
-        const hasDetent = target !== undefined && Number.isFinite(target) && clampKnobValue(target, limits) === target;
+        const hasDetent = target !== undefined && Number.isFinite(target) && normalizeKnobValue(target, limits) === target;
         if (hasDetent) {
             const snap = this.sensitivity.valueAtDetent(target, position - this.sensitivity.anchorPosition, this.anchorPlateau);
             this.plateau = snap.plateau;
@@ -52,7 +93,7 @@ export class KnobScrub {
                 value = Math.round(value / step) * step;
             }
         }
-        const clamped = clampKnobValue(value, limits);
+        const clamped = normalizeKnobValue(value, limits);
         // The exact default can sit between quantized values. Rounding must
         // keep the result on the same side of the detent as the drag.
         const result = hasDetent && (unrounded - target) * (clamped - target) < 0 ? target : clamped;

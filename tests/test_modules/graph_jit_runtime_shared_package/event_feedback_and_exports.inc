@@ -582,6 +582,21 @@ void manual_control_slice_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+void circular_manual_control_probe_module(iv::GraphBuilder& graph)
+{
+    auto const azimuth = graph.input<iv::Sample>({"Azimuth"},
+        {.default_value = 179, .min = -180, .max = 180, .circular = true});
+    auto probe = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
+    probe(azimuth);
+    graph.outputs();
+}
+
+void circular_manual_control_slice_module(iv::GraphBuilder& graph)
+{
+    (void)graph.node<"iv.test.graph_jit.circular_manual_control_probe">();
+    graph.outputs();
+}
+
 void disconnected_sample_output_module(iv::GraphBuilder& graph)
 {
     auto source =
@@ -916,6 +931,8 @@ IV_MODULE("iv.test.graph_jit.state_context.skippable_pair_module", skippable_pai
 IV_MODULE("iv.test.graph_jit.state_context.limited_block_module", limited_block_module, "Limited block module");
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_input_module", disconnected_sample_input_module, "Disconnected sample input module");
 IV_MODULE("iv.test.graph_jit.state_context.manual_control_slice_module", manual_control_slice_module, "Manual control slice module");
+IV_MODULE("iv.test.graph_jit.circular_manual_control_probe", circular_manual_control_probe_module, "Circular manual control probe");
+IV_MODULE("iv.test.graph_jit.circular_manual_control_slice", circular_manual_control_slice_module, "Circular manual control slice");
 IV_MODULE("iv.test.graph_jit.state_context.disconnected_sample_output_module", disconnected_sample_output_module, "Disconnected sample output module");
 IV_MODULE("iv.test.graph_jit.state_context.tick_capture_module", tick_capture_module, "Tick capture module");
 IV_MODULE("iv.test.graph_jit.state_context.direct_sample_module", direct_sample_module, "Direct sample module");

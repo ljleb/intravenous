@@ -366,6 +366,10 @@ std::string manual_control_migration_identity(
         } else if constexpr (std::same_as<T, ProjectSymbolicMemberSelector>) out << ":member=" << entry.index;
         else out << ":child=" << entry.name.size() << ':' << entry.name;
     }, selector);
+    if (control.circular_range) {
+        out << ":circular=" << std::bit_cast<std::uint32_t>(control.circular_range->min.value)
+            << ':' << std::bit_cast<std::uint32_t>(control.circular_range->max.value);
+    }
     return std::move(out).str();
 }
 

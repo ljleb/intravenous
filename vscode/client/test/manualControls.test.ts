@@ -21,6 +21,25 @@ function deferred() {
     const promise = new Promise<void>((done) => { resolve = done; });
     return { promise, resolve };
 }
+
+test("circular knob gestures send canonical values through the seam and across releases", () => {
+    const actions: ManualControlAction[] = [];
+    let sequence = 0;
+    const gestures = new ManualControlGestures((action) => actions.push(action), () => `drag-${++sequence}`, () => {});
+    const limits = { min: -180, max: 180, circular: true };
+    assert.ok(gestures.scrub(control, { ...descriptor, value: 179 }, 1, 0, 1, limits));
+    gestures.moveBy(1, 2);
+    gestures.release(1);
+    assert.ok(gestures.scrub(control, { ...descriptor, value: -179 }, 2, 0, 1, limits));
+    gestures.moveBy(2, -3);
+    gestures.release(2);
+    gestures.applyValue(control, descriptor, 540, true, limits);
+    assert.deepEqual(actions.flatMap((action) => "value" in action ? [[action.action, action.value]] : []), [
+        ["begin", 179], ["update", -179], ["end", -179],
+        ["begin", -179], ["update", 178], ["end", 178],
+        ["begin", 178], ["update", -180], ["end", -180],
+    ]);
+});
 function harness(overrides: Partial<ManualControlTransport> = {}) {
     const calls: Array<{ action: string; id?: string; value?: number }> = [];
     const transport: ManualControlTransport = {

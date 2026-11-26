@@ -3,7 +3,7 @@ import { manualControlKey, canEditManualControl, manualControlName } from "./man
 import { addressKey, type NodeAddress } from "./graphScope";
 import { rightClickHint, type StatusHint } from "./statusBarText";
 import { scrubSensitivityShortcut } from "./scrubSensitivity";
-import { clampKnobValue as clamp, KnobScrub, type KnobLimits } from "./knobScrub";
+import { normalizeKnobValue, KnobScrub, type KnobLimits } from "./knobScrub";
 import { KnobValueEditing, type KnobValueEntry } from "./knobValueEntry";
 
 export type ManualControlLimits = KnobLimits;
@@ -157,10 +157,11 @@ export class ManualControlGestures {
         }
         if (changed) this.changed();
     }
-    edit(control: ManualControlId, descriptor: ManualControlDescriptor): void {
+    edit(control: ManualControlId, descriptor: ManualControlDescriptor, limits: ManualControlLimits = {}): void {
         if (this.active && manualControlKey(this.active.control) === manualControlKey(control)) return;
         this.finish();
-        const value = this.state(control)?.value ?? descriptor.value;
+        const initial = this.state(control)?.value ?? descriptor.value;
+        const value = limits.circular ? normalizeKnobValue(initial, limits) : initial;
         if (!Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
         this.retainedInteraction = null;
         this.ending.delete(manualControlKey(control));
@@ -173,7 +174,7 @@ export class ManualControlGestures {
         pointerId: number, position: number, unitsPerPixel: number, limits: ManualControlLimits = {}, precise = false): boolean {
         if (this.active?.pointer) return false;
         this.cancelEntry();
-        this.edit(control, descriptor);
+        this.edit(control, descriptor, limits);
         if (!this.active || !Number.isFinite(unitsPerPixel) || unitsPerPixel <= 0) return false;
         this.active.pointer = { id: pointerId, scrub: new KnobScrub(unitsPerPixel, position,
             this.displayValue(control, this.active.value), limits, precise) };
@@ -213,12 +214,14 @@ export class ManualControlGestures {
         return [this.active?.control, this.valueEditing.owner()?.control].some((control) =>
             control && addressKey(control.node) === addressKey(address));
     }
-    applyValue(control: ManualControlId, descriptor: ManualControlDescriptor, value: number, fromDisplay = false): void {
+    applyValue(control: ManualControlId, descriptor: ManualControlDescriptor, value: number, fromDisplay = false,
+        limits: ManualControlLimits = {}): void {
         if (this.active?.pointer || !Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
         const current = this.currentValue(control, descriptor) ?? descriptor.value;
-        const target = fromDisplay && value !== 0 && this.outputInverted(control, current) ? -value : value;
+        const normalized = limits.circular ? normalizeKnobValue(value, limits) : value;
+        const target = fromDisplay && normalized !== 0 && this.outputInverted(control, current) ? -normalized : normalized;
         if (current === target) return;
-        this.edit(control, { ...descriptor, value: current });
+        this.edit(control, { ...descriptor, value: current }, limits);
         this.update(control, target);
         this.finish(control);
     }
@@ -229,7 +232,7 @@ export class ManualControlGestures {
         const entry = { control, descriptor, limits };
         this.valueEditing.open(manualControlName(control), this.displayValue(control, this.state(control)?.value ?? descriptor.value),
             anchor, () => entry.limits,
-            (value) => this.applyValue(control, entry.descriptor, value, true), entry);
+            (value) => this.applyValue(control, entry.descriptor, value, true, entry.limits), entry);
     }
     numericEntry(): ManualValueEntry | null {
         const owner = this.valueEditing.owner(), view = this.valueEditing.view();
@@ -241,16 +244,16 @@ export class ManualControlGestures {
     resetHovered(): boolean {
         if (this.active?.pointer && this.active.pointer.scrub.limits.defaultValue !== undefined) {
             this.update(this.active.control, this.valueFromDisplay(this.active.control,
-                clamp(this.active.pointer.scrub.limits.defaultValue, this.active.pointer.scrub.limits)));
+                normalizeKnobValue(this.active.pointer.scrub.limits.defaultValue, this.active.pointer.scrub.limits)));
             this.active.pointer.scrub.resetAnchor(this.displayValue(this.active.control, this.active.value));
             return true;
         }
         const hover = this.hoverDetails;
         if (!hover || !canEditManualControl(hover.control, hover.descriptor)
             || hover.limits.defaultValue === undefined) return false;
-        const value = clamp(hover.limits.defaultValue, hover.limits);
+        const value = normalizeKnobValue(hover.limits.defaultValue, hover.limits);
         if (this.displayValue(hover.control, this.state(hover.control)?.value ?? hover.descriptor.value) === value) return true;
-        this.edit(hover.control, hover.descriptor);
+        this.edit(hover.control, hover.descriptor, hover.limits);
         this.update(hover.control, this.valueFromDisplay(hover.control, value));
         this.finish(hover.control);
         return true;

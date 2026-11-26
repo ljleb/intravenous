@@ -68,6 +68,16 @@ inline bool supports_coverage_manual_control(ContinuousInputConfig const& config
         && continuous_value_type_domain(config).sole_type() == ContinuousValueTypeId::sample;
 }
 
+inline std::optional<CircularSampleRange> circular_manual_control_range(ContinuousInputConfig const& config)
+{
+    if (!is_sequential(config)) return std::nullopt;
+    auto const& metadata = sequential_input_properties(config).value_metadata;
+    if (metadata.size() != 1) return std::nullopt;
+    auto const* sample = std::get_if<ContinuousValueType<Sample>::SequentialInputMetadata>(&metadata.front());
+    if (!sample || !sample->circular) return std::nullopt;
+    return CircularSampleRange{sample->min, sample->max};
+}
+
 // One ProjectGraph-specialization binding after NodeAddress and port-name
 // resolution. Several records can retain one ManualControlId when its semantic
 // address intentionally selects several concrete nodes.
@@ -94,6 +104,7 @@ struct ConfiguredManualControl {
     // The compiler's Coverage fallback producer for this input, if any.
     std::optional<NodeBundleHandle> coverage_source{};
     bool enabled = true;
+    std::optional<CircularSampleRange> circular_range{};
     bool operator==(ConfiguredManualControl const&) const = default;
 };
 

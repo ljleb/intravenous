@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { manualKnobStatus, type KnobActivity } from "../../src/manualControlGesture";
-import { KnobScrub, clampKnobValue, type KnobLimits } from "../../src/knobScrub";
+import { circularKnobRange, KnobScrub, normalizeKnobValue, type KnobLimits } from "../../src/knobScrub";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { parseKnobValue, type KnobValueRange } from "../../src/knobValueEntry";
 import { fitPopoverAtPoint } from "../../src/popoverPosition";
@@ -116,7 +116,7 @@ function beginDrag(event: PointerEvent): KnobDrag | undefined {
             shortcuts: `${scrubSensitivityShortcut} · Esc release` }) };
 }
 function set(value: number) {
-    const next = clampKnobValue(value, props.limits);
+    const next = normalizeKnobValue(value, props.limits);
     if (!props.disabled && next !== props.value) props.apply(next, false);
 }
 function press(event: PointerEvent) {
@@ -133,6 +133,11 @@ function entry(event: Event) {
 }
 function step(direction: number) {
     const delta = props.step ?? (props.limits.wholeByDefault || props.limits.integer ? 1 : knobScrubSpeed(props.limits) * 2);
+    if (circularKnobRange(props.limits)) {
+        const current = props.limits.wholeByDefault || props.limits.integer ? Math.round(value.value) : value.value;
+        set(current + direction * delta);
+        return;
+    }
     if (props.limits.wholeByDefault || props.limits.integer) {
         const min = Math.ceil(props.limits.min ?? -Infinity), max = Math.floor(props.limits.max ?? Infinity);
         if (min <= max) set(Math.max(min, Math.min(max, Math.round(value.value) + direction * delta)));

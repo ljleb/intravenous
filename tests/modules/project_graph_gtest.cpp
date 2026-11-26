@@ -246,6 +246,14 @@ void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
     graph.outputs("main"_P.with_display_name("Main") = input);
 }
 
+void configure_module_with_circular_knob(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
+{
+    using namespace iv;
+    auto angle = programmatic::declare_input<Sample>(graph, "angle", {"Angle"},
+        {.min = -180, .max = 180, .circular = true});
+    graph.outputs("main"_P.with_display_name("Main") = angle);
+}
+
 void configure_sibling_modules(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
 {
     ++configure_calls;
@@ -4501,6 +4509,36 @@ TEST_F(ProjectGraphFixture, ManualGestureStaysTransientAndCommitsOneHistoryEntry
     ASSERT_NO_THROW(undo_name.build());
     EXPECT_FALSE(instances.desired_instances()[0].display_name);
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{.4f});
+}
+
+TEST_F(ProjectGraphFixture, CircularKnobPersistsAndRelaysOnlyItsCanonicalValue)
+{
+    publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, &configure_module_with_circular_knob)});
+    iv::ManualControlId id{.node = {.instance_id = "pan"}, .port_name = "angle"};
+    iv::ProjectAckBuilder load;
+    in_event_source([&] { project_graph.handle_project_replace_graph({
+        .instances = {{.instance_id = "pan", .definition_id = definition_id}},
+        .manual_controls = {{.id = id, .stored_value = 541.f}},
+    }, load); });
+    ASSERT_NO_THROW(load.build());
+    ASSERT_EQ(project_graph.manual_controls().size(), 1u);
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{-179.f});
+    auto const scope = read_graph_scope(project_graph);
+    auto const& port = scope_node(scope, "pan").at("sampleInputs").at(0);
+    EXPECT_EQ(port.at("valueTypes").at(0).at("circular"), true);
+
+    iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
+    iv::ProjectAckBuilder begin;
+    in_event_source([&] { project_graph.handle_project_begin_manual_control_interaction({gesture, id, 179.f}, begin); });
+    ASSERT_NO_THROW(begin.build());
+    iv::LiveManualControlUpdateRequest update{.interaction = gesture, .value = 180.f};
+    project_graph.handle_live_manual_control_update(update);
+    EXPECT_TRUE(update.applied);
+    EXPECT_EQ(update.value, iv::Sample{-180.f});
+    iv::ProjectAckBuilder end;
+    in_event_source([&] { project_graph.handle_project_end_manual_control_interaction({gesture, 182.f}, end); });
+    ASSERT_NO_THROW(end.build());
+    EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{-178.f});
 }
 
 TEST_F(ProjectGraphFixture, DisconnectEndsOpenGesturesAtTheirLastReceivedValues)

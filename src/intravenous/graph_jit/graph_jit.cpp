@@ -2306,8 +2306,13 @@ public:
         // Keep the independent knob value in request.graph. Disabled
         // Sequential inputs use their neutral value in settled executables.
         for (auto& control : resolved_graph.manual_controls) {
-            if (control.output || control.enabled || control.override_connections) continue;
+            if (control.output) continue;
             auto const& input = resolved_graph.node_bundles.resolve_sample_input(control.input).config;
+            if (!control.input_symbolic_node)
+                control.circular_range = circular_manual_control_range(input);
+            if (control.circular_range)
+                control.settled_value = control.circular_range->canonical(control.settled_value);
+            if (control.enabled || control.override_connections) continue;
             if (!supports_coverage_manual_control(input)) {
                 control.settled_value = sequential_input_metadata<Sample>(sequential_input_properties(input)).neutral_value;
                 control.participation = ManualControlParticipation::disconnected_only;

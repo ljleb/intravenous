@@ -1,4 +1,6 @@
-export type KnobValueRange = { min?: number; max?: number; integer?: boolean };
+import { circularKnobRange, normalizeKnobValue, type KnobLimits } from "./knobScrub";
+
+export type KnobValueRange = Pick<KnobLimits, "min" | "max" | "integer" | "circular">;
 export type KnobValueEntry = {
     id: string;
     label: string;
@@ -9,10 +11,12 @@ export type KnobValueEntry = {
 
 export function parseKnobValue(draft: string, range: KnobValueRange): number | string {
     const value = Number(draft);
-    if (!draft.trim() || !Number.isFinite(value) || value < (range.min ?? -Infinity) || value > (range.max ?? Infinity))
+    const circular = circularKnobRange(range);
+    if (!draft.trim() || !Number.isFinite(value) ||
+        (!circular && (value < (range.min ?? -Infinity) || value > (range.max ?? Infinity))))
         return "Enter a finite value within the input limits.";
     if (range.integer && !Number.isInteger(value)) return "Enter a whole number.";
-    return value;
+    return circular ? normalizeKnobValue(value, range) : value;
 }
 
 export class KnobValueEditing<Owner> {

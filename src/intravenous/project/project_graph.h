@@ -209,6 +209,7 @@ class ProjectGraph {
         std::shared_ptr<ManualControlLiveTarget> target{};
         Sample value{};
         bool requires_preparation = false;
+        std::optional<CircularSampleRange> circular_range{};
     };
     struct ControlCompileTrace;
     bool restore_live_targets_ = false;
@@ -402,7 +403,7 @@ class ProjectGraph {
     // Drops the transient records of interactions a rebuild invalidated. Their
     // controls are gone or disabled, so no committed value needs to reach an
     // execution generation; the live targets are released directly. Requires mutex_.
-    void prune_live_interactions_locked();
+    void prune_live_interactions_locked(ConfiguredGraph const* next_graph = nullptr);
 
 public:
     explicit ProjectGraph(std::size_t sample_rate = 48000);

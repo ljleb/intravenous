@@ -740,6 +740,7 @@ export class WorkspaceSession {
             ...(minValue === undefined ? {} : { minValue }),
             ...(maxValue === undefined ? {} : { maxValue }),
             ...(scrubSpeed === undefined ? {} : { scrubSpeed }),
+            ...(candidate.circular === true ? { circular: true } : {}),
         };
     }
 

@@ -194,6 +194,18 @@ bool manual_control_is_available(
             return configured.id == id;
         });
 }
+
+std::optional<CircularSampleRange> configured_circular_range(
+    ConfiguredGraph const& graph, ManualControlId const& id)
+{
+    auto const found = std::ranges::find(graph.manual_controls, id, &ConfiguredManualControl::id);
+    return found == graph.manual_controls.end() ? std::nullopt : found->circular_range;
+}
+
+Sample canonical_knob_value(std::optional<CircularSampleRange> const& range, Sample value)
+{
+    return range ? range->canonical(value) : value;
+}
 } // namespace
 
 ProjectGraph::ProjectGraph(std::size_t sample_rate)
@@ -1444,7 +1456,7 @@ bool input_knob_enabled_by_default(NodeAddress const& address, ManualInputDefaul
 void configure_manual_controls(
     ConfiguredGraph& finished_graph,
     std::unordered_map<std::string, NodeInstancePlacement> const& placements,
-    std::span<ProjectManualControl const> controls,
+    std::span<ProjectManualControl> controls,
     std::vector<ProjectGraphGeneration::ManualControlDiagnostic>& diagnostics)
 {
     // Authored defaults are already constants. Give eligible public inputs the
@@ -1521,9 +1533,11 @@ void configure_manual_controls(
         std::size_t selection_index;
         NodeBundlePortId port;
         bool requires_preparation = false;
+        std::optional<CircularSampleRange> circular_range{};
     };
     std::vector<ResolvedPort> resolved_ports;
-    for (auto const& control : effective_controls) {
+    for (std::size_t control_index = 0; control_index < effective_controls.size(); ++control_index) {
+        auto const& control = effective_controls[control_index];
         auto const matches = resolve_node_address(
             finished_graph, placements, control.id.node);
         bool const output_gain = control.id.kind == ManualControlKind::output_gain;
@@ -1597,7 +1611,8 @@ void configure_manual_controls(
                 auto const config = finished_graph.node_bundles.resolve_sample_input(input).config;
                 if (config.name != control.id.port_name) continue;
                 if (manual_input_defaults(config)) {
-                    resolved_ports.push_back({selection_index, input, supports_coverage_manual_control(config)});
+                    resolved_ports.push_back({selection_index, input, supports_coverage_manual_control(config),
+                        circular_manual_control_range(config)});
                 } else if (control.enabled) {
                     diagnostics.push_back({control.id, "manual controls require a Sequential or windowed Coverage Sample input"});
                 }
@@ -1610,6 +1625,11 @@ void configure_manual_controls(
             return match.kind == ProjectNodePathMatch::Kind::symbolic_node;
         });
         if (symbolic_selection && resolved_ports.size() != bundles.size()) continue;
+        if (resolved_ports.empty()) continue;
+        // One symbolic knob copies the representative port's value to every member.
+        auto const circular_range = resolved_ports.front().circular_range;
+        auto const settled_value = canonical_knob_value(circular_range, control.stored_value);
+        if (control_index < controls.size()) controls[control_index].stored_value = settled_value;
         for (auto const& resolved : resolved_ports) {
             if (output_gain) {
                 auto const symbol = output_symbols.find(resolved.port.node_bundle_handle);
@@ -1622,11 +1642,12 @@ void configure_manual_controls(
                 finished_graph.manual_controls.push_back({
                     .id = control.id, .input = resolved.port,
                     .concrete_selection_index = resolved.selection_index,
-                    .settled_value = control.stored_value,
+                    .settled_value = settled_value,
                     .participation = control.participation,
                     .input_symbolic_node = symbol != input_symbols.end() ? std::optional{symbol->second} : std::nullopt,
                     .requires_preparation = resolved.requires_preparation,
                     .enabled = control.enabled,
+                    .circular_range = circular_range,
                 });
             }
         }
@@ -1917,8 +1938,12 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
     auto const& controls = proposed_controls ? *proposed_controls : manual_controls_;
     generation->manual_controls = controls;
 
-    configure_manual_controls(
-        finished_graph, generation->placements, controls, generation->manual_control_diagnostics);
+    configure_manual_controls(finished_graph, generation->placements, generation->manual_controls,
+        generation->manual_control_diagnostics);
+    if (publish_execution && generation->manual_controls != controls) {
+        proposed_controls = generation->manual_controls;
+        if (effect) effect->manual_controls = project_record_changes(manual_controls_, *proposed_controls);
+    }
 
     auto next_manual_interactions = manual_interactions_;
     auto next_hovered_controls = hovered_controls_;
@@ -1993,7 +2018,7 @@ ProjectGraph::RebuildResult ProjectGraph::rebuild_locked(
         };
         commit_controls_and_history();
         manual_interactions_ = std::move(next_manual_interactions);
-        prune_live_interactions_locked();
+        prune_live_interactions_locked(generation->graph.get());
         hovered_controls_ = std::move(next_hovered_controls);
         hover_retained_inputs_ = std::move(next_retained_inputs);
         dynamic_inputs_ = std::move(next_dynamic_inputs);
@@ -3369,6 +3394,8 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
             throw std::invalid_argument(
                 "manual-control interaction names an unavailable control");
         }
+        auto const circular_range = configured_circular_range(*current_generation_->graph, request.id);
+        auto const value = canonical_knob_value(circular_range, request.value);
         if (std::ranges::any_of(
                 manual_interactions_,
                 [&](ActiveManualControlInteraction const& interaction) {
@@ -3398,7 +3425,7 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
         auto const staged = update_graph_executor_controls_locked(
             {ManualControlTargetValue{
                 .id = request.id,
-                .value = request.value,
+                .value = value,
                 .gesture = ManualControlGesturePhase::begin,
             }},
             requested_inputs.empty()
@@ -3415,8 +3442,9 @@ void ProjectGraph::handle_project_begin_manual_control_interaction(
                 .interaction = request.interaction,
                 .control = request.id,
                 .target = std::move(live_target),
-                .value = request.value,
+                .value = value,
                 .requires_preparation = requires_preparation,
+                .circular_range = circular_range,
             });
         }
         if (!requested_inputs.empty() && (!staged || requires_preparation)) {
@@ -3437,6 +3465,7 @@ void ProjectGraph::handle_live_manual_control_update(LiveManualControlUpdateRequ
         // A late update for a gesture that already ended or was invalidated is
         // dropped: its end carried the authoritative value.
         if (interaction == live_interactions_.end()) return;
+        request.value = canonical_knob_value(interaction->circular_range, request.value);
         interaction->value = request.value;
         prepare = interaction->requires_preparation;
         if (interaction->target && !prepare) {
@@ -3468,12 +3497,22 @@ ProjectGraph::close_live_interaction_locked(ManualControlInteractionId const& in
     return closed;
 }
 
-void ProjectGraph::prune_live_interactions_locked()
+void ProjectGraph::prune_live_interactions_locked(ConfiguredGraph const* next_graph)
 {
     std::scoped_lock live(live_mutex_);
     std::erase_if(live_interactions_, [&](LiveManualControlInteraction& entry) {
         if (std::ranges::contains(manual_interactions_, entry.interaction,
                 &ActiveManualControlInteraction::interaction)) {
+            if (next_graph) {
+                auto const range = configured_circular_range(*next_graph, entry.control);
+                if (entry.circular_range != range) {
+                    entry.circular_range = range;
+                    entry.value = canonical_knob_value(range, entry.value);
+                    if (entry.target && !entry.requires_preparation)
+                        entry.target->target_bits.store(
+                            std::bit_cast<std::uint32_t>(entry.value.value), std::memory_order_relaxed);
+                }
+            }
             return false;
         }
         if (entry.target) {
@@ -3501,9 +3540,12 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
                 "manual-control interaction id is not active");
         }
         auto const control_id = interaction->control;
+        auto const value = current_generation_ && current_generation_->graph
+            ? canonical_knob_value(configured_circular_range(*current_generation_->graph, control_id), request.value)
+            : request.value;
         // The end value is the gesture's one durable change and history entry,
         // appended in the order the gesture completes.
-        set_interaction_value_locked(*interaction, request.value);
+        set_interaction_value_locked(*interaction, value);
         auto const live = close_live_interaction_locked(request.interaction);
         auto const settled_dynamic_input = std::ranges::contains(
             dynamic_inputs_, control_id);
@@ -3517,7 +3559,7 @@ void ProjectGraph::handle_project_end_manual_control_interaction(
             settled_dynamic_input,
             {ManualControlTargetValue{
                 .id = control_id,
-                .value = request.value,
+                .value = value,
                 .gesture = live && live->target
                     ? ManualControlGesturePhase::end : ManualControlGesturePhase::none,
             }});
@@ -3882,12 +3924,15 @@ void ProjectGraph::handle_socket_rpc_client_disconnected(
             if (auto const live = close_live_interaction_locked(interaction->interaction)) {
                 // A control disabled since the gesture began keeps its record;
                 // the gesture still closes its live target at the received value.
+                auto const value = current_generation_ && current_generation_->graph
+                    ? canonical_knob_value(configured_circular_range(*current_generation_->graph, interaction->control), live->value)
+                    : live->value;
                 try {
-                    set_interaction_value_locked(*interaction, live->value);
+                    set_interaction_value_locked(*interaction, value);
                 } catch (std::invalid_argument const&) {}
                 ended.push_back({
                     .id = interaction->control,
-                    .value = live->value,
+                    .value = value,
                     .gesture = live->target
                         ? ManualControlGesturePhase::end : ManualControlGesturePhase::none,
                 });

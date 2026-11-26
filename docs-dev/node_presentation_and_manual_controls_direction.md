@@ -940,6 +940,20 @@ keyboard descriptions. Hover never steals keyboard focus from another editor.
 Gesture and numeric-entry ownership belongs to the webview
 root, so remounting a port widget does not silently end its interaction.
 
+#### Circular Sample input knobs
+
+_Accepted 2026-11-26._ A Sequential Sample input can declare `.circular = true`
+with finite `.min` and `.max`, where `min < max`. Set the flag on the module
+input to expose a circular knob on the module lane. The knob draws one full
+turn with a shared endpoint. Scrubbing, keyboard steps, numeric entry, and
+paste produce knob values in `[min, max)`. The project stores that value and
+discards the turn count.
+
+The manual-control ramp follows the shortest arc and emits values in the same
+half-open interval. An exact half-turn moves toward increasing values. The
+range describes the knob and its manual contribution. Cable values and the
+input's combination function keep their ordinary semantics.
+
 ### Clipboard copy/paste is a full value gesture (accepted 2026-11-16)
 
 Hover/focus on a knob makes plain `c` copy its **actual numeric value as

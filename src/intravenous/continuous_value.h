@@ -16,6 +16,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -25,6 +26,52 @@
 #include <vector>
 
 namespace iv {
+
+// The half-open range of a circular manual Sample control. It describes
+// knob values and their interpolation, independent of the input's signal.
+struct CircularSampleRange {
+    Sample min;
+    Sample max;
+
+    constexpr bool valid() const noexcept
+    {
+        return std::isfinite(min.value) && std::isfinite(max.value) && min.value < max.value;
+    }
+
+    constexpr double span() const noexcept { return static_cast<double>(max.value) - min.value; }
+
+    // A shortest-arc ramp crosses at most one endpoint. Rounding back to
+    // Sample can land on the upper endpoint, which represents min.
+    Sample wrap_adjacent(double value) const noexcept
+    {
+        if (value < min.value) value += span();
+        else if (value >= max.value) value -= span();
+        auto const rounded = Sample{value};
+        return rounded.value < max.value ? rounded : min;
+    }
+
+    Sample canonical(Sample value) const noexcept
+    {
+        if (value.value >= min.value && value.value < max.value) return value;
+        if (!std::isfinite(value.value)) return min;
+        auto const period = span();
+        auto offset = std::fmod(std::fmod(value.value, period) - std::fmod(min.value, period), period);
+        if (offset < 0) offset += period;
+        auto const rounded = Sample{static_cast<double>(min.value) + offset};
+        return rounded.value < max.value ? rounded : min;
+    }
+
+    double shortest_delta(Sample from, Sample to) const noexcept
+    {
+        auto const delta = static_cast<double>(to.value) - from.value;
+        auto const period = span();
+        if (delta <= -period / 2) return delta + period;
+        if (delta > period / 2) return delta - period;
+        return delta;
+    }
+
+    bool operator==(CircularSampleRange const&) const = default;
+};
 
 using FFTBin = std::complex<Sample::storage>;
 
@@ -217,6 +264,7 @@ struct SampleContinuousValueExtension {
         // Absent means a stable speed derived from declared bounds/default.
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
+        bool circular = false;
 
         constexpr bool operator==(BoundaryInputOptions const&) const = default;
     };
@@ -231,6 +279,7 @@ struct SampleContinuousValueExtension {
         combine_values_type combine_values = &add;
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
+        bool circular = false;
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
@@ -246,6 +295,7 @@ struct SampleContinuousValueExtension {
             .max = options.max,
             .scrub_speed = options.scrub_speed,
             .enabled_by_default = options.enabled_by_default,
+            .circular = options.circular,
         };
     }
 
@@ -256,6 +306,7 @@ struct SampleContinuousValueExtension {
         Sample neutral_value = 0.0f;
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
+        bool circular = false;
 
         constexpr bool operator==(SequentialInputMetadata const&) const = default;
 
@@ -269,6 +320,7 @@ struct SampleContinuousValueExtension {
             writer.pod(enabled_by_default);
             writer.pod(scrub_speed.has_value());
             if (scrub_speed) writer.pod(scrub_speed->value);
+            writer.pod(circular);
         }
 
         template<class Reader>
@@ -286,6 +338,9 @@ struct SampleContinuousValueExtension {
             result.enabled_by_default = reader.template pod<bool>();
             if (reader.template pod<bool>())
                 result.scrub_speed = Sample{reader.template pod<Sample::storage>()};
+            result.circular = reader.template pod<bool>();
+            if (result.circular && !CircularSampleRange{result.min, result.max}.valid())
+                throw std::invalid_argument("circular Sample input requires finite min < max");
             return result;
         }
     };
@@ -295,6 +350,7 @@ struct SampleContinuousValueExtension {
         std::optional<Sample> min {};
         std::optional<Sample> max {};
         std::optional<Sample> scrub_speed {};
+        bool circular = false;
 
         constexpr bool operator==(
             IntrospectionMetadata const&) const = default;
@@ -312,6 +368,7 @@ struct SampleContinuousValueExtension {
                 write_value(json, "maxValue", *max);
             }
             if (scrub_speed) write_value(json, "scrubSpeed", *scrub_speed);
+            if (circular) json["circular"] = true;
         }
 
     private:
@@ -340,6 +397,7 @@ struct SampleContinuousValueExtension {
             .min = metadata.min,
             .max = metadata.max,
             .scrub_speed = metadata.scrub_speed,
+            .circular = metadata.circular,
         };
     }
 
@@ -413,8 +471,10 @@ struct SampleContinuousValueExtension {
     using CoverageOutputMetadata = StatelessMetadata;
 
     [[nodiscard]] static constexpr SequentialInputMetadata metadata(
-        SequentialInputOptions const& options) noexcept
+        SequentialInputOptions const& options)
     {
+        if (options.circular && !CircularSampleRange{options.min, options.max}.valid())
+            throw std::invalid_argument("circular Sample input requires finite min < max");
         return {
             .default_value = options.default_value,
             .min = options.min,
@@ -422,6 +482,7 @@ struct SampleContinuousValueExtension {
             .neutral_value = options.neutral_value,
             .scrub_speed = options.scrub_speed,
             .enabled_by_default = options.enabled_by_default,
+            .circular = options.circular,
         };
     }
 

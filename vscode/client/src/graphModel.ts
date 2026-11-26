@@ -45,6 +45,7 @@ export type ContinuousValueAlternative = {
     minValue?: ScalarPresentationNumber;
     maxValue?: ScalarPresentationNumber;
     scrubSpeed?: ScalarPresentationNumber;
+    circular?: boolean;
 };
 
 export type SymbolicContinuousPort = {

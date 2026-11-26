@@ -40,8 +40,11 @@ inline std::optional<ManualInputDefaults> manual_input_defaults(ContinuousInputC
     if (is_sequential(config)) {
         auto const& metadata = sequential_input_properties(config).value_metadata;
         if (metadata.size() == 1)
-            if (auto const* sample = std::get_if<Type::SequentialInputMetadata>(&metadata.front()))
-                return ManualInputDefaults{sample->default_value, sample->enabled_by_default};
+            if (auto const* sample = std::get_if<Type::SequentialInputMetadata>(&metadata.front())) {
+                auto const range = circular_manual_control_range(config);
+                return ManualInputDefaults{range ? range->canonical(sample->default_value) : sample->default_value,
+                    sample->enabled_by_default};
+            }
     } else if (supports_coverage_manual_control(config)) {
         auto const& metadata = std::get<CoverageContinuousInputProperties>(config.access).value_metadata;
         auto const& sample = std::get<Type::CoverageInputMetadata>(metadata.front());
