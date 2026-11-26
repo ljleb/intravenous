@@ -8,7 +8,7 @@ struct InvalidReplayBoolean {
     static constexpr bool intrinsically_replayable = true;
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
+        return std::array {iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<InvalidReplayBoolean> const&) const {}
 };

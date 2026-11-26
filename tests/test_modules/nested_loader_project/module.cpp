@@ -11,7 +11,7 @@ void nested_loader_project(iv::GraphBuilder& g)
         "amplitude"_P = 0.25,
         "frequency"_P = 220.0,
         "phase_offset"_P = phase);
-    g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
+    g.outputs("main"_P.with_display_name("Main")[stereo::left] = tone, "main"_P.with_display_name("Main")[stereo::right] = tone);
 }
 
 IV_MODULE("iv.test.nested_loader_project", nested_loader_project, "Nested loader project");

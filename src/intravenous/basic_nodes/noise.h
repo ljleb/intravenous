@@ -116,8 +116,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
-                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
+                input<Sample>({"min", "Minimum"}, InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>({"max", "Maximum"}, InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
@@ -185,8 +185,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("min", InputAccess::sequential, {.default_value = -1.0}),
-                input<Sample>("max", InputAccess::sequential, {.default_value = 1.0}),
+                input<Sample>({"min", "Minimum"}, InputAccess::sequential, {.default_value = -1.0}),
+                input<Sample>({"max", "Maximum"}, InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 

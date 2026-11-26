@@ -2,6 +2,7 @@
     color-scheme: light dark;
     --iv-port-input: var(--vscode-terminal-ansiYellow, #d8ba69);
     --iv-port-output: var(--vscode-terminal-ansiBlue, #6b9dde);
+    --iv-feedback-delay-color: #00c800;
     --iv-ruler-tick: var(--vscode-panel-border);
     --iv-lane-ruler-tick: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
 }

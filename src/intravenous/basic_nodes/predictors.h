@@ -28,12 +28,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("", InputAccess::sequential) };
+            return std::array { input<Sample>(iv::PortNames::generated(), InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::sequential) };
+            return std::array { output<Sample>(iv::PortNames::generated(), OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<NlmsPredictor>& ctx) const
@@ -103,12 +103,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("", InputAccess::sequential) };
+            return std::array { input<Sample>(iv::PortNames::generated(), InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::sequential) };
+            return std::array { output<Sample>(iv::PortNames::generated(), OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualPredictor>& ctx) const
@@ -206,12 +206,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("", InputAccess::sequential) };
+            return std::array { input<Sample>(iv::PortNames::generated(), InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::sequential) };
+            return std::array { output<Sample>(iv::PortNames::generated(), OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<TanhResidualAR2Predictor>& ctx) const
@@ -342,12 +342,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("", InputAccess::sequential) };
+            return std::array { input<Sample>(iv::PortNames::generated(), InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("", OutputProduction::sequential) };
+            return std::array { output<Sample>(iv::PortNames::generated(), OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<PolyResidualPredictor>& ctx) const

@@ -4,7 +4,7 @@
 
 struct InvalidTickCoverageOutput {
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
     void tick_block(iv::TickBlockContext<InvalidTickCoverageOutput> const&) const {}
     void propagate_forward_coverage(

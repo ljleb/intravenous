@@ -62,13 +62,21 @@ export function canDropPortConnection(scope: GraphScope | null, drag: PortConnec
     return true;
 }
 
+function canDetachPortConnection(drag: PortConnectionDrag, target: GraphPortEndpoint | null): boolean {
+    return !isTimelineSnapAddress(drag.port.address) && (!target || !isTimelineSnapAddress(target.address))
+        && (!drag.edit || canDetachConnection(drag.edit.connection.connection));
+}
+
+export function previewConnectionDetached(drag: PortConnectionDrag, target: GraphPortEndpoint | null, altHeld: boolean): boolean {
+    return drag.edit?.connection.connection.loopExtraLatency !== undefined || (altHeld && canDetachPortConnection(drag, target));
+}
+
 export function finishPortConnection(scope: GraphScope | null, drag: PortConnectionDrag, pointerId: number,
     position: PortPointerPosition, target: GraphPortEndpoint | null, emptyEditorSpace = false,
     altHeld = false): PortConnectionResult | null {
     if (!scope?.editable || pointerId !== drag.pointerId) return null;
     if (!movedFromStart(drag, position)) return altHeld ? { type: "altClick" } : null;
-    if (altHeld && target && (isTimelineSnapAddress(target.address) || isTimelineSnapAddress(drag.port.address)
-        || (drag.edit && !canDetachConnection(drag.edit.connection.connection)))) return null;
+    if (altHeld && target && !canDetachPortConnection(drag, target)) return null;
     const detach = altHeld ? { detach: true as const } : {};
     if (drag.edit) {
         if (target && sameGraphPort(drag.port, target)) return null;

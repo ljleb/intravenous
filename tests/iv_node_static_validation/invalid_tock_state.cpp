@@ -7,7 +7,7 @@ struct InvalidConstBackgroundState {
 
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
+        return std::array {iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(iv::TockCoverageContext<InvalidConstBackgroundState>&) const {}

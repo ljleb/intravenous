@@ -4,14 +4,18 @@ import { manualKnobStatus, type KnobActivity } from "../../src/manualControlGest
 import { KnobScrub, clampKnobValue, type KnobLimits } from "../../src/knobScrub";
 import { knobScrubSpeed } from "../../src/knobPresentation";
 import { parseKnobValue, type KnobValueRange } from "../../src/knobValueEntry";
+import { fitPopoverAtPoint } from "../../src/popoverPosition";
 import { scrubSensitivityShortcut } from "../../src/scrubSensitivity";
 import { useOptionalGraphEditor, type KnobDrag } from "../graph/context";
 import KnobFace from "./KnobFace.vue";
 import { isContextMenuKey } from "./contextPopover";
+import { usePresentationSize } from "./presentationSize";
 
 defineOptions({ inheritAttrs: false });
 const props = defineProps<{
     identity: string; label: string; value?: number; limits: KnobLimits; faceLimits?: KnobLimits;
+    valueUnit?: string;
+    accentGradient?: readonly [string, string];
     disabled?: boolean; inactive?: boolean; inverted?: boolean; portCutout?: boolean; direction?: "input" | "output";
     activity?: KnobActivity; description?: string; step?: number; apply: (value: number, live: boolean) => void;
     reset?: () => void;
@@ -50,23 +54,39 @@ watch(button, (element, _, onCleanup) => {
 const hint = computed(() => props.disabled || props.value === undefined
     ? { text: [props.label, props.description, "Unavailable"].filter(Boolean).join(" · "), shortcuts: undefined }
     : manualKnobStatus(props.label, value.value, props.limits.defaultValue !== undefined, props.description));
-const preview = shallowRef<{ target: HTMLElement | "body"; left: string; top: string } | null>(null);
+const previewTarget = shallowRef<HTMLElement | "body" | null>(null);
+const previewPanel = shallowRef<HTMLElement | null>(null);
+const previewSize = usePresentationSize(previewPanel);
+const previewPosition = shallowRef<{ left: string; top: string }>();
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
 function placePreview() {
     const anchor = button.value;
-    if (!anchor) return;
+    const panel = previewPanel.value;
+    if (!anchor || !panel || !previewTarget.value) return;
     const box = anchor.getBoundingClientRect();
-    const center = box.left + box.width / 2;
-    preview.value = { target: anchor.closest<HTMLElement>(":popover-open, [role=dialog]") ?? "body",
-        left: `${Math.max(46, Math.min(window.innerWidth - 46, center))}px`, top: `${Math.max(2, box.top - 82)}px` };
+    const size = { width: panel.offsetWidth, height: panel.offsetHeight };
+    const above = box.top - size.height - 6;
+    const point = fitPopoverAtPoint({ x: box.left + (box.width - size.width) / 2, y: above >= 4 ? above : box.bottom + 6 },
+        size, { width: window.innerWidth, height: window.innerHeight });
+    previewPosition.value = { left: `${point.x}px`, top: `${point.y}px` };
 }
+function showPreview() {
+    const anchor = button.value;
+    if (!anchor) return;
+    const target = anchor.closest<HTMLElement>(":popover-open, [role=dialog]") ?? "body";
+    if (previewTarget.value !== target) {
+        previewPosition.value = undefined;
+        previewTarget.value = target;
+    } else placePreview();
+}
+watch([previewPanel, previewSize], placePreview, { flush: "post" });
 watch([hovered, dragging, () => props.disabled], ([over, drag, unavailable]) => {
     clearTimeout(previewTimer);
-    if (unavailable || (!over && !drag)) preview.value = null;
-    else if (drag || preview.value) placePreview();
-    else previewTimer = setTimeout(placePreview, 300);
+    if (unavailable || (!over && !drag)) previewTarget.value = null;
+    else if (drag || previewTarget.value) showPreview();
+    else previewTimer = setTimeout(showPreview, 300);
 });
-watch(() => preview.value !== null, (visible, _, onCleanup) => {
+watch(() => previewTarget.value !== null, (visible, _, onCleanup) => {
     if (!visible) return;
     window.addEventListener("resize", placePreview);
     window.addEventListener("scroll", placePreview, true);
@@ -126,7 +146,8 @@ defineExpose({ entry });
 </script>
 
 <template>
-    <button v-bind="$attrs" ref="button" type="button" tabindex="-1" class="knob-control" role="slider" :aria-label="label" :aria-valuenow="value"
+    <button v-bind="$attrs" ref="button" type="button" tabindex="-1" class="knob-control" role="slider"
+        :aria-label="label" :aria-valuenow="value" :aria-valuetext="valueUnit ? `${value} ${valueUnit}` : undefined"
         :aria-valuemin="limits.min" :aria-valuemax="limits.max" :disabled="disabled" :data-activity="activity"
         :data-direction="direction ?? 'input'" :class="{ inactive }" :data-status-hint="hint.text" :data-status-shortcuts="hint.shortcuts"
         @iv-hoverenter="hovered = true" @iv-hoverleave="hovered = false" @focus="emit('hover', true)"
@@ -136,13 +157,14 @@ defineExpose({ entry });
         @keydown.right.stop.prevent="step(1)" @keydown.up.stop.prevent="step(1)"
         @keydown.home.stop.prevent="limits.min !== undefined && set(limits.min)"
         @keydown.end.stop.prevent="limits.max !== undefined && set(limits.max)">
-        <KnobFace :value="value" :limits="faceLimits ?? limits" :port-cutout="portCutout" />
+        <KnobFace :value="value" :limits="faceLimits ?? limits" :port-cutout="portCutout" :accent-gradient="accentGradient" />
     </button>
-    <Teleport v-if="preview" :to="preview.target">
-        <div class="knob-preview" :class="{ inactive }" :data-direction="direction ?? 'input'" :data-activity="activity"
-            :style="{ left: preview.left, top: preview.top }" aria-hidden="true">
-            <KnobFace :value="value" :limits="faceLimits ?? limits" />
-            <span>{{ inverted ? '−' : '' }}{{ Number(value.toPrecision(6)) }}</span>
+    <Teleport v-if="previewTarget" :to="previewTarget">
+        <div ref="previewPanel" class="knob-preview" :class="{ inactive }" :data-direction="direction ?? 'input'" :data-activity="activity"
+            :style="previewPosition ?? { visibility: 'hidden' }" aria-hidden="true">
+            <span class="knob-preview-title">{{ label }}</span>
+            <KnobFace :value="value" :limits="faceLimits ?? limits" :accent-gradient="accentGradient" />
+            <span class="knob-preview-value">{{ inverted ? '−' : '' }}{{ Number(value.toPrecision(6)) }}{{ valueUnit ? ` ${valueUnit}` : '' }}</span>
         </div>
     </Teleport>
 </template>
@@ -163,9 +185,13 @@ defineExpose({ entry });
 [data-activity="active"] :deep(.knob-track) { opacity: .9; }
 [data-activity="active"] :deep(.knob-indicator), [data-activity="retained"] :deep(.knob-indicator) { opacity: 1; }
 .knob-control:disabled { cursor: default; opacity: .4; }
-.knob-preview { position: fixed; z-index: 35; transform: translateX(-50%); pointer-events: none;
+.knob-preview { position: fixed; z-index: 35; pointer-events: none; box-sizing: border-box;
+    width: max-content; max-width: min(180px, calc(100vw - 8px));
     display: grid; justify-items: center; gap: 2px; padding: 4px 8px; color: var(--iv-port-input);
     background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 6px; }
 .knob-preview svg { width: 48px; height: 48px; }
-.knob-preview span { color: var(--vscode-foreground); font-variant-numeric: tabular-nums; font-size: 11px; }
+.knob-preview span { color: var(--vscode-foreground); font-size: 11px; line-height: 14px; }
+.knob-preview-title { min-width: 0; text-align: center; overflow-wrap: anywhere; overflow: hidden;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.knob-preview-value { font-variant-numeric: tabular-nums; }
 </style>

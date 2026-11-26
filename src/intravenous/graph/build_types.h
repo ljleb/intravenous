@@ -23,6 +23,8 @@ namespace iv {
         std::vector<ContinuousValueIntrospectionMetadata> value_types {};
         std::optional<ChannelTypeId> channel_type {};
         std::vector<SourceSpan> source_spans {};
+        std::string display_name {};
+        std::string short_display_name{};
 
         bool operator==(
             IntrospectionContinuousPortInfo const&) const = default;
@@ -34,6 +36,8 @@ namespace iv {
         size_t index = 0;
         EventTypeId type = EventTypeId::empty;
         std::vector<SourceSpan> source_spans {};
+        std::string display_name {};
+        std::string short_display_name{};
 
         bool operator==(IntrospectionEventPortInfo const&) const = default;
     };

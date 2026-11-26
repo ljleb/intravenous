@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { GraphConnectionEnd, GraphPortEndpoint } from "../src/graphConnectionEditing";
 import type { GraphScope, GraphScopeNode } from "../src/graphScope";
-import { beginPortConnection, movePortConnection, finishPortConnection } from "../src/portConnectionGesture";
+import { beginPortConnection, movePortConnection, finishPortConnection, previewConnectionDetached } from "../src/portConnectionGesture";
 
 const output: GraphPortEndpoint = { address: { instanceId: "source" }, direction: "output", kind: "sample", index: 0, name: "out" };
 const input: GraphPortEndpoint = { address: { instanceId: "target" }, direction: "input", kind: "sample", index: 0, name: "in" };
@@ -20,6 +20,18 @@ const nodes = [input, output, nextInput, nextOutput].map((port): GraphScopeNode 
         sampleInputs: port.direction === "input" ? [sample] : [], sampleOutputs: port.direction === "output" ? [sample] : [] };
 });
 const graph: GraphScope = { generation: 1, editable: true, nodes, connections: [end.connection] };
+
+test("the cable preview reflects Alt and retains a moved cable's existing detach", () => {
+    const drag = beginPortConnection(output, 7, 0, { x: 0, y: 0 })!;
+    assert.equal(previewConnectionDetached(drag, null, false), false);
+    assert.equal(previewConnectionDetached(drag, input, true), true);
+    assert.equal(previewConnectionDetached(drag, input, false), false);
+
+    const detachedEnd: GraphConnectionEnd = { ...end,
+        connection: { ...end.connection, connection: { ...end.connection.connection, loopExtraLatency: 8 } } };
+    const move = beginPortConnection(input, 7, 0, { x: 0, y: 0 }, detachedEnd)!;
+    assert.equal(previewConnectionDetached(move, nextInput, false), true);
+});
 
 test("captured port drag connects on release over the opposite endpoint", () => {
     const started = beginPortConnection(output, 7, 0, { x: 10, y: 10 })!;

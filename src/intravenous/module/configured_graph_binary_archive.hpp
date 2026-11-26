@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 7;
+inline constexpr std::uint32_t archive_version = 8;
 
 class Writer {
 public:
@@ -360,6 +360,8 @@ inline void write_input(Writer& w, ContinuousInputConfig const& value)
         validate_continuous_metadata(access.value_metadata);
         write_continuous_metadata_list(w, access.value_metadata);
     }, value.access);
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 
 inline ContinuousInputConfig read_input(Reader& r)
@@ -395,6 +397,8 @@ inline ContinuousInputConfig read_input(Reader& r)
     std::visit([&](auto const& access) {
         validate_continuous_metadata(access.value_metadata);
     }, result.access);
+    result.display_name = r.string();
+    result.short_display_name = r.string();
     return result;
 }
 
@@ -408,6 +412,8 @@ inline void write_output(Writer& w, ContinuousOutputConfig const& value)
         validate_continuous_metadata(production.value_metadata);
         write_continuous_metadata_list(w, production.value_metadata);
     }, value.production);
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 
 inline ContinuousOutputConfig read_output(Reader& r)
@@ -444,6 +450,8 @@ inline ContinuousOutputConfig read_output(Reader& r)
     std::visit([&](auto const& production) {
         validate_continuous_metadata(production.value_metadata);
     }, result.production);
+    result.display_name = r.string();
+    result.short_display_name = r.string();
     return result;
 }
 
@@ -454,6 +462,8 @@ inline void write_event_input(Writer& w, EventInputConfig const& value)
     write_input_access(w, value.access);
     write_enum(w, value.content_access);
     w.flag(value.timestamp_only);
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 
 inline EventInputConfig read_event_input(Reader& r)
@@ -472,6 +482,8 @@ inline EventInputConfig read_event_input(Reader& r)
             || result.access != InputAccessKind::coverage)) {
         throw std::runtime_error("timestamp-only event input must accept TriggerEvent Coverage");
     }
+    result.display_name = r.string();
+    result.short_display_name = r.string();
     return result;
 }
 
@@ -484,6 +496,8 @@ inline void write_event_output(Writer& w, EventOutputConfig const& value)
     write_output_realization(w, value.realization);
     w.flag(value.max_event_count.has_value());
     if (value.max_event_count) w.size(*value.max_event_count);
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 
 inline EventOutputConfig read_event_output(Reader& r)
@@ -495,6 +509,8 @@ inline EventOutputConfig read_event_output(Reader& r)
         .production = read_output_production(r),
         .realization = read_output_realization(r),
         .max_event_count = r.flag() ? std::optional(r.size()) : std::nullopt,
+        .display_name = r.string(),
+        .short_display_name = r.string(),
     };
 }
 
@@ -792,6 +808,8 @@ template<class Channel, class Fn> void write_symbolic_sample(Writer& w, Symbolic
     write_source_infos(w, value.source_infos);
     write_values<Channel>(w, value.channels, write_channel);
     w.list(value.member_channels, [&](auto const& members) { write_values<Channel>(w, members, write_channel); });
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 
 template<class Channel, class Fn> SymbolicSamplePortMapping<Channel> read_symbolic_sample(Reader& r, Fn&& read_channel)
@@ -800,6 +818,8 @@ template<class Channel, class Fn> SymbolicSamplePortMapping<Channel> read_symbol
         .source_infos = read_source_infos(r),
         .channels = read_values<Channel>(r, read_channel)};
     result.member_channels = read_list<std::vector<Channel>>(r, [&] { return read_values<Channel>(r, read_channel); });
+    result.display_name = r.string();
+    result.short_display_name = r.string();
     return result;
 }
 
@@ -808,12 +828,16 @@ inline void write_symbolic_event(Writer& w, SymbolicEventPortMapping const& valu
     w.string(value.name); w.size(value.index); write_enum(w, value.type);
     write_source_infos(w, value.source_infos);
     write_values<NodeBundlePortId>(w, value.node_bundle_ports, write_bundle_port);
+    w.string(value.display_name);
+    w.string(value.short_display_name);
 }
 inline SymbolicEventPortMapping read_symbolic_event(Reader& r)
 {
     return {.name = r.string(), .index = r.size(), .type = read_enum<EventTypeId>(r),
         .source_infos = read_source_infos(r),
-        .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port)};
+        .node_bundle_ports = read_values<NodeBundlePortId>(r, read_bundle_port),
+        .display_name = r.string(),
+        .short_display_name = r.string()};
 }
 
 inline void write_sample_output_route(Writer& w, SampleOutputRoute const& route)

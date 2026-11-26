@@ -77,12 +77,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi, InputAccess::sequential) };
+            return std::array { event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("frequency", OutputProduction::sequential) };
+            return std::array { output<Sample>({"frequency", "Frequency"}, OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
@@ -174,12 +174,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi, InputAccess::sequential) };
+            return std::array { event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("gate", OutputProduction::sequential) };
+            return std::array { output<Sample>({"gate", "Gate"}, OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
@@ -292,16 +292,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                event_input("midi", EventTypeId::midi, InputAccess::sequential),
+                event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::tuple {
-                output<Sample>("amplitude", OutputProduction::sequential),
-                output<Sample>("frequency", OutputProduction::sequential),
-                event_output("trigger", EventTypeId::trigger, OutputProduction::sequential),
+                output<Sample>({"amplitude", "Amplitude"}, OutputProduction::sequential),
+                output<Sample>({"frequency", "Frequency"}, OutputProduction::sequential),
+                event_output({"trigger", "Trigger"}, EventTypeId::trigger, OutputProduction::sequential),
             };
         }
 
@@ -399,10 +399,10 @@ namespace iv {
     {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
-        auto const midi = iv::programmatic::declare_event_input(g, "midi", EventTypeId::midi);
+        auto const midi = iv::programmatic::declare_event_input(g, "midi", {"MIDI"}, EventTypeId::midi);
         auto process_voice = [&]<size_t VoiceIndex>() {
             auto voice = g.subgraph([&](auto& s){
-                auto const voice_midi = iv::programmatic::declare_event_input(s, "midi", EventTypeId::midi);
+                auto const voice_midi = iv::programmatic::declare_event_input(s, "midi", {"MIDI"}, EventTypeId::midi);
                 auto midi_driver = details::configure_concrete_node<
                     MidiVoiceAllocator<VoiceIndex, voice_count>>(g);
                 midi_driver.connect_event_input("midi", voice_midi);

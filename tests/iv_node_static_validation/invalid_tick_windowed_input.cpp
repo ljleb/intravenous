@@ -4,7 +4,7 @@
 
 struct InvalidTickWindowedInput {
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::coverage)};
     }
     void tick_block(iv::TickBlockContext<InvalidTickWindowedInput> const&) const {}
 };

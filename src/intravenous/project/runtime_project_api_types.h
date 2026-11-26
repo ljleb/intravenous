@@ -27,6 +27,8 @@ namespace iv {
         std::vector<ContinuousValueIntrospectionMetadata> value_types {};
         std::optional<ChannelTypeId> channel_type {};
         SymbolicPortBinding binding = SymbolicPortBinding::none;
+        std::string display_name {};
+        std::string short_display_name{};
 
         bool operator==(SymbolicContinuousPortInfo const&) const = default;
     };
@@ -38,6 +40,8 @@ namespace iv {
         size_t index = 0;
         EventTypeId type = EventTypeId::empty;
         SymbolicPortBinding binding = SymbolicPortBinding::none;
+        std::string display_name {};
+        std::string short_display_name{};
 
         bool operator==(SymbolicEventPortInfo const&) const = default;
     };

@@ -33,7 +33,8 @@ std::vector<EventOutputRefConfig> make_event_output_configs(
   for (auto const& ref : refs) {
     configs.push_back({
         .ref = ref.ref,
-        .config = {.name = std::string(ref.name)},
+        .config = {.name = std::string(ref.name), .display_name = std::string(ref.display_name),
+            .short_display_name = std::string(ref.short_display_name)},
     });
   }
   return configs;
@@ -54,6 +55,8 @@ std::vector<OutputRefConfig> make_sample_output_configs(
             .channel_layout = ref.channel_layout,
             .production = default_sequential_output_properties(
                 ContinuousValueTypeSet::audio_capable()),
+            .display_name = std::string(ref.display_name),
+            .short_display_name = std::string(ref.short_display_name),
         },
         .public_member = {
             .family_name = std::string(ref.family_name),
@@ -201,7 +204,12 @@ void GraphBuilderPublicPorts::define_sample_outputs(
     size_t output = new_output
       ? _sample_output_members.size()
       : static_cast<size_t>(existing - _sample_output_members.begin());
+    details::validate_port_config_names(config);
     auto inferred = new_output ? config : boundary.boundary_ports().sample_output(output);
+    if (inferred.display_name.empty()) {
+      inferred.display_name = config.display_name;
+      inferred.short_display_name = config.short_display_name;
+    }
     auto single = new_output ? std::optional<NodeBundlePortId>{} : _sample_output_single_contributors[output];
     bool has_contributor = !new_output;
     for (auto const channel : ref.channels()) {
@@ -308,6 +316,7 @@ void GraphBuilderPublicPorts::define_event_outputs(
           ": event_outputs(...) requires names when exposing more than one "
           "event output");
     auto config = refs[i].config;
+    details::validate_port_config_names(config);
     config.type = ref.type;
     auto const sources = ref.sources();
     if (!sources.empty()) {
@@ -528,14 +537,18 @@ void GraphBuilderState::scope_outputs(
     if (refs.size() > 1 && ref.name.empty())
       details::error("outputs(...) requires names when exposing more than one output");
     if (auto const* event = std::get_if<EventPortRef>(&ref.value)) {
-      events.push_back({.ref = *event, .config = {.name = std::string(ref.name)}});
+      events.push_back({.ref = *event, .config = {
+          .name = std::string(ref.name), .display_name = std::string(ref.display_name),
+            .short_display_name = std::string(ref.short_display_name)}});
       kinds.push_back(PortKind::event);
       continue;
     }
     auto source = lift_named_sample(ref);
     samples.push_back({
         .ref = source, .config = {.name = std::string(ref.name),
-            .channel_layout = {.channel_type = source.channel_type, .sample_layout = SampleStreamLayout::planar}},
+            .channel_layout = {.channel_type = source.channel_type, .sample_layout = SampleStreamLayout::planar},
+            .display_name = std::string(ref.display_name),
+            .short_display_name = std::string(ref.short_display_name)},
         .public_member = {.family_name = std::string(ref.name),
             .channel_type = source.channel_type, .whole_stream = true}});
     kinds.push_back(PortKind::sample);

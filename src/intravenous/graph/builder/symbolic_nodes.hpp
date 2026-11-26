@@ -22,6 +22,8 @@ struct SymbolicSamplePortMapping {
   std::vector<SourceInfo> source_infos{};
   std::vector<ChannelId> channels{};
   std::vector<std::vector<ChannelId>> member_channels{};
+  std::string display_name{};
+  std::string short_display_name{};
   bool operator==(SymbolicSamplePortMapping const&) const = default;
 };
 using SymbolicSampleInputPortMapping = SymbolicSamplePortMapping<SampleInputChannelId>;
@@ -33,6 +35,8 @@ struct SymbolicEventPortMapping {
   EventTypeId type = EventTypeId::empty;
   std::vector<SourceInfo> source_infos{};
   std::vector<NodeBundlePortId> node_bundle_ports{};
+  std::string display_name{};
+  std::string short_display_name{};
   bool operator==(SymbolicEventPortMapping const&) const = default;
 };
 
@@ -136,7 +140,9 @@ constexpr void append_symbolic_event_port_mapping(
   auto& mapping = mappings[index];
   if (mapping.node_bundle_ports.empty()) {
     mapping = {.name = config.name, .index = index, .type = config.type,
-               .node_bundle_ports = {bundle_port}};
+               .node_bundle_ports = {bundle_port},
+               .display_name = config.display_name,
+               .short_display_name = config.short_display_name};
     return;
   }
   if (mapping.name != config.name || mapping.type != config.type)
@@ -155,7 +161,9 @@ constexpr void append_symbolic_sample_port_mapping(
     mapping = {.name = config.name, .index = index,
                .channel_layout = layout,
                .channels = {channels.begin(), channels.end()},
-               .member_channels = {{channels.begin(), channels.end()}}};
+               .member_channels = {{channels.begin(), channels.end()}},
+               .display_name = config.display_name,
+               .short_display_name = config.short_display_name};
     return;
   }
   if (mapping.name != config.name || mapping.channel_layout != layout)

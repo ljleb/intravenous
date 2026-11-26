@@ -131,7 +131,7 @@ public:
     {
         // Any requested sample can contain a mark, including when a query
         // selects many disjoint one-sample windows.
-        return std::array{event_output("beats", EventTypeId::beat,
+        return std::array{event_output({"beats", "Beats"}, EventTypeId::beat,
             OutputProduction::coverage, OutputRealization::computed,
             {.max_events_per_index = 1.0})};
     }

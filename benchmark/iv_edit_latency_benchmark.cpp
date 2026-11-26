@@ -385,8 +385,8 @@ constexpr char const* feedback_voice_source = R"(#include <intravenous/dsl.h>
 
 void feedback_voice(iv::GraphBuilder& g)
 {
-    auto frequency = g.input(110.0f);
-    auto cutoff = g.input(0.5f);
+    auto frequency = g.input({"Frequency"}, 110.0f);
+    auto cutoff = g.input({"Cutoff"}, 0.5f);
     auto oscillator = g.node<"builtin.saw">();
     oscillator.connect_input("frequency", frequency);
     auto filter = g.node<"builtin.simple_iir_low_pass">();
@@ -438,13 +438,13 @@ struct StorageSampleSource {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("drive")};
+        return std::array{iv::input<iv::Sample>({"drive", "Drive"})};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -471,7 +471,7 @@ struct StorageHistoryConsumer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in")};
+        return std::array{iv::input<iv::Sample>({"in", "In"})};
     }
 
     static constexpr auto outputs() { return std::tuple{}; }
@@ -496,7 +496,7 @@ struct StorageStereoConsumer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", {
+        return std::array{iv::input<iv::Sample>({"in", "In"}, {
             .channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -525,7 +525,7 @@ struct StorageEventSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "events",
+            {"events", "Events"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::sequential,
             {.max_events_per_index = 0.25})};
@@ -547,7 +547,7 @@ struct StorageEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "events",
+            {"events", "Events"},
             iv::EventTypeId::trigger,
             iv::InputAccess::sequential)};
     }
@@ -568,7 +568,7 @@ struct StorageEventConsumer {
 
 void storage_voice(iv::GraphBuilder& graph)
 {
-    auto drive = graph.input(0.25f);
+    auto drive = graph.input({"Drive"}, 0.25f);
     auto samples = graph.node<StorageSampleSource>(
         std::size_t{512});
     auto converted_samples = graph.node<StorageSampleSource>(

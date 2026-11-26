@@ -55,15 +55,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                SequentialInputConfig<Sample>{.name = "a"},
-                SequentialInputConfig<Sample>{.name = "b"}
+                input<Sample>({"a", "A"}),
+                input<Sample>({"b", "B"})
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                SequentialOutputConfig<Sample>{.name = "out"}
+                output<Sample>({"out", "Out"})
             };
         }
 
@@ -85,7 +85,7 @@ namespace iv {
         {
             auto configs = std::array<SequentialInputConfig<Sample>, NumInputs>{};
             for (auto& config : configs) {
-                config = input<Sample>("", InputAccess::sequential, {
+                config = input<Sample>(iv::PortNames::generated(), InputAccess::sequential, {
                     .channel_layout = {
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
@@ -98,7 +98,7 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("out", OutputProduction::sequential, {
+                output<Sample>({"out", "Out"}, OutputProduction::sequential, {
                     .channel_layout = ChannelLayout {
                         .channel_type = ChannelTypeTraits<ChannelType>::id,
                         .sample_layout = Layout,

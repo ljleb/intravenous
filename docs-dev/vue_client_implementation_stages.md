@@ -719,7 +719,16 @@ checkpoint below for its scope and pending verification. Stage 3 has not started
 The preceding status is preserved in
 [Historical Undo/Redo Direction](./historical/project_undo_redo_before_first_implementation_2026-11-13.md).
 
-Shift-drag disconnection and endpoint movement are implemented in source.
+The initial implementation used Shift-hover to open the chooser, as recorded
+in the following paragraphs. Right-click replaced that gesture on 2026-11-25.
+`NodePorts` opens the same connection chooser for attached and detached
+connections. The port list opens on hover and stays mounted under its nested
+chooser. Right-clicking a connection row, Escape, and Back to ports close only
+the chooser. Moving outside both panels dismisses the nested pair.
+`GraphEditor` no longer tracks Shift for port hover. See the
+[current gestures](./node_presentation_and_manual_controls_direction.md#disconnection-and-endpoint-movement).
+
+Shift-drag disconnection and endpoint movement were implemented first.
 Shift-hover opens a chooser for any port with at least one connection. Pressing
 Shift while already over the port works too. `NodePorts` measures the hovered
 circle, then aligns the first connection's circle with it after rendering.
@@ -928,7 +937,7 @@ After rebuilding the server and extension:
    Open Node Source, Delete Connection, and Save Project Now. The editor has
    no permanent action toolbar or lane edit button. The copy-debug button remains.
 9. Check yellow input circles and blue output circles against the side panel.
-   Hover a grouped slot. Its panel must extend from the slot without an arrow/count
+   Hover over a grouped slot. Its panel must extend from the slot without an arrow/count
    label or a change in lane height.
 10. Drag from an individual port to a compatible port, in both directions.
     A grouped destination must expose the opposite direction. Direct targets
@@ -938,26 +947,23 @@ After rebuilding the server and extension:
 11. Cancel a drag with Escape, release outside a port, or switch away from the
     webview. These actions must submit no connection. A quick primary click
     must also submit nothing. Middle-button scrolling must still work.
-12. Select a lane with incoming and outgoing connections. Hover a connected
+12. Select a lane with incoming and outgoing connections. Hover over a connected
     grouped slot in another lane. A wire to that slot must separate into wires
     to the exposed connected rows, then combine again when it closes. The
     original lane stays selected. Scroll or zoom vertically and check that the
     endpoints follow their controls. Port dragging and copy-debug clicks must
     retain their original actions.
-13. Reload the webview. Hold Shift and hover a grouped slot whose first port
-    has a connection. Its port list and connection chooser must stay at the
-    opening control on the first attempt, without appearing at the screen
-    origin. Close and reopen both lists; repeat with several connections.
+13. Reload the webview. Open a grouped slot whose first port has a connection.
+    Right-click the exposed port. The list and chooser must align with their
+    opening controls on the first attempt. Repeat with several connections.
 14. Press near the text of a port row and drag to create a connection. The
     preview must start at the port circle, not the press coordinates. A
     stationary click must still submit nothing. If the source list closes,
     the preview must follow the source's grouped slot.
-15. Focus another editor, then hold Shift before entering a grouped port whose
-    first port is connected. The chooser must remain stable through the port
-    list and connection-list transitions. Repeat without releasing Shift.
-    Release Shift and move slightly to report the release to the unfocused
-    webview. With keyboard focus in the webview, release must hide the chooser
-    immediately, without reopening from a stationary boundary event.
+15. Focus another editor, then right-click a connected port in the webview.
+    Move the pointer into the chooser and over a detached connection's delay
+    knob. The chooser must stay open. Click outside to dismiss it. Open it
+    again and verify that Escape dismisses it and lane selection stays intact.
 16. Start a new connection from a port list that overlaps another lane. The
     list must close on press, and the uncovered destination must be usable
     before release. Repeat from a connection chooser. The source group must
@@ -965,12 +971,12 @@ After rebuilding the server and extension:
     moving an input end, then choose a different input in that same group.
     Destination lists must still open on hover. A click without movement and
     Escape must make no connection change.
-17. Without clicking or using the keyboard, open a port popover and leave
-    slowly through its right and bottom borders. Repeat at higher speed,
-    across the gap between input and output groups, and during its first
-    opening. It must close outside its own group and panel, stay open over
-    either, and close when the pointer leaves the webview. Repeat with a
-    connection popover while holding Shift; nested transitions must not flicker.
+17. Hover over a folded group, then right-click a port inside its list. Verify
+    that the list stays mounted, and right-clicking inside the chooser closes
+    only that chooser. Open another port's chooser without leaving the list.
+    A single detached connection
+    has a delay knob on both levels. During a cable drag, verify that compatible
+    destination groups open on hover and Alt updates the dashed preview.
 18. Start a new connection at an input. Its fixed end must stay yellow and
     the preview must use the same simple curve as a finished wire. Move across
     the input/output columns, including through an expanded popover: the

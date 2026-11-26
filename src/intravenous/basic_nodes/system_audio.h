@@ -30,7 +30,7 @@ struct SystemAudioInput {
     static constexpr auto outputs()
     {
         return std::array{output<Sample>(
-            "out",
+            {"out", "Out"},
             OutputProduction::sequential,
             {.channel_layout = system_audio_channel_layout})};
     }
@@ -73,7 +73,7 @@ struct SystemAudioOutput {
     static constexpr auto inputs()
     {
         return std::array{input<Sample>(
-            "in",
+            {"in", "In"},
             InputAccess::sequential,
             {.channel_layout = system_audio_channel_layout})};
     }

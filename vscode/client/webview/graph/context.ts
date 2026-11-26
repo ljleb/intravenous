@@ -52,7 +52,6 @@ type GraphEditorContext = {
     implicitOutputModules: Readonly<Ref<ReadonlySet<string>>>;
     connectionFeedback: Readonly<Ref<ReturnType<typeof laneConnectionFeedback>>>;
     toggleModule: (address: NodeAddress) => void;
-    shiftHeld: Readonly<Ref<boolean>>;
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;
     portsChanged: () => void;
     profileGraphUi: <T>(label: string, run: () => T) => T;

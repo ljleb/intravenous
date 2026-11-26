@@ -44,7 +44,7 @@ struct ImmutablePointsNode {
     explicit ImmutablePointsNode(ImmutableArray<Sample> points_) : points(points_) {}
     static constexpr TickReplayMode replay_mode = TickReplayMode::full;
     static constexpr auto outputs() {
-        return std::array{output<Sample>("out", OutputProduction::sequential)};
+        return std::array{output<Sample>({"out", "Out"}, OutputProduction::sequential)};
     }
     void tick(TickSampleContext<ImmutablePointsNode> const& ctx) const {
         ctx.output<"out">().push(points.empty() ? Sample{} : points[0]);
@@ -57,7 +57,7 @@ struct NodeCallEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            event_output("trigger", EventTypeId::trigger, iv::OutputProduction::sequential),
+            event_output({"trigger", "Trigger"}, EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -67,17 +67,17 @@ struct NodeCallEventSource {
 struct NodeCallEventFirstOutputs {
     static constexpr auto outputs() {
         return std::tuple{
-            event_output("event-first", EventTypeId::trigger, OutputProduction::sequential),
-            output<Sample>("sample-first"),
-            event_output("event-second", EventTypeId::trigger, OutputProduction::sequential),
-            output<Sample>("sample-second"),
+            event_output({"event_first", "Event first"}, EventTypeId::trigger, OutputProduction::sequential),
+            output<Sample>({"sample_first", "Sample first"}),
+            event_output({"event_second", "Event second"}, EventTypeId::trigger, OutputProduction::sequential),
+            output<Sample>({"sample_second", "Sample second"}),
         };
     }
     void tick_block(TickBlockContext<NodeCallEventFirstOutputs> const&) const {}
 };
 struct NodeCallEventSink {
     static constexpr auto inputs() {
-        return std::array{event_input("in", EventTypeId::trigger, InputAccess::sequential)};
+        return std::array{event_input({"in", "In"}, EventTypeId::trigger, InputAccess::sequential)};
     }
     void tick_block(TickBlockContext<NodeCallEventSink> const&) const {}
 };
@@ -87,7 +87,7 @@ struct NodeCallEventForwarder {
     void tick_block(TickBlockContext<NodeCallEventForwarder> const&) const {}
 };
 struct NodeCallSampleSink {
-    static constexpr auto inputs() { return std::array{input<Sample>("in")}; }
+    static constexpr auto inputs() { return std::array{input<Sample>({"in", "In"})}; }
     void tick_block(TickBlockContext<NodeCallSampleSink> const&) const {}
 };
 
@@ -95,9 +95,9 @@ struct NodeCallMixedSink {
     static constexpr auto inputs()
     {
         return std::tuple{
-            input<Sample>("left", iv::InputAccess::sequential),
-            input<Sample>("right", iv::InputAccess::sequential),
-            event_input("trigger", EventTypeId::trigger, iv::InputAccess::sequential),
+            input<Sample>({"left", "Left"}, iv::InputAccess::sequential),
+            input<Sample>({"right", "Right"}, iv::InputAccess::sequential),
+            event_input({"trigger", "Trigger"}, EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -108,13 +108,13 @@ struct IntrospectionContinuousDomainNode {
     static constexpr auto inputs()
     {
         return std::array{input<Sample, FractionalGlobalIndex, FFTBlock>(
-            "in", InputAccess::sequential)};
+            {"in", "In"}, InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{output<Sample, FractionalGlobalIndex, FFTBlock>(
-            "out", OutputProduction::sequential)};
+            {"out", "Out"}, OutputProduction::sequential)};
     }
 
     void tick_block(
@@ -171,21 +171,21 @@ void configure_pointer_metadata_package(
 ConfiguredGraph configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
-    auto input = iv::programmatic::declare_input(g, "in", 0.0f);
-    g.outputs("out"_P = input);
+    auto input = iv::programmatic::declare_input(g, "in", {"In"}, 0.0f);
+    g.outputs("out"_P.with_display_name("Out") = input);
     return std::move(g).finish();
 }
 
 ConfiguredGraph configure_introspection_regression()
 {
     GraphBuilder g;
-    auto input = iv::programmatic::declare_input(g, "in", 0.25f);
-    auto event = iv::programmatic::declare_event_input(g, "event", EventTypeId::empty);
+    auto input = iv::programmatic::declare_input(g, "in", {"In"}, 0.25f);
+    auto event = iv::programmatic::declare_event_input(g, "event", {"Event"}, EventTypeId::empty);
     auto sum = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 1>>(g);
     auto const sum_handle = sum.node_bundle_handle();
     auto annotated = _annotate_node_source_info(sum.node_ref(), "sum");
     sum(input);
-    g.outputs("out"_P = sum);
+    g.outputs("out"_P.with_display_name("Out") = sum);
     (void)annotated;
     (void)event;
     auto configured = std::move(g).finish();
@@ -258,11 +258,11 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     ASSERT_NE(session, nullptr);
 
     GraphBuilder builder(session.get());
-    auto input = iv::programmatic::declare_input(builder, "in", 0.0f);
+    auto input = iv::programmatic::declare_input(builder, "in", {"In"}, 0.0f);
     auto pass = details::configure_concrete_node<
         SumN<mono, SampleStreamLayout::planar, 1>>(builder);
     pass(input);
-    builder.outputs("out"_P = pass);
+    builder.outputs("out"_P.with_display_name("Out") = pass);
 
     auto configured = details::take_built_graph(session.get());
     EXPECT_THROW(
@@ -279,8 +279,8 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
 TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
 {
     GraphBuilder graph;
-    auto left = iv::programmatic::declare_input(graph, "left", 0.0f);
-    auto right = iv::programmatic::declare_input(graph, "right", 0.0f);
+    auto left = iv::programmatic::declare_input(graph, "left", {"Left"}, 0.0f);
+    auto right = iv::programmatic::declare_input(graph, "right", {"Right"}, 0.0f);
     auto source = details::configure_concrete_node<NodeCallEventSource>(graph);
     auto sink = details::configure_concrete_node<NodeCallMixedSink>(graph);
     auto tiled_sink = details::configure_concrete_tiled_node<NodeCallMixedSink, stereo>(graph);
@@ -425,26 +425,26 @@ TEST(GraphModules, NodeChainingUsesDeclaredKindAndReturnsTheTargetNode)
 TEST(GraphModules, PublicInputAccessSurvivesSubgraphsAndArchiveRoundTrips)
 {
     GraphBuilder graph;
-    (void)iv::programmatic::declare_input<Sample>(graph, "sequential", InputAccess::sequential, {
+    (void)iv::programmatic::declare_input<Sample>(graph, "sequential", {"Sequential"}, InputAccess::sequential, {
         .default_value = Sample{0.25f},
         .scrub_speed = Sample{0.375f}, .enabled_by_default = false});
-    (void)iv::programmatic::declare_input<stereo>(graph, "region", InputAccess::region);
-    (void)iv::programmatic::declare_input<Sample>(graph, "coverage", InputAccess::coverage, {
+    (void)iv::programmatic::declare_input<stereo>(graph, "region", {"Region"}, InputAccess::region);
+    (void)iv::programmatic::declare_input<Sample>(graph, "coverage", {"Coverage"}, InputAccess::coverage, {
         .channel_layout = mono_planar_channel_layout, .default_value = Sample{1}, .enabled_by_default = true});
-    (void)iv::programmatic::declare_input<Sample>(graph, "");
-    (void)iv::programmatic::declare_event_input(graph, "seq-events", EventTypeId::trigger);
-    (void)iv::programmatic::declare_event_input(graph, "region-events", EventTypeId::trigger, InputAccess::region);
-    (void)iv::programmatic::declare_event_input(graph, "", EventTypeId::trigger, InputAccess::coverage);
+    (void)iv::programmatic::declare_input<Sample>(graph, "", {""});
+    (void)iv::programmatic::declare_event_input(graph, "seq_events", {"Seq events"}, EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(graph, "region_events", {"Region events"}, EventTypeId::trigger, InputAccess::region);
+    (void)iv::programmatic::declare_event_input(graph, "", {""}, EventTypeId::trigger, InputAccess::coverage);
     auto child = graph.subgraph([](SubgraphBuilder& boundary) {
-        (void)iv::programmatic::declare_input<Sample>(boundary, "sequential", {
+        (void)iv::programmatic::declare_input<Sample>(boundary, "sequential", {"Sequential"}, {
             .default_value = Sample{0.5f},
             .scrub_speed = Sample{0.125f}});
-        (void)iv::programmatic::declare_input<stereo>(boundary, "region", InputAccess::region);
-        (void)iv::programmatic::declare_input<FFTBlock>(boundary, "", InputAccess::coverage);
-        (void)iv::programmatic::declare_input(boundary, "", InputAccess::region);
-        (void)iv::programmatic::declare_event_input(boundary, "seq-events", EventTypeId::trigger, InputAccess::sequential);
-        (void)iv::programmatic::declare_event_input(boundary, "region-events", EventTypeId::trigger, InputAccess::region);
-        (void)iv::programmatic::declare_event_input(boundary, "", EventTypeId::trigger, InputAccess::coverage);
+        (void)iv::programmatic::declare_input<stereo>(boundary, "region", {"Region"}, InputAccess::region);
+        (void)iv::programmatic::declare_input<FFTBlock>(boundary, "", {""}, InputAccess::coverage);
+        (void)iv::programmatic::declare_input(boundary, "", {""}, InputAccess::region);
+        (void)iv::programmatic::declare_event_input(boundary, "seq_events", {"Seq events"}, EventTypeId::trigger, InputAccess::sequential);
+        (void)iv::programmatic::declare_event_input(boundary, "region_events", {"Region events"}, EventTypeId::trigger, InputAccess::region);
+        (void)iv::programmatic::declare_event_input(boundary, "", {""}, EventTypeId::trigger, InputAccess::coverage);
         boundary.outputs();
     });
     auto const child_handle = child.node_bundle_handle();
@@ -503,14 +503,14 @@ TEST(GraphModules, MixedPublicOutputsPreserveKindOrderThroughSubgraphsAndArchive
     GraphBuilder g;
     auto module = g.subgraph([&g](SubgraphBuilder& boundary) {
         auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
-        boundary.outputs("events"_F = source, "audio"_P = source,
-            "events2"_F = source.event_port(1), "audio2"_P = source[1]);
+        boundary.outputs("events"_F.with_display_name("Events") = source, "audio"_P.with_display_name("Audio") = source,
+            "events2"_F.with_display_name("Events2") = source.event_port(1), "audio2"_P.with_display_name("Audio2") = source[1]);
     });
     auto const module_handle = module.node_bundle_handle();
     EXPECT_EQ(module.output_port_at(0).port_kind, PortKind::event);
     auto sink = details::configure_concrete_node<NodeCallEventSink>(g);
     sink(module);
-    g.outputs("events"_F = module, "audio"_P = module);
+    g.outputs("events"_F.with_display_name("Events") = module, "audio"_P.with_display_name("Audio") = module);
     auto graph = std::move(g).finish();
     auto const& outputs = graph.public_ports.outputs(graph.node_bundles);
     ASSERT_EQ(outputs.size(), 2u);
@@ -534,13 +534,13 @@ TEST(GraphModules, MixedPublicOutputsPreserveKindOrderThroughSubgraphsAndArchive
 TEST(GraphModules, MixedPublicOutputOrderUsesOutputCountsInsteadOfInputCounts)
 {
     GraphBuilder g;
-    (void)iv::programmatic::declare_input(g, "audio-in");
-    (void)iv::programmatic::declare_event_input(g, "event-in-a", EventTypeId::trigger);
-    (void)iv::programmatic::declare_event_input(g, "event-in-b", EventTypeId::trigger);
-    (void)iv::programmatic::declare_event_input(g, "event-in-c", EventTypeId::trigger);
+    (void)iv::programmatic::declare_input(g, "audio_in", {"Audio in"});
+    (void)iv::programmatic::declare_event_input(g, "event_in_a", {"Event in a"}, EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(g, "event_in_b", {"Event in b"}, EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(g, "event_in_c", {"Event in c"}, EventTypeId::trigger);
     auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
-    g.outputs("event-a"_F = source.event_port(0), "audio-a"_P = source[0],
-        "audio-b"_P = source[1], "event-b"_F = source.event_port(1));
+    g.outputs("event_a"_F.with_display_name("Event a") = source.event_port(0), "audio_a"_P.with_display_name("Audio a") = source[0],
+        "audio_b"_P.with_display_name("Audio b") = source[1], "event_b"_F.with_display_name("Event b") = source.event_port(1));
     auto graph = std::move(g).finish();
     auto const& ports = graph.node_bundles.bundle(
         graph.public_ports.boundary_handle()).boundary_ports();
@@ -570,7 +570,8 @@ TEST(GraphModules, MixedNamedRefListPreservesEventFirstOrder)
 {
     GraphBuilder g;
     auto source = details::configure_concrete_node<NodeCallEventFirstOutputs>(g);
-    g.outputs({{"events", source.event_port()}, {"audio", static_cast<SamplePortRef>(source)}});
+    g.outputs({{{"events", "Events"}, source.event_port()},
+        {{"audio", "Audio"}, static_cast<SamplePortRef>(source)}});
     auto graph = std::move(g).finish();
     auto const& outputs = graph.public_ports.outputs(graph.node_bundles);
     ASSERT_EQ(outputs.size(), 2u);
@@ -809,7 +810,7 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
 TEST(GraphModules, UnnamedChannelAssignmentsExposeOneValueOutput)
 {
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     graph.outputs(stereo::left = input, stereo::right = input);
 
     auto configured = std::move(graph).finish();

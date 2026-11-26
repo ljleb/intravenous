@@ -28,11 +28,11 @@ struct PrivatePass {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = iv::programmatic::declare_input(graph, "in", default_value);
+        auto input = iv::programmatic::declare_input(graph, "in", {"In"}, default_value);
         details::iv_builder_prepare_node_source_identity(&graph, "inner-pass", "pass");
         auto pass = graph.node<Pass>();
         pass(input);
-        graph.outputs("value"_P = pass);
+        graph.outputs("value"_P.with_display_name("Value") = pass);
     }
 };
 
@@ -49,7 +49,7 @@ struct PublicOutputSource {
         std::is_same_v<std::remove_cv_t<decltype(Production)>, std::remove_cv_t<decltype(iv::OutputProduction::sequential)>>;
 
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("value", Production, Realization,
+        return std::array{iv::output<iv::Sample>({"value", "Value"}, Production, Realization,
             {.channel_layout = {.channel_type = Channels, .sample_layout = iv::SampleStreamLayout::interleaved}})};
     }
     void tick_block(iv::TickBlockContext<PublicOutputSource> const&) const requires (sequential) {}
@@ -59,7 +59,7 @@ struct PublicOutputSource {
 
 struct BufferedEventRegion {
     static constexpr auto outputs() {
-        return std::array{iv::event_output("events", iv::EventTypeId::trigger,
+        return std::array{iv::event_output({"events", "Events"}, iv::EventTypeId::trigger,
             iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
     void tock_coverage(iv::TockCoverageContext<BufferedEventRegion>&) const {}
@@ -102,11 +102,11 @@ iv::ConfiguredGraph make_frozen_pass()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto const input = iv::programmatic::declare_input(graph, "in");
+    auto const input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto pass = details::configure_concrete_node<Pass>(graph);
     pass(input);
     pass._annotate_source_info("pass", "/tmp/frozen.cpp", 1, 2);
-    graph.outputs("out"_P = pass);
+    graph.outputs("out"_P.with_display_name("Out") = pass);
     return std::move(graph).finish();
 }
 } // namespace
@@ -130,7 +130,7 @@ TEST(ScopedGraphBuilder, StereoArithmeticStillCreatesOneMemberPerChannel)
     auto source = graph.node<Pass>();
     auto quotient = graph.tile<stereo>(source, source) / 2;
     auto const handle = quotient.node_bundle_handle();
-    graph.outputs("out"_P = quotient);
+    graph.outputs("out"_P.with_display_name("Out") = quotient);
     auto const configured = std::move(graph).finish();
     auto const& bundle = configured.node_bundles.bundle(handle);
     ASSERT_TRUE(bundle.is_tiled());
@@ -161,9 +161,9 @@ TEST(ScopedGraphBuilder, PrivateModuleConstructionPreservesItsBoundary)
     details::iv_builder_prepare_node_source_identity(&root, "private-module", "module");
     auto module = root.node<PrivatePass>(Sample{.25f});
     auto const handle = module.node_bundle_handle();
-    auto const input = iv::programmatic::declare_input(root, "in");
+    auto const input = iv::programmatic::declare_input(root, "in", {"In"});
     module("in"_P = input);
-    root.outputs("out"_P = module["value"_P]);
+    root.outputs("out"_P.with_display_name("Out") = module["value"_P]);
 
     auto const graph = std::move(root).finish();
     auto const& bundles = graph.node_bundles;
@@ -192,13 +192,13 @@ TEST(ScopedGraphBuilder, PublicSampleOutputsInferProductionAndRealizationAcrossD
     auto coverage = details::configure_concrete_node<PublicOutputSource<OutputProduction::coverage, OutputRealization::computed>>(root);
     auto sequential = details::configure_concrete_node<PublicOutputSource<OutputProduction::sequential, OutputRealization::buffered>>(root);
 
-    root.outputs("coverage"_P = coverage, "region"_P = region);
-    root.outputs({NamedRef{"named-coverage", coverage[0]}, NamedRef{"named-region", region[0]}});
-    root.outputs("single-stereo"_P[stereo::left] = stereo_region[0].select_channel(0));
-    root.outputs("single-stereo"_P[stereo::right] = stereo_region[0].select_channel(1));
-    root.outputs("both-buffered"_P[stereo::left] = region, "both-buffered"_P[stereo::right] = other_region);
-    root.outputs("with-computed"_P[stereo::left] = region, "with-computed"_P[stereo::right] = coverage);
-    root.outputs("with-sequential"_P[stereo::left] = region, "with-sequential"_P[stereo::right] = sequential);
+    root.outputs("coverage"_P.with_display_name("Coverage") = coverage, "region"_P.with_display_name("Region") = region);
+    root.outputs({NamedRef{{"named_coverage", "Named coverage"}, coverage[0]}, NamedRef{{"named_region", "Named region"}, region[0]}});
+    root.outputs("single_stereo"_P.with_display_name("Single stereo")[stereo::left] = stereo_region[0].select_channel(0));
+    root.outputs("single_stereo"_P.with_display_name("Single stereo")[stereo::right] = stereo_region[0].select_channel(1));
+    root.outputs("both_buffered"_P.with_display_name("Both buffered")[stereo::left] = region, "both_buffered"_P.with_display_name("Both buffered")[stereo::right] = other_region);
+    root.outputs("with_computed"_P.with_display_name("With computed")[stereo::left] = region, "with_computed"_P.with_display_name("With computed")[stereo::right] = coverage);
+    root.outputs("with_sequential"_P.with_display_name("With sequential")[stereo::left] = region, "with_sequential"_P.with_display_name("With sequential")[stereo::right] = sequential);
     auto const graph = std::move(root).finish();
     auto const outputs = graph.public_ports.sample_outputs(graph.node_bundles);
 
@@ -210,12 +210,12 @@ TEST(ScopedGraphBuilder, PublicSampleOutputsInferProductionAndRealizationAcrossD
     };
     expect("coverage", OutputProductionKind::coverage, OutputRealization::computed);
     expect("region", OutputProductionKind::region, OutputRealization::buffered);
-    expect("named-coverage", OutputProductionKind::coverage, OutputRealization::computed);
-    expect("named-region", OutputProductionKind::region, OutputRealization::buffered);
-    expect("single-stereo", OutputProductionKind::region, OutputRealization::buffered);
-    expect("both-buffered", OutputProductionKind::coverage, OutputRealization::buffered);
-    expect("with-computed", OutputProductionKind::coverage, OutputRealization::computed);
-    expect("with-sequential", OutputProductionKind::sequential, OutputRealization::buffered);
+    expect("named_coverage", OutputProductionKind::coverage, OutputRealization::computed);
+    expect("named_region", OutputProductionKind::region, OutputRealization::buffered);
+    expect("single_stereo", OutputProductionKind::region, OutputRealization::buffered);
+    expect("both_buffered", OutputProductionKind::coverage, OutputRealization::buffered);
+    expect("with_computed", OutputProductionKind::coverage, OutputRealization::computed);
+    expect("with_sequential", OutputProductionKind::sequential, OutputRealization::buffered);
 }
 
 TEST(ScopedGraphBuilder, PublicEventOutputKeepsItsSourceProductionAndRealization)
@@ -224,9 +224,9 @@ TEST(ScopedGraphBuilder, PublicEventOutputKeepsItsSourceProductionAndRealization
     GraphBuilder root;
     auto source = details::configure_concrete_node<BufferedEventRegion>(root);
     auto module = root.subgraph([&](SubgraphBuilder& boundary) {
-        boundary.event_outputs("forwarded"_F = source.event_port());
+        boundary.event_outputs("forwarded"_F.with_display_name("Forwarded") = source.event_port());
     }, "event export");
-    root.outputs("exported"_F = module.event_port());
+    root.outputs("exported"_F.with_display_name("Exported") = module.event_port());
     auto const graph = std::move(root).finish();
     auto const outputs = graph.public_ports.event_outputs(graph.node_bundles);
     ASSERT_EQ(outputs.size(), 1u);
@@ -245,11 +245,11 @@ TEST(ScopedGraphBuilder, RefsFromDifferentViewsOfOneSessionAreCompatible)
     // A ref created through the root view wires a node created through the
     // nested view: both belong to one session.
     inner(source);
-    nested.outputs("out"_P = inner);
+    nested.outputs("out"_P.with_display_name("Out") = inner);
     auto placed = root.subgraph(std::move(nested), "nested");
     auto sink = details::configure_concrete_node<Pass>(root);
     sink(placed);
-    root.outputs("out"_P = sink);
+    root.outputs("out"_P.with_display_name("Out") = sink);
 
     auto const graph = std::move(root).finish();
     EXPECT_EQ(graph.connections.configured_sample_connections().size(), 4u);
@@ -270,11 +270,11 @@ TEST(ScopedGraphBuilder, NestedScopeSnapshotLeavesTheSessionUntouched)
     using namespace iv;
     GraphBuilder root;
     auto nested = root.nested();
-    auto const input = iv::programmatic::declare_input(nested, "in");
+    auto const input = iv::programmatic::declare_input(nested, "in", {"In"});
     auto pass = details::configure_concrete_node<Pass>(nested);
     pass(input);
     pass._annotate_source_info("pass", "/tmp/frozen.cpp", 1, 2);
-    nested.outputs("out"_P = pass);
+    nested.outputs("out"_P.with_display_name("Out") = pass);
 
     auto const before = shape_of(root.finish());
     auto const snapshot = nested.configured_graph();
@@ -285,10 +285,10 @@ TEST(ScopedGraphBuilder, NestedScopeSnapshotLeavesTheSessionUntouched)
     // The live scope keeps being used for the current construction, and a
     // frozen placement of its snapshot is equivalent to it.
     auto const live = root.subgraph(std::move(nested), "nested");
-    root.outputs("out"_P = live);
+    root.outputs("out"_P.with_display_name("Out") = live);
     GraphBuilder frozen_root;
     auto const frozen = frozen_root.subgraph(*snapshot, "nested");
-    frozen_root.outputs("out"_P = frozen);
+    frozen_root.outputs("out"_P.with_display_name("Out") = frozen);
     EXPECT_EQ(
         shape_of(std::move(root).finish()),
         shape_of(std::move(frozen_root).finish()));
@@ -302,7 +302,7 @@ TEST(ScopedGraphBuilder, FreeAncestorCaptureIsConstructibleButNotSnapshotable)
     auto nested = root.nested();
     auto inner = details::configure_concrete_node<Pass>(nested);
     inner(outer);
-    nested.outputs("out"_P = inner);
+    nested.outputs("out"_P.with_display_name("Out") = inner);
 
     auto const snapshot = nested.configured_graph();
     ASSERT_FALSE(snapshot.has_value());
@@ -310,7 +310,7 @@ TEST(ScopedGraphBuilder, FreeAncestorCaptureIsConstructibleButNotSnapshotable)
               ConfiguredGraphSnapshotError::Kind::free_graph_capture);
 
     auto const placed = root.subgraph(std::move(nested), "nested");
-    root.outputs("out"_P = placed);
+    root.outputs("out"_P.with_display_name("Out") = placed);
     // The enclosing scope contains both ends of the capture and is closed.
     EXPECT_TRUE(root.configured_graph().has_value());
     EXPECT_NO_THROW((void)std::move(root).finish());
@@ -323,7 +323,7 @@ TEST(ScopedGraphBuilder, FailedSubgraphFailsItsSession)
     auto outer = details::configure_concrete_node<Pass>(root);
 
     EXPECT_THROW(root.subgraph([&](SubgraphBuilder& boundary) {
-        (void)iv::programmatic::declare_input(boundary, "");
+        (void)iv::programmatic::declare_input(boundary, "", {""});
         auto inner = details::configure_concrete_node<Pass>(root);
         outer(inner);
         throw std::runtime_error("construction failed");
@@ -354,10 +354,10 @@ TEST(ScopedGraphBuilder, ReusableClosuresPlaceFreshScopesOnEveryInvocation)
     using namespace iv;
     GraphBuilder root;
     SubgraphClosure callable = [&](SubgraphBuilder& boundary) {
-        auto const input = iv::programmatic::declare_input(boundary, "");
+        auto const input = iv::programmatic::declare_input(boundary, "", {""});
         auto pass = details::configure_concrete_node<Pass>(root);
         pass(input);
-        boundary.outputs("out"_P = pass);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
     };
     SubgraphClosure frozen{std::make_shared<ConfiguredGraph const>(make_frozen_pass())};
 
@@ -377,7 +377,7 @@ TEST(ScopedGraphBuilder, NestedViewIsFinalizedInPlaceOnlyOnce)
     GraphBuilder root;
     auto nested = root.nested();
     auto pass = details::configure_concrete_node<Pass>(nested);
-    nested.outputs("out"_P = pass);
+    nested.outputs("out"_P.with_display_name("Out") = pass);
     auto const before = root.finish().node_bundles.size();
 
     (void)root.subgraph(std::move(nested), "nested");
@@ -400,7 +400,7 @@ TEST(ScopedGraphBuilder, HigherOrderClosureIsInvokedRepeatedlyInADeeperScope)
     SubgraphClosure voice = [&](SubgraphBuilder& boundary) {
         auto pass = details::configure_concrete_node<Pass>(root);
         pass(source);
-        boundary.outputs("out"_P = pass);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
     };
     auto deeper = root.nested();
     std::vector<NodeBundleHandle> voices;
@@ -437,7 +437,7 @@ TEST(ScopedGraphBuilder, CaughtInnerFailureCannotResumeConstruction)
         // closure's next construction operation is refused.
         auto next = details::configure_concrete_node<Pass>(root);
         resumed = true;
-        boundary.outputs("out"_P = next);
+        boundary.outputs("out"_P.with_display_name("Out") = next);
     }), std::logic_error);
     EXPECT_FALSE(resumed);
     EXPECT_THROW((void)std::move(root).finish(), std::logic_error);
@@ -469,7 +469,7 @@ TEST(ScopedGraphBuilder, NestedViewLeakedFromAClosureFailsTheSession)
     // scope cannot be finalized.
     EXPECT_THROW((void)root.subgraph([&](SubgraphBuilder& boundary) {
         auto pass = details::configure_concrete_node<Pass>(root);
-        boundary.outputs("out"_P = pass);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
         leaked.emplace(root.nested());
     }), std::logic_error);
     ASSERT_TRUE(leaked.has_value());
@@ -484,11 +484,11 @@ TEST(ScopedGraphBuilder, NestedViewsFinalizeInnermostFirst)
         GraphBuilder root;
         auto first = root.nested();
         auto first_node = details::configure_concrete_node<Pass>(first);
-        first.outputs("out"_P = first_node);
+        first.outputs("out"_P.with_display_name("Out") = first_node);
         // Opened while `first` is current, so it is nested inside `first`.
         auto second = root.nested();
         auto second_node = details::configure_concrete_node<Pass>(second);
-        second.outputs("out"_P = second_node);
+        second.outputs("out"_P.with_display_name("Out") = second_node);
 
         // Finalizing the outer scope first is refused, and the refusal fails
         // the session like any other error a session operation raises.
@@ -500,13 +500,13 @@ TEST(ScopedGraphBuilder, NestedViewsFinalizeInnermostFirst)
     GraphBuilder root;
     auto first = root.nested();
     auto first_node = details::configure_concrete_node<Pass>(first);
-    first.outputs("out"_P = first_node);
+    first.outputs("out"_P.with_display_name("Out") = first_node);
     auto second = root.nested();
     auto second_node = details::configure_concrete_node<Pass>(second);
-    second.outputs("out"_P = second_node);
+    second.outputs("out"_P.with_display_name("Out") = second_node);
     auto const inner = root.subgraph(std::move(second), "second");
     auto const outer = root.subgraph(std::move(first), "first");
-    root.outputs("out"_P = outer);
+    root.outputs("out"_P.with_display_name("Out") = outer);
 
     auto const graph = std::move(root).finish();
     auto const info = graph.node_bundles.subgraph_info(outer.node_bundle_handle());
@@ -521,7 +521,7 @@ TEST(ScopedGraphBuilder, DestroyingAnOuterViewBeforeItsInnerViewFailsTheSession)
     std::optional<GraphBuilder> outer{root.nested()};
     auto inner = outer->nested();
     auto pass = details::configure_concrete_node<Pass>(inner);
-    inner.outputs("out"_P = pass);
+    inner.outputs("out"_P.with_display_name("Out") = pass);
 
     outer.reset();
 
@@ -536,7 +536,7 @@ TEST(ScopedGraphBuilder, SnapshotAvailabilityFollowsTheScopeLifecycle)
     auto outer = root.nested();
     auto inner = outer.nested();
     auto pass = details::configure_concrete_node<Pass>(inner);
-    inner.outputs("out"_P = pass);
+    inner.outputs("out"_P.with_display_name("Out") = pass);
 
     auto const incomplete = outer.configured_graph();
     ASSERT_FALSE(incomplete.has_value());
@@ -545,7 +545,7 @@ TEST(ScopedGraphBuilder, SnapshotAvailabilityFollowsTheScopeLifecycle)
     EXPECT_TRUE(inner.configured_graph().has_value());
 
     auto const placed = outer.subgraph(std::move(inner), "inner");
-    outer.outputs("out"_P = placed);
+    outer.outputs("out"_P.with_display_name("Out") = placed);
     // A finalized nested scope is local content of its parent.
     EXPECT_TRUE(outer.configured_graph().has_value());
     auto const closed = inner.configured_graph();
@@ -556,7 +556,7 @@ TEST(ScopedGraphBuilder, SnapshotAvailabilityFollowsTheScopeLifecycle)
     root.outputs();
     // An interface operation on a closed view is an error of the session, so
     // it fails the session.
-    EXPECT_THROW((void)iv::programmatic::declare_input(inner, "late"), std::logic_error);
+    EXPECT_THROW((void)iv::programmatic::declare_input(inner, "late", {"Late"}), std::logic_error);
     EXPECT_THROW((void)std::move(root).finish(), std::logic_error);
 }
 
@@ -567,15 +567,15 @@ TEST(ScopedGraphBuilder, RootInterfaceDeclaredWhileANestedScopeIsCurrentBelongsT
     auto nested = root.nested();
     // Interface operations act on the view's scope; node creation acts on
     // the session's current scope, which is `nested`.
-    auto const input = iv::programmatic::declare_input(root, "x");
+    auto const input = iv::programmatic::declare_input(root, "x", {"X"});
     auto pass = details::configure_concrete_node<Pass>(root);
     pass(input);
-    nested.outputs("out"_P = pass);
+    nested.outputs("out"_P.with_display_name("Out") = pass);
     // The nested node reads the root boundary, a capture outside its scope.
     EXPECT_FALSE(nested.configured_graph().has_value());
 
     auto const placed = root.subgraph(std::move(nested), "nested");
-    root.outputs("out"_P = placed);
+    root.outputs("out"_P.with_display_name("Out") = placed);
     auto const graph = std::move(root).finish();
     auto const inputs = graph.public_ports.sample_inputs(graph.node_bundles);
     ASSERT_EQ(inputs.size(), 1u);
@@ -592,7 +592,7 @@ TEST(ScopedGraphBuilder, FinishingTheRootWhileANestedViewIsOpenFailsTheSession)
     GraphBuilder root;
     auto nested = root.nested();
     auto pass = details::configure_concrete_node<Pass>(nested);
-    nested.outputs("out"_P = pass);
+    nested.outputs("out"_P.with_display_name("Out") = pass);
     EXPECT_THROW((void)std::move(root).finish(), std::logic_error);
     EXPECT_THROW((void)root.subgraph(std::move(nested), "nested"), std::logic_error);
 }
@@ -617,16 +617,16 @@ TEST(ScopedGraphBuilder, EnclosingInterfaceDeclaredWhileANestedScopeIsOpenBelong
     GraphBuilder root;
     auto voice = root.nested();
     auto pass = details::configure_concrete_node<Pass>(voice);
-    voice.outputs("out"_P = pass);
+    voice.outputs("out"_P.with_display_name("Out") = pass);
 
     // An interface operation on the root view acts on the root scope, even
     // while `voice` is the current construction scope. The voice's own
     // contents are unchanged, so its snapshot stays closed.
-    (void)iv::programmatic::declare_input(root, "gain");
+    (void)iv::programmatic::declare_input(root, "gain", {"Gain"});
     EXPECT_TRUE(voice.configured_graph().has_value());
 
     auto const placed = root.subgraph(std::move(voice), "voice");
-    root.outputs("out"_P = placed);
+    root.outputs("out"_P.with_display_name("Out") = placed);
     auto const graph = std::move(root).finish();
     auto const inputs = graph.public_ports.sample_inputs(graph.node_bundles);
     ASSERT_EQ(inputs.size(), 1u);

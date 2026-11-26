@@ -5,7 +5,7 @@
 struct InvalidBackgroundSampleTickOutput {
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::coverage)};
+        return std::array {iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::coverage)};
     }
 
     void tick_block(iv::TickBlockContext<InvalidBackgroundSampleTickOutput> const& ctx) const
@@ -24,7 +24,7 @@ struct InvalidBackgroundEventTickOutput {
     static constexpr auto outputs()
     {
         return std::array {
-            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::coverage),
+            iv::event_output({"events", "Events"}, iv::EventTypeId::trigger, iv::OutputProduction::coverage),
         };
     }
 

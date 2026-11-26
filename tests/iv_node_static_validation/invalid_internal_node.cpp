@@ -5,7 +5,7 @@
 struct DynamicInternalNode {
     std::array<iv::SequentialInputConfig<iv::Sample>, 1> inputs() const
     {
-        return {iv::input<iv::Sample>("input", iv::InputAccess::sequential)};
+        return {iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<DynamicInternalNode> const&) const {}

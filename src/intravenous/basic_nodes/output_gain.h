@@ -12,15 +12,15 @@ struct OutputGainNode {
     static constexpr auto inputs()
     {
         return std::tuple{
-            input<Sample, FFTBlock>("signal",
+            input<Sample, FFTBlock>({"signal", "Signal"},
                 {.channel_layout = {Channels, Layout}},
                 {.channel_layout = {Channels, Layout}}),
-            input<Sample>("scale", {.default_value = 1.0f}),
+            input<Sample>({"scale", "Scale"}, {.default_value = 1.0f}),
         };
     }
     static constexpr auto outputs()
     {
-        return std::tuple{output<Sample, FFTBlock>("scaled",
+        return std::tuple{output<Sample, FFTBlock>({"scaled", "Scaled"},
             {.channel_layout = {Channels, Layout}},
             {.channel_layout = {Channels, Layout}})};
     }

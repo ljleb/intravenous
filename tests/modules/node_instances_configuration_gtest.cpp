@@ -789,7 +789,7 @@ void receiver_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument> a
     auto const& target = *static_cast<NodeRef const*>(arguments[0].data);
     auto pass = details::configure_concrete_node<Pass>(graph);
     pass(target);
-    graph.outputs("out"_P = pass);
+    graph.outputs("out"_P.with_display_name("Out") = pass);
 }
 
 iv::details::ConfigurationExpressionTypeSchema const node_reference_schema{
@@ -1114,7 +1114,7 @@ void closure_owner_module(iv::GraphBuilder& graph, std::span<ConfigurationArgume
     SubgraphClosure voice = [&](SubgraphBuilder& boundary) {
         auto pass = details::configure_concrete_node<Pass>(graph);
         pass(source);
-        boundary.outputs("out"_P = pass);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
     };
     ConfigurationArgument argument{
         .data = &voice,
@@ -1211,7 +1211,7 @@ void tiled_failing_module(iv::GraphBuilder& graph, std::span<ConfigurationArgume
     bool const second = tiled_calls++ % 2 == 1;
     auto value = details::configure_concrete_node<Constant>(graph, Sample{0.25f});
     if (second) throw std::runtime_error("second tiled member failed");
-    graph.outputs("out"_P = value);
+    graph.outputs("out"_P.with_display_name("Out") = value);
 }
 
 // The second member of every stereo request declares a different interface.
@@ -1222,10 +1222,10 @@ void tiled_mismatched_module(iv::GraphBuilder& graph, std::span<ConfigurationArg
     auto value = details::configure_concrete_node<Constant>(graph, Sample{0.25f});
     if (second) {
         auto extra = details::configure_concrete_node<Constant>(graph, Sample{0.5f});
-        graph.outputs("out"_P = value, "other"_P = extra);
+        graph.outputs("out"_P.with_display_name("Out") = value, "other"_P.with_display_name("Other") = extra);
         return;
     }
-    graph.outputs("out"_P = value);
+    graph.outputs("out"_P.with_display_name("Out") = value);
 }
 
 DefinitionSpec failing_spec()

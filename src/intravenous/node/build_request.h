@@ -1458,11 +1458,13 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
         "nodes may declare only Tock outputs");
     if constexpr (has_inputs<Node>) {
         for_each_port_config(Node::inputs(), [&](auto const& input) {
+            validate_port_config_names(input);
             sink.add_input(erase_port_config(input));
         });
     }
     if constexpr (has_outputs<Node>) {
         for_each_port_config(Node::outputs(), [&](auto const& output) {
+            validate_port_config_names(output);
             sink.add_output(erase_port_config(output));
         });
     }

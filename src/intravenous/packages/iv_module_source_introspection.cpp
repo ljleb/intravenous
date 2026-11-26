@@ -84,6 +84,8 @@ SymbolicContinuousPortInfo to_live_port(
         .value_types = port.value_types,
         .channel_type = port.channel_type,
         .binding = binding,
+        .display_name = port.display_name,
+        .short_display_name = port.short_display_name,
     };
 }
 
@@ -97,6 +99,8 @@ SymbolicEventPortInfo to_live_port(
         .index = port.index,
         .type = port.type,
         .binding = binding,
+        .display_name = port.display_name,
+        .short_display_name = port.short_display_name,
     };
 }
 

@@ -201,6 +201,8 @@ project_introspection_continuous_ports(
                 : std::nullopt,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
+            .display_name = mapping.display_name,
+            .short_display_name = mapping.short_display_name,
         });
     }
     return result;
@@ -259,6 +261,8 @@ constexpr std::vector<IntrospectionEventPortInfo> project_introspection_event_po
             .type = mapping.type,
             .source_spans =
                 introspection_source_spans_for(mapping.source_infos),
+            .display_name = mapping.display_name,
+            .short_display_name = mapping.short_display_name,
         });
     }
     return result;
@@ -475,6 +479,8 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .index = family.family_index,
             .value_types = details::introspection_value_types(family.output_config),
             .channel_type = family.channel_type,
+            .display_name = family.output_config.display_name,
+            .short_display_name = family.output_config.short_display_name,
         });
         metadata.symbolic_nodes.push_back(std::move(node));
     }
@@ -491,6 +497,8 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .connectivity = connectivity_of(input.graph_connected),
             .index = input.port_index,
             .type = input.config.type,
+            .display_name = input.config.display_name,
+            .short_display_name = input.config.short_display_name,
         });
         metadata.symbolic_nodes.push_back(std::move(node));
     }
@@ -507,6 +515,8 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .index = family.family_index,
             .value_types = details::introspection_value_types(family.input_config),
             .channel_type = family.channel_type,
+            .display_name = family.input_config.display_name,
+            .short_display_name = family.input_config.short_display_name,
         });
         metadata.symbolic_nodes.push_back(std::move(node));
     }
@@ -522,6 +532,8 @@ constexpr GraphIntrospectionMetadata build_graph_introspection_metadata(
             .name = output.config.name,
             .index = output.port_index,
             .type = output.config.type,
+            .display_name = output.config.display_name,
+            .short_display_name = output.config.short_display_name,
         });
         metadata.symbolic_nodes.push_back(std::move(node));
     }

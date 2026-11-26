@@ -2,12 +2,14 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useManualInput } from "./manualControlContext";
 import { knobPortStatus } from "../../src/knobPresentation";
+import { portDisplayName } from "./nodeSummary";
 import Knob from "./Knob.vue";
+import PortLabel from "./PortLabel.vue";
 
 const props = defineProps<{ name: string; showName?: boolean; direction?: "input" | "output"; portCutout?: boolean }>();
 const control = useManualInput(() => props.name, () => props.direction ?? "input");
 const { value, available, limits, state, descriptor, activity } = control;
-const label = computed(() => control.port.value?.displayName || props.name);
+const label = computed(() => control.port.value ? portDisplayName(control.port.value) : props.name);
 const inactive = computed(() => !descriptor.value?.participates
     || (props.direction === "output" && value.value === 1 && !control.inverted.value));
 const knob = ref<InstanceType<typeof Knob> | null>(null);
@@ -35,10 +37,10 @@ onBeforeUnmount(() => control.hover(false));
         :data-status-hint="[label, description].filter(Boolean).join(' · ')"
         @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
-        <span v-if="showName" class="manual-name">{{ name }}</span>
+        <PortLabel v-if="showName" class="manual-name" :name="label" :short-name="control.port.value?.shortDisplayName" />
         <button v-if="control.canToggleEnabled.value" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
-            :aria-label="`${name} manual value`"
+            :aria-label="`${label} manual value`"
             :data-status-hint="`${label} · ${descriptor?.enabled ? 'Disable knob' : 'Enable knob'}`"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
             <span aria-hidden="true" />
@@ -50,7 +52,7 @@ onBeforeUnmount(() => control.hover(false));
             :reset="control.reset" @hover="control.hover" />
         <button v-if="direction === 'output'" type="button" tabindex="-1" class="knob-side-toggle"
             :aria-pressed="control.inverted.value"
-            :disabled="!available" :aria-label="`${name}: invert output polarity`"
+            :disabled="!available" :aria-label="`${label}: invert output polarity`"
             :data-status-hint="`${label} · ${control.inverted.value ? 'Restore polarity' : 'Invert polarity'}`"
             aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.invert" @contextmenu.stop.prevent

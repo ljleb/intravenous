@@ -554,19 +554,27 @@ namespace iv {
         if constexpr (std::convertible_to<Value, SamplePortRef>) {
             return ChannelNamedArg<Name, ChannelType, ChannelIndex, SamplePortRef>{
                 .value = static_cast<SamplePortRef>(std::forward<T>(value)),
+                .display_name = display_name,
+                .short_display_name = short_display_name,
             };
         } else if constexpr (std::same_as<Value, EventPortRef>) {
             return ChannelNamedArg<Name, ChannelType, ChannelIndex, EventPortRef>{
                 .value = std::forward<T>(value),
+                .display_name = display_name,
+                .short_display_name = short_display_name,
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
             return ChannelNamedArg<Name, ChannelType, ChannelIndex, Handle>{
                 .value = value._clone_handle(),
+                .display_name = display_name,
+                .short_display_name = short_display_name,
             };
         } else {
             return ChannelNamedArg<Name, ChannelType, ChannelIndex, Value>{
                 .value = std::forward<T>(value),
+                .display_name = display_name,
+                .short_display_name = short_display_name,
             };
         }
     }
@@ -582,16 +590,17 @@ namespace iv {
         // source layout is validated by the builder at runtime.
         if constexpr (Kind == NamedPortKind::sample &&
                       std::convertible_to<Value, SamplePortRef>) {
-            return NamedArg<Name, SamplePortRef, Kind>{ static_cast<SamplePortRef>(std::forward<T>(value)) };
+            return NamedArg<Name, SamplePortRef, Kind>{
+                static_cast<SamplePortRef>(std::forward<T>(value)), display_name, short_display_name};
         } else if constexpr (std::same_as<Value, EventPortRef>) {
             return NamedArg<Name, EventPortRef, Kind>{
-                std::forward<T>(value)
+                std::forward<T>(value), display_name, short_display_name
             };
         } else if constexpr (requires(Value const& ref) { ref._clone_handle(); }) {
             using Handle = decltype(value._clone_handle());
-            return NamedArg<Name, Handle, Kind>{ value._clone_handle() };
+            return NamedArg<Name, Handle, Kind>{value._clone_handle(), display_name, short_display_name};
         } else {
-            return NamedArg<Name, Value, Kind>{ std::forward<T>(value) };
+            return NamedArg<Name, Value, Kind>{std::forward<T>(value), display_name, short_display_name};
         }
     }
 }

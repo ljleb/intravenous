@@ -18,15 +18,15 @@ iv::ConfiguredGraph make_nested_annotated_graph()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto const input = iv::programmatic::declare_input(graph, "in");
+    auto const input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
         auto pass = details::configure_concrete_node<Pass>(graph);
         pass(input);
         pass._annotate_source_info(
             "shared-child-node", "/tmp/configured-child.cpp", 10, 20);
-        boundary.outputs("out"_P = pass);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
     }, "nested-child");
-    graph.outputs("out"_P = nested);
+    graph.outputs("out"_P.with_display_name("Out") = nested);
     return std::move(graph).finish();
 }
 
@@ -235,7 +235,7 @@ TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclara
     second.connect_input(0, Sample{2});
     EXPECT_EQ(first.node_bundle_handle(), repeated.node_bundle_handle());
     EXPECT_EQ(first.node_bundle_handle(), branch.node_bundle_handle());
-    nested.outputs("out"_P = repeated, "branch"_P = branch);
+    nested.outputs("out"_P.with_display_name("Out") = repeated, "branch"_P.with_display_name("Branch") = branch);
 
     auto const child = nested.configured_graph();
     ASSERT_TRUE(child.has_value());

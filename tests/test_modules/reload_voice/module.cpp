@@ -4,12 +4,12 @@
 void reload_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const amplitude = g.input(0.1);
-    auto const frequency = g.input(220.0);
-    auto const phase_offset = g.input(0.0);
+    auto const amplitude = g.input({"Amplitude"}, 0.1);
+    auto const frequency = g.input({"Frequency"}, 220.0);
+    auto const phase_offset = g.input({"Phase offset"}, 0.0);
     auto const saw = g.node<"saw">();
     saw("frequency"_P = frequency, "phase_offset"_P = phase_offset);
-    g.outputs("out"_P = saw * amplitude);
+    g.outputs("out"_P.with_display_name("Out") = saw * amplitude);
 }
 
 IV_MODULE("iv.test.reload_voice", reload_voice, "Reload voice");

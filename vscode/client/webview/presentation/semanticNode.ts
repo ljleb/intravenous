@@ -14,7 +14,7 @@ import { addressKey, isProjectInstance, resolveScopePorts } from "../../src/grap
 
 export type SemanticPortDirection = "input" | "output";
 
-type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization" | "displayName"> & {
+type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization" | "displayName" | "shortDisplayName"> & {
     direction: SemanticPortDirection;
     index: number;
     name: string;
@@ -88,6 +88,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
         });
         const base: SemanticPortFields = {
             index: entry.index, name: entry.name, displayName: entry.displayName, direction,
+            shortDisplayName: entry.shortDisplayName,
             access: entry.access, production: entry.production, realization: entry.realization,
             connectivity: connected ? "connected" : "disconnected", binding: "interface",
         };
@@ -138,6 +139,8 @@ function continuousPorts(
         direction,
         index: port.index,
         name: port.name,
+        displayName: port.displayName,
+        shortDisplayName: port.shortDisplayName,
         connectivity: port.connectivity,
         binding: port.binding,
         valueTypes: port.valueTypes,
@@ -154,6 +157,8 @@ function eventPorts(
         direction,
         index: port.index,
         name: port.name,
+        displayName: port.displayName,
+        shortDisplayName: port.shortDisplayName,
         connectivity: port.connectivity,
         binding: port.binding,
         eventType: port.eventType,

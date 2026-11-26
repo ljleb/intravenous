@@ -41,6 +41,8 @@ namespace iv {
         static constexpr auto kind = Kind;
 
         T value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
     // A public-port argument whose name and channel are separate pieces of
@@ -53,16 +55,36 @@ namespace iv {
         static constexpr size_t channel_index = ChannelIndex;
 
         T value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
     template<fixed_string Name, class ChannelType, size_t ChannelIndex>
     struct ChannelPortName {
+        std::string_view display_name {};
+        std::string_view short_display_name {};
+
+        constexpr ChannelPortName with_display_name(
+            std::string_view label, std::string_view abbreviated = {}) const
+        {
+            return {label, abbreviated};
+        }
+
         template<class T>
         constexpr auto operator=(T&& value) const;
     };
 
     template<fixed_string Name, NamedPortKind Kind = NamedPortKind::sample>
     struct PortName {
+        std::string_view display_name {};
+        std::string_view short_display_name {};
+
+        constexpr PortName with_display_name(
+            std::string_view label, std::string_view abbreviated = {}) const
+        {
+            return {label, abbreviated};
+        }
+
         template<class T>
         constexpr auto operator=(T&& value) const;
 
@@ -70,7 +92,7 @@ namespace iv {
         constexpr auto operator[](Channel) const
         {
             using ChannelT = std::remove_cvref_t<Channel>;
-            return ChannelPortName<Name, typename ChannelT::channel_type, ChannelT::channel_index>{};
+            return ChannelPortName<Name, typename ChannelT::channel_type, ChannelT::channel_index>{display_name, short_display_name};
         }
     };
 

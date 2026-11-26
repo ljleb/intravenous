@@ -663,6 +663,8 @@ inline auto make_sample_output_requests(
       using Channel = typename Value::channel_type;
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = Value::name.view();
+      request.display_name = ref.display_name;
+      request.short_display_name = ref.short_display_name;
       request.channel_layout = {.channel_type = ChannelTypeTraits<Channel>::id,
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = Value::name.view();
@@ -672,6 +674,7 @@ inline auto make_sample_output_requests(
       using Channel = typename Value::channel_type;
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = default_output_name;
+      request.display_name = "Value";
       request.channel_layout = {.channel_type = ChannelTypeTraits<Channel>::id,
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = default_output_name;
@@ -680,6 +683,8 @@ inline auto make_sample_output_requests(
     } else if constexpr (is_named_arg_v<Value>) {
       request.ref = builder.lift_to_sample_port(ref.value);
       request.name = Value::name.view();
+      request.display_name = ref.display_name;
+      request.short_display_name = ref.short_display_name;
       request.channel_layout = {.channel_type = request.ref.channel_type,
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = Value::name.view();
@@ -689,6 +694,7 @@ inline auto make_sample_output_requests(
         "outputs(...) requires names when exposing more than one sample output");
       request.ref = builder.lift_to_sample_port(std::forward<Ref>(ref));
       request.name = default_output_name;
+      request.display_name = "Value";
       request.channel_layout = {.channel_type = request.ref.channel_type,
         .sample_layout = SampleStreamLayout::planar};
       request.family_name = default_output_name;
@@ -710,6 +716,8 @@ inline auto make_event_output_requests(Refs&&... refs) {
     if constexpr (is_named_arg_v<Value>) {
       request.ref = lift_node_call_event_operand(ref.value);
       request.name = Value::name.view();
+      request.display_name = ref.display_name;
+      request.short_display_name = ref.short_display_name;
     } else {
       static_assert(count == 1,
         "event_outputs(...) requires names when exposing more than one event output");

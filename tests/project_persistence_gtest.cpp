@@ -81,7 +81,7 @@ void configure_persisted_original(
     std::span<iv::details::ConfigurationArgument>)
 {
     using namespace iv;
-    auto input = iv::programmatic::declare_input(graph, "main");
+    auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
     graph.outputs(input);
 }
 
@@ -91,7 +91,7 @@ void configure_persisted_successor(
 {
     ++persisted_successor_configure_calls;
     using namespace iv;
-    auto input = iv::programmatic::declare_input(graph, "main");
+    auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
     graph.outputs(input);
 }
 

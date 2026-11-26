@@ -683,6 +683,8 @@ NodeBundle::sample_input_descriptor(size_t index) const {
               .name = output.name,
               .channel_layout = output.channel_layout,
               .access = access,
+              .display_name = output.display_name,
+              .short_display_name = output.short_display_name,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_input(index)};
@@ -723,6 +725,8 @@ NodeBundle::sample_output_descriptor(size_t index) const {
               .name = input.name,
               .channel_layout = input.channel_layout,
               .production = production,
+              .display_name = input.display_name,
+              .short_display_name = input.short_display_name,
           }};
         } else if constexpr (std::is_same_v<Bundle, ConcreteNodeBundle>) {
           return {.config = payload.ports.sample_output(index)};
@@ -830,7 +834,9 @@ constexpr EventOutputConfig inward_event_output_config(
           ? OutputProductionKind::sequential
           : input_access(config) == InputAccessKind::region
               ? OutputProductionKind::region
-              : OutputProductionKind::coverage};
+              : OutputProductionKind::coverage,
+      .display_name = config.display_name,
+      .short_display_name = config.short_display_name};
 }
 
 constexpr EventInputConfig inward_event_input_config(
@@ -842,7 +848,9 @@ constexpr EventInputConfig inward_event_input_config(
           ? InputAccessKind::sequential
           : output_production(config) == OutputProductionKind::region
               ? InputAccessKind::region
-              : InputAccessKind::coverage};
+              : InputAccessKind::coverage,
+      .display_name = config.display_name,
+      .short_display_name = config.short_display_name};
 }
 
 template <class MatchesName>

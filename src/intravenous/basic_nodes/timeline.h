@@ -7,7 +7,7 @@ namespace iv {
 struct Timeline {
     void build_graph(GraphBuilder& graph) const
     {
-        iv::programmatic::declare_event_input(graph, "beats", EventTypeId::beat, InputAccess::coverage);
+        iv::programmatic::declare_event_input(graph, "beats", {"Beats"}, EventTypeId::beat, InputAccess::coverage);
         graph.outputs();
     }
 };

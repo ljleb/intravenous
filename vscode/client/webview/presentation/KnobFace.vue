@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import { knobFraction, knobMagnitude } from "../../src/knobPresentation";
 import type { ManualControlLimits } from "../../src/manualControlGesture";
 
-const props = defineProps<{ value: number; limits: ManualControlLimits; portCutout?: boolean }>();
+const props = defineProps<{ value: number; limits: ManualControlLimits; portCutout?: boolean;
+    accentGradient?: readonly [string, string] }>();
+const gradientId = useId();
 
 function point(fraction: number, radius: number) {
     const angle = (-135 + 270 * fraction) * Math.PI / 180;
@@ -51,7 +53,13 @@ const magnitude = computed(() => knobMagnitude(props.value, props.limits));
 </script>
 
 <template>
-    <svg viewBox="0 0 32 32" aria-hidden="true">
+    <svg viewBox="0 0 32 32" aria-hidden="true" :style="accentGradient ? { '--knob-paint': `url(#${gradientId})` } : undefined">
+        <defs v-if="accentGradient">
+            <linearGradient :id="gradientId" gradientUnits="userSpaceOnUse" x1="4" y1="16" x2="28" y2="16">
+                <stop offset="0" :style="{ stopColor: accentGradient[0] }" />
+                <stop offset="1" :style="{ stopColor: accentGradient[1] }" />
+            </linearGradient>
+        </defs>
         <path class="knob-track" :d="track" />
         <circle v-if="portCutout" class="knob-body knob-backing" cx="16" cy="16" r="11.25" />
         <circle class="knob-body" :class="{ 'compact-outline': portCutout }" cx="16" cy="16" r="9"
@@ -70,14 +78,14 @@ const magnitude = computed(() => knobMagnitude(props.value, props.limits));
 </template>
 
 <style scoped>
-.knob-track { fill: none; stroke: currentColor; stroke-width: 1.5; opacity: .34; }
-.knob-body { fill: var(--vscode-editor-background); stroke: currentColor; stroke-width: 1; stroke-opacity: .55; }
+.knob-track { fill: none; stroke: var(--knob-paint, currentColor); stroke-width: 1.5; opacity: .34; }
+.knob-body { fill: var(--vscode-editor-background); stroke: var(--knob-paint, currentColor); stroke-width: 1; stroke-opacity: .55; }
 .knob-body.knob-backing { stroke: none; }
 .knob-body.compact-outline { stroke-opacity: .72; }
-.knob-value-sector { fill: currentColor; opacity: .17; }
-.knob-indicator { stroke: currentColor; stroke-width: 2; stroke-linecap: round; opacity: .82; }
-.magnitude { fill: currentColor; }
-.bound-pin, .default-pin { stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; }
+.knob-value-sector { fill: var(--knob-paint, currentColor); opacity: .17; }
+.knob-indicator { stroke: var(--knob-paint, currentColor); stroke-width: 2; stroke-linecap: round; opacity: .82; }
+.magnitude { fill: var(--knob-paint, currentColor); }
+.bound-pin, .default-pin { stroke: var(--knob-paint, currentColor); stroke-width: 1.2; stroke-linecap: round; }
 .knob-track, .knob-body, .knob-indicator { transition: fill 100ms ease, opacity 100ms ease, stroke-opacity 100ms ease; }
 @media (prefers-reduced-motion: reduce) { .knob-track, .knob-body, .knob-indicator { transition: none; } }
 </style>

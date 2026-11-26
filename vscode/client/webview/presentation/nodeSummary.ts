@@ -7,6 +7,10 @@ export function portKey(port: SemanticPort): string {
     return `${port.direction}:${port.kind}:${port.index}`;
 }
 
+export function portDisplayName(port: Pick<SemanticPort, "displayName" | "name" | "index">): string {
+    return port.displayName || port.name || String(port.index + 1);
+}
+
 export type PortGroup = {
     label: string;
     ports: SemanticPort[];

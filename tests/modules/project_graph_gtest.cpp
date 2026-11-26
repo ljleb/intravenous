@@ -242,8 +242,8 @@ void configure_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
 {
     using namespace iv;
     ++configure_calls;
-    auto input = iv::programmatic::declare_input(graph, "main");
-    graph.outputs("main"_P = input);
+    auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+    graph.outputs("main"_P.with_display_name("Main") = input);
 }
 
 void configure_sibling_modules(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
@@ -305,8 +305,8 @@ struct ReplacingModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
 
     void on_message(
@@ -366,8 +366,8 @@ struct SuccessorModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
 
     void on_message(
@@ -392,8 +392,8 @@ struct ReceiverModule {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
 
     void on_message(
@@ -419,8 +419,8 @@ struct SenderModule {
             source_file,
             1,
             2);
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
 
     void on_message(
@@ -467,8 +467,8 @@ struct SelectorSenderModule {
             source_file,
             1,
             2);
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
 
     void on_message(
@@ -501,7 +501,7 @@ struct ManualControlLeaf {
     {
         return std::array{
             iv::input<iv::Sample>(
-                "gain", iv::InputAccess::sequential),
+                {"gain", "Gain"}, iv::InputAccess::sequential),
         };
     }
 
@@ -2433,14 +2433,14 @@ namespace {
 struct NamedSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
-            {.channel_layout = iv::mono_planar_channel_layout, .default_value = 0.25f})};
+        return std::array{iv::input<iv::Sample>({"in", "Signal input"}, iv::InputAccess::sequential,
+                {.channel_layout = iv::mono_planar_channel_layout, .default_value = 0.25f})};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
-            {.channel_layout = iv::mono_planar_channel_layout})};
+        return std::array{iv::output<iv::Sample>({"out", "Signal output"}, iv::OutputProduction::sequential,
+                {.channel_layout = iv::mono_planar_channel_layout})};
     }
 
     void tick(iv::TickSampleContext<NamedSamplePass> const& ctx) const
@@ -2539,7 +2539,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     using namespace iv;
     auto configure_children = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
         using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
-        auto input = iv::programmatic::declare_input(graph, "main");
+        auto input = iv::programmatic::declare_input(graph, "main", PortDisplayName{"Main input"});
         auto named = details::configure_concrete_node<NamedSamplePass>(graph);
         named(input);
         named._annotate_source_info("source-local:/tmp/module_children.cpp:1@named", "/tmp/module_children.cpp", 1, 2, "named");
@@ -2550,7 +2550,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
         second(alias);
         auto anonymous = details::configure_concrete_node<Pass>(graph);
         anonymous(second);
-        graph.outputs("main"_P = anonymous, "tap"_P = second);
+        graph.outputs("main"_P.with_display_name("Main output") = anonymous, "tap"_P.with_display_name("Tap") = second);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
     ProjectStringBuilder create;
@@ -2574,12 +2574,19 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     auto const named = parse_address(child);
     auto const& child_input = child.at("sampleInputs").at(0);
     EXPECT_EQ(child_input.at("name"), "in");
+    EXPECT_EQ(child_input.at("displayName"), "Signal input");
     ASSERT_TRUE(child_input.contains("manualControl")) << child_input.dump();
     EXPECT_FALSE(child_input.at("manualControl").at("enabled").get<bool>());
     EXPECT_EQ(child_input.at("manualControl").at("value"), 0.25f);
     auto const& public_input = scope_node(scope, "module").at("sampleInputs").at(0);
+    EXPECT_EQ(public_input.at("name"), "main");
+    EXPECT_EQ(public_input.at("displayName"), "Main input");
     EXPECT_TRUE(public_input.at("manualControl").at("enabled").get<bool>());
+    auto const& public_output = scope_node(scope, "module").at("sampleOutputs").at(0);
+    EXPECT_EQ(public_output.at("name"), "main");
+    EXPECT_EQ(public_output.at("displayName"), "Main output");
     EXPECT_EQ(child.at("sampleOutputs").at(0).at("name"), "out");
+    EXPECT_EQ(child.at("sampleOutputs").at(0).at("displayName"), "Signal output");
     EXPECT_TRUE(child.at("sampleOutputs").at(0).at("manualControl").at("enabled").get<bool>());
     auto const second = parse_address(children.at(1));
     auto const& unnamed_input = children.at(1).at("sampleInputs").at(0);
@@ -2600,6 +2607,8 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsOnlySelectorReachableModuleChildren)
     EXPECT_NE(alias_member.at("membershipAddress"), member.at("address"));
     EXPECT_EQ(alias_member.at("sampleInputs"), member.at("sampleInputs"));
     auto const& member_input = member.at("sampleInputs").at(0);
+    EXPECT_EQ(member_input.at("name"), "in");
+    EXPECT_EQ(member_input.at("displayName"), "Signal input");
     ASSERT_TRUE(member_input.contains("manualControl")) << member_input.dump();
     EXPECT_FALSE(member_input.at("manualControl").at("enabled").get<bool>());
     EXPECT_EQ(member_input.at("manualControl").at("value"), 0.25f);
@@ -2724,7 +2733,7 @@ TEST_F(ProjectGraphFixture, GraphScopeShowsConnectionsFromNamedSamplePortAliases
         auto consumer = details::configure_concrete_node<Pass>(graph);
         consumer(output);
         consumer._annotate_source_info("consumer", "/tmp/module_alias.cpp", 3, 4);
-        graph.outputs("main"_P = consumer);
+        graph.outputs("main"_P.with_display_name("Main") = consumer);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
     ProjectStringBuilder create;
@@ -2757,7 +2766,7 @@ TEST_F(ProjectGraphFixture, GraphScopeAnchorsHiddenSampleSourcesAtTheirModule)
         consumer(hidden);
         consumer(constant);
         consumer._annotate_source_info("consumer", "/tmp/hidden_wire.cpp", 5, 6);
-        graph.outputs("main"_P = consumer);
+        graph.outputs("main"_P.with_display_name("Main") = consumer);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
     ProjectStringBuilder create;
@@ -2795,13 +2804,13 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
 {
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto const detune = iv::programmatic::declare_input(graph, "main", 0, -100, 100);
+        auto const detune = iv::programmatic::declare_input(graph, "main", {"Main"}, 0, -100, 100);
         // Use private constant nodes because this fixture has no package-generated type metadata.
         auto const numerator_scale = graph.node<Constant>(Sample{2});
         auto const denominator = graph.node<Constant>(Sample{15});
         auto detune_pair = detune * numerator_scale / denominator;
         detune_pair._annotate_source_info("detune_pair", "/tmp/quotient.cpp", 1, 2, "detune_pair");
-        graph.outputs("main"_P = detune_pair);
+        graph.outputs("main"_P.with_display_name("Main") = detune_pair);
     };
     auto definitions = std::const_pointer_cast<NodeDefinitionsSnapshot>(make_snapshot(1, configure));
     definitions->by_id.emplace("test.quotient", NodeDefinitionEntry{
@@ -2867,7 +2876,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForTiledMultiplicationAndItsMe
         auto const balance = graph.tile<stereo>(left, right);
         auto const gain = level * balance;
         gain._annotate_source_info("gain", "/tmp/gain.cpp", 1, 2, "gain");
-        graph.outputs("main"_P = gain);
+        graph.outputs("main"_P.with_display_name("Main") = gain);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure)});
     ProjectStringBuilder create;
@@ -2917,7 +2926,7 @@ TEST_F(ProjectGraphFixture, SymbolicDeclarationsKeepSeparateLanesAndInputsForEac
         auto pair = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 2>>(graph);
         single._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
         pair._annotate_source_info("voice", "/tmp/voice.cpp", 1, 2, "voice");
-        graph.outputs("main"_P = single);
+        graph.outputs("main"_P.with_display_name("Main") = single);
     };
     publish_definitions_snapshot(project_graph, {.snapshot = make_snapshot(1, configure_children)});
     ProjectStringBuilder create;
@@ -5173,7 +5182,7 @@ TEST_F(ProjectGraphFixture, RegisteredBuiltinConstructionIsAnImplicitPackageDepe
 TEST_F(ProjectGraphFixture, StereoObservationCapabilitiesKeepPublicChannelNamesAndOperationSchemas)
 {
     auto snapshot = make_snapshot(1, +[](iv::GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto input = iv::programmatic::declare_input(graph, "main");
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
         graph.outputs(graph.tile<iv::stereo>(input, input));
     });
     publish_definitions_snapshot(project_graph, {.snapshot = snapshot});

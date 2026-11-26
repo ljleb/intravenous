@@ -2,7 +2,7 @@
 import { useNode } from "./nodeContext";
 import { useLane } from "./laneContext";
 import { computed, nextTick, ref } from "vue";
-import { nodeDisplayName, portDescription } from "./nodeSummary";
+import { nodeDisplayName, portDescription, portDisplayName } from "./nodeSummary";
 import { editableHeightPx, type NodeDisplayMode } from "./displayMode";
 import NodePorts from "./NodePorts.vue";
 import LiveOutputMeters from "./LiveOutputMeters.vue";
@@ -24,8 +24,8 @@ const inlineHeader = computed(() => props.mode === "mini" || props.mode === "nan
     || (props.mode === "compact" && (lane?.regionHeight.value ?? Infinity) < editableHeightPx));
 const inputs = computed(() => node.value.ports.filter((port) => port.direction === "input"));
 const outputs = computed(() => node.value.ports.filter((port) => port.direction === "output"));
-const inputSummary = computed(() => inputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
-const outputSummary = computed(() => outputs.value.map((port) => `${port.name}: ${portDescription(port)}`).join('\n'));
+const inputSummary = computed(() => inputs.value.map((port) => `${portDisplayName(port)}: ${portDescription(port)}`).join('\n'));
+const outputSummary = computed(() => outputs.value.map((port) => `${portDisplayName(port)}: ${portDescription(port)}`).join('\n'));
 const displayName = computed(() => nodeDisplayName(node.value));
 const labels = computed(() => props.moduleBoundary ? laneLabels("Module Ports")
     : laneLabels(displayName.value, node.value.sourceLabel));

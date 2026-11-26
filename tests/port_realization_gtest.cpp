@@ -22,13 +22,13 @@ struct MixedIdentity {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample, iv::FractionalGlobalIndex>(
-            "in", iv::InputAccess::sequential)};
+            {"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -45,7 +45,7 @@ struct FractionalSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalSource> const&) const {}
@@ -55,7 +55,7 @@ struct FractionalOnly {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FractionalOnly> const&) const {}
@@ -68,7 +68,7 @@ struct AnchoredChoice {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -83,7 +83,7 @@ struct AnchoredChoice {
 struct SampleSource {
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<SampleSource> const&) const {}
 };
@@ -91,11 +91,11 @@ struct SampleSource {
 struct RateDoubler {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<RateDoubler>& ctx) const
     {
@@ -109,7 +109,7 @@ struct AbsolutelyAnchoredRateDoubler {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<AbsolutelyAnchoredRateDoubler>& ctx) const
@@ -127,7 +127,7 @@ struct AbsolutePaceAnchor {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential)};
+            {"in", "In"}, iv::InputAccess::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<AbsolutePaceAnchor>& ctx) const
@@ -140,11 +140,11 @@ struct AbsolutePaceAnchor {
 struct OrdinaryIdentity {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void tick_block(iv::TickBlockContext<OrdinaryIdentity> const&) const {}
 };
@@ -153,7 +153,7 @@ struct FftSizedOutput {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FFTBlock>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<FftSizedOutput>& ctx) const
     {
@@ -166,7 +166,7 @@ struct InvalidFftSizedOutput {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FFTBlock>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<InvalidFftSizedOutput>& ctx) const
@@ -179,7 +179,7 @@ struct InvalidFftSizedOutput {
 struct UnsupportedDyadicPace {
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(
         iv::ConstrainPortsContext<UnsupportedDyadicPace>& ctx) const
@@ -192,11 +192,11 @@ struct UnsupportedDyadicPace {
 struct TimedPorts {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
     void constrain_ports(iv::ConstrainPortsContext<TimedPorts>& ctx) const
     {
@@ -215,13 +215,13 @@ struct PaceRelation {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential)};
+            {"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<PaceRelation>& ctx) const
@@ -240,9 +240,9 @@ struct MixedCoverageOrderingSource {
     {
         return std::tuple{
             iv::output<iv::Sample>(
-                "samples", iv::OutputProduction::coverage),
+                {"samples", "Samples"}, iv::OutputProduction::coverage),
             iv::event_output(
-                "events", iv::EventTypeId::trigger,
+                {"events", "Events"}, iv::EventTypeId::trigger,
                 iv::OutputProduction::coverage),
         };
     }
@@ -259,9 +259,9 @@ struct MixedCoverageOrderingRelay {
     {
         return std::tuple{
             iv::input<iv::Sample>(
-                "samples", iv::InputAccess::coverage),
+                {"samples", "Samples"}, iv::InputAccess::coverage),
             iv::event_input(
-                "events", iv::EventTypeId::trigger,
+                {"events", "Events"}, iv::EventTypeId::trigger,
                 iv::InputAccess::coverage),
         };
     }
@@ -270,9 +270,9 @@ struct MixedCoverageOrderingRelay {
     {
         return std::tuple{
             iv::output<iv::Sample>(
-                "samples", iv::OutputProduction::coverage),
+                {"samples", "Samples"}, iv::OutputProduction::coverage),
             iv::event_output(
-                "events", iv::EventTypeId::trigger,
+                {"events", "Events"}, iv::EventTypeId::trigger,
                 iv::OutputProduction::coverage),
         };
     }
@@ -301,9 +301,9 @@ struct MixedSortedCoverageSink {
     {
         return std::tuple{
             iv::input<iv::Sample>(
-                "samples", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
+                {"samples", "Samples"}, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
             iv::event_input(
-                "events", iv::EventTypeId::trigger,
+                {"events", "Events"}, iv::EventTypeId::trigger,
                 iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer),
         };
     }

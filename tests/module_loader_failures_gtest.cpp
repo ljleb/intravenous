@@ -50,8 +50,8 @@ TEST(ModuleLoaderPackages, ModuleInputIdentifiersNamePortsWithoutSourceAnnotatio
 
 void module_main(iv::GraphBuilder& graph)
 {
-    auto const frequency = graph.input<iv::Sample>({.default_value = 440.f});
-    auto const gates = graph.event_input(iv::EventTypeId::trigger, iv::InputAccess::coverage);
+    auto const frequency = graph.input<iv::Sample>({"Frequency"}, {.default_value = 440.f});
+    auto const gates = graph.event_input({"Gates"}, iv::EventTypeId::trigger, iv::InputAccess::coverage);
     graph.outputs(frequency);
     graph.event_outputs(gates);
 }
@@ -80,8 +80,8 @@ TEST(ModuleLoaderFailures, ModuleInputMustDirectlyInitializeANamedLocal)
 
 void invalid_inputs(iv::GraphBuilder& graph)
 {
-    (void)graph.input();
-    graph.event_outputs(graph.event_input(iv::EventTypeId::trigger));
+    (void)graph.input({"Input"});
+    graph.event_outputs(graph.event_input({"Trigger"}, iv::EventTypeId::trigger));
 }
 IV_MODULE("iv.test.unnamed_inputs", invalid_inputs, "Unnamed Inputs");
 )cpp");
@@ -459,7 +459,7 @@ void builtin_beats(iv::GraphBuilder& g)
     using namespace iv;
     auto beats = g.node<"beats">(123.5, 3u, std::vector<std::uint32_t>{3, 2});
     auto defaults = g.node<"beats">();
-    g.event_outputs("configured"_F = beats.event_port("beats"), "defaults"_F = defaults.event_port("beats"));
+    g.event_outputs("configured"_F.with_display_name("Configured") = beats.event_port("beats"), "defaults"_F.with_display_name("Defaults") = defaults.event_port("beats"));
 }
 
 IV_MODULE("iv.test.builtin_beats", builtin_beats, "Builtin beats");
@@ -533,14 +533,14 @@ TEST(ModuleLoaderPackages, RegisteredModuleCanConstructATiledMonoInterface)
         "#include <intravenous/dsl.h>\n\n"
         "void mono_voice(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto frequency = g.input(220.0f);\n"
+        "    auto frequency = g.input({\"Frequency\"}, 220.0f);\n"
         "    auto oscillator = g.node<\"saw\">();\n"
         "    oscillator.connect_input(\"frequency\", frequency);\n"
         "    g.outputs(oscillator);\n"
         "}\n\n"
         "void stereo_voice(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto frequency = g.input<iv::stereo>(440.0f);\n"
+        "    auto frequency = g.input<iv::stereo>({\"Frequency\"}, 440.0f);\n"
         "    auto voice = g.node<\"iv.test.tiled_mono_voice\", iv::stereo>();\n"
         "    voice.connect_input(\"frequency\", frequency);\n"
         "    g.outputs(voice);\n"
@@ -583,7 +583,7 @@ TEST(ModuleLoaderFailures, TiledRegisteredModuleRequiresMonoSampleInterface)
         "#include <intravenous/dsl.h>\n\n"
         "void stereo_provider(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto input = g.input<iv::stereo>();\n"
+        "    auto input = g.input<iv::stereo>({\"Input\"});\n"
         "    g.outputs(input);\n"
         "}\n\n"
         "void invalid_tiled_use(iv::GraphBuilder& g)\n"
@@ -644,7 +644,7 @@ TEST(ModuleLoaderPackages, CaughtTiledModuleRejectionStillFailsThePackage)
         "#include <intravenous/dsl.h>\n\n"
         "void incompatible_provider(iv::GraphBuilder& g)\n"
         "{\n"
-        "    auto input = g.input<iv::stereo>();\n"
+        "    auto input = g.input<iv::stereo>({\"Input\"});\n"
         "    g.outputs(input);\n"
         "}\n\n"
         "void catches_rejected_tile(iv::GraphBuilder& g)\n"
@@ -806,7 +806,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    constexpr explicit ConfiguredProviderNode(iv::Sample gain_ = iv::Sample{0.25f})\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array{iv::SequentialOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
+        "    { return std::array{iv::output<iv::Sample>({\"out\", \"Out\"})}; }\n"
         "    void tick(iv::TickSampleContext<ConfiguredProviderNode> const& ctx) const\n"
         "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
@@ -815,7 +815,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    constexpr explicit RequiredConfiguredProviderNode(iv::Sample gain_)\n"
         "        : gain(gain_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array{iv::SequentialOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
+        "    { return std::array{iv::output<iv::Sample>({\"out\", \"Out\"})}; }\n"
         "    void tick(iv::TickSampleContext<RequiredConfiguredProviderNode> const& ctx) const\n"
         "    { ctx.output<\"out\">().push(gain); }\n"
         "};\n"
@@ -824,7 +824,7 @@ TEST(ModuleLoaderPackages, RegisteredNodeAndModuleUseProviderConstructionArgumen
         "    constexpr explicit LabelConfiguredProviderNode(char const* label_)\n"
         "        : label(label_) {}\n"
         "    static constexpr auto outputs()\n"
-        "    { return std::array{iv::SequentialOutputConfig<iv::Sample>{.name = \"out\"}}; }\n"
+        "    { return std::array{iv::output<iv::Sample>({\"out\", \"Out\"})}; }\n"
         "    void tick(iv::TickSampleContext<LabelConfiguredProviderNode> const& ctx) const\n"
         "    { ctx.output<\"out\">().push(iv::Sample{}); }\n"
         "};\n"

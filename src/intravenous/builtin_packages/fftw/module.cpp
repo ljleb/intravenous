@@ -44,14 +44,14 @@ struct RealFFT {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("samples", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"samples", "Samples"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("spectrum", iv::OutputProduction::sequential),
+            iv::output<iv::FFTBlock>({"spectrum", "Spectrum"}, iv::OutputProduction::sequential),
         };
     }
 
@@ -153,14 +153,14 @@ struct InverseRealFFT {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::FFTBlock>("spectrum", iv::InputAccess::sequential),
+            iv::input<iv::FFTBlock>({"spectrum", "Spectrum"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("samples", iv::OutputProduction::sequential),
+            iv::output<iv::Sample>({"samples", "Samples"}, iv::OutputProduction::sequential),
         };
     }
 

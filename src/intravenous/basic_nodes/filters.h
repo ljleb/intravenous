@@ -15,8 +15,8 @@ namespace iv {
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("low"),
-                output<Sample>("high"),
+                output<Sample>({"low", "Low"}),
+                output<Sample>({"high", "High"}),
             };
         }
 
@@ -50,8 +50,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("in"),
-                input<Sample>("cutoff", {
+                input<Sample>({"in", "In"}),
+                input<Sample>({"cutoff", "Cutoff"}, {
                     .default_value = 1.0f,
                     .min = 0.0f,
                     .max = 1.0f,
@@ -61,7 +61,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("out") };
+            return std::array { output<Sample>({"out", "Out"}) };
         }
 
         void constrain_ports(ConstrainPortsContext<SimpleIirHighPass>& ctx) const
@@ -101,8 +101,8 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("in"),
-                input<Sample>("cutoff", {
+                input<Sample>({"in", "In"}),
+                input<Sample>({"cutoff", "Cutoff"}, {
                     .default_value = 1.0f,
                     .min = 0.0f,
                     .max = 1.0f,
@@ -112,7 +112,7 @@ namespace iv {
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("out") };
+            return std::array { output<Sample>({"out", "Out"}) };
         }
 
         void constrain_ports(ConstrainPortsContext<SimpleIirLowPass>& ctx) const

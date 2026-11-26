@@ -993,7 +993,8 @@ public:
             || !diagnosed_module_inputs_.insert(call).second) return;
         auto const id = context_.getDiagnostics().getCustomDiagID(
             DiagnosticsEngine::Error,
-            "module input must directly initialize a named local variable, such as 'auto const frequency = g.input();'");
+            "module input must directly initialize a named local variable, "
+            "such as 'auto const frequency = g.input({\"Frequency\"});'");
         context_.getDiagnostics().Report(call->getExprLoc(), id);
     }
 

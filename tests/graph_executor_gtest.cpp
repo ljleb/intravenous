@@ -1001,7 +1001,7 @@ struct BackgroundLifecycleProbe {
         ~State() { check_owner(); --live; }
     };
     static constexpr auto outputs()
-    { return std::tuple{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)}; }
+    { return std::tuple{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)}; }
     void tock_coverage(iv::TockCoverageContext<BackgroundLifecycleProbe>&) const {}
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundLifecycleProbe>&) const {}
     void initialize(iv::InitializationContext<BackgroundLifecycleProbe> const& ctx) const

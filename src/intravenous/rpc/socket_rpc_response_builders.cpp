@@ -465,6 +465,7 @@ Json graph_scope_ports_json(std::vector<NodeInstancePortInfo> const& ports,
     for (auto const& port : ports) {
         Json entry{{"name", port.name}, {"index", port.index}};
         if (!port.display_name.empty()) entry["displayName"] = port.display_name;
+        if (!port.short_display_name.empty()) entry["shortDisplayName"] = port.short_display_name;
         if (port.access) entry["access"] = shape_name(*port.access);
         if (port.production) entry["production"] = shape_name(*port.production);
         if (port.realization) entry["realization"] = *port.realization == OutputRealization::buffered ? "buffered" : "computed";

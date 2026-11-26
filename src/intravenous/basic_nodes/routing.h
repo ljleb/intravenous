@@ -18,7 +18,7 @@ namespace iv {
     struct DummyEventSink {
         static constexpr auto inputs()
         {
-            return std::array { event_input({}, EventTypeId::empty, InputAccess::sequential) };
+            return std::array { event_input(iv::PortNames::generated(), EventTypeId::empty, InputAccess::sequential) };
         }
 
         void tick_block(TickBlockContext<DummyEventSink> const&) const

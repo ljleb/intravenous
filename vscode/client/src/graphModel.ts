@@ -50,6 +50,8 @@ export type ContinuousValueAlternative = {
 export type SymbolicContinuousPort = {
     index: number;
     name: string;
+    displayName?: string;
+    shortDisplayName?: string;
     connectivity: SymbolicPortConnectivity;
     binding: SymbolicPortBinding;
     valueTypes: ContinuousValueAlternative[];
@@ -59,6 +61,8 @@ export type SymbolicContinuousPort = {
 export type SymbolicEventPort = {
     index: number;
     name: string;
+    displayName?: string;
+    shortDisplayName?: string;
     connectivity: SymbolicPortConnectivity;
     binding: SymbolicPortBinding;
     eventType: string;

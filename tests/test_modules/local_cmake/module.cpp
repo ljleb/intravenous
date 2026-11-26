@@ -11,8 +11,8 @@ void local_cmake_module(iv::GraphBuilder& g)
         "frequency"_P = 440.0
     );
     g.outputs(
-        "main"_P[iv::stereo::left] = tone,
-        "main"_P[iv::stereo::right] = tone
+        "main"_P.with_display_name("Main")[iv::stereo::left] = tone,
+        "main"_P.with_display_name("Main")[iv::stereo::right] = tone
     );
 }
 

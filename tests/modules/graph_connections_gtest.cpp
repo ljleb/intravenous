@@ -27,11 +27,11 @@ iv::ConfiguredGraph make_sample_passthrough(iv::ChannelTypeId type = iv::Channel
     using namespace iv;
     GraphBuilder graph;
     if (type == ChannelTypeId::stereo) {
-        auto input = iv::programmatic::declare_input<stereo>(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input<stereo>(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     } else {
-        auto input = iv::programmatic::declare_input(graph, "main");
-        graph.outputs("main"_P = input);
+        auto input = iv::programmatic::declare_input(graph, "main", {"Main"});
+        graph.outputs("main"_P.with_display_name("Main") = input);
     }
     return std::move(graph).finish();
 }
@@ -41,9 +41,9 @@ iv::ConfiguredGraph make_sample_sink(iv::ChannelTypeId type = iv::ChannelTypeId:
     using namespace iv;
     GraphBuilder graph;
     if (type == ChannelTypeId::stereo) {
-        (void)iv::programmatic::declare_input<stereo>(graph, "main");
+        (void)iv::programmatic::declare_input<stereo>(graph, "main", {"Main"});
     } else {
-        (void)iv::programmatic::declare_input(graph, "main");
+        (void)iv::programmatic::declare_input(graph, "main", {"Main"});
     }
     graph.outputs();
     return std::move(graph).finish();
@@ -53,8 +53,8 @@ iv::ConfiguredGraph make_event_passthrough()
 {
     using namespace iv;
     GraphBuilder graph;
-    auto trigger = iv::programmatic::declare_event_input(graph, "trigger", EventTypeId::trigger);
-    graph.event_outputs("trigger"_P = trigger);
+    auto trigger = iv::programmatic::declare_event_input(graph, "trigger", {"Trigger"}, EventTypeId::trigger);
+    graph.event_outputs("trigger"_P.with_display_name("Trigger") = trigger);
     graph.outputs();
     return std::move(graph).finish();
 }
@@ -63,7 +63,7 @@ iv::ConfiguredGraph make_event_sink()
 {
     using namespace iv;
     GraphBuilder graph;
-    (void)iv::programmatic::declare_event_input(graph, "trigger", EventTypeId::trigger);
+    (void)iv::programmatic::declare_event_input(graph, "trigger", {"Trigger"}, EventTypeId::trigger);
     graph.event_outputs();
     graph.outputs();
     return std::move(graph).finish();
@@ -74,14 +74,14 @@ iv::ConfiguredGraph make_symbolic_source()
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto first = details::configure_concrete_node<Pass>(graph);
     first(input);
     first._annotate_source_info("symbolic-source", "/tmp/symbolic.cpp", 1, 2);
     auto second = details::configure_concrete_node<Pass>(graph);
     second(input);
     second._annotate_source_info("symbolic-source", "/tmp/symbolic.cpp", 3, 4);
-    graph.outputs("main"_P = first);
+    graph.outputs("main"_P.with_display_name("Main") = first);
     return std::move(graph).finish();
 }
 
@@ -91,7 +91,7 @@ iv::ConfiguredGraph make_set_valued_symbolic_source()
     using First = SumN<mono, SampleStreamLayout::planar, 1>;
     using Second = ProductN<1>;
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto first = details::configure_concrete_node<First>(graph);
     first(input);
     first._annotate_source_info(
@@ -100,7 +100,7 @@ iv::ConfiguredGraph make_set_valued_symbolic_source()
     second(input);
     second._annotate_source_info(
         "symbolic-source", "/tmp/symbolic.cpp", 3, 4);
-    graph.outputs("main"_P = first);
+    graph.outputs("main"_P.with_display_name("Main") = first);
     return std::move(graph).finish();
 }
 
@@ -109,14 +109,14 @@ iv::ConfiguredGraph make_scoped_symbolic_source()
     using namespace iv;
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto make_processor = [&](std::string_view processor, std::size_t offset) {
         auto result = graph.subgraph([&](SubgraphBuilder& boundary) {
             auto filter = details::configure_concrete_node<Pass>(graph);
             filter(input);
             filter._annotate_source_info(
                 "filter", "/tmp/scoped.cpp", offset + 1, offset + 2);
-            boundary.outputs("main"_P = filter);
+            boundary.outputs("main"_P.with_display_name("Main") = filter);
         }, "processor");
         result._annotate_source_info(
             processor, "/tmp/scoped.cpp", offset + 3, offset + 4);
@@ -124,7 +124,7 @@ iv::ConfiguredGraph make_scoped_symbolic_source()
     };
     auto processor_a = make_processor("processorA", 0);
     (void)make_processor("processorB", 10);
-    graph.outputs("main"_P = processor_a);
+    graph.outputs("main"_P.with_display_name("Main") = processor_a);
     return std::move(graph).finish();
 }
 
@@ -140,7 +140,7 @@ FrozenRootFixture make_tiled_source()
     GraphBuilder graph;
     auto tiled = details::configure_concrete_tiled_node<Pass, stereo>(graph);
     auto const local_root = tiled.node_bundle_handle();
-    graph.outputs("main"_P = tiled);
+    graph.outputs("main"_P.with_display_name("Main") = tiled);
     return {std::move(graph).finish(), local_root};
 }
 

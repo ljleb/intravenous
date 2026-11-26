@@ -6,12 +6,12 @@ struct RandomAccessReplayNode {
     static constexpr auto replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs()
     {
-        return std::array{iv::event_input("input", iv::EventTypeId::trigger, iv::InputAccess::region,
+        return std::array{iv::event_input({"input", "Input"}, iv::EventTypeId::trigger, iv::InputAccess::region,
             iv::InputContentAccess::complete_buffer)};
     }
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("output")};
+        return std::array{iv::output<iv::Sample>({"output", "Output"})};
     }
     void tick_block(iv::TickBlockContext<RandomAccessReplayNode> const&) const {}
 };

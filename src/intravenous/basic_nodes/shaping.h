@@ -19,14 +19,14 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array{
-                input<Sample>("in", InputAccess::sequential, {.channel_layout = layout}),
+                input<Sample>({"in", "In"}, InputAccess::sequential, {.channel_layout = layout}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array{
-                output<Sample>("out", OutputProduction::sequential, {.channel_layout = layout}),
+                output<Sample>({"out", "Out"}, OutputProduction::sequential, {.channel_layout = layout}),
             };
         }
 
@@ -53,16 +53,16 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("in", InputAccess::sequential),
-                input<Sample>("threshold", InputAccess::sequential, {.default_value = 1.0}),
+                input<Sample>({"in", "In"}, InputAccess::sequential),
+                input<Sample>({"threshold", "Threshold"}, InputAccess::sequential, {.default_value = 1.0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("anti_aliased", OutputProduction::sequential),
-                output<Sample>("aliased", OutputProduction::sequential),
+                output<Sample>({"anti_aliased", "Anti-aliased"}, OutputProduction::sequential),
+                output<Sample>({"aliased", "Aliased"}, OutputProduction::sequential),
             };
         }
 
@@ -103,12 +103,12 @@ namespace iv {
     struct PhaseIntegrator {
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("delta", InputAccess::sequential) };
+            return std::array { input<Sample>({"delta", "Delta"}, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("phase", OutputProduction::sequential) };
+            return std::array { output<Sample>({"phase", "Phase"}, OutputProduction::sequential) };
         }
 
         void constrain_ports(ConstrainPortsContext<PhaseIntegrator>& ctx) const
@@ -137,15 +137,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("phase_offset", InputAccess::sequential),
-                input<Sample>("frequency", InputAccess::sequential, {.min = 0}),
+                input<Sample>({"phase_offset", "Phase offset"}, InputAccess::sequential),
+                input<Sample>({"frequency", "Frequency"}, InputAccess::sequential, {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("out", OutputProduction::sequential),
+                output<Sample>({"out", "Out"}, OutputProduction::sequential),
             };
         }
 
@@ -193,15 +193,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("phase_offset", InputAccess::sequential),
-                input<Sample>("frequency", InputAccess::sequential, {.min = 0}),
+                input<Sample>({"phase_offset", "Phase offset"}, InputAccess::sequential),
+                input<Sample>({"frequency", "Frequency"}, InputAccess::sequential, {.min = 0}),
             };
         }
 
         static constexpr auto outputs()
         {
             return std::array {
-                output<Sample>("out", OutputProduction::sequential),
+                output<Sample>({"out", "Out"}, OutputProduction::sequential),
             };
         }
 
@@ -360,12 +360,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { input<Sample>("f", InputAccess::sequential) };
+            return std::array { input<Sample>({"f", "Frequency"}, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("offset", OutputProduction::sequential) };
+            return std::array { output<Sample>({"offset", "Offset"}, OutputProduction::sequential) };
         }
 
         void tick(TickSampleContext<PhaseOffsetPredictor> const& state) const
@@ -380,15 +380,15 @@ namespace iv {
         static constexpr auto inputs()
         {
             return std::array {
-                input<Sample>("a", InputAccess::sequential),
-                input<Sample>("b", InputAccess::sequential),
-                input<Sample>("alpha", InputAccess::sequential),
+                input<Sample>({"a", "A"}, InputAccess::sequential),
+                input<Sample>({"b", "B"}, InputAccess::sequential),
+                input<Sample>({"alpha", "Alpha"}, InputAccess::sequential),
             };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { output<Sample>("out", OutputProduction::sequential) };
+            return std::array { output<Sample>({"out", "Out"}, OutputProduction::sequential) };
         }
 
         void tick(TickSampleContext<Interpolation> const& state) const

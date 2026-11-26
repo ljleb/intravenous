@@ -10,7 +10,17 @@
 #include <string_view>
 #include <utility>
 
-namespace iv::details {
+namespace iv {
+
+struct PortDisplayName {
+    constexpr PortDisplayName(std::string_view label, std::string_view abbreviated = {})
+        : value(label), short_name(abbreviated) {}
+
+    std::string_view value;
+    std::string_view short_name;
+};
+
+namespace details {
 
 template<class Access>
 concept ModuleInputAccess = std::same_as<Access, InputAccess::Sequential>
@@ -49,16 +59,16 @@ template<ModuleInputAccess Access>
 
 template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
 [[nodiscard]] ContinuousInputConfig make_boundary_input_config(
-    std::string_view name, Access access,
+    PortNames names, Access access,
     module_input_options_t<Types, Access>... options)
     requires(sizeof...(Types) != 0)
 {
     auto authored = [&] {
         if constexpr (std::same_as<Access, InputAccess::Sequential>) {
-            return iv::input<Types...>(std::string(name), access,
+            return iv::input<Types...>(names, access,
                 ContinuousValueType<Types>::boundary_input_sequential_options(options)...);
         } else {
-            return iv::input<Types...>(std::string(name), access, std::move(options)...);
+            return iv::input<Types...>(names, access, std::move(options)...);
         }
     }();
     return materialize_continuous_config(erase_port_config(authored));
@@ -66,51 +76,51 @@ template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
 
 template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
 [[nodiscard]] ContinuousInputConfig make_boundary_input_config(
-    std::string_view name, Access access)
+    PortNames names, Access access)
     requires(sizeof...(Types) != 0)
 {
     return make_boundary_input_config<Types...>(
-        name, access, module_input_options_t<Types, Access>{}...);
+        names, access, module_input_options_t<Types, Access>{}...);
 }
 
 template<RegisteredContinuousValue... Types>
 [[nodiscard]] ContinuousInputConfig make_boundary_input_config(
-    std::string_view name,
+    PortNames names,
     typename ContinuousValueType<Types>::BoundaryInputOptions... options)
     requires(sizeof...(Types) != 0)
 {
     return make_boundary_input_config<Types...>(
-        name, InputAccess::sequential, std::move(options)...);
+        names, InputAccess::sequential, std::move(options)...);
 }
 
 template<RegisteredContinuousValue... Types>
-[[nodiscard]] ContinuousInputConfig make_boundary_input_config(std::string_view name)
+[[nodiscard]] ContinuousInputConfig make_boundary_input_config(PortNames names)
     requires(sizeof...(Types) != 0)
 {
-    return make_boundary_input_config<Types...>(name, InputAccess::sequential);
+    return make_boundary_input_config<Types...>(names, InputAccess::sequential);
 }
 
 template<ModuleInputAccess Access>
 [[nodiscard]] ContinuousInputConfig make_default_boundary_input_config(
-    std::string_view name, ChannelLayout layout, Access access)
+    PortNames names, ChannelLayout layout, Access access)
 {
     module_input_options_t<DefaultContinuousValueType, Access> options{};
     options.channel_layout = layout;
-    return make_boundary_input_config<DefaultContinuousValueType>(name, access, options);
+    return make_boundary_input_config<DefaultContinuousValueType>(names, access, options);
 }
 
 [[nodiscard]] inline ContinuousInputConfig make_default_boundary_input_config(
-    std::string_view name, ChannelLayout layout =
+    PortNames names, ChannelLayout layout =
         continuous_value_details::default_audio_channel_layout)
 {
-    return make_default_boundary_input_config(name, layout, InputAccess::sequential);
+    return make_default_boundary_input_config(names, layout, InputAccess::sequential);
 }
 
 [[nodiscard]] inline ContinuousInputConfig make_sample_boundary_input_config(
-    std::string_view name, ChannelLayout layout, Sample value,
+    PortNames names, ChannelLayout layout, Sample value,
     std::optional<Sample> min, std::optional<Sample> max)
 {
-    return make_boundary_input_config<Sample>(name, {
+    return make_boundary_input_config<Sample>(names, {
         .channel_layout = layout,
         .default_value = value,
         .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
@@ -128,57 +138,59 @@ class ModuleInputDeclarations {
 public:
     template<class ChannelType = mono>
         requires requires { ChannelTypeTraits<ChannelType>::id; }
-    TypedPublicSampleInputRef<ChannelType> input() {
+    TypedPublicSampleInputRef<ChannelType> input(PortDisplayName) {
         uninstrumented_module_input();
     }
 
     template<class ChannelType = mono>
         requires requires { ChannelTypeTraits<ChannelType>::id; }
     TypedPublicSampleInputRef<ChannelType> input(
-        Sample, std::optional<Sample> = {}, std::optional<Sample> = {}) {
+        PortDisplayName, Sample, std::optional<Sample> = {}, std::optional<Sample> = {}) {
         uninstrumented_module_input();
     }
 
     template<RegisteredContinuousValue... Types>
         requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input() {
+    PublicSampleInputRef input(PortDisplayName) {
         uninstrumented_module_input();
     }
 
     template<RegisteredContinuousValue... Types>
         requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(typename ContinuousValueType<Types>::BoundaryInputOptions...) {
+    PublicSampleInputRef input(
+        PortDisplayName, typename ContinuousValueType<Types>::BoundaryInputOptions...) {
         uninstrumented_module_input();
     }
 
     template<class ChannelType = mono, ModuleInputAccess Access>
         requires requires { ChannelTypeTraits<ChannelType>::id; }
-    TypedPublicSampleInputRef<ChannelType> input(Access) {
+    TypedPublicSampleInputRef<ChannelType> input(PortDisplayName, Access) {
         uninstrumented_module_input();
     }
 
     template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
         requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(Access) {
+    PublicSampleInputRef input(PortDisplayName, Access) {
         uninstrumented_module_input();
     }
 
     template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
         requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(Access, module_input_options_t<Types, Access>...) {
+    PublicSampleInputRef input(PortDisplayName, Access, module_input_options_t<Types, Access>...) {
         uninstrumented_module_input();
     }
 
-    PublicEventInputRef event_input(EventTypeId) {
+    PublicEventInputRef event_input(PortDisplayName, EventTypeId) {
         uninstrumented_module_input();
     }
 
     template<ModuleInputAccess Access>
-    PublicEventInputRef event_input(EventTypeId, Access) {
+    PublicEventInputRef event_input(PortDisplayName, EventTypeId, Access) {
         uninstrumented_module_input();
     }
 };
 
 struct ProgrammaticInputAccess;
 
-} // namespace iv::details
+} // namespace details
+} // namespace iv

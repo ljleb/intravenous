@@ -3,8 +3,8 @@
 void event_loader_voice(iv::GraphBuilder& g)
 {
     using namespace iv;
-    auto const trigger = g.event_input(EventTypeId::trigger);
-    g.event_outputs("trigger"_F = trigger);
+    auto const trigger = g.event_input({"Trigger"}, EventTypeId::trigger);
+    g.event_outputs("trigger"_F.with_display_name("Trigger") = trigger);
     g.outputs();
 }
 

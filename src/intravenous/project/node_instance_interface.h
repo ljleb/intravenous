@@ -24,6 +24,7 @@ struct NodeInstancePortInfo {
     std::string name{};
     std::size_t index = 0;
     std::string display_name{};
+    std::string short_display_name{};
     std::optional<ChannelTypeId> channel_type{};
     std::optional<EventTypeId> event_type{};
     std::vector<ContinuousValueIntrospectionMetadata> value_types{};
@@ -75,7 +76,8 @@ inline NodeInstanceInterface read_node_instance_interface(
     for (std::size_t index = 0; index < bundle.sample_input_count(); ++index) {
         auto const config = bundles.resolve_sample_input({root, PortKind::sample, index}).config;
         result.sample_inputs.push_back({
-            .name = config.name, .index = index,
+            .name = config.name, .index = index, .display_name = config.display_name,
+            .short_display_name = config.short_display_name,
             .channel_type = config.channel_layout.channel_type,
             .value_types = std::visit([](auto const& access) {
                 return continuous_introspection_metadata(access.value_metadata);
@@ -88,7 +90,8 @@ inline NodeInstanceInterface read_node_instance_interface(
     for (std::size_t index = 0; index < bundle.sample_output_count(); ++index) {
         auto const config = bundles.resolve_sample_output({root, PortKind::sample, index}).config;
         result.sample_outputs.push_back({
-            .name = config.name, .index = index,
+            .name = config.name, .index = index, .display_name = config.display_name,
+            .short_display_name = config.short_display_name,
             .channel_type = config.channel_layout.channel_type,
             .value_types = std::visit([](auto const& production) {
                 return continuous_introspection_metadata(production.value_metadata);
@@ -98,12 +101,16 @@ inline NodeInstanceInterface read_node_instance_interface(
     }
     for (std::size_t index = 0; index < bundle.event_input_count(); ++index) {
         auto const config = bundles.resolve_event_input({root, PortKind::event, index}).config;
-        result.event_inputs.push_back({.name = config.name, .index = index, .event_type = config.type,
+        result.event_inputs.push_back({.name = config.name, .index = index,
+            .display_name = config.display_name,
+            .short_display_name = config.short_display_name, .event_type = config.type,
             .access = input_access(config)});
     }
     for (std::size_t index = 0; index < bundle.event_output_count(); ++index) {
         auto const config = bundles.resolve_event_output({root, PortKind::event, index}).config;
-        result.event_outputs.push_back({.name = config.name, .index = index, .event_type = config.type,
+        result.event_outputs.push_back({.name = config.name, .index = index,
+            .display_name = config.display_name,
+            .short_display_name = config.short_display_name, .event_type = config.type,
             .production = output_production(config), .realization = config.realization});
     }
     result.is_module = bundle.is_subgraph();
@@ -127,8 +134,14 @@ inline NodeInstanceInterface read_symbolic_node_interface(GraphBuilderNodeBundle
     auto label = [](auto& ports, auto const& mappings, std::string_view fallback) {
         for (auto& port : ports) {
             auto const mapping = std::ranges::find(mappings, port.index, &std::decay_t<decltype(mappings.front())>::index);
-            if (mapping != mappings.end()) port.name = mapping->name;
-            if (!port.name.empty()) continue;
+            if (mapping != mappings.end()) {
+                port.name = mapping->name;
+                if (!mapping->display_name.empty()) {
+                    port.display_name = mapping->display_name;
+                    port.short_display_name = mapping->short_display_name;
+                }
+            }
+            if (!port.name.empty() || !port.display_name.empty()) continue;
             port.display_name = fallback;
             if (ports.size() > 1) port.display_name += " " + std::to_string(port.index + 1);
         }

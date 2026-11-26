@@ -72,21 +72,21 @@ struct LearnedHrtfSourceIcosphereMorton
     static constexpr auto inputs()
     {
         auto const azimuth = input<Sample>(
-            "azimuth", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
+            {"azimuth", "Azimuth"}, InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
         auto const elevation = input<Sample>(
-            "elevation", InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
+            {"elevation", "Elevation"}, InputAccess::sequential, {.default_value = 0, .min = -180, .max = 180});
 
         if constexpr (StereoInput) {
             return std::array {
-                input<Sample>("in", InputAccess::sequential, {
+                input<Sample>({"in", "In"}, InputAccess::sequential, {
                     .channel_layout = { .channel_type = ChannelTypeId::stereo },
                 }),
                 azimuth,
                 elevation,
-                input<Sample>("spread", InputAccess::sequential, {.default_value = 30, .min = 0, .max = 180}),
+                input<Sample>({"spread", "Spread"}, InputAccess::sequential, {.default_value = 30, .min = 0, .max = 180}),
             };
         } else {
-            return std::array { input<Sample>("in", InputAccess::sequential), azimuth, elevation };
+            return std::array { input<Sample>({"in", "In"}, InputAccess::sequential), azimuth, elevation };
         }
     }
 
@@ -99,7 +99,7 @@ struct LearnedHrtfSourceIcosphereMorton
     static constexpr auto outputs()
     {
         return std::array {
-            output<Sample>("out", OutputProduction::sequential, {
+            output<Sample>({"out", "Out"}, OutputProduction::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
@@ -1256,7 +1256,7 @@ struct BaselineFir256
     static constexpr auto inputs()
     {
         return std::array {
-            input<Sample>("in", InputAccess::sequential, {
+            input<Sample>({"in", "In"}, InputAccess::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
@@ -1265,7 +1265,7 @@ struct BaselineFir256
     static constexpr auto outputs()
     {
         return std::array {
-            output<Sample>("out", OutputProduction::sequential, {
+            output<Sample>({"out", "Out"}, OutputProduction::sequential, {
                 .channel_layout = { .channel_type = ChannelTypeId::stereo },
             }),
         };
@@ -1343,9 +1343,9 @@ struct SinglePan {
 
 void SinglePan::build_graph(GraphBuilder& g) const
 {
-    auto const in = g.input();
-    auto const azimuth = g.input(0, -180, 180);
-    auto const elevation = g.input(0, -180, 180);
+    auto const in = g.input({"In"});
+    auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
+    auto const elevation = g.input({"Elevation"}, 0, -180, 180);
 
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonMono>();
 
@@ -1361,10 +1361,10 @@ void SinglePan::build_graph(GraphBuilder& g) const
 
 void module_main(GraphBuilder& g)
 {
-    auto const in = g.input<stereo>();
-    auto const azimuth = g.input(0, -180, 180);
-    auto const elevation = g.input(0, -180, 180);
-    auto const spread = g.input(30, 0, 180);
+    auto const in = g.input<stereo>({"In"});
+    auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
+    auto const elevation = g.input({"Elevation"}, 0, -180, 180);
+    auto const spread = g.input({"Spread"}, 30, 0, 180);
 
     auto const hrtf = g.node<LearnedHrtfSourceIcosphereMortonStereo>();
     auto const fir = g.node<BaselineFir256>();
@@ -1377,6 +1377,6 @@ void module_main(GraphBuilder& g)
     );
     fir(hrtf);
 
-    g.outputs("main"_P = fir);
+    g.outputs("main"_P.with_display_name("Main") = fir);
 }
 IV_MODULE("iv.project.q24_icosphere_pan", module_main, "Icosphere Pan");

@@ -64,14 +64,14 @@ struct ClickDetector {
     static constexpr auto inputs()
     {
         return std::array{
-            input<Sample>("audio", InputAccess::sequential, {.channel_layout = system_audio_channel_layout}),
-            input<Sample>("threshold", {.default_value = default_threshold, .min = 0.0f}),
+            input<Sample>({"audio", "Audio"}, InputAccess::sequential, {.channel_layout = system_audio_channel_layout}),
+            input<Sample>({"threshold", "Threshold"}, {.default_value = default_threshold, .min = 0.0f}),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{event_output("clicks", EventTypeId::trigger,
+        return std::array{event_output({"clicks", "Clicks"}, EventTypeId::trigger,
             OutputProduction::sequential, OutputRealization::buffered,
             {.max_events_per_index = 1.0 / minimum_event_spacing})};
     }

@@ -124,7 +124,7 @@ struct PointSource {
     }
 
     static constexpr auto outputs() {
-        return std::array{event_output("points", EventTypeId::curve_point,
+        return std::array{event_output({"points", "Points"}, EventTypeId::curve_point,
             OutputProduction::region, OutputRealization::buffered)};
     }
     void constrain_ports(ConstrainPortsContext<PointSource>& ctx) const {
@@ -212,12 +212,12 @@ struct PointSource {
 struct Curve {
     static constexpr auto inputs() {
         return std::tuple{
-            event_input("points", EventTypeId::curve_point, InputAccess::region),
-            input<Sample>("min", InputAccess::coverage, {.channel_layout = mono_planar_channel_layout}),
-            input<Sample>("max", InputAccess::coverage, {.channel_layout = mono_planar_channel_layout})};
+            event_input({"points", "Points"}, EventTypeId::curve_point, InputAccess::region),
+            input<Sample>({"min", "Minimum"}, InputAccess::coverage, {.channel_layout = mono_planar_channel_layout}),
+            input<Sample>({"max", "Maximum"}, InputAccess::coverage, {.channel_layout = mono_planar_channel_layout})};
     }
     static constexpr auto outputs() {
-        return std::array{output<Sample>("value", OutputProduction::coverage)};
+        return std::array{output<Sample>({"value", "Value"}, OutputProduction::coverage)};
     }
 
     static IndexCoverage point_coverage(std::span<TimedEvent const> points) {
@@ -423,13 +423,13 @@ public:
         auto points = g.node<PointSource>(g.immutable_array<Point>(points_));
         auto curve = g.node<Curve>();
 
-        auto const min = iv::programmatic::declare_input<Sample>(g, "min", InputAccess::coverage, {
+        auto const min = iv::programmatic::declare_input<Sample>(g, "min", {"Minimum"}, InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 0, .enabled_by_default = false});
-        auto const max = iv::programmatic::declare_input<Sample>(g, "max", InputAccess::coverage, {
+        auto const max = iv::programmatic::declare_input<Sample>(g, "max", {"Maximum"}, InputAccess::coverage, {
             .channel_layout = mono_planar_channel_layout, .default_value = 1, .enabled_by_default = false});
         curve("points"_F = points, "min"_P = min, "max"_P = max);
 
-        g.outputs("value"_P = curve);
+        g.outputs("value"_P.with_display_name("Value") = curve);
     }
     void on_message(ModuleMessageContext<AutomationCurve>& ctx, AddPoint const& event) const {
         auto point = event.point;

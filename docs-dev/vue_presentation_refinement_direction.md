@@ -223,15 +223,17 @@ on headers with a module footer. The footer remains clickable beside the socket.
 The footer overlays the bottom edge. Headers with and without a footer give
 their port rows the same available height and folding threshold.
 
-Hover over the input or output controls to open that column's popover.
-The gap between the columns closes the popover when the pointer enters it.
-The popover stays open while the pointer moves into it or while a knob is in use.
+Hover over a folded socket or its port column to open the port popover.
+Right-click a port inside it to open its connections above the list. The
+list stays open while the pointer is in either popover. Right-click a
+connection row or the chooser background to close the chooser and return to
+the list. **Back to ports** and Escape also return to the list.
 Hidden rows use the same knob size, height, and spacing as the visible rows.
 The popover can widen for port names and start below visible rows to keep their
 controls clear. Each revealed port uses its own socket for cable endpoints.
 Scroll the additional rows when they exceed the available viewport height.
 During a cable drag, hover over compatible controls to reveal their column.
-Shift retains the separate per-port connection chooser.
+[Earlier hover and Shift gestures](./historical/vue_port_chooser_before_right_click_2026-11-25.md).
 [Earlier shared popover](./historical/vue_port_popover_before_directional_hover_2026-11-21.md).
 [Earlier header-bottom placement](./historical/vue_folded_ports_before_row_alignment_2026-11-19.md).
 

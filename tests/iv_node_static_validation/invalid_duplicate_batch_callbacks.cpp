@@ -30,7 +30,7 @@ struct InvalidScalarAndBatchTock {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "output", iv::OutputProduction::coverage)};
+            {"output", "Output"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(
@@ -47,7 +47,7 @@ struct InvalidScalarAndBatchForward {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "output", iv::OutputProduction::coverage)};
+            {"output", "Output"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(

@@ -318,7 +318,7 @@ namespace {
         };
 
         static constexpr auto outputs()
-        { return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)}; }
+        { return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)}; }
         void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundLifecycleNode>& ctx) const
         { ctx.output<"out">().publish(std::span<iv::GlobalIndexRange const>{}); }
         void tock_coverage(iv::TockCoverageContext<BackgroundLifecycleNode>&) const {}

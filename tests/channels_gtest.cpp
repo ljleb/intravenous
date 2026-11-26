@@ -43,7 +43,7 @@ struct NamedStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("main", iv::OutputProduction::sequential, {
+        return std::array{iv::output<iv::Sample>({"main", "Main"}, iv::OutputProduction::sequential, {
                 .channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
@@ -58,13 +58,13 @@ struct MonoPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+            iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MonoPass> const& ctx) const
@@ -144,15 +144,15 @@ TEST(Channels, PositionalInputsUseSeparateSampleAndEventIndexes)
     iv::NodePorts ports;
     ports.input_configs = {
         iv::erase_port_config(
-            iv::input<iv::Sample>("first", iv::InputAccess::sequential)),
+            iv::input<iv::Sample>({"first", "First"}, iv::InputAccess::sequential)),
         iv::erase_port_config(iv::event_input(
-            "first-event",
+            {"first_event", "First event"},
             iv::EventTypeId::trigger,
             iv::InputAccess::sequential)),
         iv::erase_port_config(
-            iv::input<iv::Sample>("second", iv::InputAccess::sequential)),
+            iv::input<iv::Sample>({"second", "Second"}, iv::InputAccess::sequential)),
         iv::erase_port_config(iv::event_input(
-            "second-event",
+            {"second_event", "Second event"},
             iv::EventTypeId::trigger,
             iv::InputAccess::sequential)),
     };
@@ -374,9 +374,9 @@ TEST(Channels, DetachRejectsAnExpressionContainingAnAlreadyDetachedChannel)
 TEST(Channels, NamedPublicInputsRetainRequestedChannelTypes)
 {
     iv::GraphBuilder graph;
-    auto const default_type = iv::programmatic::declare_input(graph, "default-type");
-    auto const mono = iv::programmatic::declare_input(graph, "mono", iv::Sample{0.25f});
-    auto const stereo = iv::programmatic::declare_input<iv::stereo>(graph, "stereo", iv::Sample{0.5f});
+    auto const default_type = iv::programmatic::declare_input(graph, "default_type", {"Default type"});
+    auto const mono = iv::programmatic::declare_input(graph, "mono", {"Mono"}, iv::Sample{0.25f});
+    auto const stereo = iv::programmatic::declare_input<iv::stereo>(graph, "stereo", {"Stereo"}, iv::Sample{0.5f});
     auto const families = iv::host::public_sample_input_families(graph);
 
     static_assert(std::same_as<iv::DefaultContinuousValueType, iv::Sample>);
@@ -401,17 +401,17 @@ TEST(Channels, PublicInputsRetainDeclaredContinuousValueDomains)
 
     iv::GraphBuilder graph;
     auto const coordinate =
-        iv::programmatic::declare_input<iv::FractionalGlobalIndex>(graph, "coordinate", {
+        iv::programmatic::declare_input<iv::FractionalGlobalIndex>(graph, "coordinate", {"Coordinate"}, {
             .default_value = coordinate_default,
         });
-    auto const spectrum = iv::programmatic::declare_input<iv::FFTBlock>(graph, "spectrum", {
+    auto const spectrum = iv::programmatic::declare_input<iv::FFTBlock>(graph, "spectrum", {"Spectrum"}, {
         .channel_layout = {
             .channel_type = iv::ChannelTypeId::stereo,
             .sample_layout = iv::SampleStreamLayout::planar,
         },
     });
     auto const either =
-        iv::programmatic::declare_input<iv::Sample, iv::FractionalGlobalIndex>(graph, "either",
+        iv::programmatic::declare_input<iv::Sample, iv::FractionalGlobalIndex>(graph, "either", {"Either"},
             {.default_value = iv::Sample{0.25f}},
             {.default_value = coordinate_default});
 
@@ -451,9 +451,9 @@ TEST(Channels, SubgraphInputsRetainDeclaredContinuousValueDomains)
 {
     iv::GraphBuilder graph;
     auto nested = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto default_type = iv::programmatic::declare_input(boundary, "default-type");
+        auto default_type = iv::programmatic::declare_input(boundary, "default_type", {"Default type"});
         auto coordinate =
-            iv::programmatic::declare_input<iv::FractionalGlobalIndex>(boundary, "coordinate");
+            iv::programmatic::declare_input<iv::FractionalGlobalIndex>(boundary, "coordinate", {"Coordinate"});
         (void)default_type;
         (void)coordinate;
     }, "typed-boundary");
@@ -466,7 +466,7 @@ TEST(Channels, SubgraphInputsRetainDeclaredContinuousValueDomains)
     auto const inputs = configured.node_bundles.bundle(*boundary)
         .boundary_sample_inputs();
     ASSERT_EQ(inputs.size(), 2u);
-    EXPECT_EQ(inputs[0].name, "default-type");
+    EXPECT_EQ(inputs[0].name, "default_type");
     EXPECT_EQ(iv::continuous_value_type_domain(inputs[0]),
               iv::ContinuousValueTypeSet::of<iv::DefaultContinuousValueType>());
     EXPECT_EQ(inputs[1].name, "coordinate");

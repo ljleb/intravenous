@@ -20,7 +20,7 @@ struct ReplayableArchiveNode {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
 };
@@ -34,8 +34,8 @@ struct ConstrainedArchiveNode {
     {
         return std::tuple{
             iv::input<iv::Sample, iv::FractionalGlobalIndex>(
-                "input", iv::InputAccess::sequential),
-            iv::event_input("event_input", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+                {"input", "Fréquence audio", "Fréq"}, iv::InputAccess::sequential),
+            iv::event_input({"event_input", "Event input"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -43,8 +43,8 @@ struct ConstrainedArchiveNode {
     {
         return std::tuple{
             iv::output<iv::Sample, iv::FractionalGlobalIndex>(
-                "output", iv::OutputProduction::sequential),
-            iv::event_output("event_output", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+                {"output", "Output"}, iv::OutputProduction::sequential),
+            iv::event_output({"event_output", "Trigger events", "Events"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -79,9 +79,9 @@ struct ArchiveFixture {
     {
         using namespace iv;
         iv::GraphBuilder graph;
-        auto const trigger = iv::programmatic::declare_event_input(graph, "trigger", iv::EventTypeId::trigger);
+        auto const trigger = iv::programmatic::declare_event_input(graph, "trigger", {"Trigger"}, iv::EventTypeId::trigger);
         (void)trigger;
-        auto const gain = iv::programmatic::declare_input(graph, "gain", 0.25f);
+        auto const gain = iv::programmatic::declare_input(graph, "gain", {"Gain"}, 0.25f);
         auto const source = iv::details::configure_concrete_node<iv::Constant>(
             graph, iv::Sample{0.75f});
         source._annotate_source_info("archive-source", "/tmp/archive-module.cpp", 1, 2);
@@ -100,7 +100,7 @@ struct ArchiveFixture {
         pass_alias(gain);
         pass._annotate_input_source_info(
             PortKind::sample, "", "archive-pass", "/tmp/archive-module.cpp", 10, 18);
-        graph.outputs("gain_out"_P = pass, "main"_P = projection);
+        graph.outputs("gain_out"_P.with_display_name("Gain out") = pass, "main"_P.with_display_name("Main") = projection);
 
         auto configured = std::move(graph).finish();
         configured.node_bundles.set_registered_node_type_identity(
@@ -237,7 +237,7 @@ TEST(ConfiguredGraphBinaryArchive, PreservesNamedTiledChildMetadata)
     using Pass = SumN<mono, SampleStreamLayout::planar, 1>;
     GraphBuilder graph;
     auto tiled = details::configure_concrete_tiled_node<Pass, stereo>(graph);
-    graph.outputs("main"_P = tiled);
+    graph.outputs("main"_P.with_display_name("Main") = tiled);
     auto archive = serialize_configured_graph(std::move(graph).finish());
     std::array node_types{details::node_compiler_record<Pass>};
     auto decoded = deserialize_configured_graph(
@@ -259,7 +259,7 @@ TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
     using namespace iv;
     GraphBuilder graph;
     auto const node = details::configure_concrete_node<ReplayableArchiveNode>(graph);
-    graph.outputs("replay"_P = node);
+    graph.outputs("replay"_P.with_display_name("Replay") = node);
     auto const archive = serialize_configured_graph(std::move(graph).finish());
     std::array const compiler_records{
         details::node_compiler_record<ReplayableArchiveNode>};
@@ -359,7 +359,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
         iv::GlobalIndex::from_signed(7), 0xfedcba9876543210ULL);
     auto const realtime_input = iv::materialize_continuous_config(
         iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
-            "realtime-input",
+            {"realtime_input", "Realtime input"},
             iv::InputAccess::sequential,
             {
                 .channel_layout = {
@@ -375,15 +375,15 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsOrthogonalPortAccessConfigs)
             })));
     auto const random_access_input = iv::materialize_continuous_config(
         iv::erase_port_config(iv::input<iv::Sample>(
-            "background-input", iv::InputAccess::coverage)));
+            {"background_input", "Background input"}, iv::InputAccess::coverage)));
     auto const realtime_output = iv::materialize_continuous_config(
         iv::erase_port_config(iv::output<iv::FFTBlock>(
-            "realtime-output",
+            {"realtime_output", "Realtime output"},
             iv::OutputProduction::sequential,
             iv::OutputRealization::buffered)));
     auto const tock_output = iv::materialize_continuous_config(
         iv::erase_port_config(iv::output<iv::Sample>(
-            "background-output", iv::OutputProduction::coverage)));
+            {"background_output", "Background output"}, iv::OutputProduction::coverage)));
     iv::EventInputConfig const sequential_event_input {
         .name = "realtime-event-input",
         .type = iv::EventTypeId::trigger,
@@ -483,9 +483,9 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsRandomAccessContentCapabilities)
 {
     for (auto const capability : {iv::InputContentAccess::windowed, iv::InputContentAccess::complete_buffer}) {
         auto const sample = iv::materialize_continuous_config(iv::erase_port_config(
-            iv::input<iv::Sample>("in", iv::InputAccess::coverage, capability)));
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::coverage, capability)));
         auto const event = iv::materialize_event_config(iv::erase_port_config(
-            iv::event_input("events", iv::EventTypeId::trigger, iv::InputAccess::region, capability)));
+            iv::event_input({"events", "Events"}, iv::EventTypeId::trigger, iv::InputAccess::region, capability)));
         iv::binary_wire_details::Writer writer;
         iv::binary_wire_details::write_input(writer, sample);
         iv::binary_wire_details::write_event_input(writer, event);
@@ -500,7 +500,7 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsRandomAccessContentCapabilities)
 TEST(ConfiguredGraphBinaryArchive, RoundTripsTimestampOnlyEventInput)
 {
     auto const input = iv::materialize_event_config(iv::erase_port_config(
-        iv::event_timestamp_input("marks")));
+        iv::event_timestamp_input({"marks", "Marks"})));
     ASSERT_TRUE(input.timestamp_only);
     ASSERT_EQ(input.type, iv::EventTypeId::trigger);
     ASSERT_EQ(input.access, iv::InputAccessKind::coverage);
@@ -518,7 +518,7 @@ TEST(ConfiguredGraphBinaryArchive, RejectsRepeatedContinuousMetadataType)
 {
     auto config = iv::materialize_continuous_config(
         iv::erase_port_config(iv::input<iv::Sample, iv::FractionalGlobalIndex>(
-            "input", iv::InputAccess::sequential)));
+            {"input", "Input"}, iv::InputAccess::sequential)));
     auto& metadata = std::get<iv::SequentialContinuousInputProperties>(
         config.access).value_metadata;
     metadata.push_back(metadata.front());
@@ -533,7 +533,7 @@ TEST(ConfiguredGraphBinaryArchive, RejectsEmptyContinuousMetadataDomain)
 {
     auto config = iv::materialize_continuous_config(
         iv::erase_port_config(iv::input<iv::Sample>(
-            "input", iv::InputAccess::sequential)));
+            {"input", "Input"}, iv::InputAccess::sequential)));
     std::get<iv::SequentialContinuousInputProperties>(
         config.access).value_metadata.clear();
 
@@ -549,13 +549,23 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
     GraphBuilder graph;
     auto const node =
         details::configure_concrete_node<ConstrainedArchiveNode>(graph);
-    graph.outputs("output"_P = node);
+    node._annotate_source_info("archive-labels", "/tmp/archive-module.cpp", 1, 2, "labels");
+    graph.outputs("output"_P.with_display_name("Output") = node);
 
     auto const archive = serialize_configured_graph(std::move(graph).finish());
     std::array const compiler_records{
         details::node_compiler_record<ConstrainedArchiveNode>};
     auto const decoded = deserialize_configured_graph(
         archive.bytes, compiler_records, archive.node_configs);
+    auto const& symbols = decoded.symbolic_nodes.records();
+    auto const symbol = std::ranges::find(symbols, "archive-labels", &SymbolicNodeRecord::source_identity);
+    ASSERT_NE(symbol, symbols.end());
+    ASSERT_EQ(symbol->sample_inputs.size(), 1u);
+    EXPECT_EQ(symbol->sample_inputs[0].display_name, "Fréquence audio");
+    EXPECT_EQ(symbol->sample_inputs[0].short_display_name, "Fréq");
+    ASSERT_EQ(symbol->event_outputs.size(), 1u);
+    EXPECT_EQ(symbol->event_outputs[0].display_name, "Trigger events");
+    EXPECT_EQ(symbol->event_outputs[0].short_display_name, "Events");
 
     std::size_t constrained_nodes = 0;
     decoded.node_bundles.for_each_configured_bundle(
@@ -571,6 +581,11 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsAuthoredPortConstraints)
             ASSERT_EQ(outputs.size(), 1u);
             ASSERT_EQ(event_inputs.size(), 1u);
             ASSERT_EQ(event_outputs.size(), 1u);
+            EXPECT_EQ(inputs.front().name, "input");
+            EXPECT_EQ(inputs.front().display_name, "Fréquence audio");
+            EXPECT_EQ(inputs.front().short_display_name, "Fréq");
+            EXPECT_EQ(event_outputs.front().display_name, "Trigger events");
+            EXPECT_EQ(event_outputs.front().short_display_name, "Events");
             EXPECT_EQ(
                 continuous_value_type_domain(inputs.front()),
                 ConstrainedArchiveNode::domain);
@@ -630,18 +645,18 @@ TEST(ConfiguredGraphBinaryArchive, RoundTripsEveryOutputAccessRetentionMode)
     std::array const outputs {
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
-                "realtime-ephemeral", iv::OutputProduction::sequential))),
+                {"realtime_ephemeral", "Realtime ephemeral"}, iv::OutputProduction::sequential))),
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
-                "realtime-persisted",
+                {"realtime_persisted", "Realtime persisted"},
                 iv::OutputProduction::sequential,
                 iv::OutputRealization::buffered))),
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
-                "background-ephemeral", iv::OutputProduction::coverage))),
+                {"background_ephemeral", "Background ephemeral"}, iv::OutputProduction::coverage))),
         iv::materialize_continuous_config(iv::erase_port_config(
             iv::output<iv::Sample>(
-                "background-persisted",
+                {"background_persisted", "Background persisted"},
                 iv::OutputProduction::coverage,
                 iv::OutputRealization::buffered))),
     };

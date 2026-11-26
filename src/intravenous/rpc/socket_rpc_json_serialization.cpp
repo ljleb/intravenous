@@ -199,6 +199,8 @@ SocketRpcJson symbolic_continuous_port_json(
     SocketRpcJson json = SocketRpcJson::object();
     json["index"] = port.index;
     json["name"] = port.name;
+    if (!port.display_name.empty()) json["displayName"] = port.display_name;
+    if (!port.short_display_name.empty()) json["shortDisplayName"] = port.short_display_name;
     json["connectivity"] = std::string(symbolic_port_connectivity_json(port.connectivity));
     json["binding"] = std::string(symbolic_port_binding_json(port.binding));
     json["valueTypes"] = continuous_value_types_json(port.value_types);
@@ -220,7 +222,7 @@ SocketRpcJson symbolic_continuous_ports_json(
 
 SocketRpcJson symbolic_event_port_json(SymbolicEventPortInfo const& port)
 {
-    return SocketRpcJson{
+    SocketRpcJson json{
         {"index", port.index},
         {"name", port.name},
         {"connectivity", std::string(
@@ -228,6 +230,9 @@ SocketRpcJson symbolic_event_port_json(SymbolicEventPortInfo const& port)
         {"binding", std::string(symbolic_port_binding_json(port.binding))},
         {"eventType", std::string(details::event_type_name(port.type))},
     };
+    if (!port.display_name.empty()) json["displayName"] = port.display_name;
+    if (!port.short_display_name.empty()) json["shortDisplayName"] = port.short_display_name;
+    return json;
 }
 
 SocketRpcJson symbolic_event_ports_json(

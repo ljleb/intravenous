@@ -5,9 +5,11 @@ import type { KnobLimits } from "../../src/knobScrub";
 import { useGraphEditor } from "../graph/context";
 import Knob from "./Knob.vue";
 
-const props = defineProps<{ end: GraphConnectionEnd; identity: string }>();
+const props = defineProps<{ end: GraphConnectionEnd; identity: string; portName: string; portCutout?: boolean }>();
 const editor = useGraphEditor();
 const limits: KnobLimits = { min: 1, defaultValue: 1, integer: true, scrubSpeed: 1 };
+const inputGradient = ["var(--iv-feedback-delay-color)", "var(--iv-port-input)"] as const;
+const outputGradient = ["var(--iv-port-output)", "var(--iv-feedback-delay-color)"] as const;
 const stored = computed(() => props.end.connection.connection.loopExtraLatency);
 const draft = ref<number>();
 const dragging = ref(false);
@@ -49,6 +51,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-    <Knob :identity="identity" label="Feedback delay (samples)" :value="draft ?? stored" :limits="limits"
+    <Knob :identity="identity" :label="`${portName} | Feedback delay`" value-unit="smp"
+        :value="draft ?? stored" :limits="limits"
+        :accent-gradient="end.port.direction === 'input' ? inputGradient : outputGradient"
+        :direction="end.port.direction" :port-cutout="portCutout"
         :disabled="disabled" :apply="apply" :begin-edit="begin" :end-edit="finish" />
 </template>

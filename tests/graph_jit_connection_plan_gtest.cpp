@@ -155,14 +155,14 @@ struct TimedSamplePass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::sequential),
+            iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential),
         };
     }
 
@@ -181,19 +181,19 @@ struct TimedStereoStateNodeWithPorts {
     static constexpr auto inputs()
     {
         auto const ports = std::tuple{
-            iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
                         .channel_type = iv::ChannelTypeId::stereo,
                         .sample_layout = iv::SampleStreamLayout::planar,
                     },
                 }),
-            iv::event_input("events_in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"events_in", "Events in"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
         if constexpr (InsertEarlierPorts) {
             return std::tuple_cat(std::tuple{
-                iv::input<iv::Sample>("sidechain", iv::InputAccess::sequential),
-                iv::event_input("other_events_in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+                iv::input<iv::Sample>({"sidechain", "Sidechain"}, iv::InputAccess::sequential),
+                iv::event_input({"other_events_in", "Other events in"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
             }, ports);
         } else return ports;
     }
@@ -201,19 +201,19 @@ struct TimedStereoStateNodeWithPorts {
     static constexpr auto outputs()
     {
         auto const ports = std::tuple{
-            iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
+            iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
                         .channel_type = iv::ChannelTypeId::stereo,
                         .sample_layout = iv::SampleStreamLayout::planar,
                     },
                 }),
-            iv::event_output("events_out", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+            iv::event_output({"events_out", "Events out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
         if constexpr (InsertEarlierPorts) {
             return std::tuple_cat(std::tuple{
-                iv::output<iv::Sample>("aux", iv::OutputProduction::sequential),
-                iv::event_output("other_events_out", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+                iv::output<iv::Sample>({"aux", "Aux"}, iv::OutputProduction::sequential),
+                iv::event_output({"other_events_out", "Other events out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
             }, ports);
         } else return ports;
     }
@@ -237,12 +237,12 @@ using TimedStereoStateNode = TimedStereoStateNodeWithPorts<false>;
 struct PlainSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<PlainSamplePass> const&) const {}
@@ -251,13 +251,13 @@ struct PlainSamplePass {
 struct PersistedSccPass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential,
+            {"out", "Out"}, iv::OutputProduction::sequential,
             iv::OutputRealization::buffered)};
     }
 
@@ -268,12 +268,12 @@ struct NeutralSamplePass {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential, {.neutral_value = 0.375f})};
+            {"in", "In"}, iv::InputAccess::sequential, {.neutral_value = 0.375f})};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<NeutralSamplePass> const&) const {}
@@ -283,13 +283,13 @@ struct PlainEventPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<PlainEventPass> const&) const {}
@@ -303,7 +303,7 @@ struct PersistedTickEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -326,7 +326,7 @@ struct TickMidiEventSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "out",
+            {"out", "Out"},
             iv::EventTypeId::midi,
             iv::OutputProduction::sequential,
             {.max_events_per_index = 0.25})};
@@ -340,7 +340,7 @@ struct TriggerEventSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -365,7 +365,7 @@ struct MonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MonoSource> const&) const {}
@@ -380,7 +380,7 @@ struct PersistedStereoSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out",
+            {"out", "Out"},
             iv::OutputProduction::sequential,
             iv::OutputRealization::buffered,
             {
@@ -402,7 +402,7 @@ struct LimitedMonoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     constexpr std::size_t max_block_size() const { return 16; }
@@ -414,7 +414,7 @@ struct StereoSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
                 {
                     .channel_layout = iv::ChannelLayout{
                         .channel_type = iv::ChannelTypeId::stereo,
@@ -440,7 +440,7 @@ struct BackgroundSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage, iv::OutputRealization::buffered)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage, iv::OutputRealization::buffered)};
     }
 
     void tock_coverage(iv::TockCoverageContext<BackgroundSource>&) const {}
@@ -460,7 +460,7 @@ struct ComputedBackgroundSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(iv::TockCoverageContext<ComputedBackgroundSource>&) const {}
@@ -481,7 +481,7 @@ struct BackgroundRegionSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::region, iv::OutputRealization::buffered),
+            iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::region, iv::OutputRealization::buffered),
         };
     }
 
@@ -506,7 +506,7 @@ struct BackgroundStereoSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage, iv::OutputRealization::buffered,
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage, iv::OutputRealization::buffered,
             {
                 .channel_layout = iv::ChannelLayout{
                     .channel_type = iv::ChannelTypeId::stereo,
@@ -527,12 +527,12 @@ struct BackgroundStereoSource {
 struct BackgroundSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::coverage)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(iv::TockCoverageContext<BackgroundSamplePass>&) const {}
@@ -549,17 +549,17 @@ struct BackgroundTriggerPass {
     static constexpr auto inputs()
     {
         if constexpr (TimestampOnly) {
-            return std::array{iv::event_timestamp_input("in")};
+            return std::array{iv::event_timestamp_input({"in", "In"})};
         } else {
             return std::array{iv::event_input(
-                "in", iv::EventTypeId::trigger, iv::InputAccess::coverage)};
+                {"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::coverage)};
         }
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage),
+            iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::coverage),
         };
     }
 
@@ -580,7 +580,7 @@ struct BackgroundEventRegionSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "out",
+            {"out", "Out"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
@@ -603,7 +603,7 @@ struct BackgroundEventRegionSink {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "in", iv::EventTypeId::trigger, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
+            {"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }
 
     static constexpr auto outputs() { return std::tuple{}; }
@@ -621,7 +621,7 @@ struct BackgroundMidiSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("out", iv::EventTypeId::midi, iv::OutputProduction::coverage),
+            iv::event_output({"out", "Out"}, iv::EventTypeId::midi, iv::OutputProduction::coverage),
         };
     }
 
@@ -638,7 +638,7 @@ struct TockTriggerSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.5})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.5})};
     }
 
     void tock_coverage(iv::TockCoverageContext<TockTriggerSource>&) const {}
@@ -654,7 +654,7 @@ struct ComputedTockTriggerSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::coverage, {.max_events_per_index = 0.5})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::coverage, {.max_events_per_index = 0.5})};
     }
 
     void tock_coverage(iv::TockCoverageContext<ComputedTockTriggerSource>&) const {}
@@ -665,7 +665,7 @@ struct ComputedTockTriggerSource {
 struct BackgroundSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
     }
 
     static constexpr auto outputs()
@@ -680,7 +680,7 @@ struct BackgroundStereoSink {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in",
+            {"in", "In"},
             iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer,
             {
                 .channel_layout = iv::ChannelLayout{
@@ -702,7 +702,7 @@ struct BackgroundRegionSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::region, iv::InputContentAccess::complete_buffer),
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::region, iv::InputContentAccess::complete_buffer),
         };
     }
 
@@ -718,7 +718,7 @@ struct BackgroundStereoRegionSink {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in",
+            {"in", "In"},
             iv::InputAccess::region, iv::InputContentAccess::complete_buffer,
             {
                 .channel_layout = iv::ChannelLayout{
@@ -742,14 +742,14 @@ struct BackgroundTwoInputPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("a", iv::InputAccess::coverage),
-            iv::input<iv::Sample>("b", iv::InputAccess::coverage),
+            iv::input<iv::Sample>({"a", "A"}, iv::InputAccess::coverage),
+            iv::input<iv::Sample>({"b", "B"}, iv::InputAccess::coverage),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(iv::TockCoverageContext<BackgroundTwoInputPass>&) const {}
@@ -766,8 +766,8 @@ struct RealtimeOutputRealizationModes {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("realtime_ephemeral", iv::OutputProduction::sequential, iv::OutputRealization::computed),
-            iv::output<iv::Sample>("realtime_persisted", iv::OutputProduction::sequential, iv::OutputRealization::buffered),
+            iv::output<iv::Sample>({"realtime_ephemeral", "Realtime ephemeral"}, iv::OutputProduction::sequential, iv::OutputRealization::computed),
+            iv::output<iv::Sample>({"realtime_persisted", "Realtime persisted"}, iv::OutputProduction::sequential, iv::OutputRealization::buffered),
         };
     }
 
@@ -791,9 +791,9 @@ struct BackgroundOutputRealizationModes {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("background_ephemeral", iv::OutputProduction::coverage, iv::OutputRealization::computed),
-            iv::output<iv::Sample>("background_persisted", iv::OutputProduction::coverage, iv::OutputRealization::buffered),
-            iv::event_output("background_persisted_events", iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
+            iv::output<iv::Sample>({"background_ephemeral", "Background ephemeral"}, iv::OutputProduction::coverage, iv::OutputRealization::computed),
+            iv::output<iv::Sample>({"background_persisted", "Background persisted"}, iv::OutputProduction::coverage, iv::OutputRealization::buffered),
+            iv::event_output({"background_persisted_events", "Background persisted events"}, iv::EventTypeId::trigger, iv::OutputProduction::coverage, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
         };
     }
 
@@ -806,7 +806,7 @@ struct BackgroundOutputRealizationModes {
 struct RealtimeSink {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
@@ -827,7 +827,7 @@ struct ReplayableSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick(iv::TickSampleContext<ReplayableSource> const&) const {}
@@ -841,7 +841,7 @@ struct ReplayableFFTSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("out", iv::OutputProduction::sequential),
+            iv::output<iv::FFTBlock>({"out", "Out"}, iv::OutputProduction::sequential),
         };
     }
 
@@ -862,7 +862,7 @@ struct ReplayableFastSampleSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::Sample>("out", iv::OutputProduction::sequential),
+            iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential),
         };
     }
 
@@ -877,10 +877,10 @@ struct ReplayableFastSampleSource {
 
 struct BackgroundFFTSink {
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::FFTBlock>("in", iv::InputAccess::coverage)};
+        return std::array{iv::input<iv::FFTBlock>({"in", "In"}, iv::InputAccess::coverage)};
     }
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::FFTBlock>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::FFTBlock>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
     void tock_coverage(iv::TockCoverageContext<BackgroundFFTSink>&) const {}
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundFFTSink>&) const {}
@@ -895,12 +895,12 @@ struct ReplayablePass {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick(iv::TickSampleContext<ReplayablePass> const&) const {}
@@ -909,21 +909,21 @@ struct ReplayablePass {
 struct ReplayablePair {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("signal"), iv::input<iv::Sample>("feedback")};
+        return std::array{iv::input<iv::Sample>({"signal", "Signal"}), iv::input<iv::Sample>({"feedback", "Feedback"})};
     }
-    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
     void tick(iv::TickSampleContext<ReplayablePair> const&) const {}
 };
 
 struct PersistedTickPass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential, iv::OutputRealization::buffered)};
     }
 
     void tick_block(iv::TickBlockContext<PersistedTickPass> const&) const {}
@@ -931,7 +931,7 @@ struct PersistedTickPass {
 
 struct LatentPersistedTickSource {
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputRealization::buffered)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputRealization::buffered)};
     }
     void constrain_ports(iv::ConstrainPortsContext<LatentPersistedTickSource>& ctx) const {
         ctx.output<"out">().latency() = 2;
@@ -942,12 +942,12 @@ struct LatentPersistedTickSource {
 struct LatentSamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<LatentSamplePass>& ctx) const
@@ -964,8 +964,8 @@ struct TwoInputSink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("fast", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slow", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"fast", "Fast"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slow", "Slow"}, iv::InputAccess::sequential),
         };
     }
 
@@ -981,14 +981,14 @@ struct LatentTwoInputPass {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("fast", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slow", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"fast", "Fast"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slow", "Slow"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -1005,12 +1005,12 @@ struct LatentTwoInputPass {
 struct MediumLatencySamplePass {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -1268,14 +1268,14 @@ TEST(GraphJitConnectionPlan, DerivesScheduleTemporalRequirementsAndProducerPolic
 {
     using namespace iv;
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto first = details::configure_concrete_node<TimedSamplePass>(graph);
     auto second = details::configure_concrete_node<TimedSamplePass>(graph);
     auto const first_handle = first.node_bundle_handle();
     auto const second_handle = second.node_bundle_handle();
     first(input);
     second(first);
-    graph.outputs("out"_P = second);
+    graph.outputs("out"_P.with_display_name("Out") = second);
 
     auto configured = std::move(graph).finish();
     auto plan = build_connection_analysis_plan(configured, 64);
@@ -1346,7 +1346,7 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
 {
     using namespace iv;
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto first_source = details::configure_concrete_node<PlainSamplePass>(graph);
     auto second_source = details::configure_concrete_node<PlainSamplePass>(graph);
     auto first_target = details::configure_concrete_node<PlainSamplePass>(graph);
@@ -1360,8 +1360,8 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
     first_target(first_source);
     second_target(second_source);
     graph.outputs(
-        "first"_P = first_target,
-        "second"_P = second_target);
+        "first"_P.with_display_name("First") = first_target,
+        "second"_P.with_display_name("Second") = second_target);
 
     auto configured = std::move(graph).finish();
     std::vector<std::size_t> classes(
@@ -1419,8 +1419,8 @@ TEST(GraphJitConnectionPlan, GroupsCompatibleCyclicRegionsInExecutionPhaseOrder)
     second_head(static_cast<SamplePortRef>(second_tail).detach(1));
     second_tail(second_head);
     graph.outputs(
-        "first"_P = first_tail,
-        "second"_P = second_tail);
+        "first"_P.with_display_name("First") = first_tail,
+        "second"_P.with_display_name("Second") = second_tail);
 
     auto configured = std::move(graph).finish();
     std::vector<std::size_t> classes(
@@ -1500,7 +1500,7 @@ TEST(GraphJitConnectionPlan, FusesSampleConversionsAcrossASubgraphInput)
     auto const source_handle = source.node_bundle_handle();
     NodeBundleHandle sink_handle = 0;
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input(boundary, "in");
+        auto input = iv::programmatic::declare_input(boundary, "in", {"In"});
         auto sink = details::configure_concrete_node<StereoSink>(graph);
         sink_handle = sink.node_bundle_handle();
         sink(input);
@@ -1571,7 +1571,7 @@ TEST(GraphJitConnectionPlan, ModuleInputFanInPreservesConversionsAndManualContro
     auto mono = details::configure_concrete_node<MonoSource>(graph);
     auto stereo_source = details::configure_concrete_node<PersistedStereoSource>(graph);
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input(boundary, "in");
+        auto input = iv::programmatic::declare_input(boundary, "in", {"In"});
         auto sink = details::configure_concrete_node<StereoSink>(graph);
         sink(input);
         boundary.outputs();
@@ -1656,7 +1656,7 @@ TEST(GraphJitConnectionPlan, ComposesEventConversionsAcrossASubgraphInput)
     auto source = details::configure_concrete_node<BackgroundMidiSource>(graph);
     NodeBundleHandle sink_handle = 0;
     auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_event_input(boundary, "in", EventTypeId::boundary);
+        auto input = iv::programmatic::declare_event_input(boundary, "in", {"In"}, EventTypeId::boundary);
         auto sink = details::configure_concrete_node<PlainEventPass>(graph);
         sink_handle = sink.node_bundle_handle();
         sink.connect_event_input(0, input);
@@ -2220,7 +2220,7 @@ TEST(GraphJitConnectionPlan, RejectsSerialDetachesAcrossSubgraphBoundaries)
         details::configure_concrete_node<MonoSource>(sample_graph);
     auto sample_subgraph = sample_graph.subgraph(
         [&](SubgraphBuilder& boundary) {
-            auto input = iv::programmatic::declare_input(boundary, "in");
+            auto input = iv::programmatic::declare_input(boundary, "in", {"In"});
             boundary.outputs(
                 static_cast<SamplePortRef>(input).detach(3));
         },
@@ -2246,7 +2246,7 @@ TEST(GraphJitConnectionPlan, RejectsSerialDetachesAcrossSubgraphBoundaries)
         details::configure_concrete_node<PlainEventPass>(event_graph);
     auto event_subgraph = event_graph.subgraph(
         [&](SubgraphBuilder& boundary) {
-            auto input = iv::programmatic::declare_event_input(boundary, "in", EventTypeId::trigger);
+            auto input = iv::programmatic::declare_event_input(boundary, "in", {"In"}, EventTypeId::trigger);
             boundary.event_outputs(
                 static_cast<EventPortRef>(input).detach(3));
         },
@@ -2493,7 +2493,7 @@ TEST(GraphJitConnectionPlan, ReportsFeedbackThroughModulePortsWithoutMarkingIngr
     auto source = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input(boundary, "in");
+        auto input = iv::programmatic::declare_input(boundary, "in", {"In"});
         auto inside = details::configure_concrete_node<BackgroundSamplePass>(graph);
         inside(input);
         boundary.outputs(inside);
@@ -3104,8 +3104,8 @@ TEST(GraphJitConnectionPlan, ExternalEventsUseBoundaryPolicy)
 {
     using namespace iv;
     GraphBuilder graph;
-    auto event = iv::programmatic::declare_event_input(graph, "event", EventTypeId::trigger);
-    graph.event_outputs("event"_F = event);
+    auto event = iv::programmatic::declare_event_input(graph, "event", {"Event"}, EventTypeId::trigger);
+    graph.event_outputs("event"_F.with_display_name("Event") = event);
     graph.outputs();
 
     auto configured = std::move(graph).finish();
@@ -4934,7 +4934,7 @@ TEST(GraphJitConnectionPlan, RejectsUnavailableBoundarySourceDuringTransitiveRep
     using namespace iv;
 
     GraphBuilder graph;
-    auto input = iv::programmatic::declare_input(graph, "in");
+    auto input = iv::programmatic::declare_input(graph, "in", {"In"});
     auto replay = details::configure_concrete_node<ReplayablePass>(graph);
     auto sink = details::configure_concrete_node<BackgroundSamplePass>(graph);
     replay(input);
@@ -5039,7 +5039,7 @@ TEST(GraphJitConnectionPlan, ModuleManualInputKeepsItsInternalChannelConversion)
     GraphBuilder graph;
     NodeBundleHandle sink_handle = 0;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input<stereo>(boundary, "gain");
+        auto input = iv::programmatic::declare_input<stereo>(boundary, "gain", {"Gain"});
         auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
         sink_handle = sink.node_bundle_handle();
         sink(input);
@@ -5268,13 +5268,13 @@ TEST(GraphJitConnectionPlan, ModuleManualFanoutPreservesDetachAndOrdinarySourceP
     GraphBuilder graph;
     NodeBundleHandle delayed_handle = 0;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input(boundary, "gain");
+        auto input = iv::programmatic::declare_input(boundary, "gain", {"Gain"});
         auto direct = details::configure_concrete_node<PlainSamplePass>(graph);
         auto delayed = details::configure_concrete_node<PlainSamplePass>(graph);
         delayed_handle = delayed.node_bundle_handle();
         direct(input);
         delayed(static_cast<SamplePortRef>(input).detach(3, Sample{-1}));
-        boundary.outputs("feedback"_P = delayed);
+        boundary.outputs("feedback"_P.with_display_name("Feedback") = delayed);
     }, "manual-fanout");
     auto source = details::configure_concrete_node<PlainSamplePass>(graph);
     module(source);
@@ -5319,7 +5319,7 @@ TEST(GraphJitConnectionPlan, RejectsAcyclicDetachOfAModuleManualInput)
     using namespace iv;
     GraphBuilder graph;
     auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_input(boundary, "gain");
+        auto input = iv::programmatic::declare_input(boundary, "gain", {"Gain"});
         auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
         sink(static_cast<SamplePortRef>(input).detach(3));
         boundary.outputs();
@@ -5348,9 +5348,9 @@ TEST(GraphJitConnectionPlan, SequentialModuleEventResolutionPreservesNestedFanIn
     auto first = details::configure_concrete_node<PlainEventPass>(graph);
     auto second = details::configure_concrete_node<PlainEventPass>(graph);
     auto outer = graph.subgraph([&](SubgraphBuilder& boundary) {
-        auto input = iv::programmatic::declare_event_input(boundary, "events", EventTypeId::trigger);
+        auto input = iv::programmatic::declare_event_input(boundary, "events", {"Events"}, EventTypeId::trigger);
         auto inner = graph.subgraph([&](SubgraphBuilder& child) {
-            auto nested_input = iv::programmatic::declare_event_input(child, "events", EventTypeId::trigger);
+            auto nested_input = iv::programmatic::declare_event_input(child, "events", {"Events"}, EventTypeId::trigger);
             auto sink = details::configure_concrete_node<PlainEventPass>(graph);
             sink.connect_event_input(0, nested_input);
             child.outputs();
@@ -5387,7 +5387,7 @@ TEST(GraphJitConnectionPlan, ModuleBoundaryFeedsCoverageWithOrWithoutAnUpstreamW
         GraphBuilder graph;
         auto source = details::configure_concrete_node<ComputedBackgroundSource>(graph);
         auto module = graph.subgraph([&](SubgraphBuilder& boundary) {
-            auto input = iv::programmatic::declare_input<mono>(boundary, "freq");
+            auto input = iv::programmatic::declare_input<mono>(boundary, "freq", {"Frequency"});
             auto sink = details::configure_concrete_node<PlainSamplePass>(graph);
             sink(input);
             boundary.outputs();

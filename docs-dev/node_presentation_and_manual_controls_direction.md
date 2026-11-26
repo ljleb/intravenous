@@ -208,7 +208,7 @@ previously requested copy-debug button remains separate from these actions.
 The 2026-11-16 follow-up supersedes the standalone stacked-slot arrangement
 for **folded inputs**. After placing as many complete input controls as fit,
 **the last visible input itself is the expansion anchor**, retaining its knob,
-port circle and name. Hover/focus extends the lane header with the remaining
+port circle and name. Opening the port list extends the lane header with the remaining
 input rows aligned to the same knob/port/name columns; opening or closing it
 must **never move any already-visible knob or the anchor's port endpoint**.
 Do not duplicate the anchor knob inside the continuation. The extension must
@@ -227,10 +227,10 @@ discussion, a **popover** means a temporary panel above the existing display:
 the ordinary list is a port popover, and the connection chooser is a connection
 popover. Inputs and outputs remain separate in either form.
 
-During pointer interaction, a popover stays open while the pointer is over
-that popover or the port group that opened it. Leaving both closes it. Empty
-space between the input and output groups is outside both groups. A layout
-transition must not discard the final check of where the pointer ended up.
+The port popover follows the pointer across its group and panel. An open
+connection chooser extends that hover area when it is nested over the list.
+Moving outside closes the popovers. A layout transition must preserve the
+final pointer position.
 
 When a row press starts a connection gesture, close the open popovers before
 release. Keep the captured drag active so the pointer can reach ports that
@@ -287,20 +287,35 @@ Selection and hovering do not request graph compilation or an undo entry.
 The wires must not intercept port dragging or hover expansion.
 
 Hold Alt when dropping a new connection or moving an existing end to set the
-connection's feedback detach. Alt-click an endpoint port to toggle an authored
+connection's feedback detach. The cursor cable and the compatible drop preview
+use dashes while Alt requests a detach. Alt-click an endpoint port to toggle an authored
 connection. If several connections at that port can be toggled, open the port's
 connection chooser. Toggling preserves the connection ID and both endpoint
 selectors. A newly detached connection uses one sample of extra loop latency,
 following `port.detach()` in the [node-reference DSL](./node_ref_dsl_contract.md#expression-rules).
-Draw detached connections dashed, including a shared wire that contains a
-detached connection. Draw pending ordinary wires dotted. GraphJit validates the
+Draw detached connections dashed with the usual endpoint gradient, including
+a shared wire that contains a detached connection. Error highlighting takes
+precedence. Draw pending ordinary wires dotted. GraphJit validates the
 feedback path against the realized graph.
 
-The port connection chooser shows a **Feedback delay (samples)** knob on each
-detached connection. Hovering a delay knob lets the user release Shift while
-the chooser stays open. Right-clicking either endpoint opens those controls. The
-knob sends whole-sample updates during a scrub. While a write is in flight, keep
-the latest requested delay so a fast scrub cannot queue obsolete values.
+The port connection chooser shows a **Feedback delay** knob on each
+detached connection. The knob and socket use the regular port control layout,
+including the socket cutout around the knob. When a port has one detached
+connection, the same control appears in the port popover. When a row also has
+a manual value knob, it remains available on the other side of the label.
+The delay knob and its enlarged preview use a left-to-right gradient. On an
+input, the gradient runs from saturated green to the socket's yellow. On an
+output, it runs from the socket's blue to saturated green.
+The enlarged preview title uses `Port name | Feedback delay`.
+The editor uses the full display name in knob titles and status hints.
+In a port row it uses the short name when the full name exceeds the available
+width. If neither fits, the row ellipsizes the label. Generated positional
+ports use their generated label or port number.
+[Earlier optional-label design](historical/optional_port_display_name_2026-11-25.md)
+The value below the knob is in samples.
+The delay knob sends whole-sample updates during a scrub. While a write
+is in flight, keep the latest requested delay so a fast scrub cannot queue
+obsolete values.
 Each accepted write uses the same undo history as other connection edits.
 
 The owner added two display rules on 2026-11-13. A grouped input or output
@@ -334,13 +349,16 @@ A left click below means a primary press-drag-release gesture. A quick click
 alone does not commit a connection edit.
 
 A normal primary drag starts a new connection, including when the port already
-has connections. Shift-hover over any connected port opens a chooser, including
-when the port has exactly one connection. Pressing Shift while already hovering
-the port also opens it. The first connection circle occupies the hovered port
-circle's position; it replaces the chooser's decorative icon. Its entry can
+has connections. Right-click a port socket or label to open the chooser for
+its editable connections, including when there is exactly one. A port with
+no editable connections leaves the graph as it is on right-click. The first
+connection circle occupies the clicked port circle's position and replaces
+the chooser's decorative icon. Its entry can
 therefore be picked up without moving down the list. Other entries remain
 available for explicit selection. Near the bottom of the viewport, the remaining
-entries grow upward with the first connection still at the hovered port.
+entries grow upward with the first connection still at the clicked port.
+The [previous Shift-hover and right-click rules](./historical/vue_port_chooser_before_right_click_2026-11-25.md)
+are preserved in the historical record.
 
 The fixed end of a new connection's preview starts at the port circle, even
 when the press is on another part of its row. If that port's list closes, the
@@ -360,21 +378,23 @@ gradient when clarifying these rules on 2026-11-13.
 
 Hovering an eligible destination port also shows a faint preview of the completed
 connection, attached to that port's circle. The cursor cable remains visible
-and keeps following the pointer; its position-based colour rule stays unchanged.
-The attached preview uses the actual endpoint colours and the same cubic as the
-completed connection. The destination popover stays open while hovered. Moving
+and keeps following the pointer. The attached preview uses the endpoint colors
+and the same cubic as the completed connection. The destination popover stays
+open while hovered. Moving
 away removes the attached preview. Both previews end on release or cancellation;
 only a valid release can edit the graph. The editor's existing eligibility checks
 still apply; this display does not add converter discovery.
 
 Drag a chooser entry with the primary button to move that connection end.
-Direct Shift-drag can still pick up a sole connection. Shift-click remains a
-fallback, not a required opening click. Opening the chooser does not select a
-connection or change the graph. Right-click receives no new menu.
-The connection chooser stays open only while Shift is held. Releasing Shift
-hides it. An ordinary grouped-port list remains governed by its normal hover
-rules. Once a chooser entry has been picked up, releasing Shift does not
-cancel that drag.
+Direct Shift-drag can still pick up a sole connection. Opening the chooser
+preserves lane selection and the graph. The context chooser stays open while
+the pointer moves between controls. Right-click a connection row or the
+chooser background, or press Escape, to close it. Knobs keep their right-click
+value entry. A connection drag closes the popovers once it captures the chosen
+endpoint. Hover over a compatible grouped port during a wire drag to show it
+as a destination. To browse, hover over a grouped port slot, then right-click
+a port in the list to see its connections. The port list stays mounted under
+the chooser, with its scroll position intact.
 
 While the chooser is open, each visible entry receives its connection's wire
 at its own port circle, like the individual ports in an expanded grouped slot.
@@ -1340,7 +1360,7 @@ lane interface. They do not claim that the current client implements them._
 - Fill the port connector in both connection states. Use the full port colour
   when connected and a dimmer tint when disconnected. Keep pending outlines
   dashed and keep the adjacent knob's brightness independent. A port popover
-  containing exactly one port still uses a single-circle icon and opens on hover.
+  containing exactly one port still uses a single-circle icon.
   See the [earlier hollow connector rule](./historical/vue_port_connectors_before_solid_fills_2026-11-19.md).
 - Size port popovers to fit their longest port name with the required padding.
   Remove unnecessary horizontal space.

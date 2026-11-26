@@ -266,7 +266,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+            return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
         }
 
         void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundStateNode>& ctx) const
@@ -282,10 +282,10 @@ namespace {
         auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
         auto const background = details::configure_concrete_node<BackgroundStateNode>(g);
         g.outputs(
-            "direct"_P = direct,
-            "inherited"_P = inherited,
-            "scalar"_P = scalar,
-            "background"_P = background);
+            "direct"_P.with_display_name("Direct") = direct,
+            "inherited"_P.with_display_name("Inherited") = inherited,
+            "scalar"_P.with_display_name("Scalar") = scalar,
+            "background"_P.with_display_name("Background") = background);
     }
 }
 )");
@@ -362,7 +362,7 @@ namespace {
         auto const a = make_value<0>(g);
         auto const b = make_value<1>(g);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -394,9 +394,9 @@ namespace {
     void child_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const in = g.input();
-        auto const azimuth = g.input(0, -180, 180);
-        g.outputs("main"_P = in + azimuth);
+        auto const in = g.input({"In"});
+        auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
+        g.outputs("main"_P.with_display_name("Main") = in + azimuth);
     }
     IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
 
@@ -404,7 +404,7 @@ namespace {
     {
         using namespace iv;
         auto const child = g.node<"iv.test.source_provenance.child">();
-        g.outputs("main"_P = child);
+        g.outputs("main"_P.with_display_name("Main") = child);
     }
     IV_MODULE("iv.test.source_provenance.main", module_main, "Main");
 }
@@ -455,7 +455,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array{
-                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
+                iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -464,7 +464,7 @@ namespace {
         static constexpr auto inputs()
         {
             return std::array{
-                iv::event_input("gate", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
+                iv::event_input({"gate", "Gate"}, iv::EventTypeId::trigger, iv::InputAccess::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSink> const&) const {}
     };
@@ -472,15 +472,15 @@ namespace {
     void token_provenance_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto frequency = g.input(440.0);
+        auto frequency = g.input({"Frequency"}, 440.0);
         auto saw = details::configure_concrete_node<SawOscillator>(g);
         saw("frequency"_P = frequency);
         auto out = saw * 0.5f;
         auto trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
         auto event_sink = details::configure_concrete_node<TriggerSink>(g);
         event_sink("gate"_F = trigger);
-        g.outputs("trigger"_F = trigger, "main"_P = out,
-            "pulse"_F = trigger, "dry"_P = frequency);
+        g.outputs("trigger"_F.with_display_name("Trigger") = trigger, "main"_P.with_display_name("Main") = out,
+            "pulse"_F.with_display_name("Pulse") = trigger, "dry"_P.with_display_name("Dry") = frequency);
     }
 }
 )");
@@ -639,7 +639,7 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -689,7 +689,7 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 
@@ -722,7 +722,7 @@ namespace {
         static constexpr auto outputs()
         {
             return std::array{
-                iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
+                iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -853,7 +853,7 @@ namespace {
                 (void)visible;
             }
         }
-        g.outputs("copy"_P = hiddenCopy, "assigned"_P = assigned, "block"_P = block_output);
+        g.outputs("copy"_P.with_display_name("Copy") = hiddenCopy, "assigned"_P.with_display_name("Assigned") = assigned, "block"_P.with_display_name("Block") = block_output);
     }
 }
 )");
@@ -899,7 +899,7 @@ namespace {
         NodeRef x;
         x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
         auto const& sink = x;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -932,7 +932,7 @@ namespace {
         x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
         x = details::configure_concrete_node<Constant>(g, 1.0f).node_ref();
         auto const& sink = x;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -962,7 +962,7 @@ namespace {
         auto const a = make_sum<2>(g);
         auto const b = make_sum<3>(g);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -1076,7 +1076,7 @@ namespace {
         auto const b = make_sum<1>(g);
         a(value);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
@@ -1229,7 +1229,7 @@ void polyphonic_module(iv::GraphBuilder& g)
             "frequency"_P = 440.0
         );
         (void)Voice;
-        g.outputs("main"_P = saw * m["amplitude"_P]);
+        g.outputs("main"_P.with_display_name("Main") = saw * m["amplitude"_P]);
     });
 }
 )");
@@ -1292,7 +1292,7 @@ void polyphonic_module(iv::GraphBuilder& g)
             "frequency"_P = 440.0
         );
         (void)Voice;
-        g.outputs("main"_P = saw * m["amplitude"_P]);
+        g.outputs("main"_P.with_display_name("Main") = saw * m["amplitude"_P]);
     });
 }
 )");

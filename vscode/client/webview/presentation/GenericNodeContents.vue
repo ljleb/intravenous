@@ -5,7 +5,7 @@ import mergedNodeSvg from "../../media/merged_node.svg?raw";
 import singleNodeSvg from "../../media/single_node.svg?raw";
 import type { NodeDisplayMode } from "./displayMode";
 import { useNode } from "./nodeContext";
-import { nodeDescription, nodeDisplayName, portDescription, portGroups, portKey } from "./nodeSummary";
+import { nodeDescription, nodeDisplayName, portDescription, portDisplayName, portGroups, portKey } from "./nodeSummary";
 import PortRow from "./PortRow.vue";
 import DisclosureRow from "./DisclosureRow.vue";
 
@@ -57,8 +57,8 @@ function toggleMember(index: number): void {
                 :data-direction="port.direction"
                 :data-kind="port.kind"
                 :data-connectivity="port.connectivity"
-                :data-status-hint="`${port.direction} ${port.name} · ${portDescription(port)}`"
-                :aria-label="`${port.direction} ${port.name} · ${portDescription(port)}`"
+                :data-status-hint="`${portDisplayName(port)} · ${portDescription(port)}`"
+                :aria-label="`${portDisplayName(port)} ${port.direction} · ${portDescription(port)}`"
                 role="img"
             />
         </div>

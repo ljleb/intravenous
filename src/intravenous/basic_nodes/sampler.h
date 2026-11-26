@@ -23,15 +23,15 @@ struct Sampler {
     static constexpr auto inputs()
     {
         return std::array{
-            input<Sample>("audio", InputAccess::sequential, {.channel_layout = layout}),
-            input<Sample>("record", InputAccess::sequential),
+            input<Sample>({"audio", "Audio"}, InputAccess::sequential, {.channel_layout = layout}),
+            input<Sample>({"record", "Record"}, InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>("recorded", OutputProduction::sequential,
-            OutputRealization::buffered, {.channel_layout = layout})};
+        return std::array{output<Sample>({"recorded", "Recorded audio", "Recorded"}, OutputProduction::sequential,
+                OutputRealization::buffered, {.channel_layout = layout})};
     }
 
     void constrain_ports(ConstrainPortsContext<Sampler>& ctx) const

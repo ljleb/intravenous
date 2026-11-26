@@ -256,7 +256,7 @@ void tree_body(
             head = static_cast<SamplePortRef>(merge);
         }
     }
-    graph.outputs("out"_P = head);
+    graph.outputs("out"_P.with_display_name("Out") = head);
 }
 
 void tree_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument> arguments)
@@ -277,13 +277,13 @@ void subgraphs_module(iv::GraphBuilder& graph, std::span<ConfigurationArgument>)
     auto head = static_cast<SamplePortRef>(leaf(constant_id, graph));
     for (int index = 0; index < shape.subgraphs; ++index) {
         auto const nested = graph.subgraph([&](SubgraphBuilder& boundary) {
-            auto const input = static_cast<SamplePortRef>(iv::programmatic::declare_input(boundary, ""));
-            boundary.outputs("out"_P = leaf_chain(graph, input));
+            auto const input = static_cast<SamplePortRef>(iv::programmatic::declare_input(boundary, "", {""}));
+            boundary.outputs("out"_P.with_display_name("Out") = leaf_chain(graph, input));
         });
         nested(head);
         head = static_cast<SamplePortRef>(nested);
     }
-    graph.outputs("out"_P = head);
+    graph.outputs("out"_P.with_display_name("Out") = head);
 }
 
 struct DefinitionSpec {
@@ -517,7 +517,7 @@ Measurement builder_direct_once()
         difference(value, head);
         head = static_cast<SamplePortRef>(difference);
     }
-    graph.outputs("out"_P = head);
+    graph.outputs("out"_P.with_display_name("Out") = head);
     auto const end = Clock::now();
     auto const finish_begin = Clock::now();
     auto const configured = std::move(graph).finish();

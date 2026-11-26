@@ -26,8 +26,7 @@ import type { NodeDefinitionPreview } from "../../src/nodeDefinitionSearch";
 import { replaceProjectPresentations, selectPresentation } from "../presentation/presentations";
 import { canContinuePortConnection, fixedConnectionPorts, type GraphConnectionEnd, type GraphPortEndpoint } from "../../src/graphConnectionEditing";
 import { beginPortConnection, canDropPortConnection, destinationHandle, finishPortConnection, movePortConnection,
-    portConnectionDrop, type PortConnectionDrag } from "../../src/portConnectionGesture";
-import { initialPortHoverShift, keyboardPortHoverShift, pointerPortHoverShift } from "../../src/portHoverShift";
+    portConnectionDrop, previewConnectionDetached, type PortConnectionDrag } from "../../src/portConnectionGesture";
 import { connectionCursorOutputFraction, type PortColorColumns } from "../../src/connectionPreview";
 import { ManualControlGestures } from "../../src/manualControlGesture";
 import { provideManualControls } from "../presentation/manualControlContext";
@@ -164,6 +163,8 @@ function clickModuleFooterAcrossSeam(event: MouseEvent) {
 function selectLaneAtPointer(event: PointerEvent) {
     if (event.button !== 0 && event.button !== 2) return;
     if (!(event.target instanceof Element)) return;
+    if (event.target.closest("[data-port-popover-navigation]")) return;
+    if (event.button === 2 && event.target.closest("[data-port-endpoint], [data-port-label], button[data-port-slot], .connection-chooser")) return;
     const target = pressedModuleFooterAcrossSeam(event)?.footer ?? event.target;
     const key = target.closest<HTMLElement>("[data-lane-key]")?.dataset.laneKey;
     if (!key) return;
@@ -489,9 +490,9 @@ const trustedHover = new TrustedHover(undefined, (target, pointerMoved, point) =
 
 const surface = ref<HTMLElement | null>(null);
 const connectionDrag = shallowRef<PortConnectionDrag | null>(null);
-const hoverShift = shallowRef(initialPortHoverShift());
+const connectionAltHeld = ref(false);
 const connectionStartAnchor = shallowRef<PreviewAnchor | null>(null);
-const dropPreviewAnchor = shallowRef<PreviewAnchor | null>(null);
+const dropPreview = shallowRef<{ anchor: PreviewAnchor | null; port: GraphPortEndpoint | null }>({ anchor: null, port: null });
 const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
@@ -716,10 +717,12 @@ const previewWires = computed(() => {
     }));
 });
 const dropPreviewWires = computed(() => {
-    const target = dropPreviewAnchor.value;
+    const target = dropPreview.value.anchor;
     return target ? previewWires.value.map((wire) => ({ ...wire, target,
         path: connectionWirePath(wire.anchor, target) })) : [];
 });
+const previewDetached = computed(() => !!connectionDrag.value
+    && previewConnectionDetached(connectionDrag.value, dropPreview.value.port, connectionAltHeld.value));
 const changedPresentationStates = shallowReactive(new Map<string, SerializedPresentationState>());
 const pendingPresentation = shallowReactive(new Map<number, { patch: GraphPresentationPatch; receipt?: ProjectEditReceipt }>());
 const laneViewVersions = computed(() => new Map((state.value.scope?.presentation?.laneViews ?? []).map(
@@ -810,7 +813,6 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
     scope: visibleScope, lanes, expandedModules, implicitOutputModules, connectionFeedback, toggleModule,
-    shiftHeld: computed(() => hoverShift.value.held),
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     toggleConnectionDetach: (end) => webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: { end, toggleDetach: true } }),
     setConnectionDelay: (end, loopExtraLatency) => requestGraphEdit((requestId) =>
@@ -884,7 +886,8 @@ function measureWireOcclusions(top: number, bottom: number, roots: readonly Pare
     headers: Map<Element, DOMRect>): WireOcclusions {
     const range = document.createRange();
     const occlusions: WireOcclusions = { labels: [], knobs: [] };
-    for (const root of roots) for (const element of root.querySelectorAll(".lane-name, .lane-source-label, .direct-port-name, .port-entry .port-name, .manual-knob")) {
+    const knobSelector = ".manual-knob, .connection-delay-knob";
+    for (const root of roots) for (const element of root.querySelectorAll(`.lane-name, .lane-source-label, .direct-port-name, ${knobSelector}`)) {
         if (element.closest(".port-panel.positioning")) continue;
         const bounds = element.getBoundingClientRect();
         const popup = element.closest(".expansion-body")?.getBoundingClientRect();
@@ -893,7 +896,7 @@ function measureWireOcclusions(top: number, bottom: number, roots: readonly Pare
         const clipBottom = popup?.bottom ?? bottom;
         if (!bounds.width || !bounds.height || bounds.bottom < clipTop || bounds.top > clipBottom) continue;
         // The label can fill a grid column while its text occupies only a few pixels.
-        const isKnob = element.matches(".manual-knob");
+        const isKnob = element.matches(knobSelector);
         let content = bounds;
         if (!isKnob) {
             range.selectNodeContents(element);
@@ -951,7 +954,9 @@ function updateWires() {
     const snapInput = header?.querySelector(".timeline-snap-input [data-port-endpoint]")
         ?.closest(".timeline-snap-input")?.getBoundingClientRect();
     const top = heading ? Math.max(viewport.top, heading.bottom) : viewport.top;
-    const popovers = [...document.querySelectorAll<HTMLElement>(".port-panel:not(.positioning)")];
+    // Wire clipping follows paint order, with connection choosers above port lists.
+    const popovers = [...document.querySelectorAll<HTMLElement>(".port-panel:not(.positioning)")]
+        .sort((a, b) => Number(a.classList.contains("connection-chooser")) - Number(b.classList.contains("connection-chooser")));
     const popoverIndices = new Map(popovers.map((panel, index) => [panel, index]));
     const auxiliaryRoots = header ? [header, ...popovers] : popovers;
     const revealedEnds = popovers.flatMap((panel) => [...panel.querySelectorAll<HTMLElement>("[data-connection-end]")]
@@ -1100,8 +1105,11 @@ watch([selectedLanes, visibleScope, lanes, () => layout.value.timeline.laneHeigh
 let connectionAltClick: (() => void) | undefined;
 function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: GraphConnectionEnd, altClick?: () => void) {
     if (!surface.value || !state.value.scope?.editable || connectionDrag.value) return;
-    const handle = event.currentTarget;
-    if (!(handle instanceof HTMLElement)) return;
+    const control = event.currentTarget;
+    if (!(control instanceof HTMLElement)) return;
+    const handle = control.hasAttribute("data-port-label")
+        ? control.closest(".control-row")?.querySelector<HTMLElement>(".port-handle") : control;
+    if (!handle) return;
     const anchor = measureWireAnchor(handle, `port:${portEndpointKey(port)}`);
     if (!anchor) return;
     const drag = beginPortConnection(port, event.pointerId, event.button, { x: event.clientX, y: event.clientY }, edit);
@@ -1112,6 +1120,7 @@ function startConnection(event: PointerEvent, port: GraphPortEndpoint, edit?: Gr
     surface.value.focus({ preventScroll: true });
     surface.value.setPointerCapture(event.pointerId);
     connectionDrag.value = drag;
+    connectionAltHeld.value = event.altKey;
     connectionAltClick = altClick;
     connectionStartAnchor.value = edit ? null : anchor;
     sourceGroupToLeave = { nodeKey: addressKey(port.address), direction: port.direction,
@@ -1123,17 +1132,17 @@ function updateDropPreview() {
     const drag = connectionDrag.value;
     const handle = drag?.moved ? destinationHandle(document.elementFromPoint(drag.end.x, drag.end.y)) : null;
     const target = handle?.dataset.portEndpoint ? JSON.parse(handle.dataset.portEndpoint) as GraphPortEndpoint : null;
-    dropPreviewAnchor.value = handle && drag && target && canDropPortConnection(visibleScope.value, drag, target)
-        ? measureWireAnchor(handle, "drop-preview") : null;
+    dropPreview.value = { port: target, anchor: handle && drag && target && canDropPortConnection(visibleScope.value, drag, target)
+        ? measureWireAnchor(handle, "drop-preview") : null };
 }
 function moveConnection(event: PointerEvent) {
-    observePointerShift(event);
     const drag = connectionDrag.value;
     if (!drag || event.pointerId !== drag.pointerId) return;
     event.preventDefault();
     const next = movePortConnection(drag, event.pointerId, event.buttons, { x: event.clientX, y: event.clientY });
     if (!next) { cancelConnection(); return; }
     connectionDrag.value = next;
+    connectionAltHeld.value = event.altKey;
     updateDropPreview();
     const hovered = portGroupAt(next.end);
     if (sourceGroupToLeave) {
@@ -1150,7 +1159,6 @@ function moveConnection(event: PointerEvent) {
     }
 }
 function releaseConnection(event: PointerEvent) {
-    observePointerShift(event);
     const drag = connectionDrag.value;
     if (!drag || event.pointerId !== drag.pointerId) return;
     event.preventDefault();
@@ -1168,9 +1176,10 @@ function releaseConnection(event: PointerEvent) {
 function cancelConnection() {
     const pointerId = connectionDrag.value?.pointerId;
     connectionDrag.value = null;
+    connectionAltHeld.value = false;
     connectionAltClick = undefined;
     connectionStartAnchor.value = null;
-    dropPreviewAnchor.value = null;
+    dropPreview.value = { anchor: null, port: null };
     hoveredPortGroup.value = null;
     sourceGroupToLeave = null;
     dragAnchors.value = [];
@@ -1200,10 +1209,11 @@ function focusSurfaceFromPointer(event: PointerEvent) {
 function focusIdleSurface() {
     if (document.hasFocus() && document.activeElement === document.body) surface.value?.focus({ preventScroll: true });
 }
-function keepAltInDetachedGraph(event: KeyboardEvent) {
-    // VS Code opens detached editors in a popup and forwards webview keys
-    // to the workbench from a bubble listener. Keep Alt available to pointer gestures.
-    if (event.key !== "Alt" || !window.top?.opener) return;
+function handleAltKey(event: KeyboardEvent) {
+    if (event.key !== "Alt") return;
+    if (connectionDrag.value) connectionAltHeld.value = event.type === "keydown" || event.altKey;
+    objectDrag?.modifiers?.(event);
+    // Keep Alt in the focused graph before the webview forwards keys to the workbench.
     event.preventDefault();
     event.stopImmediatePropagation();
 }
@@ -1376,7 +1386,6 @@ function keyDown(event: KeyboardEvent) {
         }
         return;
     }
-    hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
     if (event.key === "Escape") {
         cancelConnection(); knobClicks.cancel(); pointerLock.cancel("Escape canceled the drag.");
         cursorReturn.cancel("Escape canceled the cursor return.");
@@ -1384,14 +1393,9 @@ function keyDown(event: KeyboardEvent) {
 }
 function keyUp(event: KeyboardEvent) {
     objectDrag?.modifiers?.(event);
-    hoverShift.value = keyboardPortHoverShift(hoverShift.value, event.shiftKey);
-}
-function observePointerShift(event: PointerEvent) {
-    hoverShift.value = pointerPortHoverShift(hoverShift.value, event);
 }
 function windowBlurred() {
     if (document.hasFocus()) return;
-    hoverShift.value = initialPortHoverShift();
     if (!knobDrag && !objectDrag && !document.pointerLockElement && !cursorReturn.waitingForUnlock) {
         blurPointerControls();
         if (state.value.scope) {
@@ -1406,7 +1410,6 @@ function windowBlurred() {
 function nativeWindowFocusChanged(focused: boolean) {
     if (!focused) {
         pendingKnobPastes.clear();
-        hoverShift.value = initialPortHoverShift();
         cancelConnection();
         blurPointerControls();
     }
@@ -1676,12 +1679,11 @@ onMounted(() => {
     window.addEventListener("wheel", wheelControl, { capture: true, passive: false });
     window.addEventListener("focus", focusPointerHint);
     window.addEventListener("focus", focusIdleSurface);
-    window.addEventListener("pointerdown", observePointerShift, true);
     window.addEventListener("pointerup", releaseConnection, true);
     window.addEventListener("pointercancel", pointerCancelled, true);
     window.addEventListener("pointerout", pointerLeftWindow, true);
-    window.addEventListener("keydown", keepAltInDetachedGraph, true);
-    window.addEventListener("keyup", keepAltInDetachedGraph, true);
+    window.addEventListener("keydown", handleAltKey, true);
+    window.addEventListener("keyup", handleAltKey, true);
     // VS Code cancels and forwards undo/redo from an earlier window bubble listener.
     window.addEventListener("keydown", handleProjectHistory, true);
     window.addEventListener("keydown", handleGraphEditorShortcut, true);
@@ -1733,12 +1735,11 @@ onBeforeUnmount(() => {
     window.removeEventListener("wheel", wheelControl, true);
     window.removeEventListener("focus", focusPointerHint);
     window.removeEventListener("focus", focusIdleSurface);
-    window.removeEventListener("pointerdown", observePointerShift, true);
     window.removeEventListener("pointerup", releaseConnection, true);
     window.removeEventListener("pointercancel", pointerCancelled, true);
     window.removeEventListener("pointerout", pointerLeftWindow, true);
-    window.removeEventListener("keydown", keepAltInDetachedGraph, true);
-    window.removeEventListener("keyup", keepAltInDetachedGraph, true);
+    window.removeEventListener("keydown", handleAltKey, true);
+    window.removeEventListener("keyup", handleAltKey, true);
     window.removeEventListener("keydown", handleProjectHistory, true);
     window.removeEventListener("keydown", handleGraphEditorShortcut, true);
     window.removeEventListener("keydown", keyDown);
@@ -1837,8 +1838,10 @@ onBeforeUnmount(() => {
                 </g>
                 <g mask="url(#wire-label-fade)">
                     <path v-for="(wire, index) in dropPreviewWires" :key="`drop-${wire.anchor.id}`" class="drop-preview-wire"
+                        :class="{ detached: previewDetached }"
                         :d="wire.path" :stroke="`url(#drop-preview-wire-${index})`" />
                     <path v-for="(wire, index) in previewWires" :key="wire.anchor.id" class="preview-wire"
+                        :class="{ detached: previewDetached }"
                         :d="wire.path" :stroke="`url(#preview-wire-${index})`" />
                 </g>
             </g>
@@ -1855,7 +1858,7 @@ onBeforeUnmount(() => {
 .drop-preview-wire { fill: none; stroke-width: 2; stroke-opacity: .4; }
 .selected-wire { fill: none; stroke-width: 1.5; }
 .selected-wire.pending { stroke-dasharray: 1 3; }
-.selected-wire.detached { stroke-dasharray: 5 4; }
+:is(.selected-wire, .preview-wire, .drop-preview-wire).detached { stroke-dasharray: 5 4; }
 .feedback-wire { stroke: var(--vscode-errorForeground); stroke-width: 2; }
 .feedback-wire.edited-wire { stroke-width: 3.5; }
 .package-dialog-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #0005; }

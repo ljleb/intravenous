@@ -2,8 +2,9 @@
 import { computed } from "vue";
 
 import arrowRightSvg from "../../media/arrow_right.svg?raw";
-import { portDescription, portTypeSummary } from "./nodeSummary";
+import { portDescription, portDisplayName, portTypeSummary } from "./nodeSummary";
 import type { SemanticPort } from "./semanticNode";
+import PortLabel from "./PortLabel.vue";
 
 const props = defineProps<{
     port: SemanticPort;
@@ -25,10 +26,10 @@ const active = computed(() => props.port.binding !== "none"
         :data-direction="port.direction"
         :data-kind="port.kind"
         :data-active="active"
-        :data-status-hint="`${port.name} · ${portDescription(port)}`" :aria-description="portDescription(port)"
+        :data-status-hint="`${portDisplayName(port)} · ${portDescription(port)}`" :aria-description="portDescription(port)"
     >
         <span class="port-icon" :class="{ mirrored: port.direction === 'output' }" v-html="arrowIcon" />
-        <span class="port-name">{{ port.name }}</span>
+        <PortLabel class="port-name" :name="portDisplayName(port)" :short-name="port.shortDisplayName" />
         <span class="port-description">{{ description }}</span>
     </div>
 </template>

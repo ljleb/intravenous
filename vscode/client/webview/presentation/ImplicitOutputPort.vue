@@ -5,7 +5,7 @@ defineProps<{ moduleKey: string; feedback?: ConnectionFeedback }>();
 </script>
 
 <template>
-    <div class="control-row implicit-output" data-direction="output" :data-connection-feedback="feedback">
+    <div class="control-row implicit-output" data-direction="output" :data-connection-feedback="feedback" @contextmenu.stop.prevent>
         <span class="direct-port-name iv-graph-header-detail">Implicit nodes</span>
         <span class="implicit-socket" :data-implicit-output="moduleKey" aria-hidden="true">
             <span class="port-circle" />

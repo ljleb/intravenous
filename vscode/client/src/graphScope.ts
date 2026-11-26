@@ -10,6 +10,7 @@ export type GraphScopePort = {
     name: string;
     index: number;
     displayName?: string;
+    shortDisplayName?: string;
     channelType?: string;
     eventType?: string;
     valueTypes?: ContinuousValueAlternative[];

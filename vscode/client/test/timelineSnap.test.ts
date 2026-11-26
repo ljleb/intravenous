@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { connectionFromPorts, type GraphPortEndpoint } from "../src/graphConnectionEditing";
 import type { GraphScope, GraphScopeConnection, GraphScopeNode } from "../src/graphScope";
+import { beginPortConnection, previewConnectionDetached } from "../src/portConnectionGesture";
 import { isGeneratedSnapConnection, isTimelineSnapNode, managedBeats, managedTimeline, planTimelineSnapMode,
     readTimelineSnapMemory, timelineGridMode, type ProjectEditOperation } from "../src/timelineSnap";
 
@@ -94,6 +95,8 @@ test("the Custom ruler socket accepts Beat Event outputs only", () => {
     const input: GraphPortEndpoint = { address: managedTimeline(custom)!.address, kind: "event", direction: "input", name: "beats", index: 0 };
     const output: GraphPortEndpoint = { address: source.address, kind: "event", direction: "output", name: "beat", index: 0 };
     assert.equal(connectionFromPorts(custom, "wire", output, input).targetType, "beat");
+    const drag = beginPortConnection(output, 1, 0, { x: 0, y: 0 })!;
+    assert.equal(previewConnectionDetached(drag, input, true), false);
     assert.throws(() => connectionFromPorts(custom, "wire", { ...output, name: "another", index: 1 }, input), /Beat Event/);
     const beats = apply(custom, planTimelineSnapMode(custom, "beats", {}, unusedId).operations);
     assert.throws(() => connectionFromPorts(beats, "wire", output, input), /Custom/);

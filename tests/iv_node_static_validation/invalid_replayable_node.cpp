@@ -7,11 +7,11 @@ struct InvalidReplayWithRandomAccess {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
     static constexpr auto inputs()
     {
-        return std::array {iv::input<iv::Sample>("input", iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
+        return std::array {iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
     }
     static constexpr auto outputs()
     {
-        return std::array {iv::output<iv::Sample>("output", iv::OutputProduction::sequential)};
+        return std::array {iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<InvalidReplayWithRandomAccess> const&) const {}
 };

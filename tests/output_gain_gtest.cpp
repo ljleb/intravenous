@@ -33,7 +33,7 @@ ConfiguredGraph gain_graph(bool dynamic = false, Sample gain = 1,
 {
     ConfiguredGraph graph;
     auto source = graph.node_bundles.append_concrete(ConcreteNode{
-        .ports = {.output_configs = {erase_port_config(output<Sample>("out", production, realization))}}});
+        .ports = {.output_configs = {erase_port_config(output<Sample>({"out", "Out"}, production, realization))}}});
     graph.manual_controls.push_back({
         .id = {.node = {.instance_id = "source"}, .port_name = "out", .kind = ManualControlKind::output_gain},
         .settled_value = gain, .dynamic = dynamic, .output = NodeBundlePortId{source, PortKind::sample, 0}});
@@ -72,7 +72,7 @@ TEST(OutputGain, OneTransformFeedsAllConsumersAndItsIngressKeepsTheRawSource)
     std::vector<ConfiguredSampleConnection> connections;
     for (int i = 0; i < 2; ++i) {
         auto sink = graph.node_bundles.append_concrete(ConcreteNode{
-            .ports = {.input_configs = {erase_port_config(input<Sample>("in"))}}});
+            .ports = {.input_configs = {erase_port_config(input<Sample>({"in", "In"}))}}});
         connections.push_back({.source_channels = {{.channel = {0, 0, 0}}},
             .target_channels = {{sink, 0, 0}}});
     }
@@ -121,9 +121,9 @@ ConfiguredGraph forwarded_gain_graph(bool tap, bool live, bool repeated = false)
     if (repeated) {
         auto const forwarded = trimmed;
         forwarded._annotate_source_info("osc", "/tmp/forwarded-gain.cpp", 0, 1);
-        builder.outputs("final"_P = forwarded);
-    } else if (tap) builder.outputs("tap"_P = osc, "final"_P = trimmed);
-    else builder.outputs("final"_P = trimmed);
+        builder.outputs("final"_P.with_display_name("Final") = forwarded);
+    } else if (tap) builder.outputs("tap"_P.with_display_name("Tap") = osc, "final"_P.with_display_name("Final") = trimmed);
+    else builder.outputs("final"_P.with_display_name("Final") = trimmed);
     auto graph = std::move(builder).finish();
     auto const source = osc.node_bundle_handle();
     auto const name = graph.node_bundles.resolve_sample_output({source, PortKind::sample, 0}).config.name;
@@ -184,12 +184,12 @@ TEST(OutputGain, CoverageGainUsesTickOnlyUntilAnAuthoredConsumerNeedsBackgroundP
 {
     auto graph = gain_graph(true, 2, OutputRealization::computed, OutputProduction::coverage);
     auto tick = graph.node_bundles.append_concrete(ConcreteNode{
-        .ports = {.input_configs = {erase_port_config(input<Sample>("in"))},
-            .output_configs = {erase_port_config(output<Sample>("out"))}},
+        .ports = {.input_configs = {erase_port_config(input<Sample>({"in", "In"}))},
+            .output_configs = {erase_port_config(output<Sample>({"out", "Out"}))}},
         .operations = {.runtime = {.tick_block = +[](void const*, ReflectedNodeTickContext const&, GlobalIndex, std::size_t) {}}},
     });
     auto tock = graph.node_bundles.append_concrete(ConcreteNode{
-        .ports = {.input_configs = {erase_port_config(input<Sample>("in", InputAccess::coverage))}},
+        .ports = {.input_configs = {erase_port_config(input<Sample>({"in", "In"}, InputAccess::coverage))}},
     });
     std::array<ConfiguredSampleConnection, 3> connections{{
         {.source_channels = {{.channel = {0, 0, 0}}}, .target_channels = {{tick, 0, 0}}},
@@ -258,11 +258,11 @@ TEST(OutputGain, ATiledChildGainReachesTheAggregateWithoutChangingOtherChannels)
 {
     auto graph = gain_graph(false, .5f);
     auto const right = graph.node_bundles.append_concrete(ConcreteNode{
-        .ports = {.output_configs = {erase_port_config(output<Sample>("out"))}}});
+        .ports = {.output_configs = {erase_port_config(output<Sample>({"out", "Out"}))}}});
     std::array<NodeBundleHandle, 2> const members{0, right};
     auto const tile = graph.node_bundles.append_tiled(members,
         {ChannelTypeId::stereo, SampleStreamLayout::planar});
-    auto stereo = input<Sample>("in", {.channel_layout = {ChannelTypeId::stereo, SampleStreamLayout::planar}});
+    auto stereo = input<Sample>({"in", "In"}, {.channel_layout = {ChannelTypeId::stereo, SampleStreamLayout::planar}});
     auto const sink = graph.node_bundles.append_concrete(ConcreteNode{
         .ports = {.input_configs = {erase_port_config(stereo)}}});
     ConfiguredSampleConnection connection{

@@ -25,10 +25,18 @@ namespace iv {
     struct NamedRef {
         std::string_view name;
         std::variant<SamplePortRef, Sample, EventPortRef> value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
 
-        NamedRef(std::string_view name, SamplePortRef sample_port): name(name), value(sample_port) {}
-        NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
-        NamedRef(std::string_view name, EventPortRef event): name(name), value(event) {}
+        NamedRef(PortNames names, SamplePortRef sample_port)
+            : name(names.identifier), value(sample_port), display_name(names.display),
+              short_display_name(names.short_display) {}
+        NamedRef(PortNames names, Sample sample)
+            : name(names.identifier), value(sample), display_name(names.display),
+              short_display_name(names.short_display) {}
+        NamedRef(PortNames names, EventPortRef event)
+            : name(names.identifier), value(event), display_name(names.display),
+              short_display_name(names.short_display) {}
     };
 
     struct OutputRefConfig {
@@ -57,6 +65,8 @@ namespace iv {
         ChannelTypeId family_channel_type = ChannelTypeId::mono;
         bool whole_stream = true;
         size_t target_channel_index = std::numeric_limits<size_t>::max();
+        std::string_view display_name {};
+        std::string_view short_display_name {};
 
         constexpr bool targets_single_channel() const {
             return target_channel_index != std::numeric_limits<size_t>::max();
@@ -66,6 +76,8 @@ namespace iv {
     struct EventOutputRequest {
         EventPortRef ref;
         std::string_view name;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
     using OutputRequest = std::variant<SampleOutputRequest, EventOutputRequest>;
