@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -276,6 +277,25 @@ TEST(RegionSpecializationSubstitution, EmitsModuleInputResolutionWithoutPackageC
     for (auto const& function : module) {
         EXPECT_TRUE(!function.isDeclaration() || function.isIntrinsic()) << function.getName().str();
     }
+
+    auto const absent_key = region_specialization_key(request);
+    auto const absent_structure = region_specialization_structure_key(request);
+    input.upstream_coverage.full = true;
+    request.steps[0].inputs = bytes(input);
+    EXPECT_NE(region_specialization_key(request), absent_key);
+    EXPECT_NE(region_specialization_structure_key(request), absent_structure);
+
+    // The first step's input binding starts at offset zero in its workspace.
+    auto const coverage_offset = offsetof(ReflectedContinuousInputPortBinding, upstream_coverage);
+    EXPECT_NE(emitted->known[coverage_offset + offsetof(SequentialInputCoverage, full)], 0u);
+    input.upstream_coverage.full = false;
+    request.steps[0].inputs = bytes(input);
+    request.steps[0].stages_manual_controls = true;
+    auto staged = emit_region_specialization(module, request, "staged_input", symbols);
+    ASSERT_TRUE(staged) << staged.error();
+    auto const coverage_bytes = std::span(staged->known).subspan(coverage_offset, sizeof(SequentialInputCoverage));
+    EXPECT_TRUE(std::ranges::all_of(coverage_bytes, [](auto known) { return known == 0; }));
+
     request.steps[0].resolves_module_input = false;
     EXPECT_FALSE(region_specialization_request_is_complete(request));
 }

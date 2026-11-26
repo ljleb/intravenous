@@ -7,6 +7,8 @@
 namespace iv {
 
 struct Constant {
+    static constexpr auto replay_mode = TickReplayMode::enabled;
+
     Sample _value;
 
     // The same default applies to construction by type or by definition ID.

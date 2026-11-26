@@ -3,7 +3,7 @@
 #include <array>
 
 struct RandomAccessReplayNode {
-    static constexpr auto replay_mode = iv::TickReplayMode::full;
+    static constexpr auto replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs()
     {
         return std::array{iv::event_input({"input", "Input"}, iv::EventTypeId::trigger, iv::InputAccess::region,

@@ -170,6 +170,17 @@ Output-selection rules superseded on 2026-11-14 are preserved in
 - Arithmetic creates ordinary builder nodes. Typed ports preserve channel type
   and layout; incompatible channel representations fail rather than silently
   flattening or selecting channels.
+- Binary Sample arithmetic (`+`, `-`, `*`, and `/`) is pointwise and
+  replayable. Outside a feedback component, the result has the union of its
+  operands' coverages. Each absent operand still resolves through its
+  Sequential input. For example, in `a | (a + b) | c`, the sum yields to
+  `c` where both operands have a known gap.
+- `a | b | c` creates a reusable Sample signal. At each value position it selects
+  the first source with coverage. A covered zero counts as a value. A known gap
+  advances to the next source, and unprepared data follows the ordinary Tick
+  delivery rules. The acyclic output has the union of the source coverages.
+  A scalar operand is a full-coverage constant. Use the result in named or
+  positional connections or publish it through `outputs(...)`.
 - `port.detach(loop_extra_latency)` detaches a sample or event stream with the declared extra feedback latency; `~port` uses the default latency of one sample. Sample detach also accepts an optional initial sample value. When omitted, lowering chooses the neutral value of one connected downstream sample input (if several differ, either is valid); when supplied, the override is the initial value for the detached sample storage. Bundle outputs are lowered first.
 - `GraphBuilder::outputs(...)` and `SubgraphBuilder::outputs(...)` accept sample
   and event outputs in the same call. For example,

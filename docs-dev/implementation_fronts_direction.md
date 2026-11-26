@@ -92,6 +92,103 @@ _Implementation status and open questions, 2026-11-25._
   connect the proof obligations to launcher, IPC, and resource enforcement on
   the executable path before introducing either mechanism. [Security prerequisite](./package_sandbox_security_direction.md#installation-and-listing-prerequisite)
 
+### Project-authored modules and constructor reference order
+
+_Implementation friction, 2026-11-25._
+
+The proposed grouping edit keeps each member's project instance ID and existing
+connection endpoints. The first realization approach was to open a
+`GraphBuilder` subgraph and configure the selected instances inside it.
+`NodeInstances::configure_and_embed()` receives every
+`NodeInstanceConfigurationRequest` and orders construction by
+`configuration_referenced_instance_ids()`. Each live `NodeRef` argument
+requires the referenced instance's `NodeInstancePlacement::root` before the
+dependent constructor can run. If A references B and B references C, the
+constructor order is C, B, A. Grouping A and C leaves B outside the group.
+
+`GraphBuilderState::finish_scope()` produces a `SubgraphNodeBundle` with a
+`child_begin` and `child_count` covering consecutive bundle handles. That
+range would include B in the example. A second construction or forced
+construction order would change the semantics of live `NodeRef` arguments.
+Repacking the finalized graph would require remapping bundles, connections,
+symbolic records, and project placement ranges. Rejecting such selections
+would make grouping depend on which existing constructors take `NodeRef`.
+
+**Proposed resolution.** Store project module membership explicitly by
+instance ID and keep it independent of `ProjectLaneParent`. Configure
+existing instances in reference order, then derive the module's member
+placements from those IDs. Reuse the boundary port realization for explicitly
+declared named ports. Existing `ProjectNodePortMatcher` endpoints keep their
+instance IDs and paths. This puts membership lookups in the project graph's
+control plane. The executor can still receive the same concrete nodes and
+connections for grouping edits that add no signal routes.
+
+Resolve the durable membership, boundary declaration, and edit rules first.
+Then carry them through `ProjectEditBatch`, `ProjectEditEffect`,
+`ProjectPersistence`, graph-scope reads, and the editor in one feature.
+Verify grouping across interleaved constructor dependencies, existing
+cross-boundary cables, explicit boundary connections, and save, reopen, and
+undo. Inline Module and Extract Module depend on that project-owned scope
+contract. [Group design](./node_presentation_and_manual_controls_direction.md#subgraph-presentation-layout) ·
+[Constructor order](../src/intravenous/project/node_instances.cpp#L1139) ·
+[Bundle range](../src/intravenous/graph/builder/state.cpp#L441)
+
+### Reusable Sample fallback and editable input priorities
+
+_Implementation status and friction, 2026-11-25._
+
+The C++ DSL lowers `a | b` to `SampleFallback`, a replayable pointwise Tick
+node that publishes the union of its input coverages. Each input carries its own upstream coverage
+through `ContinuousInputPortBinding`. The realtime root queries the same
+coverage projections as Sequential gap resolution. Background replay borrows
+the coverage it selected for the callback. This makes covered zero and absent
+positions distinguishable without a sentinel Sample value. Numeric literals
+use `Constant`, which is replayable and publishes full coverage. This changes the native
+package ABI. The live and replay regression selects a three-source expression
+from both a Tick sink and a background window.
+
+Editable input priorities need a separate destination-side routing record.
+`ProjectSampleConnection::inputs` contains matchers, and those matchers
+currently carry no fallback set identity. `SampleInputTakeovers::replaces()`
+can remove C++ routes before port realization, so assigning a priority to a
+popover socket alone cannot bring those routes back in gaps. The Sequential
+composition plan stores a flat list of contributions. A fallback plan needs the
+destination-local groups before resolving active routes, applying input
+combination, and supplying consumers in live execution and replay. Moving an
+entire reusable `|` result into one group keeps its internal coverage selection
+independent of other cables into that input.
+
+The compact popover interaction was prototyped in a standalone browser page.
+Shift opens the chooser during a drag, sockets can accept another source
+including the knob's set, and the gaps insert a priority. The editor integration
+depends on durable set identities, routing and history rules. Treating drops as
+ordinary fan-in would make the preview misrepresent the resulting audio.
+
+**Explicit Tick coverage rules.** Source now uses per-output rules and
+`TickReplayMode::{disabled,enabled}` for replay eligibility. The callback keeps the spelling
+`propagate_forward_coverage(PropagateForwardCoverageContext<Node>&)`. For
+Tick nodes, the context records an output coverage expression during graph
+configuration. Tock callbacks retain their current content requests and
+Region publication. Evaluate the Tick rule for both live presence and
+background coverage. Pointwise replay can continue to derive reverse demand
+from the requested output positions and the covered portions of its inputs.
+Existing union nodes have explicit rules. A new regression exercises a
+stateful Tick node that publishes a finite tail across a block boundary
+without becoming replayable. The owner build and runtime tests are pending.
+See [Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md).
+
+Move the pointwise presence query onto the Sequential input view as
+`ctx.input<"a">().has_coverage()`. A block view should expose coverage in the
+same value order as `get_value(i)`. Preserve the distinction between an
+upstream value and an input fallback. Skipping silent spans requires its own
+state contract.
+
+Then implement persistent input fallback sets and connect them to the compact
+Shift-drop chooser. Separate cables may use the same source output in
+different sets. A cable dropped onto the knob joins its set. Use the same
+destination-side set model for C++ and project wiring. The reusable `|`
+expression remains a source that can feed any of those sets.
+
 ### Reset graph state startup storage
 
 _Implementation friction and accepted resolution, 2026-11-25._

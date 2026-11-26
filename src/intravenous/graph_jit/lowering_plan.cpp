@@ -573,8 +573,8 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             sample_storage.sequential_pace_cursors.push_back({.absolute_pace_exponent = pace});
     };
     for (auto const& port : background.ports) {
-        if (port.direction != PortDirection::output || !port.accumulators.output_change
-            || !background.nodes[port.node].tracks_live_tick_coverage) continue;
+        if (!port.accumulators.output_change || port.full_live_tick_coverage
+            || port.tick_coverage.empty()) continue;
         auto const primitive = std::ranges::find_if(analysis.primitives, [&](auto const& candidate) {
             return candidate.bundle.node_bundle == port.configured_port.node_bundle_handle;
         });
@@ -616,15 +616,34 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             }
         }
         auto const identity = value_identity.empty() ? std::string{} : "graphjit.live_coverage:" + value_identity;
+        using CoverageOp = iv::details::TickCoverageOp;
+        auto const has_tail = std::ranges::contains(port.tick_coverage,
+            CoverageOp::extend_right, &iv::details::TickCoverageTerm::op);
+        auto const term_size = std::size_t{1} + (has_tail ? sizeof(std::uint64_t) : 0);
+        if (port.tick_coverage.size() > std::numeric_limits<std::size_t>::max() / term_size)
+            return std::unexpected("GraphJit Tick coverage evaluation storage overflows");
+        std::string evaluation_identity;
+        if (has_tail && port.stable_identity) {
+            auto const& output_id = *port.stable_identity;
+            std::ostringstream out;
+            out << "graphjit.live_coverage_rule:" << migration_identity_fields(output_id.node)
+                << migration_port_identity_fields(output_id.port_name, output_id.port_index)
+                << ':' << static_cast<unsigned>(output_id.kind) << ':' << pace;
+            for (auto const& term : port.tick_coverage)
+                out << ':' << static_cast<unsigned>(term.op) << ':' << static_cast<unsigned>(term.kind)
+                    << ':' << term.first << ':' << term.second;
+            evaluation_identity = std::move(out).str();
+        }
         live_histories.push_back({
             .output_change = change, .primitive = primitive_index,
             .pace = pace, .capacity = capacity,
             .region = layout_builder.declare_raw_region(capacity, 1, identity, initialize_zero_raw_region),
+            .terms = port.tick_coverage,
+            .evaluation_region = layout_builder.declare_raw_region(
+                port.tick_coverage.size() * term_size, 1, std::move(evaluation_identity),
+                initialize_zero_raw_region, {}, primitive_index),
         });
         ensure_pace(pace);
-        for (auto const& binding : sample_ports.primitives[primitive_index].inputs)
-            if (!binding.coverage_projections.empty()) ensure_pace(binding.absolute_pace_exponent);
-        if (!event_ports.primitives[primitive_index].inputs.empty()) ensure_pace(0);
     }
     std::ranges::sort(sample_storage.sequential_pace_cursors, {},
         &SequentialPaceCursorPlan::absolute_pace_exponent);
@@ -985,7 +1004,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
             return owns(sample_ports.storage.persistent_allocations)
                 || owns(sample_ports.storage.producer_authored_extents)
                 || owns(sample_ports.storage.sequential_pace_cursors)
-                || owns(live_histories);
+                || owns(live_histories)
+                || std::ranges::any_of(live_histories, [region_index](auto const& history) {
+                    return history.evaluation_region.index == region_index;
+                });
         };
 
     for (std::size_t region_index = 0;
@@ -1148,8 +1170,10 @@ std::expected<DeclarationPlan, std::string> plan_declarations(
         .activity_frontiers = std::move(activity_frontiers),
         .live_coverage_histories = std::move(live_histories),
     };
-    for (auto& history : plan.live_coverage_histories)
+    for (auto& history : plan.live_coverage_histories) {
         history.storage_offset = plan.node_layout.regions[history.region.index].storage_offset;
+        history.evaluation_offset = plan.node_layout.regions[history.evaluation_region.index].storage_offset;
+    }
     for (auto& activity : plan.primitive_activity) {
         if (!activity) continue;
         if (!activity->region.valid()

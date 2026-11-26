@@ -37,7 +37,7 @@ inline ConfiguredGraph resolve_module_inputs(ConfiguredGraph const& authored)
             ConcreteNode stage{
                 .ports = {.input_configs = {make_input_config(input)},
                           .output_configs = {make_output_config(output)}},
-                .replay_mode = TickReplayMode::full,
+                .replay_mode = TickReplayMode::enabled,
             };
             PortConstraintRef const in{PortConstraintDirection::input, PortKind::sample, 0};
             PortConstraintRef const out{PortConstraintDirection::output, PortKind::sample, 0};
@@ -59,7 +59,7 @@ inline ConfiguredGraph resolve_module_inputs(ConfiguredGraph const& authored)
             ConcreteNode stage{
                 .ports = {.input_configs = {make_input_config(input)},
                           .output_configs = {make_output_config(output)}},
-                .replay_mode = TickReplayMode::full,
+                .replay_mode = TickReplayMode::enabled,
             };
             auto const operations = module_input_resolution_operations();
             stage.operations.runtime.declare_node = operations.declare_node;

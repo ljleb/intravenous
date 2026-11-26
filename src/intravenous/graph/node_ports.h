@@ -5,6 +5,7 @@
 // derived only where kind-specific graph machinery needs them.
 
 #include <intravenous/graph/port_ids.h>
+#include <intravenous/node/tick_coverage.h>
 #include <intravenous/ports.h>
 
 #include <stdexcept>
@@ -16,6 +17,31 @@ namespace iv {
 struct NodePorts {
     std::vector<InputConfig> input_configs {};
     std::vector<OutputConfig> output_configs {};
+
+    bool supports_tick_coverage(PortKind kind, std::size_t output,
+        std::span<details::TickCoverageTerm const> terms) const
+    {
+        if (kind == PortKind::sample) {
+            if (output >= sample_output_count()) return false;
+            auto const config = sample_output(output);
+            if (!is_sequential_output(config) || config.realization != OutputRealization::computed)
+                return false;
+        } else if (kind == PortKind::event) {
+            if (output >= event_output_count()) return false;
+            auto const config = event_output(output);
+            if (!is_sequential_output(config) || config.realization != OutputRealization::computed)
+                return false;
+        } else return false;
+
+        if (!details::valid_tick_coverage_terms(terms, sample_input_count(), event_input_count()))
+            return false;
+        for (auto const& term : terms) {
+            if (term.op != details::TickCoverageOp::input) continue;
+            if (term.kind == PortKind::sample ? !is_sequential(sample_input(term.first))
+                : !is_sequential(event_input(term.first))) return false;
+        }
+        return true;
+    }
 
     constexpr std::vector<InputConfig> const& inputs() const
     {

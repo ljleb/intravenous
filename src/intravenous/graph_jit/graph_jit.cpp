@@ -2333,7 +2333,7 @@ public:
                 .resolved_module_input = source,
                 .module_input_config = source->port_kind == PortKind::sample
                     ? &module_input_configs.back() : nullptr,
-                .replay_mode = TickReplayMode::full,
+                .replay_mode = TickReplayMode::enabled,
                 .pointwise_tick = true,
                 .declare_node = operations.declare_node,
                 .tick_block = imported.callback(operations.tick_block),

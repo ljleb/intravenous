@@ -198,7 +198,8 @@ struct RootPrimitive {
     struct InputObservation { std::size_t slot, port, channel; };
     std::vector<InputObservation> input_observations{};
     std::vector<std::size_t> live_coverage_outputs{};
-    std::vector<SequentialCoverageProjection> live_event_inputs{};
+    std::vector<bool> live_sample_inputs_with_manual_source{};
+    std::vector<std::vector<SequentialCoverageProjection>> live_event_inputs{};
     // Compact realtime output binding and semantic output-coverage index.
     std::vector<std::pair<std::size_t, std::size_t>> sparse_event_outputs{};
     // Callback-local write starts, so coverage filtering does not revisit

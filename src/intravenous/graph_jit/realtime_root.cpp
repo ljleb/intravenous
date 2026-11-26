@@ -1349,11 +1349,26 @@ void stage_sequential_sample_resolution(
     RootFrame& frame,
     std::size_t primitive_index,
     GlobalIndex index,
-    std::size_t count) noexcept
+    std::size_t count,
+    ReflectedContinuousInputPortBinding const* bindings) noexcept
 {
     auto const& primitive = frame.plan.primitives[primitive_index];
     for (auto const port : primitive.coverage_inputs) {
         auto const& input = frame.plan.sample_ports.primitives[primitive_index].inputs[port];
+        bindings[port].upstream_coverage = {
+            .context = &frame,
+            .source = &input,
+            .query = +[](void const* context, void const* source,
+                std::uint64_t value_index, std::uint64_t sequential_index) noexcept {
+                auto const& root = *static_cast<RootFrame const*>(context);
+                auto const& plan = *static_cast<detail::PrimitiveSampleInputBindingPlan const*>(source);
+                auto const presence = live_input_presence(root, plan.coverage_projections,
+                    sequential_index, GlobalIndex::from_bits(value_index), plan.absolute_pace_exponent);
+                IV_ASSERT(presence != SequentialCoveragePresence::unknown,
+                    "Sequential input coverage was not resolved before Tick");
+                return presence == SequentialCoveragePresence::covered;
+            },
+        };
         if (input.invocation_supplied) continue; // Resolved while staging its slot.
         auto const lattice = project_lattice(index, count, input.absolute_pace_exponent);
         auto const begin = pace_begin_index(frame, input.absolute_pace_exponent, index);
@@ -1524,12 +1539,14 @@ void initialize_tick_slots(RootFrame& frame) noexcept
             // contiguous scratch.
             auto& binding = sample_inputs[tick.sample_inputs[slot]];
             auto const capacity = binding.contiguous_value_capacity;
+            auto const upstream_coverage = binding.upstream_coverage;
             std::array<std::byte*, maximum_supported_channel_count> scratch{};
             for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
                 scratch[channel] = binding.storage.channels[channel].contiguous_scratch;
             }
             binding = supplied;
             binding.contiguous_value_capacity = capacity;
+            binding.upstream_coverage = upstream_coverage;
             for (std::size_t channel = 0; channel < scratch.size(); ++channel) {
                 binding.storage.channels[channel].contiguous_scratch = scratch[channel];
             }
@@ -1559,12 +1576,6 @@ void initialize_tick_slots(RootFrame& frame) noexcept
     }
 }
 
-FractionalGlobalExtent lattice_extent(std::uint64_t values, std::int32_t pace) noexcept
-{
-    if (pace > 0) return {.whole = values >> pace, .fraction = values << (64 - pace)};
-    return {.whole = pace == -64 ? 0 : values << -pace};
-}
-
 void stage_live_output_coverage(RootFrame& frame, std::size_t primitive_index,
     GlobalIndex index, std::size_t count) noexcept
 {
@@ -1576,33 +1587,46 @@ void stage_live_output_coverage(RootFrame& frame, std::size_t primitive_index,
         auto const& history = *frame.plan.live_coverage_histories[change];
         auto const output = *window.try_project_onto_lattice(history.pace);
         auto const begin = pace_begin_index(frame, history.pace, index);
+        auto* evaluation = frame.storage_base + history.evaluation_offset;
         for (std::size_t offset = 0; offset < output.count; ++offset) {
-            auto present = [&](auto const& projections, std::int32_t pace) {
-                if (projections.empty()) return false;
-                auto physical = begin + offset;
-                auto address = output.begin_index_bits + offset;
-                if (pace != history.pace) {
-                    auto const position = output.begin.advanced_by(lattice_extent(offset, history.pace));
-                    auto const match = FractionalGlobalIndexRange{
-                        .begin = position, .extent = {.fraction = 1}}.try_project_onto_lattice(pace);
-                    if (!match || match->count == 0) return false;
-                    auto const prefix = FractionalGlobalIndexRange{
-                        .begin = window.begin, .extent = window.begin.forward_distance_to(position)}
-                        .try_project_onto_lattice(pace);
-                    if (!prefix) return false;
-                    physical = pace_begin_index(frame, pace, index) + prefix->count;
-                    address = match->begin_index_bits;
-                }
-                auto const presence = live_input_presence(frame, projections, physical,
-                    GlobalIndex::from_bits(address), pace);
+            auto present = [&](auto const& projections) {
+                auto const presence = live_input_presence(frame, projections, begin + offset,
+                    GlobalIndex::from_bits(output.begin_index_bits + offset), history.pace);
                 IV_ASSERT(presence != SequentialCoveragePresence::unknown,
-                    "Tick input-union coverage was not resolved before Tick");
+                    "Tick input coverage was not resolved before its output rule");
                 return presence == SequentialCoveragePresence::covered;
             };
-            auto const covered = std::ranges::any_of(inputs, [&](auto const& input) {
-                return present(input.coverage_projections, input.absolute_pace_exponent);
-            }) || present(primitive.live_event_inputs, 0);
-            live_coverage_value(frame, history, begin + offset) = covered ? std::byte{1} : std::byte{0};
+            auto covered = [evaluation](std::size_t term) { return evaluation[term] != std::byte{0}; };
+            for (std::size_t index = 0; index < history.terms.size(); ++index) {
+                auto const& term = history.terms[index];
+                using Op = iv::details::TickCoverageOp;
+                bool value = false;
+                switch (term.op) {
+                case Op::input:
+                    if (term.kind == PortKind::sample) {
+                        auto const& input = inputs[term.first];
+                        value = primitive.live_sample_inputs_with_manual_source[term.first]
+                            || present(input.coverage_projections);
+                    } else {
+                        value = present(primitive.live_event_inputs[term.first]);
+                    }
+                    break;
+                case Op::union_: value = covered(term.first) || covered(term.second); break;
+                case Op::intersection: value = covered(term.first) && covered(term.second); break;
+                case Op::extend_right: {
+                    auto const tail_offset = history.terms.size() + index * sizeof(std::uint64_t);
+                    auto const remaining = load_raw<std::uint64_t>(evaluation, tail_offset);
+                    auto const input = covered(term.first);
+                    value = input || remaining != 0;
+                    auto const next = input ? static_cast<std::uint64_t>(term.second)
+                        : remaining - (remaining != 0);
+                    store_raw(evaluation, tail_offset, next);
+                    break;
+                }
+                }
+                evaluation[index] = value ? std::byte{1} : std::byte{0};
+            }
+            live_coverage_value(frame, history, begin + offset) = evaluation[history.terms.size() - 1];
         }
     }
 }
@@ -1631,7 +1655,9 @@ ReflectedNodeTickContext const& prepare_invocation(
         }
     }
     if (!primitive.coverage_inputs.empty()) {
-        stage_sequential_sample_resolution(frame, primitive_index, callback_index, callback_size);
+        auto const* inputs = reinterpret_cast<ReflectedContinuousInputPortBinding const*>(
+            frame.scratch + primitive.sample_inputs_offset);
+        stage_sequential_sample_resolution(frame, primitive_index, callback_index, callback_size, inputs);
     }
     if (!primitive.manual_controls.empty()) {
         stage_manual_control_sample_timelines(
@@ -2146,7 +2172,7 @@ void stage_specialized_manual_controls(
 {
     auto& root_frame = *static_cast<RootFrame*>(frame);
     stage_sequential_sample_resolution(root_frame, primitive_index,
-        GlobalIndex::from_bits(slice_index_bits), slice_count);
+        GlobalIndex::from_bits(slice_index_bits), slice_count, inputs);
     stage_manual_control_sample_timelines(
         root_frame,
         primitive_index,

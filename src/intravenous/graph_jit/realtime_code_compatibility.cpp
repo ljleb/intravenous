@@ -61,6 +61,8 @@ bool can_reuse_background_workspace(
             && before.input_access == after.input_access
             && before.content_access == after.content_access
             && before.full_live_tick_coverage == after.full_live_tick_coverage
+            && before.tick_coverage == after.tick_coverage
+            && before.tick_coverage_has_manual_source == after.tick_coverage_has_manual_source
             && before.sample_fallback_value == after.sample_fallback_value
             && before.sample_manual_contribution == after.sample_manual_contribution
             && before.accumulators.input_change == after.accumulators.input_change
@@ -168,6 +170,7 @@ bool compatible_steady_realtime_layout(
             || lhs.element_count != rhs.element_count
             || lhs.transition_only != rhs.transition_only
             || lhs.migration_identity != rhs.migration_identity
+            || lhs.state_migration_owner != rhs.state_migration_owner
             || lhs.raw_initialize_fn != rhs.raw_initialize_fn
             || lhs.element_type != rhs.element_type
             || lhs.assign_span_fn != rhs.assign_span_fn

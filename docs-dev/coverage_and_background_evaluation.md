@@ -672,20 +672,14 @@ preserved in the [historical predecessor](./historical/output_ports_before_compu
 
 ### Replayable node trait
 
-Intrinsic replay eligibility remains separate from port output shape and
-realization. Replay is permitted only for deterministic, side-effect-free Tick
-computations with no `State`, Sequential history or latency, Random Access
-input, or authored forward or reverse coverage callback, and only when
-contextual dependencies can be obtained from the same immutable snapshot.
-`TickReplayMode::{disabled,input_union,full}` remains the intended declaration.
-Outside feedback SCCs, input-union output coverage follows input coverage;
-full output coverage spans the whole circle. Computing a fallback value does
-not make an absent input-union output covered. Feedback SCC members instead
-have effective full live coverage and are explicitly excluded from ordinary
-contextual replay, without changing their declarations or solving recursive
-coverage. See the [recovered contract](./tick_input_union_and_feedback_direction.md).
-The erroneous November 16 full-only wording is preserved
-[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/coverage_and_background_evaluation.md).
+`TickReplayMode::enabled` grants intrinsic replay permission to a deterministic,
+side-effect-free Tick computation. Replayable nodes have no `State`, Sequential
+history or latency, Random Access input, or authored reverse coverage callback.
+The same immutable snapshot must supply their contextual dependencies. Each
+computed output can declare forward coverage independently of replay. GraphJit
+treats Tick outputs in a feedback SCC as full in live execution and excludes
+those SCCs from ordinary contextual replay. See
+[Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md).
 
 Intrinsic replay permission remains independent of output realization. A
 replayable node's own outputs must be computed Sequential outputs. It may
@@ -1476,11 +1470,9 @@ actual Coverage while paused. No generic port class is globally silenced by tran
 
 An acyclic pointwise replay requested at position `I` evaluates its dependencies at
 `I`; a live invocation during pause can use background data held at playhead position
-`P` with Tick `ctx.index = I`. Their computed values and `input_union` coverage can
-differ although the same Tick implementation is replayable. Preserve the distinction
-between transport-selected live coverage and position-addressed background coverage,
-without weakening intrinsic/contextual replayability. See
-[Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md#background-selection-coverage-and-pause).
+`P` with Tick `ctx.index = I`. Both use the same output coverage rule on
+the inputs selected for their invocation. Their values and coverage can
+differ. See [Project Playback And Presentation Grids](./project_playback_and_presentation_grids_direction.md#background-selection-coverage-and-pause).
 
 A pending seek/resume does not substitute newly requested positions for currently
 applied background input selections. The background worker prepares required windows

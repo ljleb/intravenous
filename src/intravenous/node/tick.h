@@ -456,6 +456,22 @@ namespace iv {
             return index.whole();
         }
 
+        // Tests whether a connected Sequential source supplies the current
+        // value. The neutral or manual fill of a gap does not count.
+        template<fixed_string Name>
+        [[nodiscard]] bool input_has_coverage() const noexcept
+        requires details::has_constexpr_port_configs<Node>
+        {
+            constexpr auto declaration = details::static_input_declaration_index<Node, Name>();
+            static_assert(details::static_input_port_kind_at<Node, declaration>() == PortKind::sample
+                && !details::static_input_port_is_random_access_at<Node, declaration>(),
+                "input_has_coverage() requires a Sequential continuous input");
+            constexpr auto port = details::static_sample_input_port_index_at<Node, declaration>();
+            auto const& binding = this->port_bindings().continuous_inputs[port];
+            return binding.upstream_coverage.contains(value_index,
+                binding.sequential_begin_index + sequential_value_offset_);
+        }
+
         template<size_t Index>
         auto input() const
         requires details::has_constexpr_port_configs<Node>

@@ -1668,6 +1668,14 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         .storage = raw->binding(),
                         .contiguous_value_capacity =
                             contiguous_value_capacity,
+                        .upstream_coverage = {
+                            .source = adapter->coverage,
+                            .query = +[](void const*, void const* source,
+                                std::uint64_t value_index, std::uint64_t) noexcept {
+                                return static_cast<IndexCoverage const*>(source)->contains(
+                                    GlobalIndex::from_bits(value_index));
+                            },
+                        },
                     };
                     storage.sample_input_adapters.push_back(adapter);
                     storage.sample_input_upstream.push_back(

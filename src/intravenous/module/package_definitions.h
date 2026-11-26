@@ -669,7 +669,7 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
-        "have no State, Random Access inputs, or authored coverage propagation callbacks, " \
+        "have no State, Random Access inputs, or authored reverse coverage callbacks, " \
         "and declare only computed Sequential outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
@@ -687,8 +687,13 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE node type declares a Tock output port; define exact propagate_forward_coverage() or propagate_forward_coverage_batch()."); \
     static_assert(!(::iv::details::has_propagate_forward_coverage<Node> \
                 || ::iv::details::has_propagate_forward_coverage_batch<Node>) \
-            || ::iv::details::has_coverage_propagation_domain_v<Node>, \
-        "IV_NODE node type defines propagate_forward_coverage but does not declare Tock execution."); \
+            || ::iv::details::has_coverage_propagation_domain_v<Node> \
+            || (::iv::details::has_tick_family_v<Node> \
+                && !::iv::details::has_propagate_forward_coverage_batch<Node>), \
+        "IV_NODE forward propagation requires Tock execution or a scalar Tick coverage rule."); \
+    static_assert(!::iv::details::has_tick_family_v<Node> \
+            || !::iv::details::has_suspendable_forward_coverage<Node>, \
+        "IV_NODE Tick forward coverage must declare its rule without suspending."); \
     static_assert(!(::iv::details::has_propagate_reverse_coverage<Node> \
                 || ::iv::details::has_propagate_reverse_coverage_batch<Node>) \
             || (::iv::details::has_coverage_propagation_domain_v<Node> \

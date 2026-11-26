@@ -787,7 +787,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
         auto const& background_node = plan.connections.background.nodes[node];
         auto const applicable = phase == BackgroundRootOperation::forward
             ? background_node.authored_forward_coverage
-                || background_node.uses_replay_forward_coverage
+                || background_node.uses_tick_forward_coverage
             : phase == BackgroundRootOperation::reverse
                 ? (background_node.authored_reverse_coverage
                       && background_node.accumulators.input_requirement_count != 0)
@@ -816,7 +816,7 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                             callbacks.propagate_forward_coverage,
                             offsets.forward_context);
                     });
-            } else if (background_node.uses_replay_forward_coverage) {
+            } else if (background_node.uses_tick_forward_coverage) {
                 emit_when_active(
                     node,
                     BackgroundNodeActivity::forward,

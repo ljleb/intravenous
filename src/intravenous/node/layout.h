@@ -60,6 +60,10 @@ namespace iv {
             // initializer runs during storage initialization only when this
             // region was not restored by exact-shape migration.
             std::string migration_identity{};
+            // Some raw state has meaning only alongside its node's State.
+            // This is independent of owned_regions(), which describes the
+            // authored State layout checked before calling move().
+            size_t state_migration_owner = no_owner_node;
             using RawInitializeFn = void (*)(
                 std::span<std::byte> storage,
                 std::span<std::byte const> data);
@@ -176,7 +180,8 @@ namespace iv {
             size_t alignment = 1,
             std::string migration_identity = {},
             NodeLayout::Region::RawInitializeFn initialize_fn = nullptr,
-            std::vector<std::byte> initialize_data = {});
+            std::vector<std::byte> initialize_data = {},
+            size_t state_migration_owner = NodeLayout::no_owner_node);
 
         NodeLayout::RegionHandle declare_transition_raw_region(
             size_t size,

@@ -479,6 +479,13 @@ emit_region_specialization(
                          sizeof(std::size_t)}}) {
                 written.unknown(base + offset, size);
             }
+            if (step.stages_manual_controls) {
+                // Sequential coverage staging installs a query for sparse
+                // inputs. The null query in the binding template is temporary.
+                written.unknown(
+                    base + offsetof(ReflectedContinuousInputPortBinding, upstream_coverage),
+                    sizeof(SequentialInputCoverage));
+            }
             for (std::size_t channel = 0; channel < step.input_channel_counts[input]; ++channel) {
                 written.unknown(
                     base + channel_field(

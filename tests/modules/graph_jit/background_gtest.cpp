@@ -1958,7 +1958,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayCoverageDistinguishesInputUnionFromFullAcro
         if (plan.ports[port].replayed_tick_output) replayed.push_back(port);
         if (plan.ports[port].name == "window") windows.push_back(port);
     }
-    // The processors use input_union and full; the generator uses full.
+    // The first processor follows its input coverage; the other outputs are full.
     ASSERT_EQ(replayed.size(), 3u);
     ASSERT_EQ(windows.size(), 4u);
 
@@ -2083,6 +2083,129 @@ TEST_F(GraphJitRuntimeFixture, LiveInputUnionPreservesGapsForTheNextInputsManual
     // AddOne may compute 1 in its own gaps. Those values are uncovered, so
     // ManualFull must use its own .25 fallback there, then add 1.
     EXPECT_EQ(probe->values, (std::array<float, 8>{1.25f, 1.25f, 6, 7, 8, 9, 1.25f, 1.25f}));
+}
+
+TEST_F(GraphJitRuntimeFixture, SampleFallbackExpressionPreservesCoveredZeroInLiveAndReplayedOutput)
+{
+    auto compiled = compile("iv.test.replay.sample_fallback_operator", 3014);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    auto const window = std::ranges::find(plan.ports, "window", &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(window, plan.ports.end());
+    auto const output = static_cast<iv::graph_jit::BackgroundPortIndex>(window - plan.ports.begin());
+    auto const requested = index_coverage({{18, 26}});
+    roots.output_demands.push_back({.port = output, .required = requested});
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = requested});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+    ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
+
+    // The covered zero wins over the sum. The sum covers the tail of the
+    // secondary source, then yields to the constant when both operands have gaps.
+    constexpr std::array expected{0.5f, 0.5f, 0.f, 0.f, 0.f, 2.f, 2.f, 0.5f};
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+        graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input};
+    iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(18), expected.size()};
+    graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(18), expected.size());
+    struct State { std::uint64_t calls; std::array<float, 8> values; };
+    auto const* probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    EXPECT_EQ(probe->calls, 1u);
+    EXPECT_EQ(probe->values, expected);
+
+    auto const persisted = std::ranges::find_if(plan.storage.ports, [&](auto const& port) {
+        return port.output_port == output && port.storage == iv::graph_jit::PortStorageKind::persisted_data;
+    });
+    ASSERT_NE(persisted, plan.storage.ports.end());
+    auto const handle = data.resolve_output(iv::persisted_output_id(plan,
+        static_cast<iv::graph_jit::PortStorageIndex>(persisted - plan.storage.ports.begin()),
+        graph.project_generation));
+    auto pinned = data_reader.pin();
+    auto const* region = pinned->find_sample_region(handle, index(18));
+    ASSERT_NE(region, nullptr);
+    for (std::size_t offset = 0; offset < expected.size(); ++offset)
+        EXPECT_FLOAT_EQ(region->at(index(18).advanced_by(offset), 0).value, expected[offset]);
+}
+
+TEST_F(GraphJitRuntimeFixture, StatefulTickPublishesFiniteTailWithoutReplay)
+{
+    auto compiled = compile("iv.test.tick.finite_tail_fallback", 3015);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const filtered = std::ranges::find(plan.ports, "filtered", &iv::graph_jit::BackgroundPortPlan::name);
+    ASSERT_NE(filtered, plan.ports.end());
+    ASSERT_TRUE(filtered->accumulators.output_change);
+    EXPECT_FALSE(filtered->replayed_tick_output);
+    EXPECT_FALSE(plan.nodes[filtered->node].replays_tick);
+    EXPECT_TRUE(plan.nodes[filtered->node].uses_tick_forward_coverage);
+
+    iv::PersistedDataStore data;
+    iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    for (auto port : plan.tick_sequential_inputs)
+        roots.input_demands.push_back({.port = port, .required = index_coverage({{18, 28}})});
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.semantic_version = 1, .roots = std::move(roots)}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+    ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
+    auto const filtered_port = static_cast<iv::graph_jit::BackgroundPortIndex>(filtered - plan.ports.begin());
+    auto const change = std::ranges::find_if(prepared->coverage.output_changes,
+        [&](auto const& change) { return change.port == filtered_port; });
+    ASSERT_NE(change, prepared->coverage.output_changes.end());
+    EXPECT_EQ(change->coverage, index_coverage({{20, 26}}));
+
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data,
+        graph.specialization.block_size, graph.root_operations.combine_sequential_input,
+        graph.root_operations.initialize_sequential_input};
+    struct State { std::uint64_t calls; std::array<float, 8> values; };
+    auto const* probe = find_unique_state<State>(graph.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    {
+        iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(18), 6};
+        graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(18), 6);
+        EXPECT_EQ(probe->calls, 1u);
+        std::vector const expected{0.5f, 0.5f, 5.f, 11.f, 18.f, 21.f};
+        EXPECT_EQ(std::vector<float>(probe->values.begin(), probe->values.begin() + 6), expected);
+    }
+    {
+        iv::TickInvocationFrame frame{data_reader, materialization_reader, workspace, index(24), 4};
+        graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(24), 4);
+        EXPECT_EQ(probe->calls, 2u);
+        std::vector const expected{15.f, 8.f, 0.5f, 0.5f};
+        EXPECT_EQ(std::vector<float>(probe->values.begin(), probe->values.begin() + 4), expected);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, ConcreteInputSumsIndependentTickAndTockConnections)

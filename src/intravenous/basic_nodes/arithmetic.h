@@ -52,6 +52,10 @@ namespace iv {
     template<typename BinaryOp>
     class BinaryOpNode {
     public:
+        // Binary expressions apply a pure pointwise operation. An input's
+        // neutral value lets the operation run in a gap without covering it.
+        static constexpr auto replay_mode = TickReplayMode::enabled;
+
         static constexpr auto inputs()
         {
             return std::array {
@@ -65,6 +69,12 @@ namespace iv {
             return std::array {
                 output<Sample>({"out", "Out"})
             };
+        }
+
+        void propagate_forward_coverage(PropagateForwardCoverageContext<BinaryOpNode>& ctx) const
+        {
+            ctx.template output<"out">().publish(
+                ctx.template input<"a">().coverage() | ctx.template input<"b">().coverage());
         }
 
         void tick(TickSampleContext<BinaryOpNode<BinaryOp>> const& ctx) const

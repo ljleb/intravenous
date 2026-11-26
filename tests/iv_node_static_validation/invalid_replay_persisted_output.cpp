@@ -3,7 +3,7 @@
 #include <array>
 
 struct InvalidReplayPersistedSample {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
@@ -13,7 +13,7 @@ struct InvalidReplayPersistedSample {
 };
 
 struct InvalidReplayPersistedEvent {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(

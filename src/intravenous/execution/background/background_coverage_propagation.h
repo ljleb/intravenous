@@ -484,12 +484,8 @@ class BackgroundPropagationWorkspace {
     static void publish_input_sample_positions(void* accumulator, SamplePositionsView);
     static void publish_input_region_selection(void* accumulator, RegionSelection);
     static void publish_corresponding_sample_requirements(void* accumulator, OutputCoverageRequirement const&);
-    // Generated input-union and full forward propagation. Both may also
-    // describe live Tick coverage without replaying Tick sample values.
-    static void replay_forward_coverage(void*, ReflectedNodeForwardCoverageContext const&);
-    static void
-    replay_full_forward_coverage(void*,
-                                 ReflectedNodeForwardCoverageContext const& context);
+    // Evaluates declared Tick rules without running Tick or reading sample values.
+    static void tick_forward_coverage(void*, ReflectedNodeForwardCoverageContext const&);
     static void
     replay_reverse_coverage(void*,
                             ReflectedNodeReverseCoverageContext const& context);

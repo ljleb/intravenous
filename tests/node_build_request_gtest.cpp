@@ -762,7 +762,7 @@ static_assert(!EventRegionOutputHasOrdering<OrderingConstraintContext>);
 static_assert(EventCoverageOutputHasOrdering<OrderingConstraintContext>);
 
 struct ReplayableNode {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     std::size_t latency = 0;
 
     static constexpr auto inputs()
@@ -778,13 +778,13 @@ struct ReplayableNode {
 };
 
 struct ReplayWithState {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     struct State {};
     void tick(iv::TickSampleContext<ReplayWithState> const&) const {}
 };
 
 struct ReplayWithInputHistory {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::sequential)};
@@ -798,7 +798,7 @@ struct ReplayWithInputHistory {
 };
 
 struct ReplayWithOutputLatency {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::sequential)};
@@ -821,12 +821,12 @@ TEST(NodeBuildRequest, ValidatesAndReflectsIntrinsicReplayability)
     ReplayableNode node{};
     auto request = iv::details::make_node_build_request(node);
     ASSERT_NE(request.compiler_record, nullptr);
-    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::full);
+    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::enabled);
     auto storage = iv::details::copy_node_config_bytes(
         request.config, request.config_size, request.config_alignment);
     auto description = iv::details::materialize_node_description(
         request, std::move(storage));
-    EXPECT_EQ(description.replay_mode, iv::TickReplayMode::full);
+    EXPECT_EQ(description.replay_mode, iv::TickReplayMode::enabled);
     EXPECT_FALSE(description.operations.runtime.has_propagate_forward_coverage);
     EXPECT_FALSE(description.operations.runtime.has_propagate_reverse_coverage);
     EXPECT_EQ(description.internal_latency_samples, 0u);
@@ -2022,7 +2022,7 @@ TEST(TickPointwiseExecution, StereoClipPreservesChannelsAndHasReplayableComputed
     iv::StereoClip clip;
     auto const request = iv::details::make_node_build_request(clip);
     ASSERT_NE(request.compiler_record, nullptr);
-    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::input_union);
+    EXPECT_EQ(request.compiler_record->replay_mode, iv::TickReplayMode::enabled);
 
     auto const operations = iv::details::node_compiler_operations<iv::StereoClip>();
     operations.tick_block(&clip, {
@@ -2908,7 +2908,7 @@ TEST(NodeBuildRequest, AutomaticCurveUsesIrregularSpacingAndClampedTangents)
 
 
 struct ReplayWithoutRandomAccessPropagation {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() {
         return std::array{iv::event_input({"points", "Points"}, iv::EventTypeId::sample, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }

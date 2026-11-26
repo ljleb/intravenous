@@ -483,7 +483,8 @@ namespace iv {
                 || has_propagate_forward_coverage_batch<Node>)
             && (!(has_propagate_forward_coverage<Node>
                     || has_propagate_forward_coverage_batch<Node>)
-                || has_coverage_propagation_domain_v<Node>)
+                || has_coverage_propagation_domain_v<Node>
+                || (has_tick_family_v<Node> && !has_propagate_forward_coverage_batch<Node>))
             && (!(has_propagate_reverse_coverage<Node>
                     || has_propagate_reverse_coverage_batch<Node>)
                 || (has_coverage_propagation_domain_v<Node>
@@ -512,7 +513,6 @@ namespace iv {
                 && has_tick_family_v<Node>
                 && !has_State<Node>
                 && !declares_random_access_inputs_v<Node>
-                && !has_propagate_forward_coverage<Node>
                 && !has_propagate_forward_coverage_batch<Node>
                 && !has_propagate_reverse_coverage<Node>
                 && !has_propagate_reverse_coverage_batch<Node>

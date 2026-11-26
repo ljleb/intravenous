@@ -36,6 +36,7 @@ struct ReflectedNodeDescription {
     std::optional<std::size_t> default_ttl_samples {};
     bool block_skippable = false;
     TickReplayMode replay_mode = TickReplayMode::disabled;
+    std::vector<details::TickOutputCoverageRule> tick_output_coverage{};
     std::optional<Sample> static_sample_value {};
 
     constexpr std::vector<InputConfig> const& inputs() const

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -162,6 +163,8 @@ bool local_port_semantics_equal(
         || current.persisted_tick_output != previous.persisted_tick_output
         || current.replayed_tick_output != previous.replayed_tick_output
         || current.full_live_tick_coverage != previous.full_live_tick_coverage
+        || current.tick_coverage != previous.tick_coverage
+        || current.tick_coverage_has_manual_source != previous.tick_coverage_has_manual_source
         || current.sample_neutral_value != previous.sample_neutral_value
         || current.sample_fallback_value != previous.sample_fallback_value
         || current.sample_manual_contribution != previous.sample_manual_contribution
@@ -248,8 +251,8 @@ bool node_local_semantics_equal(
         && current.tracks_live_tick_coverage == previous.tracks_live_tick_coverage
         && current.authored_forward_coverage == previous.authored_forward_coverage
         && current.authored_reverse_coverage == previous.authored_reverse_coverage
-        && current.uses_replay_forward_coverage
-            == previous.uses_replay_forward_coverage
+        && current.uses_tick_forward_coverage
+            == previous.uses_tick_forward_coverage
         && current.uses_replay_reverse_coverage
             == previous.uses_replay_reverse_coverage
         && current.replay_mode == previous.replay_mode
@@ -308,7 +311,13 @@ IndexCoverage derive_input_coverage(
             for (auto const& delivery : connection.event_deliveries) {
                 if (delivery.target_port != input) continue;
                 used_exact_routes = true;
-                if (delivery.source_port) result.include(output_coverage(*delivery.source_port));
+                if (delivery.source_port) {
+                    auto const delay = plan.nodes[plan.ports[input].node].replays_tick
+                        ? 0 : delivery.live_read_latency;
+                    result.include(shifted_forward(output_coverage(*delivery.source_port), delay));
+                } else if (delivery.mechanism == graph_jit::PlannedDeliveryMechanism::tick_to_sequential) {
+                    result.include(graph_jit::full_index_coverage());
+                }
             }
         }
         if (!used_exact_routes) {
@@ -996,11 +1005,12 @@ void BackgroundPropagationWorkspace::mark_forward_pending(graph_jit::BackgroundN
 {
     if (!planning_state_ || planning_state_->root != this) return;
     auto const& planned = plan_->nodes[node];
-    if (planned.tracks_live_tick_coverage && !planned.replays_tick) return;
+    if (planned.tracks_live_tick_coverage && !planned.uses_tick_forward_coverage) return;
     auto& operation = *planning_state_->group(this).forward[node];
     planning_state_->scheduler.schedule(operation);
     for (auto const output : plan_->nodes[node].outputs) {
-        if (!finalized_outputs_[output]) output_ready_[output] = false;
+        if (!finalized_outputs_[output] && !port(output).persisted_tick_output)
+            output_ready_[output] = false;
     }
 }
 
@@ -1099,7 +1109,7 @@ void BackgroundPropagationWorkspace::activate_node(
 {
     auto const& planned = plan_->nodes[node];
     if (activity == graph_jit::BackgroundNodeActivity::forward
-        && planned.tracks_live_tick_coverage && !planned.replays_tick) return;
+        && planned.tracks_live_tick_coverage && !planned.uses_tick_forward_coverage) return;
     node_calls_[node].activity = node_calls_[node].activity | activity;
     if (!planning_state_) return;
     if (graph_jit::has_activity(activity, graph_jit::BackgroundNodeActivity::forward)) {
@@ -1166,8 +1176,9 @@ void BackgroundPropagationWorkspace::route_output_change(
             for (auto const& delivery : connection.event_deliveries) {
                 if (delivery.source_port != output || !delivery.target_port)
                     continue;
-                add_input_change(
-                    *delivery.target_port, changed, coverage_changed);
+                auto const target = *delivery.target_port;
+                auto const delay = plan_->nodes[port(target).node].replays_tick ? 0 : delivery.live_read_latency;
+                add_input_change(target, shifted_forward(changed, delay), coverage_changed);
                 used_exact_routes = true;
             }
         }
@@ -1801,7 +1812,7 @@ void BackgroundPropagationWorkspace::publish_corresponding_sample_requirements(
 namespace {
 // Every Sequential input change changes resolved input values, also where
 // upstream coverage appears or disappears.
-IndexCoverage replay_input_changes(ReflectedNodeForwardCoverageContext const& context)
+IndexCoverage tick_input_changes(ReflectedNodeForwardCoverageContext const& context)
 {
     IndexCoverage changed;
     for (auto const& input :
@@ -1815,53 +1826,82 @@ IndexCoverage replay_input_changes(ReflectedNodeForwardCoverageContext const& co
     return changed;
 }
 
-void publish_replay_outputs(ReflectedNodeForwardCoverageContext const& context,
-    IndexCoverage const& coverage, IndexCoverage const& changed)
+IndexCoverage extend_tick_coverage(IndexCoverage const& coverage, std::size_t tail)
 {
-    for (auto const& output :
-         static_cast<std::span<OutputCoverageChange>>(context.outputs)) {
-        output.publish_coverage(coverage);
-        output.change(changed);
+    if (tail == 0) return coverage;
+    IndexCoverage result;
+    for (auto const range : coverage) {
+        if (tail > std::numeric_limits<GlobalIndex::extent_type>::max() - range.extent)
+            return graph_jit::full_index_coverage();
+        result.include({range.begin, range.extent + tail});
     }
-    for (auto const& output :
-         static_cast<std::span<OutputCoverageChange>>(context.event_outputs)) {
-        output.publish_coverage(coverage);
-        output.change(changed);
-    }
-    context.planning.finish();
+    return result;
 }
 } // namespace
 
-// An open manual/default input contributes a value, not a connected coverage
-// source. Its fallback must not enlarge the input union.
-void BackgroundPropagationWorkspace::replay_forward_coverage(
+void BackgroundPropagationWorkspace::tick_forward_coverage(
     void*, ReflectedNodeForwardCoverageContext const& context)
 {
-    IndexCoverage coverage;
-    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(context.inputs))
-        coverage.include(input.coverage());
-    for (auto const& input : static_cast<std::span<InputCoverageChange const>>(context.event_inputs))
-        coverage.include(input.coverage());
-    auto changed = context.local_state_changed ? coverage : replay_input_changes(context);
-    publish_replay_outputs(context, coverage, changed);
-}
-
-// TickReplayMode::full. The output exists at every position, including where
-// every Sequential input resolves to its fallback and for nodes without
-// inputs. Reverse propagation still requires only covered upstream positions.
-void BackgroundPropagationWorkspace::replay_full_forward_coverage(
-    void*, ReflectedNodeForwardCoverageContext const& context)
-{
-    // A full circle needs two ranges because one extent cannot hold 2^64.
-    constexpr auto half = std::uint64_t{1} << 63;
-    IndexCoverage const coverage{
-        GlobalIndexRange{GlobalIndex::from_bits(0), half},
-        GlobalIndexRange{GlobalIndex::from_bits(half), half}};
-    auto changed = replay_input_changes(context);
-    if (context.local_state_changed) {
-        changed = coverage;
-    }
-    publish_replay_outputs(context, coverage, changed);
+    using Op = details::TickCoverageOp;
+    auto const input_changes = tick_input_changes(context);
+    auto publish = [&](OutputCoverageChange const& output) {
+        auto const& accumulator = *static_cast<OutputChangeAccumulator const*>(output.data);
+        auto const& workspace = *accumulator.owner;
+        auto const& port = workspace.port(accumulator.port);
+        if (port.persisted_tick_output) return;
+        auto const& calls = workspace.node_call_data_[port.node];
+        auto read_input = [&](details::TickCoverageTerm const& term) -> IndexCoverage {
+            auto const sample = term.kind == PortKind::sample;
+            auto const& ports = sample ? calls.sample_inputs : calls.event_inputs;
+            auto const found = std::ranges::find_if(ports, [&](auto input) {
+                return workspace.port(input).configured_port.port_index == term.first;
+            });
+            if (found == ports.end()) throw std::logic_error("Tick coverage rule lost its input");
+            if (workspace.port(*found).tick_coverage_has_manual_source)
+                return graph_jit::full_index_coverage();
+            // tick_input_changes() completed the metadata reads before any output was published.
+            return workspace.input_changes_[workspace.input_index(*found)].coverage;
+        };
+        auto coverage = graph_jit::full_index_coverage();
+        std::size_t tail = 0;
+        if (!port.tick_coverage.empty()) {
+            struct TermValue {
+                IndexCoverage coverage;
+                std::size_t tail = 0;
+            };
+            std::vector<TermValue> values;
+            values.reserve(port.tick_coverage.size());
+            for (auto const& term : port.tick_coverage) {
+                switch (term.op) {
+                case Op::input: values.push_back({read_input(term)}); break;
+                case Op::union_:
+                case Op::intersection: {
+                    auto const& lhs = values[term.first];
+                    auto const& rhs = values[term.second];
+                    values.push_back({term.op == Op::union_ ? lhs.coverage | rhs.coverage
+                        : lhs.coverage & rhs.coverage, std::max(lhs.tail, rhs.tail)});
+                    break;
+                }
+                case Op::extend_right: {
+                    auto const& operand = values[term.first];
+                    auto const maximum = std::numeric_limits<std::size_t>::max();
+                    values.push_back({extend_tick_coverage(operand.coverage, term.second),
+                        operand.tail + std::min(term.second, maximum - operand.tail)});
+                    break;
+                }
+                }
+            }
+            coverage = std::move(values.back().coverage);
+            tail = values.back().tail;
+        }
+        auto changed = extend_tick_coverage(input_changes, tail);
+        if (context.local_state_changed) changed.include(coverage | output.previous_coverage());
+        output.publish_coverage(coverage);
+        output.change(changed);
+    };
+    for (auto const& output : std::span<OutputCoverageChange>(context.outputs)) publish(output);
+    for (auto const& output : std::span<OutputCoverageChange>(context.event_outputs)) publish(output);
+    context.planning.finish();
 }
 
 void BackgroundPropagationWorkspace::replay_reverse_coverage(
@@ -2029,9 +2069,8 @@ void BackgroundPropagationWorkspace::initialize_calls()
             .event_outputs = calls.event_output_requirements,
             .sample_rate = sample_rate_,
         };
-        if (node.uses_replay_forward_coverage) {
-            frame.replay_forward = node.replay_mode == TickReplayMode::input_union
-                ? &replay_forward_coverage : &replay_full_forward_coverage;
+        if (node.uses_tick_forward_coverage) {
+            frame.replay_forward = &tick_forward_coverage;
         }
         if (node.uses_replay_reverse_coverage) {
             frame.replay_reverse = &replay_reverse_coverage;
@@ -2177,7 +2216,7 @@ BackgroundCoverageState::prepare_migration_from(
         if (!unchanged) {
             migration.reconciliation_roots.locally_changed_nodes.push_back(
                 current_index);
-        } else if (current.authored_forward_coverage || current.uses_replay_forward_coverage) {
+        } else if (current.authored_forward_coverage || current.uses_tick_forward_coverage) {
             // Commit checks which retained outputs still need discovery.
             migration.reconciliation_roots.forward_nodes.push_back(current_index);
         }

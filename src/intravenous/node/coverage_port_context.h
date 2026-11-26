@@ -8,6 +8,7 @@
 #include <intravenous/event_sequence.h>
 #include <intravenous/node/region_selection.h>
 #include <intravenous/node/static_port_access.h>
+#include <intravenous/node/tick_coverage.h>
 #include <intravenous/node/traits.h>
 
 #include <algorithm>
@@ -1203,6 +1204,58 @@ struct PropagateForwardCoverageContext {
         }
     }
 
+};
+
+template<typename Node>
+requires details::has_tick_family_v<Node>
+struct PropagateForwardCoverageContext<Node> {
+    using Publish = void (*)(void*, PortKind, std::size_t, std::span<details::TickCoverageTerm const>);
+
+    class Input {
+        PortKind kind_;
+        std::size_t index_;
+    public:
+        Input(PortKind kind, std::size_t index) : kind_(kind), index_(index) {}
+        [[nodiscard]] TickCoverageExpression coverage() const { return {kind_, index_}; }
+    };
+
+    class Output {
+        void* owner_;
+        Publish publish_;
+        PortKind kind_;
+        std::size_t index_;
+    public:
+        Output(void* owner, Publish publish, PortKind kind, std::size_t index)
+            : owner_(owner), publish_(publish), kind_(kind), index_(index) {}
+        void publish(TickCoverageExpression const& expression) const
+        { publish_(owner_, kind_, index_, expression.terms()); }
+    };
+
+    PropagateForwardCoverageContext(void* owner, Publish publish) : owner_(owner), publish_(publish) {}
+
+    template<fixed_string Name>
+    [[nodiscard]] Input input() const
+    {
+        static_assert(!details::static_input_port_is_random_access<Node, Name>(),
+            "Tick coverage expressions require a Sequential input");
+        if constexpr (details::static_input_port_kind<Node, Name>() == PortKind::sample)
+            return {PortKind::sample, details::static_input_port_index<Node, Name>()};
+        else
+            return {PortKind::event, details::static_event_input_port_index<Node, Name>()};
+    }
+
+    template<fixed_string Name>
+    [[nodiscard]] Output output() const
+    {
+        if constexpr (details::static_output_port_kind<Node, Name>() == PortKind::sample)
+            return {owner_, publish_, PortKind::sample, details::static_output_port_index<Node, Name>()};
+        else
+            return {owner_, publish_, PortKind::event, details::static_event_output_port_index<Node, Name>()};
+    }
+
+private:
+    void* owner_;
+    Publish publish_;
 };
 
 template<typename Node>

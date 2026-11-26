@@ -655,12 +655,14 @@ IV_MODULE("iv.test.automation.wrap_bound", automation_wrap_bound, "Wrap bound");
 
 // Replayable pointwise Tick nodes whose only input is Sequential. Both compute
 // a value at every position; an input position without upstream coverage
-// resolves to the input's neutral value. Their declared TickReplayMode decides
-// where that value is output.
+// resolves to the input's neutral value. AddOne follows its input coverage.
 struct ReplayAddOne {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>({"in", "In"})}; }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayAddOne>& ctx) const {
+        ctx.output<"out">().publish(ctx.input<"in">().coverage());
+    }
     void tick_block(iv::TickBlockContext<ReplayAddOne> const& ctx) const {
         auto input = ctx.input<"in">();
         auto output = ctx.output<"out">().block();
@@ -670,7 +672,7 @@ struct ReplayAddOne {
 };
 IV_NODE("iv.test.replay.add_one", ReplayAddOne, "Add one");
 struct ReplayTenMinus {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() { return std::array{iv::input<iv::Sample>({"in", "In"})}; }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
     void tick_block(iv::TickBlockContext<ReplayTenMinus> const& ctx) const {
@@ -806,8 +808,7 @@ IV_MODULE("iv.test.replay.sequential_resolution_module", replay_sequential_resol
 
 template<bool ModuleChild>
 struct ReplayManualFallback {
-    static constexpr iv::TickReplayMode replay_mode = ModuleChild
-        ? iv::TickReplayMode::input_union : iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     // A nonzero neutral value must remain the combiner's identity, as the
     // Sequential fan-in contract requires: combine(neutral, x) == x.
     static constexpr iv::Sample shifted_add(iv::Sample left, iv::Sample right) noexcept {
@@ -823,6 +824,11 @@ struct ReplayManualFallback {
             ? iv::PortNames{"manual_union", "Manual union"}
             : iv::PortNames{"manual_full", "Manual full"};
         return std::array{iv::output<iv::Sample>(names)};
+    }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayManualFallback>& ctx) const
+        requires (ModuleChild)
+    {
+        ctx.template output<"manual_union">().publish(ctx.template input<"gain">().coverage());
     }
     void tick_block(iv::TickBlockContext<ReplayManualFallback> const& ctx) const {
         auto input = ctx.template input<"gain">();
@@ -863,12 +869,96 @@ void live_union_fallback_module(iv::GraphBuilder& graph) {
 }
 IV_MODULE("iv.test.replay.live_union_fallback", live_union_fallback_module, "Live union fallback");
 
+struct FallbackWindowSource {
+    std::int64_t begin;
+    std::uint64_t length;
+    iv::Sample value;
+
+    constexpr FallbackWindowSource(std::int64_t begin_, std::uint64_t length_, iv::Sample value_)
+        : begin(begin_), length(length_), value(value_) {}
+
+    static constexpr auto outputs() {
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::region)};
+    }
+
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<FallbackWindowSource>& ctx) const {
+        auto out = ctx.output<"out">();
+        auto const window = iv::GlobalIndexRange{iv::GlobalIndex::from_signed(begin), length};
+        out.publish(window);
+        out.change(window);
+    }
+
+    void tock_coverage(iv::TockCoverageContext<FallbackWindowSource>& ctx) const {
+        for (auto run : ctx.output<"out">().prepared_runs())
+            for (std::size_t slot = 0; slot < run.size(); ++slot)
+                run.value(slot) = value;
+    }
+};
+IV_NODE("iv.test.replay.fallback_window_source", FallbackWindowSource, "Fallback source");
+
+void sample_fallback_operator_module(iv::GraphBuilder& graph) {
+    auto primary = graph.node<"iv.test.replay.fallback_window_source">(
+        std::int64_t{20}, std::uint64_t{3}, iv::Sample{0.0f});
+    auto secondary = graph.node<"iv.test.replay.fallback_window_source">(
+        std::int64_t{21}, std::uint64_t{4}, iv::Sample{2.0f});
+    auto constant = graph.node<"iv.test.graph_jit.state_context.constant">(iv::Sample{0.5f});
+    auto const selected = primary | (primary + secondary) | constant;
+    auto probe = graph.node<"iv.test.replay.live_probe">();
+    auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{8});
+    probe(iv::named<"value"> = selected);
+    window(selected);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.sample_fallback_operator", sample_fallback_operator_module, "Sample fallback operator");
+
+struct FiniteTail {
+    struct State { float previous = 0; float older = 0; };
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>({"signal", "Signal"})}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"filtered", "Filtered"})}; }
+
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<FiniteTail>& ctx) const
+    {
+        ctx.output<"filtered">().publish(ctx.input<"signal">().coverage().extend_right(2));
+    }
+
+    void tick_block(iv::TickBlockContext<FiniteTail> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto const input = ctx.input<"signal">();
+        auto const output = ctx.output<"filtered">().block();
+        for (std::size_t frame = 0; frame < output.size(); ++frame) {
+            auto const current = input.get_value(frame).value;
+            output[frame] = iv::Sample{current + state.previous + state.older};
+            state.older = state.previous;
+            state.previous = current;
+        }
+    }
+};
+IV_NODE("iv.test.tick.finite_tail", FiniteTail, "Finite tail");
+
+void finite_tail_fallback_module(iv::GraphBuilder& graph)
+{
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto sparse = graph.node<"iv.test.replay.add_one">();
+    auto filtered = graph.node<"iv.test.tick.finite_tail">();
+    auto fallback = graph.node<"iv.test.graph_jit.state_context.constant">(iv::Sample{0.5f});
+    auto probe = graph.node<"iv.test.replay.live_probe">();
+    sparse(source);
+    filtered(sparse);
+    probe(iv::named<"value"> = (filtered | fallback));
+    graph.outputs();
+}
+IV_MODULE("iv.test.tick.finite_tail_fallback", finite_tail_fallback_module, "Finite tail fallback");
+
 struct ReplayEventCoverageValue {
-    static constexpr auto replay_mode = iv::TickReplayMode::input_union;
+    static constexpr auto replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() {
         return std::array{iv::event_input({"events", "Events"}, iv::EventTypeId::trigger, iv::InputAccess::sequential)};
     }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayEventCoverageValue>& ctx) const {
+        ctx.output<"out">().publish(ctx.input<"events">().coverage());
+    }
     void tick_block(iv::TickBlockContext<ReplayEventCoverageValue> const& ctx) const {
         auto output = ctx.output<"out">().block();
         for (std::size_t frame = 0; frame < output.size(); ++frame)

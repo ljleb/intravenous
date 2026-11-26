@@ -1158,9 +1158,18 @@ private:
             }
             if (!primitive.live_coverage_outputs.empty()) {
                 auto const node = *background.bundle_to_background_node[bundle];
+                primitive.live_event_inputs.resize(plan_.event_ports.primitives[index].inputs.size());
+                primitive.live_sample_inputs_with_manual_source.resize(
+                    plan_.sample_ports.primitives[index].inputs.size());
                 for (auto const port : background.nodes[node].inputs) {
                     auto const& input = background.ports[port];
-                    if (input.kind != PortKind::event || input.input_access != InputAccessKind::sequential) continue;
+                    if (input.input_access != InputAccessKind::sequential) continue;
+                    auto const input_index = input.configured_port.port_index;
+                    if (input.kind == PortKind::sample) {
+                        primitive.live_sample_inputs_with_manual_source[input_index] =
+                            input.tick_coverage_has_manual_source;
+                        continue;
+                    }
                     for (auto const connection : input.incoming_connections) {
                         for (auto const& delivery : background.connections[connection].event_deliveries) {
                             if (delivery.target_port != port) continue;
@@ -1169,7 +1178,7 @@ private:
                                 auto const& output = background.ports[*delivery.source_port];
                                 if (!output.full_live_tick_coverage) source.output_change = output.accumulators.output_change;
                             }
-                            primitive.live_event_inputs.push_back({.sources = {source}});
+                            primitive.live_event_inputs[input_index].push_back({.sources = {source}});
                         }
                     }
                 }
@@ -1184,7 +1193,8 @@ private:
                         return candidate.direction == PortDirection::output
                             && candidate.configured_port == NodeBundlePortId{bundle, PortKind::event, port};
                     });
-                    if (output != background.ports.end() && output->accumulators.output_change) {
+                    if (output != background.ports.end() && !output->full_live_tick_coverage
+                        && output->accumulators.output_change && !output->tick_coverage.empty()) {
                         primitive.sparse_event_outputs.emplace_back(compact_output, *output->accumulators.output_change);
                         plan_.has_tick_slots = true;
                     }
@@ -1722,6 +1732,9 @@ private:
                     .read_latency = input.read_latency,
                     .absolute_pace_exponent = input.absolute_pace_exponent,
                     .contiguous_value_capacity = input.contiguous_value_capacity,
+                    .upstream_coverage = {.full = !input.resolves_coverage
+                        && std::ranges::any_of(input.coverage_projections,
+                            [](auto const& projection) { return !projection.sources.empty(); })},
                 });
             }
 

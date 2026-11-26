@@ -4,6 +4,7 @@
 #include <intravenous/graph/error.h>
 #include <intravenous/graph/names.h>
 #include <intravenous/node/tick_replay_mode.h>
+#include <intravenous/node/tick_coverage.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/graph/builder/concrete_node.hpp>
 
@@ -69,6 +70,7 @@ class NodeBundle {
     std::optional<size_t> default_ttl_samples{};
     bool block_skippable = false;
     TickReplayMode replay_mode = TickReplayMode::disabled;
+    std::vector<details::TickOutputCoverageRule> tick_output_coverage{};
     std::optional<Sample> static_sample_value{};
   };
 
@@ -252,6 +254,7 @@ struct ConfiguredNodeBundleRecord {
   std::optional<size_t> default_ttl_samples{};
   bool block_skippable = false;
   TickReplayMode replay_mode = TickReplayMode::disabled;
+  std::vector<details::TickOutputCoverageRule> tick_output_coverage{};
   std::optional<Sample> static_sample_value{};
 
   std::vector<NodeBundleHandle> tiled_members{};
@@ -296,6 +299,7 @@ struct ConfiguredNodeBundleView {
   std::optional<size_t> const* default_ttl_samples = nullptr;
   bool block_skippable = false;
   TickReplayMode replay_mode = TickReplayMode::disabled;
+  std::span<details::TickOutputCoverageRule const> tick_output_coverage{};
   std::optional<Sample> const* static_sample_value = nullptr;
 
   std::span<NodeBundleHandle const> tiled_members{};
@@ -456,6 +460,7 @@ constexpr ConcreteNode GraphBuilderNodeBundles::make_concrete_node(
       .default_ttl_samples = description.default_ttl_samples,
       .block_skippable = description.block_skippable,
       .replay_mode = description.replay_mode,
+      .tick_output_coverage = std::move(description.tick_output_coverage),
       .static_sample_value = description.static_sample_value,
   };
 }
@@ -488,6 +493,7 @@ constexpr NodeBundleHandle GraphBuilderNodeBundles::append_concrete(
       .default_ttl_samples = lowered.default_ttl_samples,
       .block_skippable = lowered.block_skippable,
       .replay_mode = lowered.replay_mode,
+      .tick_output_coverage = std::move(lowered.tick_output_coverage),
       .static_sample_value = lowered.static_sample_value,
   };
   auto const handle = _bundles.size();
@@ -1422,6 +1428,7 @@ GraphBuilderNodeBundles::materialize_concrete_description(
       .default_ttl_samples = payload->default_ttl_samples,
       .block_skippable = payload->block_skippable,
       .replay_mode = payload->replay_mode,
+      .tick_output_coverage = payload->tick_output_coverage,
       .static_sample_value = payload->static_sample_value,
   };
 }
@@ -1584,6 +1591,7 @@ constexpr void GraphBuilderNodeBundles::for_each_configured_bundle(
         view.default_ttl_samples = &payload.default_ttl_samples;
         view.block_skippable = payload.block_skippable;
         view.replay_mode = payload.replay_mode;
+        view.tick_output_coverage = payload.tick_output_coverage;
         view.static_sample_value = &payload.static_sample_value;
       } else if constexpr (std::same_as<Payload, NodeBundle::TiledNodeBundle>) {
         view.kind = ConfiguredNodeBundleKind::tiled;
@@ -1647,6 +1655,7 @@ constexpr GraphBuilderNodeBundles GraphBuilderNodeBundles::from_configured_recor
           .default_ttl_samples = record.default_ttl_samples,
           .block_skippable = record.block_skippable,
           .replay_mode = record.replay_mode,
+          .tick_output_coverage = record.tick_output_coverage,
           .static_sample_value = record.static_sample_value,
       });
       break;

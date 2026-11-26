@@ -4,7 +4,7 @@
 
 // A RandomAccess dependency cannot be replayed by a pointwise Tick node.
 struct InvalidReplayWithRandomAccess {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs()
     {
         return std::array {iv::input<iv::Sample>({"input", "Input"}, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};

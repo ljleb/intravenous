@@ -62,6 +62,18 @@ void NodeDescriptionSink::set_replay_mode(TickReplayMode value) const
     description().replay_mode = value;
 }
 
+void NodeDescriptionSink::set_tick_output_coverage(PortKind kind, std::size_t output,
+    std::span<TickCoverageTerm const> terms) const
+{
+    auto& node = description();
+    if (!node.ports.supports_tick_coverage(kind, output, terms))
+        throw std::invalid_argument("Tick coverage rules require Sequential inputs and a computed Sequential output");
+    if (std::ranges::any_of(node.tick_output_coverage, [&](auto const& rule) {
+            return rule.kind == kind && rule.output == output;
+        })) throw std::invalid_argument("Tick output coverage declared twice");
+    node.tick_output_coverage.push_back({kind, output, {terms.begin(), terms.end()}});
+}
+
 void NodeDescriptionSink::set_static_sample_value(std::optional<Sample> value) const
 {
     description().static_sample_value = value;

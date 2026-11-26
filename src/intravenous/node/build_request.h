@@ -52,6 +52,7 @@ public:
     void set_block_skippable(bool) const;
     void set_static_sample_value(std::optional<Sample>) const;
     void set_replay_mode(TickReplayMode) const;
+    void set_tick_output_coverage(PortKind, std::size_t, std::span<TickCoverageTerm const>) const;
     ReflectedPortConstraintSink port_constraint_sink() const;
 };
 
@@ -1476,11 +1477,20 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State, Random Access inputs, or authored coverage propagation callbacks, "
+        "have no State, Random Access inputs, or authored reverse coverage callback, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
     sink.set_replay_mode(tick_replay_mode_v<Node>);
+    if constexpr (has_tick_family_v<Node> && has_propagate_forward_coverage<Node>) {
+        PropagateForwardCoverageContext<Node> coverage(&sink,
+            +[](void* owner, PortKind kind, std::size_t output, std::span<TickCoverageTerm const> terms) {
+                static_cast<NodeDescriptionSink*>(owner)->set_tick_output_coverage(kind, output, terms);
+            });
+        static_assert(std::same_as<decltype(node.propagate_forward_coverage(coverage)), void>,
+            "Tick forward coverage must declare its rule without suspending");
+        node.propagate_forward_coverage(coverage);
+    }
     sink.set_maximum_block_size(get_max_block_size(node));
     sink.set_default_ttl(get_ttl_samples(node));
     sink.set_block_skippable(
@@ -1506,7 +1516,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
         "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State, Random Access inputs, or authored coverage propagation callbacks, "
+        "have no State, Random Access inputs, or authored reverse coverage callbacks, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes

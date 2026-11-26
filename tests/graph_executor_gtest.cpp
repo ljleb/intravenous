@@ -598,9 +598,9 @@ iv::CompiledGraph replay_probe_graph()
     plan.nodes = {{
         .bundle = 0,
         .replays_tick = true,
-        .uses_replay_forward_coverage = true,
+        .uses_tick_forward_coverage = true,
         .uses_replay_reverse_coverage = true,
-        .replay_mode = iv::TickReplayMode::full,
+        .replay_mode = iv::TickReplayMode::enabled,
         .uses_imported_tick_block_for_replay = true,
         .replay_maximum_block_size = 4,
         .outputs = {0, 1},
@@ -3450,7 +3450,7 @@ TEST_F(BackgroundCoveragePropagationFixture, ModuleInputResolutionKeepsItsSemant
     BackgroundEvaluationPlan previous_plan;
     previous_plan.nodes = {{.bundle = 7, .resolved_module_input = origin,
         .replays_tick = true, .full_live_tick_coverage = true,
-        .replay_mode = TickReplayMode::full, .inputs = {0}, .outputs = {1}}};
+        .replay_mode = TickReplayMode::enabled, .inputs = {0}, .outputs = {1}}};
     previous_plan.ports = {
         {.node = 0, .configured_port = {7, PortKind::sample, 0},
          .direction = PortDirection::input, .sample_fallback_value = 0.5f,
@@ -4844,15 +4844,16 @@ TEST_F(GraphExecutorFixture, PreparedOutputGainsRejectCodeOnlyReplacementAndIgno
 }
 
 
-TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileFullReplayCoversThem)
+TEST_F(BackgroundCoveragePropagationFixture, TickOutputsHaveIndependentCoverageRules)
 {
     using namespace iv;
     using namespace iv::graph_jit;
-    for (auto mode : {TickReplayMode::input_union, TickReplayMode::full}) {
+    for (bool replay : {true, false}) {
         BackgroundEvaluationPlan plan;
-        plan.nodes = {{.bundle = 0, .replays_tick = true,
-            .uses_replay_forward_coverage = true, .replay_mode = mode,
-            .inputs = {0, 1}, .outputs = {2}}};
+        plan.nodes = {{.bundle = 0, .replays_tick = replay, .tracks_live_tick_coverage = true,
+            .uses_tick_forward_coverage = true,
+            .replay_mode = replay ? TickReplayMode::enabled : TickReplayMode::disabled,
+            .inputs = {0, 1}, .outputs = {2, 3, 4}}};
         plan.ports = {
             {.node = 0, .configured_port = {0, PortKind::sample, 0},
                 .kind = PortKind::sample, .direction = PortDirection::input,
@@ -4864,12 +4865,26 @@ TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileF
                 .accumulators = {.input_change = 1, .input_requirement = 1}},
             {.node = 0, .configured_port = {0, PortKind::sample, 0},
                 .kind = PortKind::sample, .direction = PortDirection::output,
-                .replayed_tick_output = true,
+                .replayed_tick_output = replay,
                 .accumulators = {.output_change = 0, .output_requirement = 0}},
+            {.node = 0, .configured_port = {0, PortKind::sample, 1},
+                .kind = PortKind::sample, .direction = PortDirection::output,
+                .replayed_tick_output = replay,
+                .accumulators = {.output_change = 1, .output_requirement = 1}},
+            {.node = 0, .configured_port = {0, PortKind::sample, 2},
+                .kind = PortKind::sample, .direction = PortDirection::output,
+                .replayed_tick_output = replay,
+                .accumulators = {.output_change = 2, .output_requirement = 2}},
         };
-        plan.accumulators = {.input_change_count = 2, .output_change_count = 1,
-            .output_requirement_count = 1, .input_requirement_count = 2};
-        BackgroundCoverageState state(1);
+        auto const a = TickCoverageExpression{PortKind::sample, 0};
+        auto const b = TickCoverageExpression{PortKind::sample, 1};
+        auto const selected = a | b;
+        auto const overlapping = replay ? a & b : (a & b).extend_right(2);
+        plan.ports[2].tick_coverage.assign(selected.terms().begin(), selected.terms().end());
+        plan.ports[3].tick_coverage.assign(overlapping.terms().begin(), overlapping.terms().end());
+        plan.accumulators = {.input_change_count = 2, .output_change_count = 3,
+            .output_requirement_count = 3, .input_requirement_count = 2};
+        BackgroundCoverageState state(3);
         BackgroundPropagationWorkspace workspace(plan, 48000);
         CompiledGraphBackgroundOperations operations{
             .propagate_forward = +[](BackgroundEvaluationCall* call) {
@@ -4882,12 +4897,13 @@ TEST_F(BackgroundCoveragePropagationFixture, InputUnionReplayPreservesGapsWhileF
         auto prepared = workspace.prepare(operations, state, {
             .locally_changed_nodes = {0},
             .input_changes = {{.port = 0, .coverage = index_coverage({{20, 24}}),
-                .changed = index_coverage({{20, 24}})}, {.port = 1}},
+                .changed = index_coverage({{20, 24}})}, {.port = 1,
+                .coverage = index_coverage({{22, 25}}), .changed = index_coverage({{22, 25}})}},
         });
         auto result = workspace.commit(state, std::move(prepared));
-        ASSERT_EQ(result.output_changes.size(), 1u);
-        if (mode == TickReplayMode::input_union)
-            EXPECT_EQ(result.output_changes[0].coverage, index_coverage({{20, 24}}));
-        else EXPECT_EQ(result.output_changes[0].coverage, full_index_coverage());
+        ASSERT_EQ(result.output_changes.size(), 3u);
+        EXPECT_EQ(result.output_changes[0].coverage, index_coverage({{20, 25}}));
+        EXPECT_EQ(result.output_changes[1].coverage, index_coverage({{22, replay ? 24 : 26}}));
+        EXPECT_EQ(result.output_changes[2].coverage, full_index_coverage());
     }
 }

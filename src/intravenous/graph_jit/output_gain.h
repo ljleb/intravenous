@@ -210,7 +210,6 @@ inline OutputGainExpansion expand_output_gains(ConfiguredGraph& graph, NodeDefin
             .node_size = sizeof(OutputGainConfiguration),
             .node_alignment = alignof(OutputGainConfiguration),
             .type_identity = NodeTypeIdentity{.value = "compiler.output_gain"},
-            .replay_mode = tick ? TickReplayMode::input_union : TickReplayMode::disabled,
         };
         PortConstraintRef const signal{PortConstraintDirection::input, PortKind::sample, 0};
         PortConstraintRef const out{PortConstraintDirection::output, PortKind::sample, 0};

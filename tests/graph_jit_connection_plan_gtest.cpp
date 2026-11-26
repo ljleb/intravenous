@@ -818,7 +818,7 @@ struct RealtimeSink {
 };
 
 struct ReplayableSource {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
 
     static constexpr auto inputs()
     {
@@ -834,7 +834,7 @@ struct ReplayableSource {
 };
 
 struct ReplayableFFTSource {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
 
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -855,7 +855,7 @@ struct ReplayableFFTSource {
 };
 
 struct ReplayableFastSampleSource {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
 
     static constexpr auto inputs() { return std::tuple{}; }
 
@@ -891,7 +891,7 @@ struct BackgroundFFTSink {
 };
 
 struct ReplayablePass {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
 
     static constexpr auto inputs()
     {
@@ -904,15 +904,23 @@ struct ReplayablePass {
     }
 
     void tick(iv::TickSampleContext<ReplayablePass> const&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayablePass>& ctx) const
+    {
+        ctx.output<"out">().publish(ctx.input<"in">().coverage());
+    }
 };
 
 struct ReplayablePair {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::input_union;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() {
         return std::array{iv::input<iv::Sample>({"signal", "Signal"}), iv::input<iv::Sample>({"feedback", "Feedback"})};
     }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
     void tick(iv::TickSampleContext<ReplayablePair> const&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayablePair>& ctx) const
+    {
+        ctx.output<"out">().publish(ctx.input<"signal">().coverage() | ctx.input<"feedback">().coverage());
+    }
 };
 
 struct PersistedTickPass {
@@ -4402,7 +4410,7 @@ TEST(GraphJitConnectionPlan, IntrinsicTickReplaySuppliesRandomAccess)
     ASSERT_TRUE(plan->background.bundle_to_background_node[source_handle]);
     auto const source_node = *plan->background.bundle_to_background_node[source_handle];
     EXPECT_TRUE(plan->background.nodes[source_node].replays_tick);
-    EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_forward_coverage);
+    EXPECT_TRUE(plan->background.nodes[source_node].uses_tick_forward_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_replay_reverse_coverage);
     EXPECT_TRUE(plan->background.nodes[source_node].uses_imported_tick_block_for_replay);
 }
@@ -5459,7 +5467,8 @@ TEST(GraphJitConnectionPlan, AcyclicInputUnionTracksCoverageWithoutBecomingFull)
     ASSERT_TRUE(plan) << plan.error();
     auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
     ASSERT_NE(node, plan->nodes.end());
-    EXPECT_EQ(node->replay_mode, TickReplayMode::input_union);
+    EXPECT_EQ(node->replay_mode, TickReplayMode::enabled);
+    ASSERT_EQ(node->tick_output_coverage.size(), 1u);
     EXPECT_FALSE(node->full_live_tick_coverage);
     EXPECT_FALSE(node->contextually_replayable); // Live coverage needs no value replay.
     auto background = plan->background.bundle_to_background_node[bundle];
@@ -5484,7 +5493,8 @@ TEST(GraphJitConnectionPlan, EntirelyInputUnionFeedbackKeepsItsDeclarationsAndHa
     for (auto bundle : bundles) {
         auto node = std::ranges::find(plan->nodes, bundle, &graph_jit::detail::PlannedGraphNode::bundle);
         ASSERT_NE(node, plan->nodes.end());
-        EXPECT_EQ(node->replay_mode, TickReplayMode::input_union);
+        EXPECT_EQ(node->replay_mode, TickReplayMode::enabled);
+        EXPECT_EQ(node->tick_output_coverage.size(), 1u);
         EXPECT_TRUE(node->full_live_tick_coverage);
         EXPECT_FALSE(node->contextually_replayable);
     }

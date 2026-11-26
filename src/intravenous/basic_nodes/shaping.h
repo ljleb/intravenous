@@ -13,7 +13,7 @@
 namespace iv {
     template<ChannelTypeId Channels, SampleStreamLayout Layout>
     struct ClipNode {
-        static constexpr auto replay_mode = TickReplayMode::input_union;
+        static constexpr auto replay_mode = TickReplayMode::enabled;
         static constexpr ChannelLayout layout{Channels, Layout};
 
         static constexpr auto inputs()
@@ -33,6 +33,11 @@ namespace iv {
         void constrain_ports(ConstrainPortsContext<ClipNode>& ctx) const
         {
             ctx.template input<"in">().pace() = ctx.template output<"out">().pace();
+        }
+
+        void propagate_forward_coverage(PropagateForwardCoverageContext<ClipNode>& ctx) const
+        {
+            ctx.template output<"out">().publish(ctx.template input<"in">().coverage());
         }
 
         void tick(TickSampleContext<ClipNode> const& ctx) const

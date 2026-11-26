@@ -3,6 +3,7 @@
 #include "intravenous/graph/builder.h"
 #include "intravenous/basic_nodes/constant.h"
 #include "intravenous/basic_nodes/arithmetic.h"
+#include "intravenous/basic_nodes/sample_fallback.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
 #error "dsl.h is reserved for user-configured DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
@@ -427,6 +428,24 @@ namespace iv {
         using ChannelType = typename binary_typed_channel<L, R>::type;
         return make_binary_op<Sum, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator+");
+    }
+
+    // A reusable signal which selects the left value wherever it is covered.
+    template<class L, class R>
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        (SamplePortLike<L> || SamplePortLike<R>))
+    constexpr auto operator|(L&& lhs, R&& rhs)
+    {
+        if constexpr (TypedSamplePortLike<L> || TypedSamplePortLike<R>) {
+            using ChannelType = typename binary_typed_channel<L, R>::type;
+            return make_binary_op<details::SampleFallback, ChannelType>(
+                std::forward<L>(lhs), std::forward<R>(rhs), "operator|");
+        } else {
+            return make_binary_op<details::SampleFallback>(
+                std::forward<L>(lhs), std::forward<R>(rhs), "operator|");
+        }
     }
 
     template<class L, class R>

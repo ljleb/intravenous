@@ -464,6 +464,7 @@ std::expected<void, std::string> inventory_nodes(
                 .replay_mode = view.replay_mode,
                 .authored_reverse_coverage = !has_tick_callback
                     && view.operations->runtime.has_propagate_reverse_coverage,
+                .tick_output_coverage = {view.tick_output_coverage.begin(), view.tick_output_coverage.end()},
             });
             auto const first_state = plan.realtime_port_states.states.size();
             inventory_realtime_port_states(
@@ -3036,41 +3037,54 @@ std::expected<void, std::string> validate_explicit_graph_is_acyclic(
         "GraphJit graph contains an implicit cycle; use detach() to break feedback explicitly");
 }
 
-// Feedback SCCs are full by contract, without an independent contribution.
-// Outside feedback, prove simple full input unions once at compile time so an
-// ordinary gain on a full live stream needs no background coverage tracking.
-void mark_live_sequential_outputs(
+// Feedback SCCs are full by contract. Outside feedback, prove which
+// rules yield full coverage so a gain on a dense stream needs no tracking.
+std::expected<void, std::string> plan_live_sequential_coverage(
     ConfiguredGraph const& graph,
+    ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan& plan,
     ConnectionView view)
 {
-    struct Clause { std::size_t target; std::size_t remaining; };
+    struct Clause { std::size_t target; NodeBundlePortId input; std::size_t remaining; };
     std::vector<Clause> clauses;
     std::vector<std::vector<std::size_t>> waiting(plan.nodes.size());
+    std::vector<std::vector<NodeBundlePortId>> dense_inputs(plan.nodes.size());
     std::vector<std::optional<std::size_t>> node_index(graph.node_bundles.size());
     std::vector<std::size_t> ready;
     for (std::size_t i = 0; i < plan.nodes.size(); ++i) {
         auto& node = plan.nodes[i];
+        for (auto const& rule : node.tick_output_coverage) {
+            auto const pace = rule.kind == PortKind::sample
+                ? realization.output(node.bundle, rule.output).absolute_pace.exponent() : 0;
+            for (auto const& term : rule.terms) {
+                if (term.op != iv::details::TickCoverageOp::input) continue;
+                auto const operand_pace = term.kind == PortKind::sample
+                    ? realization.input(node.bundle, term.first).absolute_pace.exponent() : 0;
+                if (operand_pace != pace)
+                    return std::unexpected("GraphJit Tick coverage rule for bundle "
+                        + std::to_string(node.bundle) + " output " + std::to_string(rule.output)
+                        + " requires inputs and output on the same value lattice");
+            }
+        }
         node_index[node.bundle] = i;
         node.full_live_tick_coverage = node.tick_execution
             && (belongs_to_feedback_scc(plan, node.bundle)
-                || node.replay_mode != TickReplayMode::input_union);
+                || node.tick_output_coverage.empty());
         if (node.full_live_tick_coverage) ready.push_back(i);
     }
     auto target_index = [&](NodeBundleHandle bundle) -> std::optional<std::size_t> {
         if (bundle >= node_index.size() || !node_index[bundle]) return {};
         auto index = *node_index[bundle];
         auto const& node = plan.nodes[index];
-        if (!node.tick_execution || node.full_live_tick_coverage
-            || node.replay_mode != TickReplayMode::input_union) return {};
+        if (!node.tick_execution || node.full_live_tick_coverage) return {};
         return index;
     };
-    auto append = [&](std::size_t target, std::vector<std::size_t> sources) {
+    auto append = [&](std::size_t target, NodeBundlePortId input, std::vector<std::size_t> sources) {
         if (sources.empty()) return;
         std::ranges::sort(sources);
         sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
         auto const clause = clauses.size();
-        clauses.push_back({target, sources.size()});
+        clauses.push_back({target, input, sources.size()});
         for (auto source : sources) waiting[source].push_back(clause);
     };
     for (auto const& connection : plan.sample_connections) {
@@ -3087,7 +3101,7 @@ void mark_live_sequential_outputs(
                     || !node_index[source.source.bundle]) return;
                 sources.push_back(*node_index[source.source.bundle]);
             }
-            append(*target, std::move(sources));
+            append(*target, connection.target_port, std::move(sources));
         };
         if (!connection.routed_contributions.empty()) {
             for (auto const& contribution : connection.routed_contributions) {
@@ -3117,30 +3131,52 @@ void mark_live_sequential_outputs(
                 && uses_realtime_storage(delivery.mechanism)
                 && source.source.bundle < node_index.size()
                 && node_index[source.source.bundle])
-                append(*target, {*node_index[source.source.bundle]});
+                append(*target, {to.target.bundle, PortKind::event, to.target.port},
+                    {*node_index[source.source.bundle]});
         }
     }
+    auto mark_dense_input = [&](std::size_t target, NodeBundlePortId input) {
+        auto& node = plan.nodes[target];
+        auto& inputs = dense_inputs[target];
+        if (node.full_live_tick_coverage || std::ranges::contains(inputs, input)) return;
+        inputs.push_back(input);
+        bool const full = std::ranges::all_of(node.tick_output_coverage, [&](auto const& rule) {
+            std::vector<std::uint8_t> proven;
+            for (auto const& term : rule.terms) {
+                using Op = iv::details::TickCoverageOp;
+                switch (term.op) {
+                case Op::input:
+                    proven.push_back(std::ranges::contains(inputs, NodeBundlePortId{node.bundle, term.kind, term.first}));
+                    break;
+                case Op::union_: proven.push_back(proven[term.first] || proven[term.second]); break;
+                case Op::intersection: proven.push_back(proven[term.first] && proven[term.second]); break;
+                // Keep tail state warm even when every current input is dense.
+                case Op::extend_right: proven.push_back(false); break;
+                }
+            }
+            return proven.back() != 0;
+        });
+        if (full) {
+            node.full_live_tick_coverage = true;
+            ready.push_back(target);
+        }
+    };
     for (auto const& control : graph.manual_controls) {
         if (control.participation != ManualControlParticipation::participate_with_connections
             || overrides_connection(control, view) || control.input.port_kind != PortKind::sample) continue;
         auto target = target_index(control.input.node_bundle_handle);
         if (!target || !std::ranges::any_of(plan.sample_connections,
                 [&](auto const& connection) { return connection.target_port == control.input; })) continue;
-        if (!plan.nodes[*target].full_live_tick_coverage) {
-            plan.nodes[*target].full_live_tick_coverage = true;
-            ready.push_back(*target);
-        }
+        mark_dense_input(*target, control.input);
     }
     for (std::size_t cursor = 0; cursor < ready.size(); ++cursor) {
         for (auto index : waiting[ready[cursor]]) {
             auto& clause = clauses[index];
             if (--clause.remaining != 0) continue;
-            auto& target = plan.nodes[clause.target];
-            if (target.full_live_tick_coverage) continue;
-            target.full_live_tick_coverage = true;
-            ready.push_back(clause.target);
+            mark_dense_input(clause.target, clause.input);
         }
     }
+    return {};
 }
 
 std::expected<void, std::string> plan_background_connections(
@@ -3164,8 +3200,7 @@ std::expected<void, std::string> plan_background_connections(
     // replay. A declaration can publish sparse coverage without any consumer
     // requesting background replay of its Tick values.
     auto tracks_tick_coverage = [](PlannedGraphNode const& node) {
-        return node.tick_execution && !node.full_live_tick_coverage
-            && node.replay_mode == TickReplayMode::input_union;
+        return node.tick_execution && !node.full_live_tick_coverage && !node.tick_output_coverage.empty();
     };
     std::vector<bool> needs_background_node(graph.node_bundles.size(), false);
     auto require_bundle = [&](NodeBundleHandle bundle) {
@@ -3255,7 +3290,7 @@ std::expected<void, std::string> plan_background_connections(
             .tracks_live_tick_coverage = tracks_tick_coverage(node),
             .authored_forward_coverage = authored_tock,
             .authored_reverse_coverage = authored_tock && node.authored_reverse_coverage,
-            .uses_replay_forward_coverage = node.contextually_replayable,
+            .uses_tick_forward_coverage = node.contextually_replayable || tracks_tick_coverage(node),
             .uses_replay_reverse_coverage = node.contextually_replayable,
             .replay_mode = node.replay_mode,
             .uses_imported_tick_block_for_replay = node.contextually_replayable,
@@ -3374,6 +3409,7 @@ std::expected<void, std::string> plan_background_connections(
         Sample neutral{};
         Sample fallback{};
         std::optional<Sample> manual_contribution;
+        bool tick_coverage_has_manual_source = false;
         std::size_t sequential_history = 0;
         std::size_t output_history = 0;
         std::size_t output_latency = 0;
@@ -3402,6 +3438,9 @@ std::expected<void, std::string> plan_background_connections(
                         && ((overrides_connection(*control, view) && !control->input_symbolic_node)
                             || control->participation == ManualControlParticipation::participate_with_connections))
                         manual_contribution = control->settled_value;
+                    tick_coverage_has_manual_source = connected && control != graph.manual_controls.end()
+                        && control->participation == ManualControlParticipation::participate_with_connections
+                        && !overrides_connection(*control, view);
                     if (control != graph.manual_controls.end() && !manual_contribution)
                         fallback = control->settled_value;
                     else if (!connected) fallback = metadata.default_value;
@@ -3479,6 +3518,12 @@ std::expected<void, std::string> plan_background_connections(
         }
         if (direction == PortDirection::input && node_plan.resolved_module_input)
             stable_input = node_plan.resolved_module_input;
+        auto const& planned_node = connections.nodes[node_plan.semantic_node];
+        auto const& rules = planned_node.tick_output_coverage;
+        auto const rule = direction == PortDirection::output
+            ? std::ranges::find_if(rules, [&](auto const& candidate) {
+                return candidate.kind == port.port_kind && candidate.output == port.port_index;
+            }) : rules.end();
         plan.ports.push_back(BackgroundPortPlan{
             .node = background_node,
             .configured_port = port,
@@ -3496,7 +3541,11 @@ std::expected<void, std::string> plan_background_connections(
             .replayed_tick_output = roles.replayed_tick_output,
             .full_live_tick_coverage = direction == PortDirection::output
                 && configured_output_production == OutputProductionKind::sequential
-                && node_plan.full_live_tick_coverage,
+                && (node_plan.full_live_tick_coverage || rule == rules.end())
+                && planned_node.tick_execution,
+            .tick_coverage = rule == rules.end()
+                ? std::vector<iv::details::TickCoverageTerm>{} : rule->terms,
+            .tick_coverage_has_manual_source = tick_coverage_has_manual_source,
             .sample_neutral_value = neutral,
             .sample_fallback_value = fallback,
             .sample_manual_contribution = manual_contribution,
@@ -4789,6 +4838,10 @@ std::expected<SequentialCoverageSource, std::string> sequential_source_coverage(
         && node->full_live_tick_coverage) return result;
     NodeBundlePortId const id{
         source.source.bundle, PortKind::sample, source.source.port};
+    if (source.production == PlannedSourceProduction::tick
+        && !std::ranges::any_of(node->tick_output_coverage, [&](auto const& rule) {
+            return rule.kind == id.port_kind && rule.output == id.port_index;
+        })) return result;
     auto const port = std::ranges::find_if(plan.background.ports, [&](auto const& port) {
         return port.direction == PortDirection::output && port.configured_port == id;
     });
@@ -5034,7 +5087,8 @@ std::expected<void, std::string> plan_connection_semantics(
     plan.background = std::move(*background);
     if (auto valid = validate_background_feedback(graph, routing, plan, view, feedback_connections); !valid)
         return valid;
-    mark_live_sequential_outputs(graph, plan, view);
+    if (auto coverage = plan_live_sequential_coverage(graph, realization, plan, view); !coverage)
+        return coverage;
     if (auto replay = derive_contextual_replayability(graph, plan); !replay)
         return replay;
     if (auto replay = validate_contextual_replay_realization(graph, realization, plan); !replay)

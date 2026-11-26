@@ -59,6 +59,7 @@ struct PlannedGraphNode {
     TickReplayMode replay_mode = TickReplayMode::disabled;
     bool contextually_replayable = false;
     bool authored_reverse_coverage = false;
+    std::vector<iv::details::TickOutputCoverageRule> tick_output_coverage{};
 };
 
 struct DependencyEdgePlan {

@@ -491,7 +491,7 @@ void GraphExecutor::ExecutionGeneration::initialize_first_background_generation(
     // Window observations also depend on the first generation's coverage.
     // Playback preparation controls when Tick can activate.
     for (graph_jit::BackgroundNodeIndex node = 0; node < nodes.size(); ++node) {
-        if (nodes[node].authored_forward_coverage || nodes[node].uses_replay_forward_coverage)
+        if (nodes[node].authored_forward_coverage || nodes[node].uses_tick_forward_coverage)
             roots.push_back(node);
     }
     background.reconciliation_required = prepare_before_activation(*graph) || !roots.empty();

@@ -547,6 +547,41 @@ int main(int, char** argv)
     }
 
     {
+        // A Tick coverage tail has to follow the filter State's lifetime.
+        auto resources = make_resources();
+        auto const initialize_tail = +[](std::span<std::byte> bytes, std::span<std::byte const>) {
+            bytes.front() = std::byte{0};
+        };
+        for (bool move_state : {false, true}) {
+            Movable node;
+            iv::NodeLayoutBuilder previous_builder(8);
+            auto const previous_owner = previous_builder.node_count();
+            iv::do_declare(node, previous_builder, {});
+            previous_builder.set_node_migration_identity(previous_owner, "filter");
+            auto const previous_region = previous_builder.declare_raw_region(
+                1, 1, "filter-tail", initialize_tail, {}, previous_owner);
+            auto const previous_layout = std::move(previous_builder).build();
+            auto previous = previous_layout.create_storage(resources);
+            previous.initialize();
+            previous.region_bytes(previous_region).front() = std::byte{2};
+
+            iv::NodeLayoutBuilder current_builder(8);
+            auto const current_owner = current_builder.node_count();
+            iv::do_declare(node, current_builder, {});
+            current_builder.set_node_migration_identity(current_owner, move_state ? "filter" : "new-filter");
+            auto const current_region = current_builder.declare_raw_region(
+                1, 1, "filter-tail", initialize_tail, {}, current_owner);
+            auto const current_layout = std::move(current_builder).build();
+            auto current = current_layout.create_storage(resources);
+            auto migration = current.prepare_migration_from(previous);
+            migration.commit();
+            auto const expected = move_state ? std::byte{2} : std::byte{0};
+            iv::test::require(current.region_bytes(current_region).front() == expected,
+                "coverage tail should follow its owner's State migration");
+        }
+    }
+
+    {
         iv::NodeLayoutBuilder builder(8);
         Producer producer;
         std::vector<int> order;

@@ -74,6 +74,9 @@ struct LiveTickCoverageHistoryPlan {
     std::size_t capacity = 0;
     NodeLayout::RegionHandle region{};
     std::size_t storage_offset = 0;
+    std::vector<iv::details::TickCoverageTerm> terms{};
+    NodeLayout::RegionHandle evaluation_region{};
+    std::size_t evaluation_offset = 0;
 };
 
 struct DeclarationPlan {

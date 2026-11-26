@@ -17,12 +17,20 @@
 namespace {
 
 struct ReplayableArchiveNode {
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>({"input", "Input"})};
+    }
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>({"output", "Output"}, iv::OutputProduction::sequential)};
     }
     void tick(iv::TickSampleContext<ReplayableArchiveNode> const&) const {}
+    void propagate_forward_coverage(iv::PropagateForwardCoverageContext<ReplayableArchiveNode>& ctx) const
+    {
+        ctx.output<"output">().publish(ctx.input<"input">().coverage());
+    }
 };
 
 struct ConstrainedArchiveNode {
@@ -254,7 +262,7 @@ TEST(ConfiguredGraphBinaryArchive, PreservesNamedTiledChildMetadata)
     EXPECT_TRUE(found);
 }
 
-TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
+TEST(ConfiguredGraphBinaryArchive, PreservesReplayEligibilityAndOutputCoverage)
 {
     using namespace iv;
     GraphBuilder graph;
@@ -270,7 +278,12 @@ TEST(ConfiguredGraphBinaryArchive, PreservesIntrinsicReplayMetadata)
     decoded.node_bundles.for_each_configured_bundle(
         [&](ConfiguredNodeBundleView const& view) {
             if (view.kind != ConfiguredNodeBundleKind::concrete) return;
-            EXPECT_EQ(view.replay_mode, iv::TickReplayMode::full);
+            EXPECT_EQ(view.replay_mode, iv::TickReplayMode::enabled);
+            ASSERT_EQ(view.tick_output_coverage.size(), 1u);
+            auto const& rule = view.tick_output_coverage.front();
+            EXPECT_EQ(rule.kind, PortKind::sample);
+            EXPECT_EQ(rule.output, 0u);
+            EXPECT_EQ(rule.terms, (std::vector{details::TickCoverageTerm{}}));
             ++replayable_nodes;
         });
     EXPECT_EQ(replayable_nodes, 1u);

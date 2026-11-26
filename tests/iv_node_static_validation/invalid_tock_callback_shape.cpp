@@ -21,8 +21,8 @@ struct InvalidInputOnlyForwardCallback {
 
     void tick_block(
         iv::TickBlockContext<InvalidInputOnlyForwardCallback> const&) const {}
-    void propagate_forward_coverage(
-        iv::PropagateForwardCoverageContext<InvalidInputOnlyForwardCallback>&) const {}
+    static void propagate_forward_coverage_batch(
+        iv::PropagateForwardCoverageBatchContext<InvalidInputOnlyForwardCallback>&) {}
 };
 
 IV_NODE(

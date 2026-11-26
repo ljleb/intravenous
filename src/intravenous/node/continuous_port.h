@@ -47,6 +47,22 @@ struct ContinuousPortStorageBinding {
     };
 };
 
+// Availability of upstream values before a Sequential input fills gaps.
+// Dense or disconnected inputs need no lookup.
+struct SequentialInputCoverage {
+    using Query = bool (*)(void const*, void const*, std::uint64_t, std::uint64_t) noexcept;
+
+    void const* context = nullptr;
+    void const* source = nullptr;
+    Query query = nullptr;
+    bool full = false;
+
+    [[nodiscard]] bool contains(std::uint64_t value_index, std::uint64_t sequential_index) const noexcept
+    {
+        return query ? query(context, source, value_index, sequential_index) : full;
+    }
+};
+
 struct ContinuousInputPortBinding {
     ContinuousPortStorageBinding storage{};
     std::size_t history = 0;
@@ -59,6 +75,7 @@ struct ContinuousInputPortBinding {
     mutable std::uint64_t sequential_begin_index = 0;
     mutable std::uint64_t contiguous_begin_index = 0;
     mutable std::size_t contiguous_value_count = 0;
+    mutable SequentialInputCoverage upstream_coverage{};
 };
 
 struct ContinuousOutputPortBinding {

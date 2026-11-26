@@ -361,6 +361,7 @@ std::string make_region_specialization_key(
             key.value(binding.read_latency);
             key.value(binding.absolute_pace_exponent);
             key.value(binding.contiguous_value_capacity);
+            key.value(binding.upstream_coverage.full);
         }
         auto const outputs = std::span<std::byte const>{step.outputs};
         key.value(step.output_channel_counts.size());

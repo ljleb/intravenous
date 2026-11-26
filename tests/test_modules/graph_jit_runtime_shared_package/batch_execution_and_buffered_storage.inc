@@ -88,7 +88,7 @@ struct NativeBatchAliasingProbe {
 
 struct NativeBatchReplaySource {
     std::uint64_t id = 0;
-    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::full;
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
 
     constexpr explicit NativeBatchReplaySource(std::uint64_t id_) : id(id_) {}
 

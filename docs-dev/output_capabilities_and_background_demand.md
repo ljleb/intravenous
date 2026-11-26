@@ -304,25 +304,20 @@ because a consumer requests a small part of it.
 
 ## 6. Audio thread, Sequential production, and feedback
 
-Tick callbacks produce ordinary values at executed positions, but computed
-values and logical output coverage are separate. Acyclic `input_union` Tick
-nodes derive coverage from their inputs; `full` nodes declare full coverage.
-Sequential consumers apply their own fallback where that output is absent,
-even when the upstream Tick callback computed a fallback value there. The
-[recovered coverage contract](./tick_input_union_and_feedback_direction.md)
-corrects the November 16 full-only wording, preserved
-[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/output_capabilities_and_background_demand.md).
+A computed Sequential Tick output can declare where its values are covered.
+Each rule refers to Sequential input coverage. When an acyclic output has no
+rule, its coverage is full. A downstream Sequential input applies its own
+fallback in the upstream output's gaps. See
+[Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md).
 
 A `.detach()` connection is a stateful Sequential feedback delay with initialized
 history. It belongs to realtime scheduling, not background replay. Even if its
 neighboring Tick computations qualify intrinsically for replay, an unresolved
 feedback SCC cannot be contextually replayed through its stateful delay.
 GraphJit schedules the feedback SCC on the audio thread. Its Tick members have
-effective full live coverage regardless of their declared replay mode. Their
-declarations remain unchanged. No recursive coverage solver or independent
-full-contribution proof is required. Explicit semantic SCC membership excludes
-ordinary contextual background replay; it does not invalidate an input-union
-declaration. The override is local to feedback SCCs.
+effective full live coverage. Their authored rules remain part of the
+configured graph. Explicit semantic SCC membership excludes ordinary
+contextual background replay. The override is local to feedback SCCs.
 
 Tick callbacks write only their scheduled, preallocated Sequential output data.
 Their published recording may expose historical Coverage, but the authored

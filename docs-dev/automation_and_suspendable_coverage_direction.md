@@ -204,19 +204,13 @@ The input's fallback is not an additional source contribution.
 
 A live Tick `SequentialOutputConfig` produces a value for each physical
 execution position, including positions where its inputs used fallback.
-Outside feedback SCCs, an `input_union` declaration derives output coverage
-from input coverage, while `full` declares full coverage. The callback's use
-of fallback does not fill output gaps. A downstream Sequential input applies
-its own fallback in those gaps. A buffered recording has separately published
-historical coverage and valid contents. Contextual replay still requires the
-selected dependencies to be available or reproducible.
-
-The [2026-11-17 correction](./tick_input_union_and_feedback_direction.md)
-restores that distinction. Only the recursive live-coverage proof is retired:
-Tick members of feedback SCCs have effective full live coverage and cannot be
-contextually replayed through ordinary background Tick replay. The declarations
-remain unchanged. Earlier full-only wording is preserved
-[historically](./historical/tick_coverage_before_intent_recovery_2026-11-17/automation_and_suspendable_coverage_direction.md).
+Each computed Sequential output can declare a rule that derives coverage
+from Sequential inputs. Outputs without a rule have full coverage. Fallback
+inside Tick supplies a value during a coverage gap. The downstream input
+applies its own fallback there. A buffered recording has separately
+published historical coverage and valid contents. Contextual replay still
+requires reproducible dependencies. See
+[Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md).
 
 Automation is a Tock-produced **computed** Region/Coverage result, not a
 realtime Tick node with special authored sparse output coverage. The outgoing
@@ -440,16 +434,13 @@ workarounds that make those contracts appear implemented when they are not.
 
 ### Feedback SCCs and recorded boundaries (2026-11-17 correction)
 
-Tick nodes in a feedback SCC have effective full live coverage, including
-members declared `input_union`. No independent full contribution or recursive
-coverage fixed point is required. Preserve each declaration. Explicit semantic
-SCC membership excludes ordinary background Tick replay even when every member
-is intrinsically replayable. An initialized `.detach()` remains part of realtime
-scheduling. Published recording boundaries can supply historical data without
-replaying their feedback producer.
+Tick nodes in a feedback SCC have effective full live coverage. The configured
+nodes retain their rules. Explicit semantic SCC membership excludes ordinary
+background Tick replay even when every member is intrinsically replayable.
+An initialized `.detach()` remains part of realtime scheduling. Published
+recordings can supply historical data without replaying the feedback producer.
 
-This override is local to feedback SCCs. Acyclic input-union nodes retain sparse
-coverage. The earlier proof and the mistaken full-only replacement are preserved
+Acyclic Tick nodes apply their output rules. The earlier proof and the mistaken full-only replacement are preserved
 in the [historical predecessor](./historical/output_ports_before_computed_buffered_2026-11-16.md)
 and [November 16 wording](./historical/tick_coverage_before_intent_recovery_2026-11-17/automation_and_suspendable_coverage_direction.md).
 

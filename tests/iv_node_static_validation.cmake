@@ -65,7 +65,7 @@ expect_invalid(
 expect_invalid(
     invalid_tock_callback_shape.cpp
     "defines tock_coverage but declares no Tock output port"
-    "defines propagate_forward_coverage but does not declare Tock execution"
+    "forward propagation requires Tock execution or a scalar Tick coverage rule"
     "defines propagate_reverse_coverage but requires Tock execution and Random Access inputs")
 
 expect_invalid(
@@ -79,11 +79,10 @@ expect_invalid(
 
 expect_invalid(
     invalid_replay_random_access.cpp
-    "have no State, Random Access inputs, or authored coverage propagation callbacks")
+    "have no State, Random Access inputs, or authored reverse coverage callbacks")
 
 expect_invalid(
     invalid_replay_coverage_callbacks.cpp
-    "defines propagate_forward_coverage but does not declare Tock execution"
     "defines propagate_reverse_coverage but requires Tock execution and Random Access inputs")
 
 expect_invalid(

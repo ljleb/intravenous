@@ -45,7 +45,7 @@ struct SerializedConfiguredGraph {
 namespace iv::binary_wire_details {
 
 inline constexpr std::uint32_t archive_magic = 0x49564147; // IVAG
-inline constexpr std::uint32_t archive_version = 8;
+inline constexpr std::uint32_t archive_version = 9;
 
 class Writer {
 public:
@@ -941,6 +941,18 @@ inline SerializedConfiguredGraph serialize_binary_configured_graph(
             if (has_default_ttl) bundles.size(**view.default_ttl_samples);
             bundles.flag(view.block_skippable);
             write_enum(bundles, view.replay_mode);
+            bundles.size(view.tick_output_coverage.size());
+            for (auto const& rule : view.tick_output_coverage) {
+                write_enum(bundles, rule.kind);
+                bundles.size(rule.output);
+                bundles.size(rule.terms.size());
+                for (auto const& term : rule.terms) {
+                    write_enum(bundles, term.op);
+                    write_enum(bundles, term.kind);
+                    bundles.size(term.first);
+                    bundles.size(term.second);
+                }
+            }
             auto const has_static_value = view.static_sample_value && *view.static_sample_value;
             bundles.flag(has_static_value);
             if (has_static_value) bundles.pod((**view.static_sample_value).value);
@@ -1165,7 +1177,7 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
             if (reader.flag()) record.default_ttl_samples = reader.size();
             record.block_skippable = reader.flag();
             record.replay_mode = read_enum<TickReplayMode>(reader);
-            if (record.replay_mode > TickReplayMode::full) {
+            if (record.replay_mode > TickReplayMode::enabled) {
                 throw std::runtime_error(
                     "configured graph archive has invalid replay mode");
             }
@@ -1175,6 +1187,23 @@ inline ConfiguredGraph deserialize_binary_configured_graph(
                     && record.internal_latency_samples != 0)) {
                 throw std::runtime_error(
                     "configured graph replay mode disagrees with compiler metadata");
+            }
+            auto const rule_count = reader.size();
+            if (rule_count > record.ports.sample_output_count() + record.ports.event_output_count())
+                throw std::runtime_error("configured graph has too many Tick coverage rules");
+            for (std::size_t index = 0; index < rule_count; ++index) {
+                details::TickOutputCoverageRule rule{
+                    .kind = read_enum<PortKind>(reader), .output = reader.size()};
+                rule.terms = read_list<details::TickCoverageTerm>(reader, [&] {
+                    return details::TickCoverageTerm{
+                        read_enum<details::TickCoverageOp>(reader),
+                        read_enum<PortKind>(reader), reader.size(), reader.size()};
+                });
+                if (!record.ports.supports_tick_coverage(rule.kind, rule.output, rule.terms)
+                    || std::ranges::any_of(record.tick_output_coverage, [&](auto const& previous) {
+                        return previous.kind == rule.kind && previous.output == rule.output;
+                    })) throw std::runtime_error("configured graph has an invalid Tick coverage rule");
+                record.tick_output_coverage.push_back(std::move(rule));
             }
             if (reader.flag()) record.static_sample_value = Sample{reader.pod<Sample::storage>()};
             if (reader.flag()) {

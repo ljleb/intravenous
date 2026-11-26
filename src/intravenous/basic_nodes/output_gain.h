@@ -7,7 +7,7 @@ namespace iv {
 // after a public output; its signal is the only connected input in that use.
 template<ChannelTypeId Channels, SampleStreamLayout Layout>
 struct OutputGainNode {
-    static constexpr auto replay_mode = TickReplayMode::input_union;
+    static constexpr auto replay_mode = TickReplayMode::enabled;
 
     static constexpr auto inputs()
     {
@@ -31,6 +31,12 @@ struct OutputGainNode {
         ctx.template input<"signal">().pace() = ctx.template output<"scaled">().pace();
         ctx.template input<"scale">().pace() = ctx.template output<"scaled">().pace();
     }
+    void propagate_forward_coverage(PropagateForwardCoverageContext<OutputGainNode>& ctx) const
+    {
+        ctx.template output<"scaled">().publish(
+            ctx.template input<"signal">().coverage() | ctx.template input<"scale">().coverage());
+    }
+
     void tick(TickSampleContext<OutputGainNode> const& ctx) const
     {
         auto const signal = ctx.template input<"signal">();

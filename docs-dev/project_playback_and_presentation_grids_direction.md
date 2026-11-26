@@ -174,16 +174,14 @@ foreground execution. A Region or Coverage **Random Access input** retains its
 ordinary prepared, pinned, position-addressed view while paused; it does not
 become empty, collapse to the held position, or lose its actual Coverage.
 
-Coverage derived by `TickReplayMode::input_union` uses the actual coverages of
-the values selected for that evaluation. A paused live invocation can select
-background data at playhead position `P` while a pure pointwise Tick replay
-requested at global position `I` selects data at `I`. Their output values and
-coverage may differ even when the same node implementation is intrinsically
-replayable. This is not permission to weaken pointwise replay or change its
-existing purity/state constraints. Do not mix live transport-selected
-coverage with background position-addressed replay coverage, or silently
-turn held covered inputs into uncovered inputs. [Tick Input-Union Coverage](./tick_input_union_and_feedback_direction.md)
-remains authoritative about fallback, `input_union`, `full`, and feedback SCCs.
+An authored Tick output rule uses the coverage of the values selected for
+that evaluation. A paused live invocation can select background data at
+playhead position `P`, while pointwise Tick replay requested at global
+position `I` selects data at `I`. Output values and coverage may differ
+between those evaluations. For a stateful Tick rule, a finite tail follows
+the sequence of values delivered to the live callback. See
+[Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md)
+for the output rules, replay contract, and feedback SCC behavior.
 
 ### Event delivery is selection of occurrences, not pausing the Event stream
 

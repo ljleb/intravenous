@@ -382,7 +382,7 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto const name_size = constant_size(record->getOperand(3), "type name size");
         if (name_size > name.size()) fail("node compiler record type name length is invalid");
         auto const replay_mode = constant_u64(record->getOperand(8));
-        if (replay_mode > static_cast<std::uint64_t>(iv::TickReplayMode::full)) {
+        if (replay_mode > static_cast<std::uint64_t>(iv::TickReplayMode::enabled)) {
             fail("malformed iv_node_types Tick replay mode");
         }
         auto const pointwise_marker = constant_u64(record->getOperand(9));

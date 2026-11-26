@@ -51,7 +51,8 @@ namespace iv {
         size_t alignment,
         std::string migration_identity,
         NodeLayout::Region::RawInitializeFn initialize_fn,
-        std::vector<std::byte> initialize_data)
+        std::vector<std::byte> initialize_data,
+        size_t state_migration_owner)
     {
         if (_transition_suffix_started) {
             throw std::logic_error(
@@ -68,6 +69,7 @@ namespace iv {
         region.size = size;
         region.alignment = alignment;
         region.migration_identity = std::move(migration_identity);
+        region.state_migration_owner = state_migration_owner;
         region.raw_initialize_fn = initialize_fn;
         region.raw_initialize_data = std::move(initialize_data);
         if (!region.raw_initialize_fn && !region.raw_initialize_data.empty()) {
@@ -943,6 +945,7 @@ namespace iv {
     std::unordered_set<std::string> plan_persistent_raw_region_migration(
         NodeStorage const& current,
         NodeStorage const& previous,
+        std::span<size_t const> previous_node_for_current,
         std::vector<NodeStorage::Migration::RawRegionTransfer>& transfers)
     {
         std::unordered_set<std::string> migrated;
@@ -982,6 +985,16 @@ namespace iv {
                 || region->alignment != prior->alignment) {
                 continue;
             }
+            auto const owner = region->state_migration_owner;
+            auto const prior_owner = prior->state_migration_owner;
+            if (owner != NodeLayout::no_owner_node || prior_owner != NodeLayout::no_owner_node) {
+                if (owner >= current.layout->nodes.size() || prior_owner >= previous.layout->nodes.size())
+                    continue;
+                if (previous_node_for_current[owner] != prior_owner
+                    && (current.layout->nodes[owner].state_size != 0
+                        || previous.layout->nodes[prior_owner].state_size != 0))
+                    continue;
+            }
             transfers.push_back({
                 .current_offset = region->storage_offset,
                 .previous_offset = prior->storage_offset,
@@ -993,12 +1006,13 @@ namespace iv {
     }
 
     std::unordered_set<std::string> migrate_persistent_raw_regions(
-        NodeStorage& current, NodeStorage const& previous)
+        NodeStorage& current, NodeStorage const& previous,
+        std::span<size_t const> previous_node_for_current)
     {
         std::vector<NodeStorage::Migration::RawRegionTransfer> transfers;
         transfers.reserve(current.layout ? current.layout->regions.size() : 0);
         auto migrated = plan_persistent_raw_region_migration(
-            current, previous, transfers);
+            current, previous, previous_node_for_current, transfers);
         for (auto const& transfer : transfers) {
             if (transfer.size == 0) continue;
             std::memcpy(
@@ -1184,7 +1198,7 @@ namespace iv {
         construct_node_storage_states(*this);
         auto const migrated_raw_regions =
             plan_persistent_raw_region_migration(
-                *this, previous, migration.raw_region_transfers);
+                *this, previous, migration.previous_node_for_current, migration.raw_region_transfers);
         initialize_raw_regions(*this, migrated_raw_regions);
 
         patch_node_storage_regions(*this, [](size_t) { return true; });
@@ -1330,7 +1344,8 @@ namespace iv {
         construct_node_storage_states(*this);
         std::unordered_set<std::string> migrated_raw_regions;
         if (previous && previous->layout) {
-            migrated_raw_regions = migrate_persistent_raw_regions(*this, *previous);
+            migrated_raw_regions = migrate_persistent_raw_regions(
+                *this, *previous, previous_node_for_current);
         }
         initialize_raw_regions(*this, migrated_raw_regions);
 

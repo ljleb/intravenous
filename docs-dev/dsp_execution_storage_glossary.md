@@ -64,9 +64,10 @@ which replaces the former `TickOutputConfig` terminology. Its production is a
 stream of ordered values produced by Tick on the audio thread. Tock cannot
 declare a Sequential output: its Region or Coverage data may instead be prepared
 for a Sequential consumer. Tick callbacks produce ordinary values at executed
-positions; those values can remain logically uncovered for acyclic input-union
-nodes. Full nodes and live Tick members of feedback SCCs have full coverage.
-See the [recovered coverage contract](./tick_input_union_and_feedback_direction.md).
+positions. An acyclic computed output can declare a rule for where its values
+are covered. Outputs without a rule and live Tick members of feedback SCCs
+have full coverage. See
+[Tick Output Coverage And Feedback](./tick_input_union_and_feedback_direction.md).
 Recorded historical coverage remains a separate stored-data fact.
 
 ### Region output / Region production

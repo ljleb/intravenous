@@ -7,6 +7,7 @@
 #include <intravenous/node/port_constraints.h>
 #include <intravenous/node/registered_type_identity.h>
 #include <intravenous/node/tick_replay_mode.h>
+#include <intravenous/node/tick_coverage.h>
 #include <intravenous/ports.h>
 
 #include <cstddef>
@@ -203,6 +204,8 @@ struct BackgroundPortPlan {
     bool persisted_tick_output = false;
     bool replayed_tick_output = false;
     bool full_live_tick_coverage = false;
+    std::vector<iv::details::TickCoverageTerm> tick_coverage{};
+    bool tick_coverage_has_manual_source = false;
     std::string recording_directory{};
 
     // Sample-input neutral values are retained for uncovered-position playback at the
@@ -283,11 +286,9 @@ struct BackgroundNodePlan {
     bool tracks_live_tick_coverage = false;
     bool authored_forward_coverage = false;
     bool authored_reverse_coverage = false;
-    bool uses_replay_forward_coverage = false;
+    bool uses_tick_forward_coverage = false;
     bool uses_replay_reverse_coverage = false;
-    // The node's declared mode. With generated forward propagation, it selects
-    // each output's coverage: the union of the input coverages, or the full
-    // circle. An authored forward callback publishes its own coverage instead.
+    // Intrinsic replay eligibility, independent of the output coverage rule.
     TickReplayMode replay_mode = TickReplayMode::disabled;
     bool uses_imported_tick_block_for_replay = false;
     // Zero for non-replay nodes. Replay transactions split dynamic IndexCoverage
