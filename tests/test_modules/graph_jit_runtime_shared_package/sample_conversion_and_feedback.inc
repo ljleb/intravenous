@@ -13,7 +13,7 @@ struct ConvertedSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -22,7 +22,7 @@ struct ConvertedSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<ConvertedSampleFeedback> const& ctx) const
@@ -67,7 +67,7 @@ struct MonoInterleavedConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::mono,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -103,7 +103,7 @@ struct StereoRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -141,7 +141,7 @@ struct StereoPlanarConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -191,7 +191,7 @@ struct StereoSampleConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -240,7 +240,7 @@ struct HistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -276,7 +276,7 @@ struct HistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     void constrain_ports(
@@ -315,7 +315,7 @@ struct StereoHistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -354,7 +354,7 @@ struct LargeHistoryRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<LargeHistoryRampSource> const& ctx) const
@@ -378,7 +378,7 @@ struct LargeHistoryConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     void constrain_ports(
@@ -410,12 +410,12 @@ struct FiveSampleDelay {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<FiveSampleDelay>& ctx) const
@@ -445,12 +445,12 @@ struct NeutralFeedbackCounter {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential, {.neutral_value = 100.0f})};
+            {"in", "In"}, iv::InputAccess::sequential, {.neutral_value = 100.0f})};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<NeutralFeedbackCounter> const& ctx) const
@@ -474,7 +474,7 @@ struct RoutedHistoryProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -483,7 +483,7 @@ struct RoutedHistoryProbe {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<RoutedHistoryProbe>& ctx) const
@@ -549,7 +549,7 @@ struct InterleavedLeftProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -586,12 +586,12 @@ struct ConvertedSequenceProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+            iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::mono,
                     .sample_layout = iv::SampleStreamLayout::interleaved,
                 }}),
-            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slower", "Slower"}, iv::InputAccess::sequential),
         };
     }
 
@@ -627,7 +627,7 @@ struct NeutralSequenceProbe {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential, {.neutral_value = 100.0f})};
+            {"in", "In"}, iv::InputAccess::sequential, {.neutral_value = 100.0f})};
     }
 
     static constexpr auto outputs()
@@ -663,8 +663,8 @@ struct NeutralCompensatedSequenceProbe {
     {
         return std::array{
             iv::input<iv::Sample>(
-                "ramp", iv::InputAccess::sequential, {.neutral_value = 100.0f}),
-            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+                {"ramp", "Ramp"}, iv::InputAccess::sequential, {.neutral_value = 100.0f}),
+            iv::input<iv::Sample>({"slower", "Slower"}, iv::InputAccess::sequential),
         };
     }
 

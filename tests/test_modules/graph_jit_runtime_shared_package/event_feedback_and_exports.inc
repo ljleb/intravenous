@@ -16,8 +16,8 @@ struct RetainedDualEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("exact", iv::EventTypeId::trigger, iv::InputAccess::sequential),
-            iv::event_input("converted", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"exact", "Exact"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"converted", "Converted"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -30,7 +30,7 @@ struct RetainedDualEventFeedbackA {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(
@@ -71,15 +71,15 @@ struct DualEventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("exact", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
-            iv::event_output("converted", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
+            iv::event_output({"exact", "Exact"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
+            iv::event_output({"converted", "Converted"}, iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25}),
         };
     }
 
@@ -110,7 +110,7 @@ struct TriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -154,7 +154,7 @@ struct RetainedMidiEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("midi", iv::EventTypeId::midi, iv::InputAccess::sequential),
+            iv::event_input({"midi", "MIDI"}, iv::EventTypeId::midi, iv::InputAccess::sequential),
         };
     }
 
@@ -196,13 +196,13 @@ struct BoundaryEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::boundary, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::boundary, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackA> const& ctx) const
@@ -219,13 +219,13 @@ struct BoundaryEventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::boundary, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::boundary, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<BoundaryEventFeedbackB> const& ctx) const
@@ -252,7 +252,7 @@ struct LimitedTriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -294,7 +294,7 @@ struct RetainedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
+            iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
         };
     }
 
@@ -332,7 +332,7 @@ struct RetainedTriggerEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -376,7 +376,7 @@ struct PersistentEventRingSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
+            iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.5}),
         };
     }
 
@@ -404,7 +404,7 @@ struct PersistentEventRingConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -449,7 +449,7 @@ struct PersistentEventFeedbackConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 

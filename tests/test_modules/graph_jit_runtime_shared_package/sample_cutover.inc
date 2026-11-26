@@ -1,6 +1,6 @@
 struct ForwardFinalSample {
-    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>("in")}; }
-    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>("out")}; }
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>({"in", "In"})}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"out", "Out"})}; }
 
     void tick(iv::TickSampleContext<ForwardFinalSample> const& ctx) const
     {

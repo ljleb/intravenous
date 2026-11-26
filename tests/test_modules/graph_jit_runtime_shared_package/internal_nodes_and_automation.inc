@@ -1,10 +1,10 @@
 struct SuspendableCoverageProbe {
     struct State { std::uint64_t calls = 0; float first = 0; };
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::region)};
     }
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("suspendable-output",
+        return std::array{iv::output<iv::Sample>({"suspendable_output", "Suspendable output"},
             iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
     iv::CoverageTask propagate_forward_coverage(
@@ -15,7 +15,7 @@ struct SuspendableCoverageProbe {
         auto input = co_await ctx.request_input<"in">(iv::SamplePositionsView{.runs = requested});
         auto const begin = iv::GlobalIndex::from_signed(
             static_cast<std::int64_t>(input.region().value(0).value));
-        auto output = ctx.output<"suspendable-output">();
+        auto output = ctx.output<"suspendable_output">();
         auto const region = iv::GlobalIndexRange{begin, input.region().range().extent};
         output.publish(region);
         output.change(region);
@@ -32,7 +32,7 @@ struct SuspendableCoverageProbe {
         auto input = ctx.input<"in">().region();
         ++ctx.state().calls;
         ctx.state().first = input.value(0).value;
-        for (auto run : ctx.output<"suspendable-output">().prepared_runs())
+        for (auto run : ctx.output<"suspendable_output">().prepared_runs())
             for (std::size_t slot = 0; slot < run.size(); ++slot)
                 run.value(slot) = input.value(static_cast<std::size_t>(run.index(slot)));
     }
@@ -54,7 +54,7 @@ struct PrivateArithmeticProbe {
         iv::Sample last = 0;
     };
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("in")};
+        return std::array{iv::input<iv::Sample>({"in", "In"})};
     }
     static constexpr auto outputs() { return std::tuple{}; }
     void tick_block(iv::TickBlockContext<PrivateArithmeticProbe> const& ctx) const {
@@ -84,7 +84,7 @@ void summed_module_boundaries(iv::GraphBuilder& graph) {
         }
     }, "summed-voices");
     auto pass = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto in = boundary.input<iv::stereo>();
+        auto in = boundary.input<iv::stereo>({"In"});
         boundary.outputs(in);
     }, "summed-input");
     auto extra = graph.node<"iv.test.graph_jit.state_context.sample_ramp_source">();
@@ -99,7 +99,7 @@ IV_MODULE("iv.test.graph_jit.summed_module_boundaries", summed_module_boundaries
 struct HugeComputedRegionSource {
     struct State { std::uint64_t values_written = 0; std::uint64_t logical_extent = 0; };
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("huge", iv::OutputProduction::region)};
+        return std::array{iv::output<iv::Sample>({"huge", "Huge"}, iv::OutputProduction::region)};
     }
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<HugeComputedRegionSource>& ctx) const {
         iv::GlobalIndexRange const region{iv::GlobalIndex::from_bits(0), std::uint64_t{1} << 50};
@@ -128,11 +128,11 @@ IV_MODULE("iv.test.computed.huge_playback", huge_computed_playback, "Huge playba
 
 struct CompleteRegionCopy {
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::region,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::region,
             iv::InputContentAccess::complete_buffer)};
     }
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::region)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::region)};
     }
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<CompleteRegionCopy>& ctx) const {
         auto input = ctx.input<"in">();
@@ -159,7 +159,7 @@ void invalid_computed_complete_connection(iv::GraphBuilder& graph) {
 IV_MODULE("iv.test.computed.invalid_complete_connection", invalid_computed_complete_connection, "Invalid complete connection");
 struct BufferedRegionForTick {
     static constexpr auto outputs() {
-        return std::array{iv::output<iv::Sample>("buffered", iv::OutputProduction::region, iv::OutputRealization::buffered)};
+        return std::array{iv::output<iv::Sample>({"buffered", "Buffered"}, iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BufferedRegionForTick>& ctx) const {
         ctx.output<"buffered">().publish({iv::GlobalIndex::from_signed(20), 4});
@@ -173,7 +173,7 @@ struct BufferedRegionForTick {
 IV_NODE("iv.test.computed.buffered_for_tick", BufferedRegionForTick, "Buffered for tick");
 struct CompleteTickRegionSink {
     static constexpr auto inputs() {
-        return std::array{iv::input<iv::Sample>("complete", iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
+        return std::array{iv::input<iv::Sample>({"complete", "Complete"}, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }
     void tick_block(iv::TickBlockContext<CompleteTickRegionSink> const& ctx) const {
         auto region = ctx.input<"complete">().region();
@@ -197,10 +197,10 @@ IV_MODULE("iv.test.computed.complete_tick_input", complete_tick_input_module, "C
 
 struct CurvePointTransform {
     static constexpr auto inputs() {
-        return std::array{iv::event_input("points", iv::EventTypeId::curve_point, iv::InputAccess::region)};
+        return std::array{iv::event_input({"points", "Points"}, iv::EventTypeId::curve_point, iv::InputAccess::region)};
     }
     static constexpr auto outputs() {
-        return std::array{iv::event_output("transformed", iv::EventTypeId::curve_point,
+        return std::array{iv::event_output({"transformed", "Transformed"}, iv::EventTypeId::curve_point,
             iv::OutputProduction::region, iv::OutputRealization::buffered)};
     }
     void constrain_ports(iv::ConstrainPortsContext<CurvePointTransform>& ctx) const {
@@ -272,7 +272,7 @@ void rolling_automation_module(iv::GraphBuilder& graph) {
         std::vector<iv::automation::Point>{{1, 0, 1, iv::CurveInterpolation::bezier, 0},
             {2, 1, 2, iv::CurveInterpolation::bezier, 0}});
     auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
-        auto frequency = boundary.input<iv::Sample>(iv::InputAccess::sequential, {
+        auto frequency = boundary.input<iv::Sample>({"Frequency"}, iv::InputAccess::sequential, {
             .default_value = .25f});
         auto consumer = graph.node<"iv.test.replay.manual_full">();
         consumer(frequency);

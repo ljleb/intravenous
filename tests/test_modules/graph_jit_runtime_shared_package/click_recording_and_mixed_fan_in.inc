@@ -10,7 +10,7 @@ struct ClickRecordingSource {
     static constexpr auto outputs()
     {
         using namespace iv;
-        return std::array{output<Sample>("audio", OutputProduction::sequential,
+        return std::array{output<Sample>({"audio", "Audio"}, OutputProduction::sequential,
             {.channel_layout = system_audio_channel_layout})};
     }
 

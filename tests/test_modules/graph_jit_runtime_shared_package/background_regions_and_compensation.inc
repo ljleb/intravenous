@@ -4,7 +4,7 @@ struct MultiRegionCoverageSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "multi-region-source-output",
+            {"multi_region_source_output", "Multi region source output"},
             iv::OutputProduction::coverage)};
     }
 
@@ -24,7 +24,7 @@ struct MultiRegionCoverageSource {
         iv::PropagateForwardCoverageContext<MultiRegionCoverageSource>& ctx) const
     {
         auto const published = regions();
-        auto output = ctx.output<"multi-region-source-output">();
+        auto output = ctx.output<"multi_region_source_output">();
         output.publish(published);
         for (auto const region : published) output.change(region);
     }
@@ -32,7 +32,7 @@ struct MultiRegionCoverageSource {
     void tock_coverage(
         iv::TockCoverageContext<MultiRegionCoverageSource>& ctx) const
     {
-        for (auto run : ctx.output<"multi-region-source-output">().prepared_runs())
+        for (auto run : ctx.output<"multi_region_source_output">().prepared_runs())
             for (std::size_t slot = 0; slot < run.size(); ++slot)
                 run.value(slot) = iv::Sample{run.region_range().begin == regions()[0].begin ? 1.0f : 2.0f};
     }
@@ -51,22 +51,22 @@ struct MultiRegionCoverageConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "multi-region-coverage-input",
+            {"multi_region_coverage_input", "Multi region coverage input"},
             iv::InputAccess::coverage)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "multi-region-consumer-output",
+            {"multi_region_consumer_output", "Multi region consumer output"},
             iv::OutputProduction::coverage)};
     }
 
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<MultiRegionCoverageConsumer>& ctx) const
     {
-        auto input = ctx.input<"multi-region-coverage-input">();
-        auto output = ctx.output<"multi-region-consumer-output">();
+        auto input = ctx.input<"multi_region_coverage_input">();
+        auto output = ctx.output<"multi_region_consumer_output">();
         output.publish(input.regions());
         output.change(input.changed());
     }
@@ -74,13 +74,13 @@ struct MultiRegionCoverageConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<MultiRegionCoverageConsumer>& ctx) const
     {
-        for (auto region : ctx.input<"multi-region-coverage-input">().coverage()) ctx.input<"multi-region-coverage-input">().require(region);
+        for (auto region : ctx.input<"multi_region_coverage_input">().coverage()) ctx.input<"multi_region_coverage_input">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<MultiRegionCoverageConsumer>& ctx) const
     {
-        auto input = ctx.input<"multi-region-coverage-input">().regions();
+        auto input = ctx.input<"multi_region_coverage_input">().regions();
         IV_ASSERT(input.size() == 2,
             "multi-Region consumer lost its explicitly requested inspection inputs");
 
@@ -93,7 +93,7 @@ struct MultiRegionCoverageConsumer {
         state.first_overlap_value = static_cast<float>(input[0].at(overlap));
         state.second_overlap_value = static_cast<float>(input[1].at(overlap));
 
-        for (auto run : ctx.output<"multi-region-consumer-output">().prepared_runs()) {
+        for (auto run : ctx.output<"multi_region_consumer_output">().prepared_runs()) {
             auto const source = std::ranges::find_if(input, [&](auto region) {
                 return region.range() == run.region_range();
             });
@@ -116,7 +116,7 @@ struct MultiRegionSequentialConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "multi-region-sequential-input",
+            {"multi_region_sequential_input", "Multi region sequential input"},
             iv::InputAccess::sequential)};
     }
 
@@ -125,7 +125,7 @@ struct MultiRegionSequentialConsumer {
     void tick_block(
         iv::TickBlockContext<MultiRegionSequentialConsumer> const& ctx) const
     {
-        auto const input = ctx.input<"multi-region-sequential-input">().block();
+        auto const input = ctx.input<"multi_region_sequential_input">().block();
         auto& state = ctx.state();
         ++state.calls;
         state.sample_count = input.size();
@@ -142,7 +142,7 @@ struct MultiRegionEventCoverageSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "multi-region-event-source-output",
+            {"multi_region_event_source_output", "Multi region event source output"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::coverage,
             iv::EventOutputOptions{.max_events_per_index = 1.0})};
@@ -165,7 +165,7 @@ struct MultiRegionEventCoverageSource {
             MultiRegionEventCoverageSource>& ctx) const
     {
         auto const published = regions();
-        auto output = ctx.output<"multi-region-event-source-output">();
+        auto output = ctx.output<"multi_region_event_source_output">();
         output.publish(published);
         for (auto const region : published) output.change(region);
     }
@@ -174,8 +174,8 @@ struct MultiRegionEventCoverageSource {
         iv::TockCoverageContext<MultiRegionEventCoverageSource>& ctx) const
     {
         auto output =
-            ctx.output<"multi-region-event-source-output">().regions();
-        auto const& requested = ctx.output<"multi-region-event-source-output">().requested_coverage();
+            ctx.output<"multi_region_event_source_output">().regions();
+        auto const& requested = ctx.output<"multi_region_event_source_output">().requested_coverage();
         for (auto region : output) {
             auto const first = region.range().begin.signed_value();
             for (auto const time : {first, first + 3})
@@ -198,7 +198,7 @@ struct MultiRegionEventCoverageConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "multi-region-event-coverage-input",
+            {"multi_region_event_coverage_input", "Multi region event coverage input"},
             iv::EventTypeId::trigger,
             iv::InputAccess::coverage)};
     }
@@ -206,7 +206,7 @@ struct MultiRegionEventCoverageConsumer {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "multi-region-event-consumer-output",
+            {"multi_region_event_consumer_output", "Multi region event consumer output"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::coverage,
             iv::EventOutputOptions{.max_events_per_index = 1.0})};
@@ -216,8 +216,8 @@ struct MultiRegionEventCoverageConsumer {
         iv::PropagateForwardCoverageContext<
             MultiRegionEventCoverageConsumer>& ctx) const
     {
-        auto input = ctx.input<"multi-region-event-coverage-input">();
-        auto output = ctx.output<"multi-region-event-consumer-output">();
+        auto input = ctx.input<"multi_region_event_coverage_input">();
+        auto output = ctx.output<"multi_region_event_consumer_output">();
         output.publish(input.regions());
         output.change(input.changed());
     }
@@ -226,16 +226,16 @@ struct MultiRegionEventCoverageConsumer {
         iv::PropagateReverseCoverageContext<
             MultiRegionEventCoverageConsumer>& ctx) const
     {
-        for (auto region : ctx.input<"multi-region-event-coverage-input">().coverage()) ctx.input<"multi-region-event-coverage-input">().require(region);
+        for (auto region : ctx.input<"multi_region_event_coverage_input">().coverage()) ctx.input<"multi_region_event_coverage_input">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<MultiRegionEventCoverageConsumer>& ctx) const
     {
         auto input =
-            ctx.input<"multi-region-event-coverage-input">().regions();
+            ctx.input<"multi_region_event_coverage_input">().regions();
         auto output =
-            ctx.output<"multi-region-event-consumer-output">().regions();
+            ctx.output<"multi_region_event_consumer_output">().regions();
         IV_ASSERT(input.size() == 2,
             "multi-Region event consumer lost its explicitly requested inspection inputs");
 
@@ -257,7 +257,7 @@ struct MultiRegionEventCoverageConsumer {
                     ++state.second_event_count;
                 }
                 if (destination != output.end()
-                    && ctx.output<"multi-region-event-consumer-output">().requested_coverage().contains(event.time))
+                    && ctx.output<"multi_region_event_consumer_output">().requested_coverage().contains(event.time))
                     (*destination).write(event);
             });
         }
@@ -276,7 +276,7 @@ struct MultiRegionSequentialEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "multi-region-sequential-event-input",
+            {"multi_region_sequential_event_input", "Multi region sequential event input"},
             iv::EventTypeId::trigger,
             iv::InputAccess::sequential)};
     }
@@ -288,7 +288,7 @@ struct MultiRegionSequentialEventConsumer {
         const
     {
         auto const events =
-            ctx.input<"multi-region-sequential-event-input">().events();
+            ctx.input<"multi_region_sequential_event_input">().events();
         auto& state = ctx.state();
         ++state.calls;
         state.event_count = events.size();
@@ -305,7 +305,7 @@ struct SingleRegionSampleSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "single-region-sample-source-output",
+            {"single_region_sample_source_output", "Single region sample source output"},
             iv::OutputProduction::region)};
     }
 
@@ -319,7 +319,7 @@ struct SingleRegionSampleSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SingleRegionSampleSource>& ctx) const
     {
-        auto output = ctx.output<"single-region-sample-source-output">();
+        auto output = ctx.output<"single_region_sample_source_output">();
         output.publish(region());
         output.change(region());
     }
@@ -327,7 +327,7 @@ struct SingleRegionSampleSource {
     void tock_coverage(
         iv::TockCoverageContext<SingleRegionSampleSource>& ctx) const
     {
-        auto output = ctx.output<"single-region-sample-source-output">();
+        auto output = ctx.output<"single_region_sample_source_output">();
         IV_ASSERT(output.region().range() == region(),
             "single sample Region source received the wrong output range");
         for (auto run : output.prepared_runs())
@@ -348,24 +348,24 @@ struct SingleRegionSampleConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "single-region-sample-input", iv::InputAccess::region)};
+            {"single_region_sample_input", "Single region sample input"}, iv::InputAccess::region)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "single-region-sample-consumer-output",
+            {"single_region_sample_consumer_output", "Single region sample consumer output"},
             iv::OutputProduction::region)};
     }
 
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SingleRegionSampleConsumer>& ctx) const
     {
-        auto input = ctx.input<"single-region-sample-input">();
+        auto input = ctx.input<"single_region_sample_input">();
         auto const regions = input.regions();
         IV_ASSERT(regions.size() == 1,
             "single sample Region input did not propagate one range");
-        auto output = ctx.output<"single-region-sample-consumer-output">();
+        auto output = ctx.output<"single_region_sample_consumer_output">();
         output.publish(regions.front());
         output.change(input.changed());
     }
@@ -373,14 +373,14 @@ struct SingleRegionSampleConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<SingleRegionSampleConsumer>& ctx) const
     {
-        for (auto region : ctx.input<"single-region-sample-input">().coverage()) ctx.input<"single-region-sample-input">().require(region);
+        for (auto region : ctx.input<"single_region_sample_input">().coverage()) ctx.input<"single_region_sample_input">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<SingleRegionSampleConsumer>& ctx) const
     {
-        auto input = ctx.input<"single-region-sample-input">().region();
-        auto output = ctx.output<"single-region-sample-consumer-output">();
+        auto input = ctx.input<"single_region_sample_input">().region();
+        auto output = ctx.output<"single_region_sample_consumer_output">();
         IV_ASSERT(input.range() == output.region().range(),
             "single sample Region input and output ranges differ");
         auto& state = ctx.state();
@@ -402,7 +402,7 @@ struct SingleRegionEventSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "single-region-event-source-output",
+            {"single_region_event_source_output", "Single region event source output"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::region,
             iv::EventOutputOptions{.max_events_per_index = 1.0})};
@@ -418,7 +418,7 @@ struct SingleRegionEventSource {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SingleRegionEventSource>& ctx) const
     {
-        auto output = ctx.output<"single-region-event-source-output">();
+        auto output = ctx.output<"single_region_event_source_output">();
         output.publish(region());
         output.change(region());
     }
@@ -426,14 +426,14 @@ struct SingleRegionEventSource {
     void tock_coverage(
         iv::TockCoverageContext<SingleRegionEventSource>& ctx) const
     {
-        auto output = ctx.output<"single-region-event-source-output">().region();
+        auto output = ctx.output<"single_region_event_source_output">().region();
         IV_ASSERT(output.range() == region(),
             "single event Region source received the wrong output range");
-        if (ctx.output<"single-region-event-source-output">().requested_coverage().contains(iv::GlobalIndex::from_signed(30))) output.write({
+        if (ctx.output<"single_region_event_source_output">().requested_coverage().contains(iv::GlobalIndex::from_signed(30))) output.write({
             .time = iv::GlobalIndex::from_signed(30),
             .value = iv::TriggerEvent{},
         });
-        if (ctx.output<"single-region-event-source-output">().requested_coverage().contains(iv::GlobalIndex::from_signed(33))) output.write({
+        if (ctx.output<"single_region_event_source_output">().requested_coverage().contains(iv::GlobalIndex::from_signed(33))) output.write({
             .time = iv::GlobalIndex::from_signed(33),
             .value = iv::TriggerEvent{},
         });
@@ -453,7 +453,7 @@ struct SingleRegionEventConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "single-region-event-input",
+            {"single_region_event_input", "Single region event input"},
             iv::EventTypeId::trigger,
             iv::InputAccess::region)};
     }
@@ -461,7 +461,7 @@ struct SingleRegionEventConsumer {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "single-region-event-consumer-output",
+            {"single_region_event_consumer_output", "Single region event consumer output"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::region,
             iv::EventOutputOptions{.max_events_per_index = 1.0})};
@@ -470,11 +470,11 @@ struct SingleRegionEventConsumer {
     void propagate_forward_coverage(
         iv::PropagateForwardCoverageContext<SingleRegionEventConsumer>& ctx) const
     {
-        auto input = ctx.input<"single-region-event-input">();
+        auto input = ctx.input<"single_region_event_input">();
         auto const regions = input.regions();
         IV_ASSERT(regions.size() == 1,
             "single event Region input did not propagate one range");
-        auto output = ctx.output<"single-region-event-consumer-output">();
+        auto output = ctx.output<"single_region_event_consumer_output">();
         output.publish(regions.front());
         output.change(input.changed());
     }
@@ -482,14 +482,14 @@ struct SingleRegionEventConsumer {
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<SingleRegionEventConsumer>& ctx) const
     {
-        for (auto region : ctx.input<"single-region-event-input">().coverage()) ctx.input<"single-region-event-input">().require(region);
+        for (auto region : ctx.input<"single_region_event_input">().coverage()) ctx.input<"single_region_event_input">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<SingleRegionEventConsumer>& ctx) const
     {
-        auto input = ctx.input<"single-region-event-input">().region();
-        auto output = ctx.output<"single-region-event-consumer-output">().region();
+        auto input = ctx.input<"single_region_event_input">().region();
+        auto output = ctx.output<"single_region_event_consumer_output">().region();
         IV_ASSERT(input.range() == output.range(),
             "single event Region input and output ranges differ");
         auto& state = ctx.state();
@@ -500,7 +500,7 @@ struct SingleRegionEventConsumer {
             if (state.event_count == 0) state.first_time = event.time.bits();
             state.last_time = event.time.bits();
             ++state.event_count;
-            if (ctx.output<"single-region-event-consumer-output">().requested_coverage().contains(event.time)) output.write(event);
+            if (ctx.output<"single_region_event_consumer_output">().requested_coverage().contains(event.time)) output.write(event);
         });
     }
 };
@@ -720,7 +720,7 @@ struct OffsetStereoRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential,
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,

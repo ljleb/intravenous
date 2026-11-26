@@ -787,6 +787,8 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
     GraphBuilder builder;
     auto source = details::configure_concrete_node<Constant>(builder, Sample{0.25f});
     std::string name = "main";
+    std::string display_name = "Main signal";
+    std::string short_display_name = "Main";
     auto const request = SampleOutputRequest{
         .ref = static_cast<SamplePortRef>(source),
         .name = name,
@@ -796,15 +798,21 @@ TEST(GraphModules, OutputRequestCopiesBorrowedStringsIntoTheSession)
         },
         .family_name = name,
         .family_channel_type = ChannelTypeId::mono,
+        .display_name = display_name,
+        .short_display_name = short_display_name,
     };
     builder.outputs(std::span<SampleOutputRequest const>(&request, 1));
     name[0] = 'x';
+    display_name[0] = 'x';
+    short_display_name[0] = 'x';
 
     auto configured = std::move(builder).finish();
     auto const outputs = configured.public_ports.sample_outputs(
         configured.node_bundles);
     ASSERT_EQ(outputs.size(), 1u);
     EXPECT_EQ(outputs.front().name, "main");
+    EXPECT_EQ(outputs.front().display_name, "Main signal");
+    EXPECT_EQ(outputs.front().short_display_name, "Main");
 }
 
 TEST(GraphModules, UnnamedChannelAssignmentsExposeOneValueOutput)

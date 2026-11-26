@@ -102,7 +102,7 @@ struct BackgroundOnlyProbe {
 
     static constexpr auto outputs()
     {
-        return std::tuple{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::tuple{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundOnlyProbe>& ctx) const
@@ -123,7 +123,7 @@ struct BackgroundExecutionProbe {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::coverage)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void propagate_forward_coverage(
@@ -340,7 +340,7 @@ struct SampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleRampSource> const& ctx) const
@@ -362,7 +362,7 @@ struct RevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -394,8 +394,8 @@ struct TickCaptureSource {
     static constexpr auto outputs()
     {
         return std::tuple{
-            iv::output<iv::Sample>("samples", iv::OutputProduction::sequential, iv::OutputRealization::buffered),
-            iv::event_output("events", iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
+            iv::output<iv::Sample>({"samples", "Samples"}, iv::OutputProduction::sequential, iv::OutputRealization::buffered),
+            iv::event_output({"events", "Events"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, iv::OutputRealization::buffered, {.max_events_per_index = 0.25}),
         };
     }
 
@@ -431,7 +431,7 @@ struct PersistentRevisingSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -463,7 +463,7 @@ struct TickFallbackSampleSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -494,7 +494,7 @@ struct LimitedSampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     std::size_t max_block_size() const { return 16; }
@@ -522,7 +522,7 @@ struct SampleConsumerProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
@@ -559,12 +559,12 @@ struct SampleFeedbackA {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackA> const& ctx) const
@@ -606,12 +606,12 @@ struct SampleFeedbackB {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<SampleFeedbackB> const& ctx) const
@@ -657,15 +657,15 @@ struct MultiBranchSampleFeedback {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("fast", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slow", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("initialized", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"fast", "Fast"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slow", "Slow"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"initialized", "Initialized"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<MultiBranchSampleFeedback> const& ctx) const
@@ -712,12 +712,12 @@ struct TemporalSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -766,12 +766,12 @@ struct RevisingSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -824,7 +824,7 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -833,7 +833,7 @@ struct ProjectedRevisingSampleFeedback {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(

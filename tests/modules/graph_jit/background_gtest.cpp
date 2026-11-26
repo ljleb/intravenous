@@ -686,34 +686,34 @@ TEST_F(GraphJitRuntimeFixture,
     };
 
     auto const source_output = find_port(
-        "multi-region-source-output",
+        "multi_region_source_output",
         iv::graph_jit::PortDirection::output);
     auto const coverage_consumer_output = find_port(
-        "multi-region-consumer-output",
+        "multi_region_consumer_output",
         iv::graph_jit::PortDirection::output);
     auto const sequential_consumer_input = find_port(
-        "multi-region-sequential-input",
+        "multi_region_sequential_input",
         iv::graph_jit::PortDirection::input);
     auto const event_source_output = find_port(
-        "multi-region-event-source-output",
+        "multi_region_event_source_output",
         iv::graph_jit::PortDirection::output);
     auto const event_coverage_consumer_output = find_port(
-        "multi-region-event-consumer-output",
+        "multi_region_event_consumer_output",
         iv::graph_jit::PortDirection::output);
     auto const sequential_event_consumer_input = find_port(
-        "multi-region-sequential-event-input",
+        "multi_region_sequential_event_input",
         iv::graph_jit::PortDirection::input);
     auto const single_sample_source_output = find_port(
-        "single-region-sample-source-output",
+        "single_region_sample_source_output",
         iv::graph_jit::PortDirection::output);
     auto const single_sample_consumer_output = find_port(
-        "single-region-sample-consumer-output",
+        "single_region_sample_consumer_output",
         iv::graph_jit::PortDirection::output);
     auto const single_event_source_output = find_port(
-        "single-region-event-source-output",
+        "single_region_event_source_output",
         iv::graph_jit::PortDirection::output);
     auto const single_event_consumer_output = find_port(
-        "single-region-event-consumer-output",
+        "single_region_event_consumer_output",
         iv::graph_jit::PortDirection::output);
     ASSERT_TRUE(source_output.has_value());
     ASSERT_TRUE(coverage_consumer_output.has_value());
@@ -1436,22 +1436,22 @@ TEST_F(GraphJitRuntimeFixture,
         return std::nullopt;
     };
     auto const observed_samples = find_port(
-        "observed-sample-coverage",
+        "observed_sample_coverage",
         iv::graph_jit::PortDirection::output);
     auto const observed_events = find_port(
-        "observed-event-coverage",
+        "observed_event_coverage",
         iv::graph_jit::PortDirection::output);
     auto const boundary_sample_source = find_port(
-        "multi-region-source-output",
+        "multi_region_source_output",
         iv::graph_jit::PortDirection::output);
     auto const boundary_event_source = find_port(
-        "multi-region-event-source-output",
+        "multi_region_event_source_output",
         iv::graph_jit::PortDirection::output);
     auto const boundary_samples = find_port(
-        "module-boundary-sample-output",
+        "module_boundary_sample_output",
         iv::graph_jit::PortDirection::output);
     auto const boundary_events = find_port(
-        "module-boundary-event-output",
+        "module_boundary_event_output",
         iv::graph_jit::PortDirection::output);
     ASSERT_TRUE(observed_samples.has_value());
     ASSERT_TRUE(observed_events.has_value());
@@ -1779,7 +1779,7 @@ TEST_F(GraphJitRuntimeFixture, SuspendableForwardAndReverseCallbacksRetainTheirC
         << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
     auto const& graph = *compiled.compiled_graph;
     auto const& plan = graph.background_evaluation_plan;
-    auto found = std::ranges::find(plan.ports, std::string{"suspendable-output"},
+    auto found = std::ranges::find(plan.ports, std::string{"suspendable_output"},
         &iv::graph_jit::BackgroundPortPlan::name);
     ASSERT_NE(found, plan.ports.end());
     auto const output = static_cast<iv::graph_jit::BackgroundPortIndex>(found - plan.ports.begin());
@@ -1819,7 +1819,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
         for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
             auto const& candidate = configured->node_bundles.bundle(bundle);
             if (candidate.is_concrete() && candidate.sample_output_count() == 1
-                && candidate.sample_output_config(0).name == "manual-full") direct = bundle;
+                && candidate.sample_output_config(0).name == "manual_full") direct = bundle;
             if (candidate.is_subgraph() && candidate.sample_input_count() == 1
                 && configured->node_bundles.resolve_sample_input({bundle, iv::PortKind::sample, 0}).config.name == "boundary_gain")
                 module = bundle;
@@ -1854,7 +1854,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayResolvesStoredManualFallbackBeforeModuleFan
                 windows.push_back(port);
                 roots.output_demands.push_back({.port = port, .required = index_coverage({{18, 26}})});
             }
-            if (plan.ports[port].name == "manual-union") child_output = port;
+            if (plan.ports[port].name == "manual_union") child_output = port;
         }
         ASSERT_EQ(windows.size(), 2u);
         ASSERT_TRUE(child_output);
@@ -1951,7 +1951,7 @@ TEST_F(GraphJitRuntimeFixture, ReplayCoverageDistinguishesInputUnionFromFullAcro
     auto const& graph = *compiled.compiled_graph;
     auto const& plan = graph.background_evaluation_plan;
     auto const source = std::ranges::find(plan.ports,
-        std::string{"single-region-sample-source-output"}, &iv::graph_jit::BackgroundPortPlan::name);
+        std::string{"single_region_sample_source_output"}, &iv::graph_jit::BackgroundPortPlan::name);
     ASSERT_NE(source, plan.ports.end());
     std::vector<iv::graph_jit::BackgroundPortIndex> replayed, windows;
     for (iv::graph_jit::BackgroundPortIndex port = 0; port < plan.ports.size(); ++port) {

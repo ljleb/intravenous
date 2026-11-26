@@ -76,7 +76,7 @@ std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
             zero_feedback.connect_input("in", static_cast<iv::SamplePortRef>(feedback));
             zero_feedback.connect_input("gain", static_cast<iv::SamplePortRef>(zero));
             delayed(feedback); // Read the delayed output outside the cycle.
-            boundary.outputs(iv::PortName<"feedback", iv::NamedPortKind::sample>{} = zero_feedback);
+            boundary.outputs(iv::PortName<"feedback">{}.with_display_name("Feedback") = zero_feedback);
         } else {
             converted(value);
             delayed(value);

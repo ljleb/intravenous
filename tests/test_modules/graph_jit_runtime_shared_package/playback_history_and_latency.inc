@@ -10,7 +10,7 @@ struct PlaybackSampleSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::coverage)};
+            {"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     void tock_coverage(iv::TockCoverageContext<PlaybackSampleSource>&) const {}
@@ -27,7 +27,7 @@ struct PlaybackTriggerSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "out",
+            {"out", "Out"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::coverage,
             {.max_events_per_index = 0.25})};
@@ -48,7 +48,7 @@ struct PlaybackHistoryConsumer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     void constrain_ports(
@@ -87,7 +87,7 @@ struct PlaybackHistoryPeer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     void constrain_ports(iv::ConstrainPortsContext<PlaybackHistoryPeer>& ctx) const
@@ -124,7 +124,7 @@ struct PlaybackStereoHistoryConsumer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -169,7 +169,7 @@ struct PlaybackEventHistoryConsumer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -211,7 +211,7 @@ struct PlaybackEventHistoryPeer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("trigger", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -258,10 +258,10 @@ struct ModuleBoundaryCoverageObserver {
     {
         return std::tuple{
             iv::input<iv::Sample>(
-                "module-boundary-sample-input",
+                {"module_boundary_sample_input", "Module boundary sample input"},
                 iv::InputAccess::coverage),
             iv::event_input(
-                "module-boundary-event-input",
+                {"module_boundary_event_input", "Module boundary event input"},
                 iv::EventTypeId::trigger,
                 iv::InputAccess::coverage),
         };
@@ -271,10 +271,10 @@ struct ModuleBoundaryCoverageObserver {
     {
         return std::tuple{
             iv::output<iv::Sample>(
-                "module-boundary-sample-output",
+                {"module_boundary_sample_output", "Module boundary sample output"},
                 iv::OutputProduction::coverage),
             iv::event_output(
-                "module-boundary-event-output",
+                {"module_boundary_event_output", "Module boundary event output"},
                 iv::EventTypeId::trigger,
                 iv::OutputProduction::coverage,
                 {.max_events_per_index = 1.0}),
@@ -285,15 +285,15 @@ struct ModuleBoundaryCoverageObserver {
         iv::PropagateForwardCoverageContext<
             ModuleBoundaryCoverageObserver>& ctx) const
     {
-        auto samples = ctx.input<"module-boundary-sample-input">();
-        ctx.output<"module-boundary-sample-output">().publish(
+        auto samples = ctx.input<"module_boundary_sample_input">();
+        ctx.output<"module_boundary_sample_output">().publish(
             samples.regions());
-        ctx.output<"module-boundary-sample-output">().change(
+        ctx.output<"module_boundary_sample_output">().change(
             samples.changed());
-        auto events = ctx.input<"module-boundary-event-input">();
-        ctx.output<"module-boundary-event-output">().publish(
+        auto events = ctx.input<"module_boundary_event_input">();
+        ctx.output<"module_boundary_event_output">().publish(
             events.regions());
-        ctx.output<"module-boundary-event-output">().change(
+        ctx.output<"module_boundary_event_output">().change(
             events.changed());
     }
 
@@ -301,18 +301,18 @@ struct ModuleBoundaryCoverageObserver {
         iv::PropagateReverseCoverageContext<
             ModuleBoundaryCoverageObserver>& ctx) const
     {
-        for (auto region : ctx.input<"module-boundary-sample-input">().coverage()) ctx.input<"module-boundary-sample-input">().require(region);
-        for (auto region : ctx.input<"module-boundary-event-input">().coverage()) ctx.input<"module-boundary-event-input">().require(region);
+        for (auto region : ctx.input<"module_boundary_sample_input">().coverage()) ctx.input<"module_boundary_sample_input">().require(region);
+        for (auto region : ctx.input<"module_boundary_event_input">().coverage()) ctx.input<"module_boundary_event_input">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<ModuleBoundaryCoverageObserver>& ctx) const
     {
-        auto samples = ctx.input<"module-boundary-sample-input">().regions();
-        auto sample_outputs = ctx.output<"module-boundary-sample-output">();
-        auto events = ctx.input<"module-boundary-event-input">().regions();
+        auto samples = ctx.input<"module_boundary_sample_input">().regions();
+        auto sample_outputs = ctx.output<"module_boundary_sample_output">();
+        auto events = ctx.input<"module_boundary_event_input">().regions();
         auto event_outputs =
-            ctx.output<"module-boundary-event-output">().regions();
+            ctx.output<"module_boundary_event_output">().regions();
         IV_ASSERT(samples.size() == 2 && sample_outputs.regions().size() == 2,
             "module boundary did not preserve two sample Regions");
         IV_ASSERT(events.size() == 2 && event_outputs.size() == 2,
@@ -337,7 +337,7 @@ struct ModuleBoundaryCoverageObserver {
                 run.value(slot) = samples[run.region_index()].at(run.position(slot));
         for (std::size_t region = 0; region < events.size(); ++region) {
             events[region].for_each([&](iv::TimedEvent const& event) {
-                if (ctx.output<"module-boundary-event-output">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
+                if (ctx.output<"module_boundary_event_output">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
             });
         }
     }
@@ -345,9 +345,9 @@ struct ModuleBoundaryCoverageObserver {
 
 void multi_region_boundary_child_module(iv::GraphBuilder& graph)
 {
-    auto samples = graph.input<iv::Sample>(iv::InputAccess::coverage);
+    auto samples = graph.input<iv::Sample>({"Samples"}, iv::InputAccess::coverage);
     auto events = graph.event_input(
-        iv::EventTypeId::trigger, iv::InputAccess::coverage);
+        {"Events"}, iv::EventTypeId::trigger, iv::InputAccess::coverage);
     auto sample = graph.node<
         "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
     auto event_consumer = graph.node<
@@ -365,7 +365,7 @@ struct PersistedStereoRecordingSource {
     {
         return std::tuple{
             iv::output<iv::Sample>(
-                "recorded-samples",
+                {"recorded_samples", "Recorded samples"},
                 iv::OutputProduction::sequential,
                 iv::OutputRealization::buffered,
                 {.channel_layout = {
@@ -373,7 +373,7 @@ struct PersistedStereoRecordingSource {
                     .sample_layout = iv::SampleStreamLayout::planar,
                 }}),
             iv::event_output(
-                "recorded-events",
+                {"recorded_events", "Recorded events"},
                 iv::EventTypeId::trigger,
                 iv::OutputProduction::sequential,
                 iv::OutputRealization::buffered,
@@ -384,7 +384,7 @@ struct PersistedStereoRecordingSource {
     void tick_block(
         iv::TickBlockContext<PersistedStereoRecordingSource> const& ctx) const
     {
-        auto samples = ctx.output<"recorded-samples">();
+        auto samples = ctx.output<"recorded_samples">();
         for (std::size_t frame = 0; frame < ctx.block_size; ++frame) {
             auto const position = ctx.index.advanced_by({.whole = frame}).whole();
             samples.value(frame, 0) =
@@ -393,7 +393,7 @@ struct PersistedStereoRecordingSource {
                 1000.0f + static_cast<float>(position.signed_value())};
         }
         if (ctx.block_size > 2) {
-            ctx.output<"recorded-events">().push(iv::TriggerEvent{}, 2);
+            ctx.output<"recorded_events">().push(iv::TriggerEvent{}, 2);
         }
     }
 };
@@ -416,14 +416,14 @@ struct PersistedRecordingCoverageConsumer {
     {
         return std::tuple{
             iv::input<iv::Sample>(
-                "recorded-sample-coverage",
+                {"recorded_sample_coverage", "Recorded sample coverage"},
                 iv::InputAccess::coverage,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
                 }}),
             iv::event_input(
-                "recorded-event-coverage",
+                {"recorded_event_coverage", "Recorded event coverage"},
                 iv::EventTypeId::trigger,
                 iv::InputAccess::coverage),
         };
@@ -433,14 +433,14 @@ struct PersistedRecordingCoverageConsumer {
     {
         return std::tuple{
             iv::output<iv::Sample>(
-                "observed-sample-coverage",
+                {"observed_sample_coverage", "Observed sample coverage"},
                 iv::OutputProduction::coverage,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::stereo,
                     .sample_layout = iv::SampleStreamLayout::planar,
                 }}),
             iv::event_output(
-                "observed-event-coverage",
+                {"observed_event_coverage", "Observed event coverage"},
                 iv::EventTypeId::trigger,
                 iv::OutputProduction::coverage,
                 {.max_events_per_index = 0.25}),
@@ -451,32 +451,32 @@ struct PersistedRecordingCoverageConsumer {
         iv::PropagateForwardCoverageContext<
             PersistedRecordingCoverageConsumer>& ctx) const
     {
-        auto samples = ctx.input<"recorded-sample-coverage">();
-        ctx.output<"observed-sample-coverage">().publish(samples.regions());
-        ctx.output<"observed-sample-coverage">().change(samples.changed());
-        auto events = ctx.input<"recorded-event-coverage">();
-        ctx.output<"observed-event-coverage">().publish(events.regions());
-        ctx.output<"observed-event-coverage">().change(events.changed());
+        auto samples = ctx.input<"recorded_sample_coverage">();
+        ctx.output<"observed_sample_coverage">().publish(samples.regions());
+        ctx.output<"observed_sample_coverage">().change(samples.changed());
+        auto events = ctx.input<"recorded_event_coverage">();
+        ctx.output<"observed_event_coverage">().publish(events.regions());
+        ctx.output<"observed_event_coverage">().change(events.changed());
     }
 
     void propagate_reverse_coverage(
         iv::PropagateReverseCoverageContext<
             PersistedRecordingCoverageConsumer>& ctx) const
     {
-        for (auto region : ctx.input<"recorded-sample-coverage">().coverage()) ctx.input<"recorded-sample-coverage">().require(region);
-        for (auto region : ctx.input<"recorded-event-coverage">().coverage()) ctx.input<"recorded-event-coverage">().require(region);
+        for (auto region : ctx.input<"recorded_sample_coverage">().coverage()) ctx.input<"recorded_sample_coverage">().require(region);
+        for (auto region : ctx.input<"recorded_event_coverage">().coverage()) ctx.input<"recorded_event_coverage">().require(region);
     }
 
     void tock_coverage(
         iv::TockCoverageContext<PersistedRecordingCoverageConsumer>& ctx) const
     {
         auto sample_inputs =
-            ctx.input<"recorded-sample-coverage">().regions();
-        auto sample_outputs = ctx.output<"observed-sample-coverage">();
+            ctx.input<"recorded_sample_coverage">().regions();
+        auto sample_outputs = ctx.output<"observed_sample_coverage">();
         auto event_inputs =
-            ctx.input<"recorded-event-coverage">().regions();
+            ctx.input<"recorded_event_coverage">().regions();
         auto event_outputs =
-            ctx.output<"observed-event-coverage">().regions();
+            ctx.output<"observed_event_coverage">().regions();
         IV_ASSERT(sample_inputs.size() == sample_outputs.regions().size(),
             "recorded sample input and output Region counts differ");
         IV_ASSERT(event_inputs.size() == event_outputs.size(),
@@ -514,7 +514,7 @@ struct PersistedRecordingCoverageConsumer {
         for (std::size_t region = 0; region < event_inputs.size(); ++region) {
             event_inputs[region].for_each(
                 [&](iv::TimedEvent const& event) {
-                    if (ctx.output<"observed-event-coverage">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
+                    if (ctx.output<"observed_event_coverage">().requested_coverage().contains(event.time)) event_outputs[region].write(event);
                 });
         }
     }
@@ -694,7 +694,7 @@ struct LatentWindowSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(

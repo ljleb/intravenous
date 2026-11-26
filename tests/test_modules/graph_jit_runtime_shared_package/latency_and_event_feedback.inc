@@ -15,8 +15,8 @@ struct LatencyCompensationProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("fast", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slow", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"fast", "Fast"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slow", "Slow"}, iv::InputAccess::sequential),
         };
     }
 
@@ -68,12 +68,12 @@ struct InterleavedLatencyCompensationProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("fast", iv::InputAccess::sequential,
+            iv::input<iv::Sample>({"fast", "Fast"}, iv::InputAccess::sequential,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::mono,
                     .sample_layout = iv::SampleStreamLayout::interleaved,
                 }}),
-            iv::input<iv::Sample>("slow", iv::InputAccess::sequential,
+            iv::input<iv::Sample>({"slow", "Slow"}, iv::InputAccess::sequential,
                 {.channel_layout = {
                     .channel_type = iv::ChannelTypeId::mono,
                     .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -130,7 +130,7 @@ struct DisconnectedSampleInputProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                  .channel_type = iv::ChannelTypeId::stereo,
                  .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -183,7 +183,7 @@ struct ManualControlSliceProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("value", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"value", "Value"}, iv::InputAccess::sequential),
         };
     }
 
@@ -225,7 +225,7 @@ struct TriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+            iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -248,7 +248,7 @@ struct MidiEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("midi", iv::EventTypeId::midi, iv::OutputProduction::sequential),
+            iv::event_output({"midi", "MIDI"}, iv::EventTypeId::midi, iv::OutputProduction::sequential),
         };
     }
 
@@ -284,7 +284,7 @@ struct LimitedTriggerEventSource {
     static constexpr auto outputs()
     {
         return std::array{
-            iv::event_output("trigger", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+            iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
@@ -308,7 +308,7 @@ struct FanInBurstEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
     }
 
     void tick_block(iv::TickBlockContext<FanInBurstEventSource> const& ctx) const
@@ -329,7 +329,7 @@ struct FanInSparseEventSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.125})};
     }
 
     void tick_block(iv::TickBlockContext<FanInSparseEventSource> const& ctx) const
@@ -356,13 +356,13 @@ struct EventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackA> const& ctx) const
@@ -394,7 +394,7 @@ struct RetainedFanInEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
@@ -449,13 +449,13 @@ struct LatentEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -504,13 +504,13 @@ struct PersistentLatentEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -550,13 +550,13 @@ struct PersistentLatentBoundaryEventFeedbackA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::boundary, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::boundary, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::boundary, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void constrain_ports(
@@ -583,13 +583,13 @@ struct EventFeedbackBurstA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 16.0})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 16.0})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackBurstA> const& ctx) const
@@ -608,14 +608,14 @@ struct EventFeedbackFanoutA {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in_a", iv::EventTypeId::trigger, iv::InputAccess::sequential),
-            iv::event_input("in_b", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in_a", "In a"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in_b", "In b"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackFanoutA> const& ctx) const
@@ -646,13 +646,13 @@ struct EventFeedbackB {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::event_input("in", iv::EventTypeId::trigger, iv::InputAccess::sequential),
+            iv::event_input({"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::event_output("out", iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
+        return std::array{iv::event_output({"out", "Out"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential, {.max_events_per_index = 0.25})};
     }
 
     void tick_block(iv::TickBlockContext<EventFeedbackB> const& ctx) const

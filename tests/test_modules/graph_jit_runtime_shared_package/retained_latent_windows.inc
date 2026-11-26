@@ -12,7 +12,7 @@ struct LargeLatentWindowSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -44,7 +44,7 @@ struct LatentWindowConsumer {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
@@ -169,8 +169,8 @@ struct CompensatedRampProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"ramp", "Ramp"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slower", "Slower"}, iv::InputAccess::sequential),
         };
     }
 
@@ -202,8 +202,8 @@ struct CompensatedRampHistoryProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"ramp", "Ramp"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slower", "Slower"}, iv::InputAccess::sequential),
         };
     }
 
@@ -277,7 +277,7 @@ struct MovingStateProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
@@ -320,7 +320,7 @@ struct OffsetSampleRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<OffsetSampleRampSource> const& ctx) const
@@ -348,8 +348,8 @@ struct CompensatedSequenceProbe {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("ramp", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("slower", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"ramp", "Ramp"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"slower", "Slower"}, iv::InputAccess::sequential),
         };
     }
 
@@ -420,7 +420,7 @@ struct SampleSequenceProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
@@ -467,7 +467,7 @@ struct PlanarStereoAlignmentProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::planar,
@@ -494,7 +494,7 @@ struct InterleavedStereoAlignmentProbe {
 
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential,
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential,
             {.channel_layout = {
                 .channel_type = iv::ChannelTypeId::stereo,
                 .sample_layout = iv::SampleStreamLayout::interleaved,
@@ -518,12 +518,12 @@ struct InterleavedStereoAlignmentProbe {
 struct FeedbackCounter {
     static constexpr auto inputs()
     {
-        return std::array{iv::input<iv::Sample>("in", iv::InputAccess::sequential)};
+        return std::array{iv::input<iv::Sample>({"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(iv::TickBlockContext<FeedbackCounter> const& ctx) const
@@ -553,7 +553,7 @@ struct LatencyArgumentRampSource {
 
     static constexpr auto outputs()
     {
-        return std::array{iv::output<iv::Sample>("out", iv::OutputProduction::sequential)};
+        return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(

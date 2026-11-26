@@ -1006,9 +1006,9 @@ namespace {
             g.outputs(output = p);
         };
 
-        make_branch.template operator()<true>("first_sum"_P);
-        make_branch.template operator()<false>("difference"_P);
-        make_branch.template operator()<true>("second_sum"_P);
+        make_branch.template operator()<true>("first_sum"_P.with_display_name("First sum"));
+        make_branch.template operator()<false>("difference"_P.with_display_name("Difference"));
+        make_branch.template operator()<true>("second_sum"_P.with_display_name("Second sum"));
     }
 }
 )"

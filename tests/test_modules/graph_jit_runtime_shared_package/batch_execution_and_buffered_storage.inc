@@ -68,7 +68,7 @@ struct NativeBatchAliasingProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     static void tick_block_batch(
@@ -96,7 +96,7 @@ struct NativeBatchReplaySource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     static void tick_block_batch(
@@ -127,12 +127,12 @@ struct NativeBatchBackgroundProbe {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::coverage)};
+            {"in", "In"}, iv::InputAccess::coverage)};
     }
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::coverage)};
+            {"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     static void propagate_forward_coverage_batch(
@@ -194,7 +194,7 @@ struct NativeBatchTockProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::coverage)};
+            {"out", "Out"}, iv::OutputProduction::coverage)};
     }
 
     static void propagate_forward_coverage_batch(
@@ -242,7 +242,7 @@ struct NativeBatchActivityProbe {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     bool can_skip_block() const { return true; }
@@ -278,8 +278,8 @@ struct NativeBatchActivitySink {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("first", iv::InputAccess::sequential),
-            iv::input<iv::Sample>("second", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"first", "First"}, iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"second", "Second"}, iv::InputAccess::sequential),
         };
     }
 
@@ -296,7 +296,7 @@ struct ActivityStepSource {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     void tick_block(
@@ -317,13 +317,13 @@ struct ActivityProbe {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential)};
+            {"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     bool can_skip_block() const { return true; }
@@ -352,13 +352,13 @@ struct ActivityTypeDefaultProbe {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::Sample>(
-            "in", iv::InputAccess::sequential)};
+            {"in", "In"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "out", iv::OutputProduction::sequential)};
+            {"out", "Out"}, iv::OutputProduction::sequential)};
     }
 
     std::optional<std::size_t> ttl_samples() const { return 64; }
@@ -387,7 +387,7 @@ struct EventActivityStepSource {
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "out",
+            {"out", "Out"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::sequential,
             {.max_events_per_index = 1.0 / 64.0})};
@@ -410,13 +410,13 @@ struct EventActivityProbe {
     static constexpr auto inputs()
     {
         return std::array{iv::event_input(
-            "in", iv::EventTypeId::trigger, iv::InputAccess::sequential)};
+            {"in", "In"}, iv::EventTypeId::trigger, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs()
     {
         return std::array{iv::event_output(
-            "out",
+            {"out", "Out"},
             iv::EventTypeId::trigger,
             iv::OutputProduction::sequential,
             {.max_events_per_index = 1.0 / 64.0})};
@@ -579,14 +579,14 @@ struct FFTValueProducer {
     static constexpr auto inputs()
     {
         return std::array{
-            iv::input<iv::Sample>("samples", iv::InputAccess::sequential),
+            iv::input<iv::Sample>({"samples", "Samples"}, iv::InputAccess::sequential),
         };
     }
 
     static constexpr auto outputs()
     {
         return std::array{
-            iv::output<iv::FFTBlock>("spectra", iv::OutputProduction::sequential),
+            iv::output<iv::FFTBlock>({"spectra", "Spectra"}, iv::OutputProduction::sequential),
         };
     }
 
@@ -641,7 +641,7 @@ struct FFTValueConsumer {
     {
         return std::array{
             iv::input<iv::Sample, iv::FFTBlock>(
-                "spectra", iv::InputAccess::sequential),
+                {"spectra", "Spectra"}, iv::InputAccess::sequential),
         };
     }
 
@@ -684,7 +684,7 @@ struct FractionalIndexProducer {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FractionalGlobalIndex>(
-            "coordinates", iv::OutputProduction::sequential)};
+            {"coordinates", "Coordinates"}, iv::OutputProduction::sequential)};
     }
 
     void constrain_ports(
@@ -723,7 +723,7 @@ struct FractionalIndexConsumer {
     static constexpr auto inputs()
     {
         return std::array{iv::input<iv::FractionalGlobalIndex>(
-            "coordinates", iv::InputAccess::sequential)};
+            {"coordinates", "Coordinates"}, iv::InputAccess::sequential)};
     }
 
     static constexpr auto outputs() { return std::tuple{}; }
@@ -761,7 +761,7 @@ struct PersistedFFTValueProducer {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::FFTBlock>(
-            "spectra",
+            {"spectra", "Spectra"},
             iv::OutputProduction::sequential,
             iv::OutputRealization::buffered)};
     }
@@ -785,7 +785,7 @@ struct PersistedNonProjectRateSampleProducer {
     static constexpr auto outputs()
     {
         return std::array{iv::output<iv::Sample>(
-            "samples",
+            {"samples", "Samples"},
             iv::OutputProduction::sequential,
             iv::OutputRealization::buffered)};
     }
