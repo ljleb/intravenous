@@ -393,7 +393,8 @@ namespace iv {
             if constexpr (!has_tick_family_v<Node> || !has_inputs<Node>
                 || !has_constexpr_port_configs<Node>) return true;
             else return !any_port_config(Node::inputs(), [](auto const& config) {
-                if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential)
+                if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential
+                    && AuthoredEventInputConfig<std::remove_cvref_t<decltype(config)>>)
                     return config.content_access != InputContentAccess::complete_buffer;
                 else return false;
             });
@@ -512,7 +513,15 @@ namespace iv {
             || (has_constexpr_port_configs<Node>
                 && has_tick_family_v<Node>
                 && !has_State<Node>
-                && !declares_random_access_inputs_v<Node>
+                && !requires { typename Node::TockState; }
+                && [] {
+                    if constexpr (!has_inputs<Node>) return true;
+                    else return !any_port_config(Node::inputs(), [](auto const& config) {
+                        if constexpr (std::remove_cvref_t<decltype(config)>::access != InputAccessKind::sequential)
+                            return config.content_access != InputContentAccess::complete_buffer;
+                        return false;
+                    });
+                }()
                 && !has_propagate_forward_coverage_batch<Node>
                 && !has_propagate_reverse_coverage<Node>
                 && !has_propagate_reverse_coverage_batch<Node>

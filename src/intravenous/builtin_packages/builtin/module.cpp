@@ -13,11 +13,14 @@
 #include <intravenous/basic_nodes/noise.h>
 #include <intravenous/basic_nodes/output_gain.h>
 #include <intravenous/basic_nodes/polyphonic.h>
+#include <intravenous/basic_nodes/resampling.h>
 #include <intravenous/basic_nodes/routing.h>
 #include <intravenous/basic_nodes/sampler.h>
 #include <intravenous/basic_nodes/shaping.h>
 #include <intravenous/basic_nodes/system_audio.h>
 #include <intravenous/basic_nodes/timing.h>
+
+#include <type_traits>
 
 IV_NODE("builtin.constant", iv::Constant, "Constant");
 IV_INSTANTIATE_OUTPUT_GAIN_NODES();
@@ -67,6 +70,41 @@ IV_NODE("builtin.midi_gate", iv::MidiGate, "MIDI Gate");
 IV_NODE("builtin.system_audio_input", iv::SystemAudioInput, "System Audio Input", iv::tags(iv::tag::device, iv::tag::input));
 IV_NODE("builtin.system_audio_output", iv::SystemAudioOutput, "System Audio Output", iv::tags(iv::tag::device, iv::tag::output));
 IV_NODE("builtin.sampler", iv::Sampler, "Sampler");
+IV_NODE("builtin.transport_position", iv::TransportPosition, "Transport Position");
+
+namespace {
+template<iv::ChannelTypeId Channels, iv::SampleStreamLayout Layout>
+void configure_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples)
+{
+    using Source = std::conditional_t<Channels == iv::ChannelTypeId::mono, iv::Sample, iv::stereo>;
+    auto const position = graph.input<iv::FractionalGlobalIndex>({"position", "Position"});
+    auto const source = graph.input<Source>({"source", "Source"}, iv::InputAccess::coverage);
+    auto connect = [&](auto const& resampler) {
+        resampler.connect_input("position", position);
+        resampler.connect_input("source", source);
+        graph.outputs(resampler);
+    };
+    if (preparation_samples) {
+        connect(iv::details::configure_concrete_node<iv::DeferredLinearResamplerNode<Channels, Layout>>(
+            graph, preparation_samples));
+    } else {
+        connect(iv::details::configure_concrete_node<iv::LinearResamplerNode<Channels, Layout>>(graph));
+    }
+}
+
+void linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
+{
+    configure_linear_resampler<iv::ChannelTypeId::mono, iv::SampleStreamLayout::planar>(graph, preparation_samples);
+}
+
+void stereo_linear_resampler(iv::GraphBuilder& graph, std::size_t preparation_samples = 0)
+{
+    configure_linear_resampler<iv::ChannelTypeId::stereo, iv::SampleStreamLayout::interleaved>(graph, preparation_samples);
+}
+} // namespace
+
+IV_MODULE("builtin.linear_resampler", linear_resampler, "Linear Resampler");
+IV_MODULE("builtin.stereo_linear_resampler", stereo_linear_resampler, "Stereo Linear Resampler");
 
 // Generic node families and compiler-inserted dynamic-arity helpers deliberately
 // have no registered ID. Their concrete specializations are internal

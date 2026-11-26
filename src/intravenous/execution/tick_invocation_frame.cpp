@@ -1,4 +1,5 @@
 #include <intravenous/execution/tick_invocation_frame.h>
+#include <intravenous/execution/deferred_tick_input_requests.h>
 #include <intravenous/execution/storage/realtime_produced_record.h>
 
 #include <intravenous/graph_jit/background_storage_plan.h>
@@ -929,6 +930,19 @@ public:
         ContinuousValueStorageGeometry geometry{};
         IndexCoverage const* coverage = &empty_tick_coverage;
         std::span<ContinuousRegionStorageView const> regions{};
+        DeferredTickInputRequests* requests = nullptr;
+        std::size_t request_lead = 0;
+        GlobalIndex execution_begin{};
+        GlobalIndex project_begin{};
+
+        static bool submit(void* opaque, GlobalIndexRange block, SamplePositionsView positions) noexcept
+        {
+            auto& slot = *static_cast<SampleSlot*>(opaque);
+            if (!slot.requests) return false;
+            auto const begin = slot.execution_begin.advanced_by(slot.project_begin.forward_distance_to(block.begin));
+            return slot.requests->submit({.port = slot.port, .execution = {begin, block.extent},
+                .first_due = begin.advanced_by(slot.request_lead), .positions = positions});
+        }
     };
 
     struct EventSlot {
@@ -1179,6 +1193,7 @@ public:
             }
             auto const& port = plan.ports[binding.port];
             auto& selected = sample_slots[slot];
+            selected.request_lead = port.deferred_tick_lead;
             selected.port = binding.port;
             selected.layout = port.sample_layout;
             selected.geometry = port.continuous_geometry;
@@ -1197,6 +1212,10 @@ public:
                 .region_count = 0,
                 .coverage_value = &empty_tick_coverage,
                 .geometry = port.continuous_geometry,
+                .absolute_pace_exponent = port.absolute_pace_exponent,
+                .request_owner = &selected,
+                .request_samples = selected.request_lead ? &SampleSlot::submit : nullptr,
+                .request_generation = selected_generation,
             };
         }
 
@@ -1471,6 +1490,7 @@ public:
         }
         for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
             auto& selected = sample_slots[slot];
+            selected.project_begin = sample_index;
             selected.materialized = materialization_matches
                     && selected.accepts_materialization
                 ? materialized.find_sample(selected.port)
@@ -1697,6 +1717,17 @@ TickInvocationWorkspace::CaptureScope
 TickInvocationWorkspace::begin_capture() noexcept
 {
     return CaptureScope{*impl_};
+}
+
+void TickInvocationWorkspace::bind_deferred_input_requests(DeferredTickInputRequests& requests,
+    GlobalIndex execution_begin) noexcept
+{
+    for (auto& slot : impl_->sample_slots) {
+        if (slot.request_lead) {
+            slot.requests = &requests;
+            slot.execution_begin = execution_begin;
+        }
+    }
 }
 
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(

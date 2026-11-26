@@ -645,6 +645,53 @@ This does not redefine port `pace()`. Pace still states an exact transport-rate
 relationship and performs no resampling. `FractionalGlobalIndex` is instead a value whose
 meaning is a coordinate used by nodes that explicitly choose to sample another input.
 
+#### Complete-buffer Tick resampling
+
+`Linear Resampler` and `Stereo Linear Resampler` take a Sequential
+`FractionalGlobalIndex` on `position` and `Coverage<Sample>` with
+`InputContentAccess::complete_buffer` on `source`. `position` and `out` have
+equal pace. The interpolator selects its two taps on the resolved sample grid of
+`source`. `Transport Position` emits the exact invocation coordinate at its
+resolved pace. An authored Tick node can generate any coordinate sequence through
+the same port.
+[Earlier project-rate constraints](./historical/tick_resampler_first_proposal_2026-11-26.md)
+
+`prepared_window_at(index)` on a continuous Random Access input returns a
+borrowed typed window from the first logical Region containing `index`, if
+that Region has a prepared value there. Use the input's `coverage()` to
+distinguish an uncovered position from a covered position whose value is still
+unprepared. Use `regions()` and explicit Region selection when an algorithm
+needs a different interpretation of overlapping Regions.
+
+The builtin resamplers use linear interpolation. Each uncovered tap supplies
+zero. A coordinate on the source sample grid reads one tap. An uncovered position
+input produces silence. The resampler takes the source coordinate directly from
+`position`, with no offset based on output time. `GlobalIndex` arithmetic
+supplies the next tap across either integer representation seam. The complete-buffer
+view is ready before the callback, so the resamplers add zero output latency. A `buffered` declaration
+alone does not make a new write immediately available. These nodes read the
+selected published version, including for a recorded source.
+
+GraphJit can replay the same callback in the background when it can reproduce
+the `position` stream and bind the complete `source` buffer. Replay currently
+requires project-rate `position` and `out`. The source sample grid is independent.
+
+#### Live resampling from computed sources
+
+`Linear Resampler` and `Stereo Linear Resampler` accept a
+`preparation_samples` constructor argument. Zero uses complete buffers and adds
+zero latency. A positive count selects deferred Tick and must be at least the
+compiled root block size. It is also the output finalization latency, measured
+in project samples. The source can then be computed or buffered. The deferred
+callback requires project-rate `position` and `out`.
+
+The deferred resampler uses `ctx.request_input<"source">()` for the exact tap
+positions. It keeps these taps and their weights in `State` until they are due.
+The background evaluator prepares only those positions. The foreground stalls
+at the deadline if an adopted snapshot still lacks the required result.
+Requests from executed callbacks keep their original coordinates across seeks.
+The deferred callback runs live. The complete-buffer callback supports replay.
+
 Curve authoring should likewise keep curve definition separate from evaluated value
 representation. One curve clip/event representation may be sampled/evaluated into
 either `Sample` or `FractionalGlobalIndex`. That can initially be exposed through separate

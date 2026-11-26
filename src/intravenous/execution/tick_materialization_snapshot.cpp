@@ -248,6 +248,7 @@ void TickMaterializedSampleInput::rebuild_region_views()
             region_views.push_back(view(region));
             logical_coverage.include(region.range);
         }
+        if (semantic_coverage) logical_coverage = *semantic_coverage;
         return;
     }
     region_windows.resize(logical_regions.size());
@@ -265,6 +266,7 @@ void TickMaterializedSampleInput::rebuild_region_views()
         else region_views.push_back({.range = range, .geometry = geometry,
             .channel_layout = layout, .windows = windows});
     }
+    if (semantic_coverage) logical_coverage = *semantic_coverage;
 }
 
 bool TickMaterializedSampleInput::has_channel(
@@ -955,6 +957,26 @@ void TickMaterializationSnapshot::validate() const
     }
 }
 
+std::expected<void, std::string> TickMaterializationSnapshot::validate_positional_inputs(
+    std::span<IndexCoverage const> requests,
+    std::span<IndexCoverage const> input_coverages)
+{
+    for (auto& input : samples_) {
+        if (!input.semantic_coverage) continue;
+        if (input.port >= requests.size() || input.port >= input_coverages.size()) {
+            return std::unexpected("Tick positional input does not have request and coverage metadata");
+        }
+        auto const& semantic = input_coverages[input.port];
+        auto const covered = requests[input.port] & semantic;
+        if (!(covered - input.coverage).empty()) {
+            return std::unexpected("Tick positional input has unavailable covered data");
+        }
+        input.semantic_coverage = semantic;
+        input.logical_coverage = semantic;
+    }
+    return {};
+}
+
 void TickMaterializationSnapshot::carry_forward(
     TickMaterializationSnapshot const& previous,
     std::span<TickMaterializationRetention const> retention)
@@ -979,6 +1001,7 @@ void TickMaterializationSnapshot::carry_forward(
                     .layout = source->layout,
                     .geometry = source->geometry,
                     .channels = source->channels,
+                    .semantic_coverage = source->semantic_coverage,
                 });
                 target = std::prev(samples_.end());
             } else if (target->layout != source->layout

@@ -666,10 +666,10 @@ RegisteredSignature const* node_constructor_signature()
         "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs. " \
         "Use a module node to group both domains."); \
     static_assert(::iv::details::tick_input_content_is_valid<Node>(), \
-        "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access."); \
+        "IV_NODE Tick Region/Coverage event inputs require complete-buffer access."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
-        "have no State, Random Access inputs, or authored reverse coverage callbacks, " \
+        "use complete buffers for Region/Coverage inputs, have no State or authored reverse coverage callbacks, " \
         "and declare only computed Sequential outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \

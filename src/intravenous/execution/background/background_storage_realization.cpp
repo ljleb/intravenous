@@ -2625,9 +2625,11 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
     std::uint64_t generation,
     std::uint64_t semantic_version,
     PersistedDataVersion data_version,
-    std::span<IndexCoverage const> input_requirements) const
+    std::span<IndexCoverage const> input_requirements,
+    std::span<IndexCoverage const> input_coverages) const
 {
-    if (input_requirements.size() != plan_->ports.size()) {
+    if (input_requirements.size() != plan_->ports.size()
+        || (!input_coverages.empty() && input_coverages.size() != plan_->ports.size())) {
         return std::unexpected("Tick materialization requirements do not match the plan ports");
     }
     if (auto complete = validate_produced_storage(); !complete) {
@@ -2658,6 +2660,25 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         auto const& required = input_requirements[binding.port];
         if (required.empty()) continue;
         auto const& port = plan_->ports[binding.port];
+        auto const channels = channel_count(port.sample_layout);
+        std::optional<IndexCoverage> semantic_coverage;
+        IndexCoverage covered_request;
+        auto append_empty_positional_input = [&] {
+            std::vector<std::size_t> channel_indices(channels);
+            std::iota(channel_indices.begin(), channel_indices.end(), 0);
+            samples.push_back({.port = binding.port, .layout = port.sample_layout,
+                .geometry = port.continuous_geometry, .channels = std::move(channel_indices),
+                .semantic_coverage = std::move(semantic_coverage)});
+        };
+        if (port.input_access != InputAccessKind::sequential
+            && port.content_access == InputContentAccess::windowed && !input_coverages.empty()) {
+            semantic_coverage = input_coverages[binding.port];
+            covered_request = required & *semantic_coverage;
+            if (covered_request.empty()) {
+                append_empty_positional_input();
+                continue;
+            }
+        }
         std::vector<SampleRoute> routes;
         auto append_route = [&](SampleRoute route) {
             if (std::ranges::none_of(routes, [&](SampleRoute const& existing) {
@@ -2682,7 +2703,6 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
                 .latency = read.read_latency,
             });
         }
-        auto const channels = channel_count(port.sample_layout);
         struct FrozenSourceGroup {
             BackgroundSampleReadView const* view = nullptr;
             std::size_t latency = 0;
@@ -2830,13 +2850,36 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         for (auto const& region : frozen_regions) logical_regions.push_back(region.range);
         std::vector<FrozenRegion> prepared_regions;
         for (auto const& region : frozen_regions) {
-            auto allowed = IndexCoverage{region.range} & required;
+            auto allowed = IndexCoverage{region.range} & (semantic_coverage ? covered_request : required);
             for (std::size_t group = 0; group < groups.size(); ++group) {
                 if (region.source_regions[group] == no_region) continue;
+                auto const& source = groups[group];
                 IndexCoverage shifted;
-                for (auto const window : groups[group].view->coverage())
-                    shifted.include({window.begin.advanced_by(groups[group].latency), window.extent});
+                if (semantic_coverage) {
+                    auto include_window = [&](auto&& self, ContinuousRegionStorageView const& window) -> void {
+                        if (!window.storage) {
+                            for (auto const& child : window.windows) self(self, child);
+                        } else if (window.sample_positions) {
+                            auto run = *window.sample_positions;
+                            run.first = run.first.advanced_by(source.latency);
+                            for (auto const range : allowed) {
+                                for_each_sample_position_intersection(run, range, [&](SamplePositionRun part) {
+                                    if (part.step == 1) shifted.include({part.first, part.count});
+                                    else for (std::uint64_t slot = 0; slot < part.count; ++slot)
+                                        shifted.include({part.position(slot), 1});
+                                });
+                            }
+                        } else {
+                            shifted.include({window.range.begin.advanced_by(source.latency), window.range.extent});
+                        }
+                    };
+                    include_window(include_window, source.view->region(region.source_regions[group]));
+                } else {
+                    for (auto const window : source.view->coverage())
+                        shifted.include({window.begin.advanced_by(source.latency), window.extent});
+                }
                 allowed = allowed & shifted;
+                if (allowed.empty()) break;
             }
             if (port.input_access != InputAccessKind::sequential
                 && port.content_access == InputContentAccess::complete_buffer) {
@@ -2855,7 +2898,10 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             }
         }
         frozen_regions = std::move(prepared_regions);
-        if (frozen_regions.empty()) continue;
+        if (frozen_regions.empty()) {
+            if (semantic_coverage) append_empty_positional_input();
+            continue;
+        }
 
         std::vector<std::size_t> frozen_channels(channels);
         std::iota(frozen_channels.begin(), frozen_channels.end(), 0);
@@ -2879,7 +2925,8 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
             auto const& source = groups.front().view->regions[frozen.source_regions.front()];
             auto const source_begin = frozen.range.begin.retreated_by(groups.front().latency);
             auto const* window = source.prepared_window(source_begin);
-            if (!window || !window->range.contains({source_begin, frozen.range.extent})) {
+            if (!window || window->sample_positions
+                || !window->range.contains({source_begin, frozen.range.extent})) {
                 identity_alias = false; break;
             }
             auto const storage_frames = window->storage_frames ? window->storage_frames : window->frame_count();
@@ -2899,6 +2946,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         }
         if (identity_alias) {
             if (port.input_access != InputAccessKind::sequential) aliased.logical_regions = std::move(logical_regions);
+            aliased.semantic_coverage = std::move(semantic_coverage);
             aliased.rebuild_region_views();
             samples.push_back(std::move(aliased));
             continue;
@@ -3012,6 +3060,7 @@ BackgroundStorageRealization::make_tick_materialization_snapshot(
         if (port.input_access != InputAccessKind::sequential && !samples.empty()) {
             auto& input = samples.back();
             input.logical_regions = std::move(logical_regions);
+            input.semantic_coverage = std::move(semantic_coverage);
             for (std::size_t index = 0; index < input.regions.size(); ++index)
                 input.regions[index].logical_region_index = frozen_regions[index].logical_region_index;
             input.rebuild_region_views();

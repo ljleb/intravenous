@@ -68,7 +68,9 @@ export class WorkspaceRpc {
             ...(outputProfile ? { outputProfile } : {}),
         });
     }
-    togglePlayback(): Promise<PlaybackSnapshot> { return this.client.request("playback.toggle", {}); }
+    togglePlayback(foreground = false): Promise<PlaybackSnapshot> {
+        return this.client.request("playback.toggle", { foreground });
+    }
     resetGraphState(): Promise<{ ok: true }> { return this.client.request("graph.resetState", {}); }
     setPlaybackRunning(running: boolean): Promise<PlaybackSnapshot> { return this.client.request("playback.setRunning", { running }); }
     seekPlayback(position: string): Promise<PlaybackSnapshot> { return this.client.request("playback.seek", { position }); }

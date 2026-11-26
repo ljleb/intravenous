@@ -91,7 +91,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         this.pendingSeek = request;
         this.postPlayback();
         try {
-            const accepted = await this.session.playbackCommand(position, drag);
+            const accepted = await this.session.playbackCommand({ position, drag });
             if (this.pendingSeek !== request) return;
             if (accepted?.acceptedCommand === undefined) this.pendingSeek = null;
             else request.acceptedCommand = accepted.acceptedCommand;
@@ -687,7 +687,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     if (message.type === "playbackDrag") {
                         await this.dragPlayback(panel, message.phase, playbackSeekPosition(message.position, 1), message.releaseId);
                     } else if (message.type === "playbackSeek") await this.seekPlayback(playbackSeekPosition(message.position, 1));
-                    else await this.session.playbackCommand();
+                    else await this.session.playbackCommand({ foreground: message.foreground === true });
                 }
                 catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
             } else if (message?.type === "graphReady") {

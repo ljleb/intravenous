@@ -72,6 +72,7 @@ class BackgroundEvaluationCallFrame {
     bool sealed_ = false;
 
     static void prepare_replay(void* opaque);
+    static void prepare_replay_region(void* opaque, std::uint64_t begin, std::uint64_t extent);
     static void finalize_replay(void* opaque);
 
 public:

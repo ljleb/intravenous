@@ -1345,7 +1345,7 @@ function keyDown(event: KeyboardEvent) {
     const editingLaneItems = !!target?.closest("[data-lane-item-editor]");
     if (!editingText && event.code === "Space" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
-        if (!event.repeat) webviewApi.postMessage({ type: "playbackToggle" });
+        if (!event.repeat) webviewApi.postMessage({ type: "playbackToggle", foreground: event.shiftKey });
         return;
     }
     if (event.shiftKey && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)

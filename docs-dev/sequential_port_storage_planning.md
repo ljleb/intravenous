@@ -1383,12 +1383,12 @@ configured node and graph constraints. The same resolved facts survive the compi
 realization metadata needed for storage planning and migration. Generic input/output mode-conversion helpers may
 not invent a production callback or input access from the opposite declaration.
 
-For scheduling/storage purposes, a node may have temporal dependencies if it has
-`NodeState`, sequential history, output latency or an independent internal latency.
-An explicitly replayable `tick()` node has none of those dependencies, no
-random-access input, and meets its separate deterministic/side-effect-free trait
-contract. GraphJit reuses its existing generated LLVM-imported `tick_block()`
-wrapper and proves upstream availability for every background replay path.
+`NodeState`, Sequential history, output latency, and internal latency affect
+scheduling and storage. An explicitly replayable Tick node can use bounded output
+latency to finalize requested values. Its callbacks must meet the separate
+[replay contract](./coverage_and_background_evaluation.md). GraphJit uses the
+generated `tick_block()` wrapper and proves upstream availability for every
+background replay path.
 
 `EventOutputProperties` additionally carries a static event-buffer sizing rate:
 

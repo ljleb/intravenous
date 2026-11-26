@@ -56,6 +56,53 @@ TEST_F(GraphJitRuntimeFixture, LiveOutputObservationUsesTheProducedWindowWithout
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 
+TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResumes)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.state_context.transient_sample_module");
+    ASSERT_NE(graph, nullptr);
+    auto const bundles = concrete_bundles(*graph);
+    ASSERT_FALSE(bundles.empty());
+    auto const& operation = continuous_value_type_info(ContinuousValueTypeId::sample).observation_operations.front();
+    auto compiled = jit->compile(GraphJitCompileRequest{
+        .project_generation = 702, .graph = graph, .definitions = definitions,
+        .observations = {.revision = 9, .probes = {{.id = 17, .operation = &operation,
+            .kind = ObservationSourceKind::output, .bundle = bundles.front(), .port = 0, .available = true}}},
+    });
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(executor.activate_pending(index(0)));
+    executor.render_block(32, 48000);
+    auto const* frame = executor.collect_observations();
+    ASSERT_TRUE(frame && frame->count == 1 && frame->values[0].value.captured);
+
+    ProjectPlaybackRequest toggle{.operation = ProjectPlaybackOperation::toggle_foreground};
+    executor.handle_playback(toggle);
+    executor.render_block(32, 48000);
+    frame = executor.collect_observations();
+    ASSERT_TRUE(frame && frame->count == 1);
+    EXPECT_EQ(frame->sample_index, index(0));
+    EXPECT_EQ(frame->block_size, 0u);
+    EXPECT_FALSE(frame->values[0].value.captured);
+    executor.render_block(32, 48000);
+    EXPECT_EQ(executor.collect_observations(), nullptr);
+
+    (void)executor.seek_playback(index(20));
+    executor.render_block(32, 48000);
+    frame = executor.collect_observations();
+    ASSERT_TRUE(frame && frame->count == 1);
+    EXPECT_EQ(frame->sample_index, index(20));
+    EXPECT_FALSE(frame->values[0].value.captured);
+
+    executor.handle_playback(toggle);
+    executor.render_block(32, 48000);
+    frame = executor.collect_observations();
+    ASSERT_TRUE(frame && frame->count == 1 && frame->values[0].value.captured);
+    EXPECT_EQ(frame->sample_index, index(20));
+    EXPECT_EQ(frame->block_size, 32u);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
+}
+
 TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePlayhead)
 {
     for (auto const* module : {

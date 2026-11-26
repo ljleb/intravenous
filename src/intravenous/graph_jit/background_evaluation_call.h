@@ -44,6 +44,7 @@ using ReplayForwardCoverageFunction = void (*)(
 using ReplayReverseCoverageFunction = void (*)(
     void*, ReflectedNodeReverseCoverageContext const&);
 using BackgroundOperationFunction = void (*)(void* operation_frame);
+using ReplayPrepareRegionFunction = void (*)(void*, std::uint64_t begin, std::uint64_t extent);
 
 struct BackgroundNodeCall {
     BackgroundNodeActivity activity = BackgroundNodeActivity::none;
@@ -72,6 +73,8 @@ struct BackgroundNodeCall {
     // block; no live realtime State or buffers may be bound here.
     ReflectedNodeTickContext replay {};
     ReflectedSpan<GlobalIndexRange const> replay_regions {};
+    void* replay_storage = nullptr;
+    ReplayPrepareRegionFunction prepare_replay_region = nullptr;
 };
 
 struct BackgroundEvaluationCall {

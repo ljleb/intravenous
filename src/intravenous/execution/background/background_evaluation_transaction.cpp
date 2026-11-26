@@ -11,6 +11,7 @@
 #include <array>
 #include <cstring>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <ranges>
 #include <span>
@@ -78,8 +79,35 @@ runtime_produced(graph_jit::BackgroundEvaluationPlan const& plan,
         throw std::invalid_argument(
             "background replay has no compiled block limit");
     }
+    if (coverage.empty()) return {};
+
+    // Start after the largest gap. This keeps adjacent callbacks together
+    // across the signed seam and minimizes the raw ring's covered span.
+    auto const first = coverage.begin();
+    auto const end = coverage.end();
+    auto start = first;
+    auto previous = *first;
+    GlobalIndex::extent_type largest_gap = 0;
+    for (auto next = std::next(first); next != end; ++next) {
+        auto const gap = previous.end().forward_distance_to(next->begin);
+        if (gap > largest_gap) {
+            largest_gap = gap;
+            start = next;
+        }
+        previous = *next;
+    }
+    auto const wrap_gap = previous.end().forward_distance_to(first->begin);
+    if (wrap_gap >= largest_gap) {
+        largest_gap = wrap_gap;
+        start = first;
+    }
+    auto const span = GlobalIndex::extent_type{0} - largest_gap;
+    auto const maximum_ring = std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 1);
+    if (span == 0 || span > maximum_ring)
+        throw std::length_error("background replay raw sample span is too large");
+
     std::vector<GlobalIndexRange> result;
-    for (auto const region : coverage) {
+    auto append_blocks = [&](GlobalIndexRange region) {
         GlobalIndex::extent_type consumed = 0;
         while (consumed < region.extent) {
             auto const extent = std::min<GlobalIndex::extent_type>(
@@ -90,11 +118,49 @@ runtime_produced(graph_jit::BackgroundEvaluationPlan const& plan,
             });
             consumed += extent;
         }
-    }
+    };
+    for (auto next = start; next != end; ++next) append_blocks(*next);
+    for (auto next = first; next != start; ++next) append_blocks(*next);
     return result;
 }
 
 } // namespace
+
+std::vector<PersistedOutputHandle> background_recording_dependencies(
+    CompiledGraph const& graph, std::span<graph_jit::BackgroundPortIndex const> roots,
+    PersistedDataStore& data)
+{
+    auto const& plan = graph.background_evaluation_plan;
+    std::vector<bool> visited(plan.ports.size(), false);
+    std::vector<PersistedOutputHandle> dependencies;
+    auto visit = [&](auto&& self, graph_jit::BackgroundPortIndex index) -> void {
+        if (visited[index]) return;
+        visited[index] = true;
+        auto const& port = plan.ports[index];
+        if (port.persisted_tick_output) {
+            auto const identity = port.stable_identity
+                ? PersistedOutputId{*port.stable_identity}
+                : PersistedOutputId{GenerationLocalPersistedOutputId{
+                    graph.project_generation, index, port.kind}};
+            dependencies.push_back(data.resolve_output(identity));
+            return;
+        }
+        if (port.direction == graph_jit::PortDirection::output) {
+            for (auto input : plan.nodes[port.node].inputs) self(self, input);
+            return;
+        }
+        for (auto connection : port.incoming_connections) {
+            auto const& edge = plan.connections[connection];
+            for (auto source : edge.sample_source_port_by_channel) if (source) self(self, *source);
+            for (auto const& delivery : edge.event_deliveries)
+                if (delivery.source_port) self(self, *delivery.source_port);
+        }
+    };
+    for (auto root : roots) visit(visit, root);
+    std::ranges::sort(dependencies);
+    dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+    return dependencies;
+}
 
 class BackgroundEvaluationTransaction::Impl {
     struct DataMutation {
@@ -955,6 +1021,15 @@ class BackgroundEvaluationTransaction::Impl {
                     invocation.random_access_event_begin, invocation.random_access_event_count, false);
             }
         }
+        // Coverage propagation intersects storage requirements with what
+        // exists. The snapshot must also account for requests entirely in gaps.
+        for (auto const& binding : tick.random_access_sample_inputs) {
+            if (plan.ports[binding.port].content_access != InputContentAccess::windowed) continue;
+            for (auto const& request : inputs_.roots.input_demands) {
+                if (request.port == binding.port)
+                    selection.tick_input_requirements[binding.port].include(positional_requirement(request));
+            }
+        }
     }
 
     [[nodiscard]] bool select_storage_regions(
@@ -1434,31 +1509,7 @@ class BackgroundEvaluationTransaction::Impl {
             bool const changed = std::ranges::any_of(prepared_->result().output_changes,
                 [&](auto const& change) { return change.port == output && !change.changed.empty(); });
             if (!changed && candidate.working_snapshot().shares_output_with(pin_->snapshot(), handle)) continue;
-            std::vector<bool> visited(plan.ports.size(), false);
-            std::vector<PersistedOutputHandle> dependencies;
-            auto visit = [&](auto&& self, std::size_t index) -> void {
-                if (visited[index]) return;
-                visited[index] = true;
-                auto const& current = plan.ports[index];
-                if (current.persisted_tick_output) {
-                    auto identity = current.stable_identity
-                        ? PersistedOutputId{*current.stable_identity}
-                        : PersistedOutputId{GenerationLocalPersistedOutputId{
-                            graph_->project_generation, index, current.kind}};
-                    auto handle = data_->resolve_output(identity);
-                    if (!std::ranges::contains(dependencies, handle)) dependencies.push_back(handle);
-                    return;
-                }
-                if (current.direction == graph_jit::PortDirection::output) {
-                    for (auto input : plan.nodes[current.node].inputs) self(self, input);
-                } else for (auto connection : current.incoming_connections) {
-                    auto const& edge = plan.connections[connection];
-                    for (auto source : edge.sample_source_port_by_channel) if (source) self(self, *source);
-                    for (auto const& delivery : edge.event_deliveries) if (delivery.source_port) self(self, *delivery.source_port);
-                }
-            };
-            visit(visit, output);
-            std::ranges::sort(dependencies);
+            auto dependencies = background_recording_dependencies(*graph_, std::span{&output, 1}, *data_);
             auto inputs = std::make_shared<PersistedDataStore::Snapshot>(candidate.working_snapshot());
             // Only non-recomputable leaves are retained. Keeping intermediate
             // contexts here would build a chain of old cache roots per request.
@@ -1577,11 +1628,17 @@ class BackgroundEvaluationTransaction::Impl {
             IndexCoverage requested;
             auto const& replay = runtime.replay_invocations[slot];
             for (auto const binding_slot : replay.output_bindings) {
-                requested.include(binding.binding_coverage[binding_slot]);
+                auto const& port = graph_->background_evaluation_plan.ports[
+                    runtime.bindings[binding_slot].port];
+                requested.include(replay_callback_coverage(
+                    binding.binding_coverage[binding_slot], port.output_latency));
             }
             if (requested.empty()) {
                 for (auto const binding_slot : replay.input_bindings) {
-                    requested.include(binding.binding_coverage[binding_slot]);
+                    auto const& port = graph_->background_evaluation_plan.ports[
+                        runtime.bindings[binding_slot].port];
+                    if (port.replay_sequential_input)
+                        requested.include(binding.binding_coverage[binding_slot]);
                 }
             }
             auto set = frame->set_replay_regions(
@@ -1676,6 +1733,35 @@ class BackgroundEvaluationTransaction::Impl {
         executed_ = true;
         if (inputs_.reconstruction && !inputs_.prepare_only)
             return std::unexpected("historical reconstruction cannot publish canonical data");
+        if (!inputs_.deferred_tick_input_batch.empty()) {
+            if (!inputs_.deferred_tick_inputs || !materializations_)
+                return std::unexpected("deferred Tick requests require a materialization result");
+            if (inputs_.deferred_tick_inputs->generation() != graph_->project_generation)
+                return std::unexpected("deferred Tick requests belong to another graph generation");
+            auto const& plan = graph_->background_evaluation_plan;
+            auto const batch = inputs_.deferred_tick_input_batch;
+            auto const pending = inputs_.deferred_tick_inputs->select();
+            if (batch.begin != pending.begin || batch.end - batch.begin > pending.end - pending.begin)
+                return std::unexpected("deferred Tick requests do not match the selected prefix");
+            for (auto ticket = batch.begin; ticket != batch.end; ++ticket) {
+                for (auto const& request : inputs_.deferred_tick_inputs->requests(ticket)) {
+                    if (request.port >= plan.ports.size()
+                        || plan.ports[request.port].content_access != InputContentAccess::windowed
+                        || !std::ranges::contains(plan.tick_runtime.random_access_sample_inputs,
+                            request.port, &graph_jit::TickSampleInputBindingPlan::port)) {
+                        return std::unexpected("deferred Tick request has no windowed continuous input");
+                    }
+                    auto& demands = inputs_.roots.input_demands;
+                    auto demand = std::ranges::find(demands, request.port, &InputCoverageRequest::port);
+                    if (demand == demands.end()) {
+                        demands.push_back({.port = request.port});
+                        demands.back().sample_positions.include(request.positions);
+                    } else {
+                        demand->sample_positions.include(request.positions);
+                    }
+                }
+            }
+        }
         auto const plan_is_empty = graph_->background_evaluation_plan.nodes.empty()
             && graph_->background_evaluation_plan.ports.empty()
             && graph_->background_evaluation_plan.storage.ports.empty();
@@ -1917,7 +2003,7 @@ class BackgroundEvaluationTransaction::Impl {
                     graph_->project_generation,
                     semantic_version_,
                     candidate ? candidate->target_version() : base.version(),
-                    storage_selection.tick_input_requirements);
+                    storage_selection.tick_input_requirements, prepared_->input_coverages());
             });
             if (!frozen) {
                 return std::unexpected(std::move(frozen.error()));
@@ -1930,6 +2016,14 @@ class BackgroundEvaluationTransaction::Impl {
                 tick_materialization->carry_forward(
                     *previous_materialization_, materialization_retention_);
             }
+            if (auto ready = tick_materialization->validate_positional_inputs(
+                    storage_selection.tick_input_requirements, prepared_->input_coverages()); !ready) {
+                return std::unexpected(std::move(ready.error()));
+            }
+            if (!inputs_.deferred_tick_input_batch.empty())
+                tick_materialization->set_deferred_input_ticket(inputs_.deferred_tick_input_batch.end);
+            else if (inputs_.deferred_tick_prepared_through)
+                tick_materialization->set_deferred_input_ticket(*inputs_.deferred_tick_prepared_through);
             // All allocation/faulting/locking precedes publication. The audio
             // callback adopts the immutable payload and its residency lease.
             measure_playback_preparation(PlaybackPreparationPhase::prepare_tick_residency,

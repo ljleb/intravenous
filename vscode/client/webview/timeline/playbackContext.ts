@@ -6,7 +6,7 @@ import { usePresentationFrame } from "../presentation/presentationFrames";
 type PlaybackPresentation = {
     state: ShallowRef<PlaybackSnapshot | null>;
     backgroundPlayhead: Readonly<Ref<bigint | null>>;
-    foregroundPlayhead: ShallowRef<bigint | null>;
+    foregroundPlayhead: Readonly<Ref<bigint | null>>;
     requestedPosition: ShallowRef<bigint | null>;
     dragPosition: ShallowRef<string | null>;
     dragPreview: Readonly<Ref<bigint | null>>;
@@ -16,7 +16,7 @@ const key: InjectionKey<PlaybackPresentation> = Symbol("project playback");
 export function providePlayback() {
     const state = shallowRef<PlaybackSnapshot | null>(null);
     const appliedBackgroundPlayhead = shallowRef<bigint | null>(null);
-    const foregroundPlayhead = shallowRef<bigint | null>(null);
+    const appliedForegroundPlayhead = shallowRef<bigint | null>(null);
     const requestedPosition = shallowRef<bigint | null>(null);
     const dragPosition = shallowRef<string | null>(null);
     const localRelease = shallowRef<{ id: string; position: bigint } | null>(null);
@@ -24,11 +24,13 @@ export function providePlayback() {
     const dragPreview = computed(() => dragPosition.value === null
         ? localRelease.value?.position ?? pendingRelease.value : BigInt(dragPosition.value));
     const backgroundPlayhead = computed(() => dragPreview.value ?? appliedBackgroundPlayhead.value);
+    const foregroundPlayhead = computed(() => state.value?.foregroundRunning === false
+        ? backgroundPlayhead.value : appliedForegroundPlayhead.value);
     const display = new PlaybackDisplay();
     const animate = () => {
         const now = performance.now();
         appliedBackgroundPlayhead.value = display.backgroundPlayhead(now);
-        foregroundPlayhead.value = display.foregroundPlayhead(now);
+        appliedForegroundPlayhead.value = display.foregroundPlayhead(now);
         if (display.isAnimating(now)) frame.schedule();
     };
     const frame = usePresentationFrame("update", animate);

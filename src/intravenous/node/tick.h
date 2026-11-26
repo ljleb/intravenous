@@ -63,6 +63,18 @@ namespace iv {
             return _ports;
         }
 
+        template<fixed_string Name>
+        [[nodiscard]] bool request_input_samples(GlobalIndexRange execution, SamplePositionsView positions) const noexcept
+        {
+            constexpr auto declaration = details::static_input_declaration_index<Node, Name>();
+            static_assert(details::static_input_port_kind_at<Node, declaration>() == PortKind::sample
+                && details::static_input_port_is_random_access_at<Node, declaration>(),
+                "Tick request_input requires a Region or Coverage continuous input");
+            constexpr auto slot = details::static_random_access_input_port_index_at<Node, declaration>();
+            auto const& port = _ports.random_access_inputs[slot];
+            return !port.request_samples || port.request_samples(port.request_owner, execution, positions);
+        }
+
         template<size_t Index>
         [[nodiscard]] OutputDisposition& recording_disposition() const noexcept
         requires (details::static_output_port_is_recording_at<Node, Index>())
@@ -456,6 +468,13 @@ namespace iv {
             return index.whole();
         }
 
+        template<fixed_string Name>
+        [[nodiscard]] bool request_input(SamplePositionsView positions) const noexcept
+        {
+            return index.fraction() == 0
+                && this->template request_input_samples<Name>({index.whole(), 1}, positions);
+        }
+
         // Tests whether a connected Sequential source supplies the current
         // value. The neutral or manual fill of a gap does not count.
         template<fixed_string Name>
@@ -629,6 +648,13 @@ namespace iv {
             FractionalGlobalIndex index,
             size_t block_size
         );
+
+        template<fixed_string Name>
+        [[nodiscard]] bool request_input(SamplePositionsView positions) const noexcept
+        {
+            return index.fraction() == 0
+                && this->template request_input_samples<Name>({index.whole(), block_size}, positions);
+        }
 
         [[nodiscard]] GlobalIndex event_index() const noexcept
         {

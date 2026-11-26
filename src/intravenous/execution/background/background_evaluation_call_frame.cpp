@@ -44,7 +44,7 @@ namespace {
 {
     if (!is_valid_channel_type(storage.channel_layout.channel_type) ||
         !is_valid_sample_stream_layout(storage.channel_layout.sample_layout) ||
-        storage.geometry.value_type != ContinuousValueTypeId::sample ||
+        storage.geometry.value_size_bytes == 0 ||
         storage.value_capacity == 0 ||
         !std::has_single_bit(storage.value_capacity)) {
         return false;
@@ -54,7 +54,7 @@ namespace {
         auto const& binding = storage.channels[channel];
         if (binding.storage == nullptr || binding.value_capacity == 0 ||
             !std::has_single_bit(binding.value_capacity) ||
-            binding.value_stride_bytes < sizeof(Sample)) {
+            binding.value_stride_bytes < storage.geometry.value_size_bytes) {
             return false;
         }
     }
@@ -88,40 +88,51 @@ void append_unique_view(std::vector<View>& views, View view)
 }
 
 [[nodiscard]] std::size_t replay_sample_count(
-    std::span<GlobalIndexRange const> regions)
+    std::span<GlobalIndexRange const> regions, std::size_t lookbehind = 0)
 {
+    if (regions.empty()) return 0;
+    // Events can be authored before the first callback or in a gap just
+    // before a later callback. Overlapping authoring ranges count once.
+    auto previous_end = regions.front().begin.retreated_by(lookbehind);
     std::size_t result = 0;
     for (auto const region : regions) {
+        auto const extra = std::min<GlobalIndex::extent_type>(lookbehind,
+            previous_end.forward_distance_to(region.begin));
         auto const size = region.extent;
-        if (size > std::numeric_limits<std::size_t>::max() - result) {
+        auto const available = std::numeric_limits<std::size_t>::max() - result;
+        if (extra > available || size > available - extra) {
             throw std::length_error("background replay schedule is too large");
         }
-        result += static_cast<std::size_t>(size);
+        result += static_cast<std::size_t>(size + extra);
+        previous_end = region.end();
     }
     return result;
 }
 
 [[nodiscard]] std::size_t replay_frame_capacity(
-    std::span<GlobalIndexRange const> regions)
+    std::span<GlobalIndexRange const> regions, std::size_t latency = 0)
 {
     if (regions.empty()) return 0;
     auto const span = regions.front().begin.forward_distance_to(
         regions.back().end());
     auto const maximum_power = std::size_t{1}
         << (std::numeric_limits<std::size_t>::digits - 1);
-    if (span > maximum_power) {
+    // Reserve space for revisions before the first callback so they cannot
+    // alias a selected value at the far end of this ring.
+    if (span > maximum_power || latency > maximum_power - span) {
         throw std::length_error(
             "background replay raw sample span is too large");
     }
-    return std::bit_ceil(std::max<std::size_t>(span, 1));
+    return std::bit_ceil(std::max<std::size_t>(span + latency, 1));
 }
 
 [[nodiscard]] std::size_t replay_event_capacity(
     double maximum_per_index, std::span<GlobalIndexRange const> regions,
-    std::optional<std::size_t> finite_count = std::nullopt)
+    std::optional<std::size_t> finite_count = std::nullopt,
+    std::size_t latency = 0)
 {
     auto requested = finite_count ? finite_count : event_count_for_sample_span(
-        maximum_per_index, replay_sample_count(regions));
+        maximum_per_index, replay_sample_count(regions, latency));
     if (!requested) {
         throw std::length_error(
             "background replay raw event capacity is not representable");
@@ -176,6 +187,11 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<BackgroundSampleWriteView> sample_writes{};
     std::vector<ContinuousRegionStorageView> sample_input_regions{};
     std::vector<std::unique_ptr<PersistedContinuousStorage>> complete_sample_buffers{};
+    struct CompleteSampleCopy {
+        ContinuousRegionStorageView source;
+        ContinuousRegionStorageView destination;
+    };
+    std::vector<CompleteSampleCopy> complete_sample_copies{};
     std::vector<ContinuousRegionStorageView> sample_output_regions{};
     std::vector<BackgroundEventReadView> event_reads{};
     std::vector<BackgroundEventWriteView> event_writes{};
@@ -194,7 +210,23 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
     std::vector<EventRunStorageView> indexed_events{};
     bool rejected_write = false;
 
-    std::optional<Sample> find_sample(GlobalIndex index, std::size_t channel) const noexcept
+    void prepare_complete_sample_buffers() const
+    {
+        for (auto const& copy : complete_sample_copies) {
+            auto const channels = channel_count(copy.destination.channel_layout);
+            for (std::size_t frame = 0; frame < copy.destination.frame_count(); ++frame) {
+                auto const index = copy.destination.position(frame);
+                for (std::size_t channel = 0; channel < channels; ++channel) {
+                    auto const* source = copy.source.value_storage(index, channel);
+                    if (!source) throw std::runtime_error("complete-buffer input has unavailable data");
+                    std::memcpy(copy.destination.value_storage(index, channel), source,
+                        copy.destination.geometry.value_size_bytes);
+                }
+            }
+        }
+    }
+
+    std::byte const* find_continuous(GlobalIndex index, std::size_t channel) const noexcept
     {
         for (auto const& route : sample_reads) {
             if (route.logical_channel != channel)
@@ -202,37 +234,40 @@ struct BackgroundEvaluationCallFrame::BindingAdapter {
             auto const source_index = index.retreated_by(route.read_latency);
             if (route.view.coverage().contains(source_index)) {
                 for (auto const& region : route.view.regions) {
-                    if (auto const* bytes = region.value_storage(source_index, route.storage_channel)) {
-                        Sample value;
-                        std::memcpy(&value, bytes, sizeof(value));
-                        return value;
-                    }
+                    if (auto const* bytes = region.value_storage(source_index, route.storage_channel))
+                        return bytes;
                 }
             }
         }
-        return std::nullopt;
+        return nullptr;
     }
 
-    static Sample read_sample(void const* opaque, GlobalIndex index, std::size_t channel) noexcept
+    std::optional<Sample> find_sample(GlobalIndex index, std::size_t channel) const noexcept
     {
-        auto const value = static_cast<BindingAdapter const*>(opaque)->find_sample(index, channel);
-        IV_ASSERT(value.has_value(), "background sample binding has no selected readable route");
-        return value.value_or(Sample{});
+        auto const* bytes = find_continuous(index, channel);
+        if (!bytes) return std::nullopt;
+        Sample value;
+        std::memcpy(&value, bytes, sizeof(value));
+        return value;
     }
 
-    static void write_sample(void* opaque, GlobalIndex index,
-                             std::size_t channel, Sample value) noexcept
+    void write_continuous(GlobalIndex index, std::size_t channel,
+        std::span<std::byte const> value) noexcept
     {
-        auto& self = *static_cast<BindingAdapter*>(opaque);
         bool routed = false;
         bool rejected = false;
-        for (auto const& view : self.sample_writes) {
+        for (auto const& view : sample_writes) {
             if (!view.has_channel(channel) || !view.coverage().contains(index))
                 continue;
             routed = true;
-            rejected = !view.write(index, channel, value) || rejected;
+            auto const region = std::ranges::find_if(view.regions,
+                [&](auto const& candidate) { return candidate.prepared_window(index); });
+            auto* target = region == view.regions.end() || value.size() != view.geometry.value_size_bytes
+                ? nullptr : region->value_storage(index, channel, true);
+            if (target) std::memcpy(target, value.data(), value.size());
+            else rejected = true;
         }
-        self.rejected_write = self.rejected_write || !routed || rejected;
+        rejected_write = rejected_write || !routed || rejected;
         IV_ASSERT(routed && !rejected,
                   "background sample binding has no selected writable route");
     }
@@ -351,6 +386,7 @@ struct BackgroundEvaluationCallFrame::NodeFrameStorage {
     std::vector<TockContinuousOutputPort> sample_outputs{};
     std::vector<RandomAccessEventInputPort> event_inputs{};
     std::vector<TockEventOutputPort> event_outputs{};
+    std::vector<BindingAdapter const*> complete_sample_inputs{};
     struct IndexedInput {
         EventRunStorageView const* target = nullptr;
         std::span<EventRunStorageView const> source{};
@@ -371,46 +407,54 @@ struct BackgroundEvaluationCallFrame::NodeFrameStorage {
             }
         }
     }
+
+    static void prepare_inputs(void* opaque)
+    {
+        auto const& frame = *static_cast<NodeFrameStorage const*>(opaque);
+        for (auto const* input : frame.complete_sample_inputs) input->prepare_complete_sample_buffers();
+        prepare_indexed_inputs(opaque);
+    }
 };
 
 struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
-    struct SampleStorage {
+    struct ContinuousStorage {
         ChannelLayout layout{};
+        ContinuousValueStorageGeometry geometry{};
         std::size_t capacity = 0;
-        std::vector<Sample> values{};
         std::size_t contiguous_capacity = 0;
-        std::vector<Sample> contiguous_values{};
+        PersistedContinuousStorage values{};
+        PersistedContinuousStorage contiguous_values{};
 
-        SampleStorage(
+        ContinuousStorage(
             ChannelLayout selected_layout,
+            ContinuousValueStorageGeometry selected_geometry,
             std::size_t selected_capacity,
             std::size_t selected_contiguous_capacity = 0)
             : layout(selected_layout)
+            , geometry(selected_geometry)
             , capacity(selected_capacity)
             , contiguous_capacity(selected_contiguous_capacity)
+            , values(allocate(capacity))
+            , contiguous_values(allocate(contiguous_capacity))
+        {}
+
+        [[nodiscard]] PersistedContinuousStorage allocate(std::size_t frames) const
         {
+            if (frames == 0) return {};
             auto const channels = channel_count(layout);
-            if (capacity != 0
-                && channels > std::numeric_limits<std::size_t>::max()
-                    / capacity) {
+            if (channels == 0 || geometry.value_size_bytes == 0
+                || frames > std::numeric_limits<std::size_t>::max()
+                    / geometry.value_size_bytes / channels) {
                 throw std::length_error(
-                    "background replay raw sample storage is too large");
+                    "background replay continuous storage has invalid size");
             }
-            values.resize(channels * capacity);
-            if (contiguous_capacity != 0
-                && channels > std::numeric_limits<std::size_t>::max()
-                    / contiguous_capacity) {
-                throw std::length_error(
-                    "background replay contiguous sample storage is too large");
-            }
-            contiguous_values.resize(channels * contiguous_capacity);
+            return {frames * channels * geometry.value_size_bytes, geometry.element_alignment};
         }
 
         [[nodiscard]] ReflectedContinuousPortStorageBinding binding() noexcept
         {
             ReflectedContinuousPortStorageBinding result{
-                .geometry = *continuous_value_storage_geometry(
-                    ContinuousValueTypeId::sample, std::nullopt),
+                .geometry = geometry,
                 .value_capacity = capacity,
                 .channel_layout = layout,
             };
@@ -421,24 +465,22 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
                     ? channel * capacity
                     : channel;
                 result.channels[channel] = {
-                    .storage = reinterpret_cast<std::byte*>(
-                        values.data() + offset),
+                    .storage = values.data() + offset * geometry.value_size_bytes,
                     .value_capacity = capacity,
                     .value_stride_bytes = (layout.sample_layout
                             == SampleStreamLayout::planar
                         ? 1
-                        : channels) * sizeof(Sample),
+                        : channels) * geometry.value_size_bytes,
                     .contiguous_scratch = contiguous_capacity == 0
                         ? nullptr
-                        : reinterpret_cast<std::byte*>(
-                            contiguous_values.data()
-                            + channel * contiguous_capacity),
+                        : contiguous_values.data()
+                            + channel * contiguous_capacity * geometry.value_size_bytes,
                 };
             }
             return result;
         }
 
-        [[nodiscard]] Sample& at(
+        [[nodiscard]] std::span<std::byte> at(
             GlobalIndex index, std::size_t channel) noexcept
         {
             auto const frame = static_cast<std::size_t>(index.bits())
@@ -448,7 +490,8 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
                     == SampleStreamLayout::planar
                 ? channel * capacity + frame
                 : frame * channels + channel;
-            return values[offset];
+            return {values.data() + offset * geometry.value_size_bytes,
+                geometry.value_size_bytes};
         }
     };
 
@@ -509,8 +552,8 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     std::vector<ReflectedEventInputPortBinding> event_inputs{};
     std::vector<ReflectedEventOutputPortBinding> event_outputs{};
     std::vector<GlobalIndexRange> regions{};
-    std::vector<std::unique_ptr<SampleStorage>> sample_input_storage{};
-    std::vector<std::unique_ptr<SampleStorage>> sample_output_storage{};
+    std::vector<std::unique_ptr<ContinuousStorage>> sample_input_storage{};
+    std::vector<std::unique_ptr<ContinuousStorage>> sample_output_storage{};
     std::vector<std::unique_ptr<EventStorage>> event_input_storage{};
     std::vector<std::unique_ptr<EventStorage>> event_output_storage{};
     std::vector<BindingAdapter*> sample_input_adapters{};
@@ -519,10 +562,11 @@ struct BackgroundEvaluationCallFrame::ReplayFrameStorage {
     // Per Sequential input: upstream contribution coverage, or null when the
     // selection did not supply it, and the input's neutral fallback value.
     std::vector<IndexCoverage const*> sample_input_upstream{};
-    std::vector<Sample> sample_input_fallback{};
-    std::vector<std::optional<Sample>> sample_input_manual_contributions{};
-    std::vector<graph_jit::BackgroundPortIndex> sample_input_ports{};
+    std::vector<std::pair<graph_jit::BackgroundPortIndex,
+        graph_jit::BackgroundPortPlan const*>> sample_input_ports{};
     graph_jit::SequentialInputCombineFunction combine_sequential_input = nullptr;
+    NodeFrameStorage* node_frame = nullptr;
+    std::optional<GlobalIndex> previous_region_end{};
     std::vector<IndexCoverage const*> event_input_upstream{};
     std::vector<BindingAdapter*> event_output_adapters{};
 };
@@ -556,10 +600,18 @@ void combine_manual_sample(graph_jit::SequentialInputCombineFunction combine,
 void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
 {
     auto& replay = *static_cast<ReplayFrameStorage*>(opaque);
+    replay.previous_region_end.reset();
+    if (replay.node_frame) NodeFrameStorage::prepare_inputs(replay.node_frame);
     for (std::size_t input = 0;
          input < replay.sample_input_storage.size(); ++input) {
         auto& raw = *replay.sample_input_storage[input];
         auto const& adapter = *replay.sample_input_adapters[input];
+        auto const& port = *replay.sample_input_ports[input].second;
+        auto const fallback = raw.geometry.value_type == ContinuousValueTypeId::sample
+            ? std::as_bytes(std::span{&port.sample_fallback_value, 1})
+            : std::as_bytes(std::span{&port.coordinate_fallback_value, 1});
+        if (fallback.size() != raw.geometry.value_size_bytes)
+            throw std::logic_error("background replay input fallback has incompatible storage");
         for (auto const region : replay.regions) {
             auto const absent = known_absent_replay_positions(region, *adapter.coverage,
                 replay.sample_input_upstream[input],
@@ -570,8 +622,10 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                     auto const index = selected.begin.advanced_by(offset);
                     for (std::size_t channel = 0;
                          channel < channel_count(raw.layout); ++channel) {
-                        raw.at(index, channel) =
-                            BindingAdapter::read_sample(&adapter, index, channel);
+                        auto target = raw.at(index, channel);
+                        auto const* source = adapter.find_continuous(index, channel);
+                        if (!source) throw std::runtime_error("background replay input has no readable value");
+                        std::memcpy(target.data(), source, target.size());
                     }
                 }
             }
@@ -583,22 +637,26 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
                     auto const index = gap.begin.advanced_by(offset);
                     for (std::size_t channel = 0;
                          channel < channel_count(raw.layout); ++channel) {
-                        raw.at(index, channel) = replay.sample_input_fallback[input];
+                        std::memcpy(raw.at(index, channel).data(), fallback.data(), fallback.size());
                     }
                 }
             }
         }
     }
     for (std::size_t input = 0; input < replay.sample_input_storage.size(); ++input) {
-        auto const& manual = replay.sample_input_manual_contributions[input];
+        auto const [port_index, port] = replay.sample_input_ports[input];
+        auto const& manual = port->sample_manual_contribution;
         if (!manual) continue;
         auto& raw = *replay.sample_input_storage[input];
         for (auto const region : replay.regions) {
             for (GlobalIndex::extent_type offset = 0; offset < region.extent; ++offset) {
                 auto const index = region.begin.advanced_by(offset);
                 for (std::size_t channel = 0; channel < channel_count(raw.layout); ++channel) {
-                    auto& target = raw.at(index, channel);
-                    combine_manual_sample(replay.combine_sequential_input, replay.sample_input_ports[input], target, *manual);
+                    auto target = raw.at(index, channel);
+                    Sample value;
+                    std::memcpy(&value, target.data(), sizeof(value));
+                    combine_manual_sample(replay.combine_sequential_input, port_index, value, *manual);
+                    std::memcpy(target.data(), &value, sizeof(value));
                 }
             }
         }
@@ -643,6 +701,27 @@ void BackgroundEvaluationCallFrame::prepare_replay(void* opaque)
     }
 }
 
+void BackgroundEvaluationCallFrame::prepare_replay_region(void* opaque,
+    std::uint64_t begin, std::uint64_t extent)
+{
+    auto& replay = *static_cast<ReplayFrameStorage*>(opaque);
+    auto const start = GlobalIndex::from_bits(begin);
+    if (replay.previous_region_end != start) {
+        for (std::size_t port = 0; port < replay.sample_output_storage.size(); ++port) {
+            auto& storage = *replay.sample_output_storage[port];
+            auto const latency = replay.sample_outputs[port].latency;
+            // A previous requested position already ran through its entire
+            // finalization window. This prefix reaches only scratch values.
+            for (std::size_t offset = latency; offset != 0; --offset) {
+                for (std::size_t channel = 0; channel < channel_count(storage.layout); ++channel) {
+                    std::ranges::fill(storage.at(start.retreated_by(offset), channel), std::byte{});
+                }
+            }
+        }
+    }
+    replay.previous_region_end = start.advanced_by(extent);
+}
+
 void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
 {
     auto& replay = *static_cast<ReplayFrameStorage*>(opaque);
@@ -659,8 +738,7 @@ void BackgroundEvaluationCallFrame::finalize_replay(void* opaque)
                 auto const index = region.begin.advanced_by(offset);
                 for (std::size_t channel = 0;
                      channel < channel_count(raw.layout); ++channel) {
-                    BindingAdapter::write_sample(
-                        &adapter, index, channel, raw.at(index, channel));
+                    adapter.write_continuous(index, channel, raw.at(index, channel));
                 }
             }
         }
@@ -700,8 +778,11 @@ BackgroundEvaluationCallFrame::BackgroundEvaluationCallFrame(
             }
             auto const& binding = plan.runtime.bindings[slot];
             auto const& port = plan.ports[binding.port];
-            if (!port.replay_sequential_input || port.random_access_input || port.sequential_history != 0)
-                throw std::invalid_argument("background Tick replay requires a pointwise Sequential input binding");
+            if (port.random_access_input
+                    ? port.content_access != InputContentAccess::complete_buffer
+                    : (!port.replay_sequential_input || port.sequential_history != 0)) {
+                throw std::invalid_argument("background Tick replay requires a zero-history Sequential or complete-buffer input");
+            }
             if (binding.kind == PortKind::sample) {
                 storage->sample_inputs.emplace_back();
             } else {
@@ -1199,7 +1280,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         && (!scoped || scoped->prepared_runs(region.range, *adapter->coverage,
                                 region.range.extent) != std::vector<SamplePositionRun>{{region.range.begin, region.range.extent}}))
                         return std::unexpected("complete-buffer input Region is not fully prepared");
-                    if (region.storage && region.first_frame == 0
+                    if (region.storage && region.first_frame == 0 && region.frame_stride == 1
                         && (!region.storage_frames || region.storage_frames == region.frame_count())) continue;
                     auto const frames = region.frame_count();
                     auto const channels = channel_count(region.channel_layout);
@@ -1213,15 +1294,12 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     destination.windows = {};
                     destination.storage_frames = frames;
                     destination.first_frame = 0;
+                    destination.frame_stride = 1;
                     destination.written_values = nullptr;
-                    for (std::size_t frame = 0; frame < frames; ++frame) {
-                        auto const index = region.range.begin.advanced_by(frame);
-                        for (std::size_t channel = 0; channel < channels; ++channel) {
-                            auto const* value = region.value_storage(index, channel);
-                            if (!value) return std::unexpected("complete-buffer input has unavailable data");
-                            std::memcpy(destination.value_storage(index, channel), value, bytes_per_value);
-                        }
-                    }
+                    destination.sample_positions.reset();
+                    // The selected storage can be a producer's write view.
+                    // Copy its values after that producer has run.
+                    adapter->complete_sample_copies.push_back({region, destination});
                     adapter->complete_sample_buffers.push_back(std::move(owner));
                     region = destination;
                 }
@@ -1537,6 +1615,9 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             auto* adapter = adapters[*slot].get();
             adapter->logical_coverage = {};
             if (port.kind == PortKind::sample) {
+                if (!adapter->complete_sample_copies.empty()) {
+                    storage->complete_sample_inputs.push_back(adapter);
+                }
                 for (auto const& region : adapter->sample_input_regions) {
                     adapter->logical_coverage.include(region.range);
                     if (port.content_access == InputContentAccess::complete_buffer && !region.storage)
@@ -1548,6 +1629,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     .coverage_value = &adapter->logical_coverage,
                     .geometry = port.continuous_geometry,
                     .prepared_coverage_value = adapter->coverage,
+                    .absolute_pace_exponent = port.absolute_pace_exponent,
                 });
             } else {
                 for (auto const region : adapter->event_input_ranges)
@@ -1616,12 +1698,16 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         frame.tock.event_inputs = storage->event_inputs;
         frame.tock.event_outputs = storage->event_outputs;
         frame.tock.sample_rate = selection_.sample_rate;
+        if (node_plan.replays_tick) {
+            frame.replay.random_access_inputs = storage->sample_inputs;
+            frame.replay.random_access_event_inputs = storage->event_inputs;
+        }
         auto const& placement = runtime.node_operations[node];
         auto operation_frame =
             std::make_unique<BackgroundStorageOperationFrame>(
                 *realization_, placement.before, placement.after);
-        if (!storage->indexed_inputs.empty()) {
-            operation_frame->set_leaf_hooks(storage.get(), &NodeFrameStorage::prepare_indexed_inputs, nullptr);
+        if (!storage->indexed_inputs.empty() || !storage->complete_sample_inputs.empty()) {
+            operation_frame->set_leaf_hooks(storage.get(), &NodeFrameStorage::prepare_inputs, nullptr);
         }
         frame.operation_frame = operation_frame.get();
         frame.prepare_operations =
@@ -1648,6 +1734,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         }
         auto& storage = *replay_storage_[slot];
         auto& frame = built_nodes[replay.node];
+        storage.node_frame = node_storage[replay.node].get();
         if (!storage.regions.empty()) {
             auto const sample_capacity = replay_frame_capacity(storage.regions);
             std::size_t sample_input = 0;
@@ -1656,12 +1743,19 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 auto const& binding = runtime.bindings[binding_slot];
                 auto const& port = plan.ports[binding.port];
                 auto* adapter = adapters[binding_slot].get();
+                // The imported Tick wrapper uses the authored indices, even
+                // though the random-access views have their own compact spans.
+                if (port.random_access_input) {
+                    if (binding.kind == PortKind::sample) ++sample_input;
+                    else ++event_input;
+                    continue;
+                }
                 if (binding.kind == PortKind::sample) {
                     auto const contiguous_value_capacity =
                         replay.block_input_access ? replay.maximum_block_size : 0;
                     auto raw = std::make_unique<
-                        ReplayFrameStorage::SampleStorage>(
-                            port.sample_layout,
+                        ReplayFrameStorage::ContinuousStorage>(
+                            port.sample_layout, port.continuous_geometry,
                             sample_capacity,
                             contiguous_value_capacity);
                     storage.sample_inputs[sample_input] = {
@@ -1682,9 +1776,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                         binding_slot < selection_.binding_upstream_coverage.size()
                             ? &selection_.binding_upstream_coverage[binding_slot]
                             : nullptr);
-                    storage.sample_input_fallback.push_back(port.sample_fallback_value);
-                    storage.sample_input_manual_contributions.push_back(port.sample_manual_contribution);
-                    storage.sample_input_ports.push_back(binding.port);
+                    storage.sample_input_ports.emplace_back(binding.port, &port);
                     storage.combine_sequential_input = selection_.combine_sequential_input;
                     storage.sample_input_storage.push_back(std::move(raw));
                     ++sample_input;
@@ -1719,9 +1811,13 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 auto* adapter = adapters[binding_slot].get();
                 if (binding.kind == PortKind::sample) {
                     auto raw = std::make_unique<
-                        ReplayFrameStorage::SampleStorage>(
-                            port.sample_layout, sample_capacity);
-                    storage.sample_outputs[sample_output].storage = raw->binding();
+                        ReplayFrameStorage::ContinuousStorage>(
+                            port.sample_layout, port.continuous_geometry,
+                            replay_frame_capacity(storage.regions, port.output_latency));
+                    storage.sample_outputs[sample_output] = {
+                        .storage = raw->binding(),
+                        .latency = port.output_latency,
+                    };
                     storage.sample_output_adapters.push_back(adapter);
                     storage.sample_output_storage.push_back(std::move(raw));
                     ++sample_output;
@@ -1729,11 +1825,13 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                     auto raw = std::make_unique<
                         ReplayFrameStorage::EventStorage>(
                             replay_event_capacity(
-                                port.max_events_per_index, storage.regions, port.max_event_count));
+                                port.max_events_per_index, storage.regions, port.max_event_count,
+                                port.output_latency));
                     storage.event_outputs[event_output] = {
                         .storage = raw->binding(port.event_type),
                         .overflow_count = &raw->overflow,
                         .source_type = port.event_type,
+                        .latency = port.output_latency,
                         .append_existing = true,
                     };
                     storage.event_output_adapters.push_back(adapter);
@@ -1746,6 +1844,7 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
             if (!std::ranges::all_of(
                     storage.sample_inputs,
                     [](ReflectedContinuousInputPortBinding const& binding) {
+                        if (binding.storage.value_capacity == 0) return true;
                         if (!valid_replay_sample_storage(binding.storage)) {
                             return false;
                         }
@@ -1771,7 +1870,8 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
                 !std::ranges::all_of(
                     storage.event_inputs,
                     [](ReflectedEventInputPortBinding const& binding) {
-                        return valid_replay_event_storage(binding.storage);
+                        return binding.storage.storage == nullptr
+                            || valid_replay_event_storage(binding.storage);
                     }) ||
                 !std::ranges::all_of(
                     storage.event_outputs,
@@ -1788,6 +1888,8 @@ std::expected<void, std::string> BackgroundEvaluationCallFrame::seal()
         frame.replay.event_output_bindings = storage.event_outputs;
         frame.replay.sample_rate = selection_.sample_rate;
         frame.replay_regions = storage.regions;
+        frame.replay_storage = &storage;
+        frame.prepare_replay_region = &prepare_replay_region;
     }
 
     binding_adapters_ = std::move(adapters);
@@ -1809,11 +1911,13 @@ RandomAccessContinuousInputPort BackgroundEvaluationCallFrame::discovery_continu
         throw std::invalid_argument("continuous discovery input has no sealed binding");
     }
     auto const& adapter = *binding_adapters_[*plan_->runtime.port_bindings[input]];
+    adapter.prepare_complete_sample_buffers();
     return {.regions = adapter.sample_input_regions.data(),
         .region_count = adapter.sample_input_regions.size(),
         .coverage_value = &adapter.logical_coverage,
         .geometry = plan_->ports[input].continuous_geometry,
-        .prepared_coverage_value = adapter.coverage};
+        .prepared_coverage_value = adapter.coverage,
+        .absolute_pace_exponent = plan_->ports[input].absolute_pace_exponent};
 }
 
 std::optional<Sample> BackgroundEvaluationCallFrame::observe_sequential_sample_input(

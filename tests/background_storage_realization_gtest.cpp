@@ -831,6 +831,64 @@ TEST(BackgroundStorageRealization,
     EXPECT_EQ(retained.value(1)[1], FFTBin(7.0f, 8.0f));
 }
 
+TEST(BackgroundStorageRealization, TickPositionalInputsDistinguishGapsFromMissingTaps)
+{
+    using namespace iv;
+    auto const geometry = *continuous_value_storage_geometry(
+        continuous_value_type_id_v<Sample>, std::nullopt);
+    graph_jit::BackgroundEvaluationPlan plan;
+    plan.ports = {{.direction = graph_jit::PortDirection::input,
+        .input_access = InputAccessKind::coverage, .random_access_input = true,
+        .sample_layout = mono_planar_channel_layout, .continuous_geometry = geometry}};
+    plan.storage.ports = {{.storage = graph_jit::PortStorageKind::tick_random_access,
+        .sample_layout = mono_planar_channel_layout, .continuous_geometry = geometry,
+        .sample_channels = {0}}};
+    plan.tick_runtime.random_access_sample_inputs = {{.port = 0, .reads = {{.storage = 0}}}};
+
+    auto const logical = range(10, 31);
+    std::array const coverage{IndexCoverage{logical}};
+    BackgroundSampleDemand taps;
+    taps.include(SamplePositionRun{index(10), 2, 20});
+    PersistedDataStore data;
+    BackgroundStorageRealization realization{plan, data, {
+        .storage_coverage = {{}}, .sample_positions = {taps},
+        .storage_regions = {{logical}}, .produce_storage = {true},
+    }};
+    auto const* output = realization.sample_write(0);
+    ASSERT_NE(output, nullptr);
+    ASSERT_TRUE(output->write(index(10), 0, 1.f));
+    ASSERT_TRUE(output->write(index(30), 0, 9.f));
+    ASSERT_TRUE(realization.seal());
+
+    std::array requests{index_coverage({{10, 11}, {30, 31}, {40, 41}})};
+    auto freeze = [&] {
+        return realization.make_tick_materialization_snapshot(1, 0, {}, requests, coverage);
+    };
+    auto selected = freeze();
+    ASSERT_TRUE(selected) << selected.error();
+    ASSERT_TRUE((*selected)->validate_positional_inputs(requests, coverage));
+    auto const* input = (*selected)->find_sample(0);
+    ASSERT_NE(input, nullptr);
+    EXPECT_EQ(input->logical_coverage, coverage[0]);
+    EXPECT_EQ(input->coverage, index_coverage({{10, 11}, {30, 31}}));
+    EXPECT_FLOAT_EQ(input->at(index(10), 0).value, 1.f);
+    EXPECT_FLOAT_EQ(input->at(index(30), 0).value, 9.f);
+
+    requests[0].include(range(11, 12));
+    auto incomplete = freeze();
+    ASSERT_TRUE(incomplete) << incomplete.error();
+    EXPECT_FALSE((*incomplete)->validate_positional_inputs(requests, coverage));
+
+    requests[0] = IndexCoverage{range(40, 41)};
+    auto gap = freeze();
+    ASSERT_TRUE(gap) << gap.error();
+    ASSERT_TRUE((*gap)->validate_positional_inputs(requests, coverage));
+    auto const* gap_input = (*gap)->find_sample(0);
+    ASSERT_NE(gap_input, nullptr);
+    EXPECT_TRUE(gap_input->coverage.empty());
+    EXPECT_EQ(gap_input->logical_coverage, coverage[0]);
+}
+
 TEST(BackgroundStorageRealization, ReadsTypedPublishedDataWithoutCopyingIt)
 {
     iv::PersistedDataStore store;
@@ -2790,6 +2848,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
             .kind = iv::PortKind::sample,
             .direction = iv::graph_jit::PortDirection::output,
             .replayed_tick_output = true,
+            .output_latency = 7,
             .sample_layout =
                 {
                     .channel_type = iv::ChannelTypeId::mono,
@@ -2801,6 +2860,7 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
             .kind = iv::PortKind::event,
             .direction = iv::graph_jit::PortDirection::output,
             .replayed_tick_output = true,
+            .output_latency = 2,
         },
     };
     plan.sample_target_subsets = {{
@@ -2934,8 +2994,20 @@ TEST(BackgroundEvaluationCallFrame, ReservesAndValidatesReplaySchedule)
     EXPECT_FLOAT_EQ(input_values[0].value, 3.0f);
 
     auto const& sample_output = node.replay.continuous_output_bindings.data()[0];
+    EXPECT_EQ(sample_output.latency, 7u);
+    EXPECT_EQ(sample_output.storage.value_capacity, 32u);
+    EXPECT_EQ(node.replay.event_output_bindings.data()[0].latency, 2u);
     auto* output_values = reinterpret_cast<iv::Sample*>(
         sample_output.storage.channels[0].storage);
+    ASSERT_NE(node.prepare_replay_region, nullptr);
+    node.prepare_replay_region(node.replay_storage, 0, 4);
+    output_values[0] = iv::Sample{2.0f};
+    output_values[3] = iv::Sample{99.0f};
+    node.prepare_replay_region(node.replay_storage, 4, 2);
+    EXPECT_FLOAT_EQ(output_values[3].value, 99.0f);
+    node.prepare_replay_region(node.replay_storage, 8, 2);
+    EXPECT_FLOAT_EQ(output_values[0].value, 2.0f);
+    EXPECT_FLOAT_EQ(output_values[3].value, 0.0f);
     output_values[8 & (sample_output.storage.value_capacity - 1)] =
         iv::Sample{9.0f};
     node.finalize_operations(node.operation_frame);

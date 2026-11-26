@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/execution/background/background_coverage_propagation.h>
+#include <intravenous/execution/deferred_tick_input_requests.h>
 #include <intravenous/execution/storage/async_capacity_manager.h>
 #include <intravenous/graph_jit/graph_jit.h>
 #include <intravenous/execution/storage/persisted_data_store.h>
@@ -14,6 +15,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace iv {
 class BackgroundStorageRealization;
@@ -46,6 +48,12 @@ struct BackgroundProducedInputRoute {
     SampleRecordingBinding recording{};
 };
 
+// Follow background routes from the selected ports to their recorded inputs.
+// Persisted Tick outputs terminate traversal at their canonical recording.
+[[nodiscard]] std::vector<PersistedOutputHandle> background_recording_dependencies(
+    CompiledGraph const& graph, std::span<graph_jit::BackgroundPortIndex const> roots,
+    PersistedDataStore& data);
+
 // Transaction-local inputs selected by the background actor. Realtime-produced
 // queue records are separate complete inputs and add their own coverage roots.
 // A missing semantic version retains the pinned persisted snapshot's semantic
@@ -76,7 +84,11 @@ struct BackgroundTransactionInputs {
     // Historical reconstruction uses these exact recorded boundaries instead
     // of the current canonical recording. It is always a private transaction.
     std::shared_ptr<PersistedDataStore::Reconstruction const> reconstruction{};
-
+    // A selected foreground request prefix stays alive until the worker
+    // commits and foreground execution consumes the corresponding result.
+    DeferredTickInputRequests const* deferred_tick_inputs = nullptr;
+    DeferredTickInputRequests::Batch deferred_tick_input_batch{};
+    std::optional<DeferredTickInputRequests::Ticket> deferred_tick_prepared_through{};
 };
 
 enum class BackgroundEvaluationStatus : std::uint8_t {

@@ -167,6 +167,8 @@ class GraphExecutor {
     struct RealtimeGeneration {
         NodeStorage storage{};
         TickInvocationWorkspace tick_invocation;
+        std::unique_ptr<DeferredTickInputRequests> deferred_inputs{};
+        GlobalIndex rendered_samples{};
         std::vector<std::unique_ptr<ProducerReserve>> producer_reserves{};
         // Declared after producer_reserves so registrations are removed before
         // their reserves are destroyed.
@@ -218,6 +220,13 @@ class GraphExecutor {
         // and published a coherent realtime-visible pair.
         bool reconciliation_required = false;
         bool tick_materialization_required = false;
+        struct DeferredDemand {
+            graph_jit::BackgroundPortIndex port = 0;
+            GlobalIndex due_end{};
+            BackgroundSampleDemand positions{};
+        };
+        std::vector<DeferredDemand> retained_deferred_inputs{};
+        std::optional<DeferredTickInputRequests::Batch> selected_deferred_inputs{};
 
         BackgroundGeneration(
             CompiledGraph const& graph,
@@ -277,6 +286,9 @@ class GraphExecutor {
         BackgroundGeneration background;
         std::unique_ptr<RealtimePersistedState> initial_persisted_state{};
         RealtimePersistedStateMailbox prepared_initial_states{};
+        // Set during staging, then owned by realtime. The preview can arm
+        // the cutover, but this reset cannot render from it.
+        bool waiting_for_reset_recordings = false;
         enum class Activation : std::uint8_t { pending, activating, active, failed };
         static_assert(std::atomic<Activation>::is_always_lock_free);
         std::atomic<Activation> activation{Activation::pending};
@@ -436,6 +448,7 @@ class GraphExecutor {
     std::uint64_t next_observation_publication_ = 1; // Control owner only.
     std::uint64_t last_observation_publication_ = 0; // Realtime owner only.
     std::uint64_t observation_activation_ = 0; // Actual activation order.
+    std::optional<GlobalIndex> held_observation_position_{}; // Realtime owner only.
     ResourceContext resources_{};
     RealtimeProducerCapacityConfig producer_capacity_{};
     // Executor-level and deliberately outside either execution generation.
@@ -517,6 +530,7 @@ class GraphExecutor {
     BackgroundExecutor background_executor_;
 
     [[nodiscard]] ExecutionGeneration& realtime_execution_generation();
+    [[nodiscard]] RealtimePersistedState const* adopt_playback_state(ExecutionGeneration& generation) noexcept;
     void publish_playback_demand(std::array<PlaybackDemand, 2> demand) noexcept;
     [[nodiscard]] std::optional<std::array<PlaybackDemand, 2>> read_playback_demand() const noexcept;
     [[nodiscard]] static bool playback_ready(CompiledGraph const& graph,
@@ -524,7 +538,10 @@ class GraphExecutor {
     bool activate_pending_at(PlaybackDemand const& applied, PlaybackDemand const* candidate = nullptr,
         RealtimePersistedState const** activated_root = nullptr, bool* applied_candidate = nullptr,
         bool* reset_playhead = nullptr);
-    void execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
+    [[nodiscard]] LiveObservationFrame* begin_observation_frame(
+        ExecutionGeneration const& generation, ExecutionGeneration::RealtimeCode const& code,
+        GlobalIndex sample_index, std::size_t block_size) noexcept;
+    bool execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
         GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
         PlaybackRenderSlice* profile = nullptr);
     [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
@@ -565,6 +582,8 @@ public:
             request.accepted_command = set_playback_running(request.running);
         else if (request.operation == ProjectPlaybackOperation::toggle)
             request.accepted_command = playback_.toggle();
+        else if (request.operation == ProjectPlaybackOperation::toggle_foreground)
+            request.accepted_command = playback_.toggle_foreground();
         else if (request.operation == ProjectPlaybackOperation::seek)
             request.accepted_command = seek_playback(request.position);
         else if (request.operation == ProjectPlaybackOperation::drag)

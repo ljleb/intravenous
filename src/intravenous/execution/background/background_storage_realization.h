@@ -391,7 +391,8 @@ public:
         std::uint64_t generation,
         std::uint64_t semantic_version,
         PersistedDataVersion data_version,
-        std::span<IndexCoverage const> input_requirements) const;
+        std::span<IndexCoverage const> input_requirements,
+        std::span<IndexCoverage const> input_coverages = {}) const;
 
     // Serializes every selected runtime-produced persisted slot into the
     // transaction's private candidate. No retained record becomes visible

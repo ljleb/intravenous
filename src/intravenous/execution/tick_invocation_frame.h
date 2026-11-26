@@ -15,6 +15,8 @@
 
 namespace iv {
 
+class DeferredTickInputRequests;
+
 struct RealtimeProducerRequirement {
     PersistedOutputHandle output{};
     graph_jit::BackgroundPortIndex port = 0;
@@ -76,6 +78,8 @@ public:
     [[nodiscard]] std::size_t random_access_event_count() const noexcept;
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
+    void bind_deferred_input_requests(DeferredTickInputRequests& requests,
+        GlobalIndex execution_begin) noexcept;
     // One entry per Tick/persisted producer queue which the prepared execution
     // generation must provision. Entries are aligned sample-first/event-second
     // with the workspace's capture-operation slots and include record-header

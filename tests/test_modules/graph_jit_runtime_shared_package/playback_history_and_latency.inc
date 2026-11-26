@@ -544,6 +544,29 @@ void persisted_recording_coverage_module(iv::GraphBuilder& graph)
     graph.outputs();
 }
 
+struct ResetRecordingPlaybackSink {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>({"source", "Source"}, iv::InputAccess::coverage,
+            iv::InputContentAccess::complete_buffer, {.channel_layout = {
+                .channel_type = iv::ChannelTypeId::stereo,
+                .sample_layout = iv::SampleStreamLayout::planar,
+            }})};
+    }
+
+    void tick_block(iv::TickBlockContext<ResetRecordingPlaybackSink> const&) const {}
+};
+
+void reset_recording_playback_module(iv::GraphBuilder& graph)
+{
+    auto recorder = graph.node<"iv.test.graph_jit.state_context.persisted_stereo_recording_source">();
+    auto sink = iv::details::configure_concrete_node<ResetRecordingPlaybackSink>(graph);
+    sink(recorder);
+    graph.outputs();
+}
+IV_MODULE("iv.test.graph_jit.reset_recording_playback", reset_recording_playback_module,
+    "Reset Recording Playback");
+
 void playback_sample_history_module(iv::GraphBuilder& graph)
 {
     auto source = graph.node<"iv.test.graph_jit.state_context.playback_sample_source">();

@@ -60,10 +60,12 @@ bool can_reuse_background_workspace(
             && before.direction == after.direction
             && before.input_access == after.input_access
             && before.content_access == after.content_access
+            && before.deferred_tick_lead == after.deferred_tick_lead
             && before.full_live_tick_coverage == after.full_live_tick_coverage
             && before.tick_coverage == after.tick_coverage
             && before.tick_coverage_has_manual_source == after.tick_coverage_has_manual_source
             && before.sample_fallback_value == after.sample_fallback_value
+            && before.coordinate_fallback_value == after.coordinate_fallback_value
             && before.sample_manual_contribution == after.sample_manual_contribution
             && before.accumulators.input_change == after.accumulators.input_change
             && before.accumulators.output_change == after.accumulators.output_change

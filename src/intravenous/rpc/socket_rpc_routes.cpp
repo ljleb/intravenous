@@ -119,6 +119,7 @@ std::string playback_result(int id, ProjectPlaybackRequest request)
         {"startPosition", std::to_string(state.start_position.signed_value())},
         {"executionIndex", std::to_string(state.foreground_playhead.signed_value())},
         {"running", state.running},
+        {"foregroundRunning", state.foreground_running},
         {"sampleRate", state.sample_rate},
         {"appliedCommand", std::to_string(state.applied_command)},
         {"segment", std::to_string(state.segment)},
@@ -200,8 +201,9 @@ SocketRpcRouteRegistry::SocketRpcRouteRegistry()
                 .output_profile = request.output_profile});
         });
     impl_->add<TogglePlaybackRequest>("playback.toggle", "project.write", false, false,
-        [](auto const&, int id, Context const&) {
-            return playback_result(id, {.operation = ProjectPlaybackOperation::toggle});
+        [](auto const& request, int id, Context const&) {
+            return playback_result(id, {.operation = request.foreground
+                ? ProjectPlaybackOperation::toggle_foreground : ProjectPlaybackOperation::toggle});
         });
     impl_->add<SetPlaybackRunningRequest>("playback.setRunning", "project.write", false, false,
         [](auto const& request, int id, Context const&) {

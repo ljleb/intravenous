@@ -385,21 +385,14 @@ std::expected<void, std::string> inventory_nodes(
             if (view.replay_mode != TickReplayMode::disabled
                 && (!has_tick_callback
                     || view.operations->runtime.has_propagate_forward_coverage
-                    || view.operations->runtime.has_propagate_reverse_coverage
-                    || std::ranges::any_of(view.ports->sample_inputs(), [](auto const& config) {
-                        return is_random_access(config);
-                    }) || std::ranges::any_of(view.ports->event_inputs(), [](auto const& config) {
-                        return is_random_access(config);
-                    }))) {
-                error = "GraphJit Tick replay requires pointwise Sequential inputs and generated coverage";
+                    || view.operations->runtime.has_propagate_reverse_coverage)) {
+                error = "GraphJit Tick replay requires a Tick callback and generated coverage";
                 return;
             }
-            if (has_tick_callback && (std::ranges::any_of(view.ports->sample_inputs(), [](auto const& config) {
+            if (has_tick_callback && std::ranges::any_of(view.ports->event_inputs(), [](auto const& config) {
                     return is_random_access(config) && config.content_access != InputContentAccess::complete_buffer;
-                }) || std::ranges::any_of(view.ports->event_inputs(), [](auto const& config) {
-                    return is_random_access(config) && config.content_access != InputContentAccess::complete_buffer;
-                }))) {
-                error = "Tick Region/Coverage inputs initially require complete-buffer access";
+                })) {
+                error = "Tick Region/Coverage event inputs require complete-buffer access";
                 return;
             }
             auto const has_sequential_output = std::ranges::any_of(
@@ -2634,6 +2627,19 @@ std::expected<void, std::string> validate_contextual_replay_realization(
     ResolvedPortRealization const& realization,
     ConnectionAnalysisPlan const& plan)
 {
+    auto validate_port = [](auto const& selected) -> std::expected<void, std::string> {
+        if (selected.value_type != continuous_value_type_id_v<Sample>
+            && selected.value_type != continuous_value_type_id_v<FractionalGlobalIndex>) {
+            return std::unexpected(
+                "GraphJit background Tick replay does not yet support continuous type '"
+                + std::string(continuous_value_type_info(selected.value_type).name) + "'");
+        }
+        if (selected.absolute_pace != PortPace{}) {
+            return std::unexpected(
+                "GraphJit background Tick replay does not yet support a non-project-rate continuous port");
+        }
+        return {};
+    };
     for (auto const& node : plan.nodes) {
         if (!node.contextually_replayable) continue;
         auto const bundle = node.bundle;
@@ -2641,18 +2647,8 @@ std::expected<void, std::string> validate_contextual_replay_realization(
             auto const config = graph.node_bundles.resolve_sample_input(
                 {bundle, PortKind::sample, port}).config;
             if (!is_sequential(config)) continue;
-            auto const& selected = realization.input(bundle, port);
-            if (selected.value_type != continuous_value_type_id_v<Sample>) {
-                return std::unexpected(
-                    "GraphJit background Tick replay does not yet support continuous type '"
-                    + std::string(continuous_value_type_info(
-                        selected.value_type).name)
-                    + "'");
-            }
-            if (selected.absolute_pace != PortPace{}) {
-                return std::unexpected(
-                    "GraphJit background Tick replay does not yet support a non-project-rate continuous port");
-            }
+            if (auto status = validate_port(realization.input(bundle, port)); !status)
+                return status;
         }
         for (std::size_t port = 0; port < node.sample_output_count; ++port) {
             auto const config = graph.node_bundles.resolve_sample_output(
@@ -2661,18 +2657,8 @@ std::expected<void, std::string> validate_contextual_replay_realization(
                 || config.realization != OutputRealization::computed) {
                 continue;
             }
-            auto const& selected = realization.output(bundle, port);
-            if (selected.value_type != continuous_value_type_id_v<Sample>) {
-                return std::unexpected(
-                    "GraphJit background Tick replay does not yet support continuous type '"
-                    + std::string(continuous_value_type_info(
-                        selected.value_type).name)
-                    + "'");
-            }
-            if (selected.absolute_pace != PortPace{}) {
-                return std::unexpected(
-                    "GraphJit background Tick replay does not yet support a non-project-rate continuous port");
-            }
+            if (auto status = validate_port(realization.output(bundle, port)); !status)
+                return status;
         }
     }
     return {};
@@ -3369,6 +3355,7 @@ std::expected<void, std::string> plan_background_connections(
         }
         auto const background_node = *plan.bundle_to_background_node[port.node_bundle_handle];
         auto& node_plan = plan.nodes[background_node];
+        auto const& planned_node = connections.nodes[node_plan.semantic_node];
 
         PortKey const key{port, direction};
         if (auto const found = port_by_port.find(key);
@@ -3408,11 +3395,13 @@ std::expected<void, std::string> plan_background_connections(
         std::optional<std::size_t> max_event_count;
         Sample neutral{};
         Sample fallback{};
+        FractionalGlobalIndex coordinate_fallback{};
         std::optional<Sample> manual_contribution;
         bool tick_coverage_has_manual_source = false;
         std::size_t sequential_history = 0;
         std::size_t output_history = 0;
         std::size_t output_latency = 0;
+        std::size_t deferred_tick_lead = 0;
         if (direction == PortDirection::input) {
             if (port.port_kind == PortKind::sample) {
                 auto const config = graph.node_bundles.resolve_sample_input(port).config;
@@ -3420,6 +3409,20 @@ std::expected<void, std::string> plan_background_connections(
                 sample_layout = config.channel_layout;
                 configured_input_access = input_access(config);
                 configured_content_access = config.content_access;
+                if (roles.random_access_input && planned_node.tick_execution
+                    && config.content_access == InputContentAccess::windowed) {
+                    for (std::size_t i = 0; i < planned_node.sample_output_count; ++i) {
+                        auto const& output = realization.output(port.node_bundle_handle, i);
+                        if (output.absolute_pace != PortPace{})
+                            return std::unexpected("deferred Tick input requires project-rate outputs");
+                        deferred_tick_lead = std::max(deferred_tick_lead, output.latency);
+                    }
+                    for (std::size_t i = 0; i < planned_node.event_output_count; ++i)
+                        deferred_tick_lead = std::max(deferred_tick_lead,
+                            realization.event_output(port.node_bundle_handle, i).latency);
+                    if (deferred_tick_lead < kernel_block_size)
+                        return std::unexpected("deferred Tick input needs output latency of at least one root block");
+                }
                 auto const& resolved = realization.input(
                     port.node_bundle_handle, port.port_index);
                 continuous_geometry = *continuous_value_storage_geometry(
@@ -3444,6 +3447,13 @@ std::expected<void, std::string> plan_background_connections(
                     if (control != graph.manual_controls.end() && !manual_contribution)
                         fallback = control->settled_value;
                     else if (!connected) fallback = metadata.default_value;
+                } else if (roles.replay_sequential_input
+                    && resolved.value_type == continuous_value_type_id_v<FractionalGlobalIndex>) {
+                    auto const& metadata = sequential_input_metadata<FractionalGlobalIndex>(
+                        sequential_input_properties(config));
+                    auto const connected = std::ranges::any_of(connections.sample_connections,
+                        [&](auto const& connection) { return connection.target_port == port; });
+                    coordinate_fallback = connected ? metadata.neutral_value : metadata.default_value;
                 }
                 sequential_history =
                     realization.input(
@@ -3518,7 +3528,6 @@ std::expected<void, std::string> plan_background_connections(
         }
         if (direction == PortDirection::input && node_plan.resolved_module_input)
             stable_input = node_plan.resolved_module_input;
-        auto const& planned_node = connections.nodes[node_plan.semantic_node];
         auto const& rules = planned_node.tick_output_coverage;
         auto const rule = direction == PortDirection::output
             ? std::ranges::find_if(rules, [&](auto const& candidate) {
@@ -3532,6 +3541,7 @@ std::expected<void, std::string> plan_background_connections(
             .name = std::move(name),
             .input_access = configured_input_access,
             .content_access = configured_content_access,
+            .deferred_tick_lead = deferred_tick_lead,
             .output_production = configured_output_production,
             .random_access_input = roles.random_access_input,
             .tick_sequential_input = roles.tick_sequential_input,
@@ -3548,6 +3558,7 @@ std::expected<void, std::string> plan_background_connections(
             .tick_coverage_has_manual_source = tick_coverage_has_manual_source,
             .sample_neutral_value = neutral,
             .sample_fallback_value = fallback,
+            .coordinate_fallback_value = coordinate_fallback,
             .sample_manual_contribution = manual_contribution,
             .sequential_history = sequential_history,
             .output_history = output_history,

@@ -17,7 +17,7 @@ struct ConfigurationTypeIdentity;
 // The loader rejects a package whose iv_package_abi_version() differs from this
 // value. Package build identity also includes this header and the DSL
 // precompiled header, so changes can invalidate cached artifacts.
-inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 11;
+inline constexpr std::uint32_t IV_PACKAGE_ABI_VERSION = 13;
 
 struct ModuleDataView {
     void const* data = nullptr;

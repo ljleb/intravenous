@@ -11,7 +11,7 @@ import { providePlayback, usePlayback } from "../webview/timeline/playbackContex
 
 const state = (changes: Partial<PlaybackSnapshot> = {}): PlaybackSnapshot => ({
     position: "48000", startPosition: "48000", executionIndex: "48000",
-    sampleRate: 48000, running: true, appliedCommand: "1", segment: "1", ...changes,
+    sampleRate: 48000, running: true, foregroundRunning: true, appliedCommand: "1", segment: "1", ...changes,
 });
 test("the displayed playhead stays at the drop while the final transport request is pending", async (t) => {
     const cancelFrame = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
@@ -38,6 +38,11 @@ test("the displayed playhead stays at the drop while the final transport request
     update({ ...paused, position: "49000", startPosition: "49000" }, null, null, releaseId);
     assert.equal(view.backgroundPlayhead.value, 49000n);
     assert.equal(view.dragPreview.value, null);
+
+    update(state({ running: false, foregroundRunning: false }), null, null);
+    view.dragPosition.value = "50000";
+    assert.equal(view.backgroundPlayhead.value, 50000n);
+    assert.equal(view.foregroundPlayhead.value, 50000n);
 });
 test("seek retains exact sample indices and quantizes seconds at the project rate", () => {
     assert.equal(playbackSeekPosition("-9223372036854775808", 48000), "-9223372036854775808");
@@ -101,6 +106,17 @@ test("requested cursor waits for its exact accepted command or a superseding one
     assert.equal(isPendingPlaybackSeek(seek, state({ appliedCommand: seek.acceptedCommand })), false);
     assert.equal(isPendingPlaybackSeek(seek, state({ appliedCommand: "9007199254740994" })), false);
 });
+test("parking the foreground playhead stops extrapolation immediately", () => {
+    const display = new PlaybackDisplay();
+    display.update(state({ executionIndex: "50400", position: "50400" }), 0);
+    display.update(state({ running: false, foregroundRunning: false, segment: "2" }), 30);
+    assert.equal(display.foregroundPlayhead(55), 48000n);
+    assert.equal(display.backgroundPlayhead(55), 48000n);
+    assert.equal(display.isAnimating(55), false);
+    display.update(state({ running: false, executionIndex: "48128", segment: "3" }), 65);
+    assert.equal(display.foregroundPlayhead(90), 49328n);
+    assert.equal(display.backgroundPlayhead(90), 48000n);
+});
 test("playback RPC does not attach graph revisions or touch project history", async () => {
     const calls: unknown[] = [];
     const client = { request: async (method: string, params: unknown) => { calls.push({ method, params }); return state(); } };
@@ -110,12 +126,14 @@ test("playback RPC does not attach graph revisions or touch project history", as
     await rpc.getPlayback(false, { id: "take", durationMs: 10000 });
     await rpc.getPlayback(false, { id: "take" });
     await rpc.togglePlayback();
+    await rpc.togglePlayback(true);
     await rpc.seekPlayback("-9223372036854775808");
     assert.deepEqual(calls, [
         { method: "playback.get", params: {} }, { method: "playback.get", params: { diagnostics: true } },
         { method: "playback.get", params: { outputProfile: { id: "take", durationMs: 10000 } } },
         { method: "playback.get", params: { outputProfile: { id: "take" } } },
-        { method: "playback.toggle", params: {} },
+        { method: "playback.toggle", params: { foreground: false } },
+        { method: "playback.toggle", params: { foreground: true } },
         { method: "playback.seek", params: { position: "-9223372036854775808" } },
     ]);
 });

@@ -20,6 +20,7 @@ struct ProjectPlaybackSnapshot {
     GlobalIndex start_position{};
     GlobalIndex foreground_playhead{}; // Starting index of the next Tick block.
     bool running = false;
+    bool foreground_running = true;
     std::uint64_t applied_command = 0;
     std::uint64_t segment = 0;
     double sample_rate = 48000;
@@ -30,7 +31,7 @@ struct TickPlaybackSelection {
     bool audition = false;
 };
 
-enum class ProjectPlaybackOperation { read, set_running, toggle, seek, drag };
+enum class ProjectPlaybackOperation { read, set_running, toggle, toggle_foreground, seek, drag };
 enum class ProjectPlaybackDragPhase { begin, move, end };
 struct ProjectPlaybackDrag {
     ProjectPlaybackDragPhase phase = ProjectPlaybackDragPhase::begin;
@@ -103,6 +104,7 @@ class ProjectPlayback {
     ProjectPlaybackSnapshot state_{};
     ProjectPlaybackSnapshot pending_{};
     std::optional<GlobalIndex> pending_position_{};
+    std::optional<GlobalIndex> pending_foreground_position_{};
     bool pending_audition_ = false;
     // Present while the audio side is processing a drag, even before its first position applies.
     std::optional<bool> drag_resume_running_{};
@@ -110,6 +112,7 @@ class ProjectPlayback {
     std::atomic<std::uint64_t> background_playhead_{0}, start_position_{0}, foreground_playhead_{0};
     std::atomic<std::uint64_t> applied_{0}, segment_{0};
     std::atomic<bool> running_{false};
+    std::atomic<bool> foreground_running_{true};
     std::atomic<double> sample_rate_{48000};
 
     std::uint64_t enqueue(Command command, bool reserve_drag_end)
@@ -136,8 +139,9 @@ class ProjectPlayback {
     void select_position(GlobalIndex position) noexcept
     {
         pending_position_ = position;
+        if (!pending_.foreground_running) pending_foreground_position_ = position;
         pending_.start_position = position;
-        pending_audition_ = !pending_.running;
+        pending_audition_ = !pending_.running && pending_.foreground_running;
         ++pending_.segment;
     }
 
@@ -148,6 +152,7 @@ class ProjectPlayback {
         start_position_.store(state_.start_position.bits(), std::memory_order_relaxed);
         foreground_playhead_.store(state_.foreground_playhead.bits(), std::memory_order_relaxed);
         running_.store(state_.running, std::memory_order_relaxed);
+        foreground_running_.store(state_.foreground_running, std::memory_order_relaxed);
         applied_.store(state_.applied_command, std::memory_order_relaxed);
         segment_.store(state_.segment, std::memory_order_relaxed);
         sample_rate_.store(state_.sample_rate, std::memory_order_relaxed);
@@ -164,6 +169,10 @@ public:
         return submit({.operation = ProjectPlaybackOperation::set_running, .running = running});
     }
     [[nodiscard]] std::uint64_t toggle() { return submit({.operation = ProjectPlaybackOperation::toggle}); }
+    [[nodiscard]] std::uint64_t toggle_foreground()
+    {
+        return submit({.operation = ProjectPlaybackOperation::toggle_foreground});
+    }
     [[nodiscard]] std::uint64_t seek(GlobalIndex position)
     {
         return submit({.operation = ProjectPlaybackOperation::seek, .position = position});
@@ -208,6 +217,7 @@ public:
         if (pending_.applied_command == state_.applied_command) {
             pending_ = state_;
             pending_position_.reset();
+            pending_foreground_position_.reset();
             pending_audition_ = false;
         }
         while (consumed != written) {
@@ -223,6 +233,7 @@ public:
                 } else if (command.drag_phase == ProjectPlaybackDragPhase::end) {
                     pending_.running = *drag_resume_running_;
                     drag_resume_running_.reset();
+                    if (pending_.running) pending_.foreground_running = true;
                     // Releasing a paused drag at an already selected position preserves its audition.
                     if (!pending_.running && command.position == pending_.start_position) break;
                 }
@@ -235,12 +246,24 @@ public:
                 if (running == wanted) break;
                 running = wanted;
                 if (!drag_resume_running_) {
+                    if (wanted) pending_.foreground_running = true;
                     pending_position_ = pending_.start_position;
                     pending_audition_ = false;
                     ++pending_.segment;
                 }
                 break;
             }
+            case ProjectPlaybackOperation::toggle_foreground:
+                pending_.foreground_running = !pending_.foreground_running;
+                if (!pending_.foreground_running) {
+                    pending_.running = false;
+                    if (drag_resume_running_) *drag_resume_running_ = false;
+                    pending_position_ = pending_.start_position;
+                    pending_foreground_position_ = pending_.start_position;
+                    pending_audition_ = false;
+                }
+                ++pending_.segment;
+                break;
             case ProjectPlaybackOperation::read:
                 break;
             }
@@ -251,14 +274,16 @@ public:
         auto state = pending_;
         state.sample_rate = sample_rate;
         state.background_playhead = pending_position_.value_or(state_.background_playhead);
-        state.foreground_playhead = state.running ? state.background_playhead : state_.foreground_playhead;
+        state.foreground_playhead = state.running ? state.background_playhead
+            : pending_foreground_position_.value_or(state_.foreground_playhead);
         return {state, pending_audition_};
     }
 
     void end_block(Block const& executed, std::size_t frames) noexcept
     {
         state_ = executed.state;
-        state_.foreground_playhead = state_.foreground_playhead.advanced_by(frames);
+        if (state_.foreground_running)
+            state_.foreground_playhead = state_.foreground_playhead.advanced_by(frames);
         if (state_.running) state_.background_playhead = state_.foreground_playhead;
         publish();
     }
@@ -281,6 +306,7 @@ public:
                 .start_position = GlobalIndex::from_bits(start_position_.load(std::memory_order_relaxed)),
                 .foreground_playhead = GlobalIndex::from_bits(foreground_playhead_.load(std::memory_order_relaxed)),
                 .running = running_.load(std::memory_order_relaxed),
+                .foreground_running = foreground_running_.load(std::memory_order_relaxed),
                 .applied_command = applied_.load(std::memory_order_relaxed),
                 .segment = segment_.load(std::memory_order_relaxed),
                 .sample_rate = sample_rate_.load(std::memory_order_relaxed),

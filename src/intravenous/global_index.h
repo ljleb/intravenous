@@ -531,6 +531,38 @@ namespace detail {
 
 } // namespace detail
 
+struct GlobalLatticeInterpolation {
+    GlobalIndex lower{};
+    GlobalIndex upper{};
+    std::uint64_t fraction = 0;
+};
+
+// Select adjacent values on a resolved port's lattice. Keep the whole
+// coordinate exact across both seams and retain the interpolation weight as
+// a binary fraction until the caller converts it to its value type.
+[[nodiscard]] constexpr std::optional<GlobalLatticeInterpolation> interpolate_global_lattice(
+    FractionalGlobalIndex position, std::int32_t pace_exponent) noexcept
+{
+    if (pace_exponent < FractionalGlobalIndexRange::minimum_pace_exponent
+        || pace_exponent > FractionalGlobalIndexRange::maximum_pace_exponent) {
+        return std::nullopt;
+    }
+    auto const lower = detail::lattice_index_bits(position, pace_exponent);
+    auto upper = lower + 1;
+    std::uint64_t fraction = 0;
+    if (pace_exponent < 0) {
+        auto const shift = static_cast<std::uint32_t>(-pace_exponent);
+        fraction = detail::shift_right(
+            {.whole = position.whole().bits(), .fraction = position.fraction()}, shift).fraction;
+        // A slow lattice has fewer than 2^64 addresses on the global circle.
+        upper = shift == 64 ? 0 : upper & (std::numeric_limits<std::uint64_t>::max() >> shift);
+    } else if (pace_exponent < 64) {
+        fraction = position.fraction() << pace_exponent;
+    }
+    return GlobalLatticeInterpolation{
+        GlobalIndex::from_bits(lower), GlobalIndex::from_bits(upper), fraction};
+}
+
 constexpr std::optional<FractionalGlobalIndexRange::LatticeProjection>
 FractionalGlobalIndexRange::try_project_onto_lattice(
     std::int32_t pace_exponent) const noexcept

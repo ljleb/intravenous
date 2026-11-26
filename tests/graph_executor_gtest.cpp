@@ -1,4 +1,5 @@
 #include <intravenous/execution/background/background_coverage_propagation.h>
+#include <intravenous/execution/deferred_tick_input_requests.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 #include "event_source_test_support.h"
 #include <intravenous/execution/graph_executor.h>
@@ -44,6 +45,60 @@ iv::IndexCoverage index_coverage(
     iv::IndexCoverage result;
     for (auto const [begin, end] : ranges) result.include(range(begin, end));
     return result;
+}
+
+TEST(DeferredTickInputRequests, AFixedPrefixRetainsExactCoordinatesUntilTheyRender)
+{
+    iv::DeferredTickInputRequests queue{1, {
+        .callbacks = 2,
+        .requests = 2,
+        .runs = 1,
+        .positions = 2,
+    }};
+    const auto signed_seam = std::numeric_limits<std::int64_t>::min();
+    const auto before_seam = std::numeric_limits<std::int64_t>::max();
+    std::array points{index(before_seam), index(signed_seam)};
+    ASSERT_TRUE(queue.begin_callback(range(16, 20)));
+    EXPECT_FALSE(queue.submit({.port = 7, .execution = range(16, 20),
+        .first_due = index(19), .positions = {.individual_positions = points}}));
+    ASSERT_TRUE(queue.submit({.port = 7, .execution = range(16, 20),
+        .first_due = index(24), .positions = {.individual_positions = points}}));
+    ASSERT_TRUE(queue.publish_callback());
+    auto const selected = queue.select();
+    ASSERT_EQ(selected.end - selected.begin, 1u);
+    EXPECT_TRUE(queue.ready_until(index(24)));
+    EXPECT_FALSE(queue.ready_until(index(25)));
+    EXPECT_FALSE(queue.adopt(selected.end));
+
+    // A seek changes source positions. The next request retains the existing
+    // execution sequence and must not change a selected transaction's prefix.
+    points = {index(-400), index(2000000)};
+    auto const run = iv::SamplePositionRun{points[0], 4, 2};
+    ASSERT_TRUE(queue.begin_callback(range(20, 24)));
+    ASSERT_TRUE(queue.submit({.port = 7, .execution = range(20, 24),
+        .first_due = index(28), .positions = {.runs = {&run, 1}}}));
+    ASSERT_TRUE(queue.publish_callback());
+    EXPECT_FALSE(queue.begin_callback(range(24, 28)));
+    auto const requests = queue.requests(selected.begin);
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(requests.front().positions.individual_positions[0], index(before_seam));
+    EXPECT_EQ(requests.front().positions.individual_positions[1], index(signed_seam));
+    EXPECT_EQ(queue.select().begin, selected.begin);
+    ASSERT_TRUE(queue.complete(selected));
+    EXPECT_FALSE(queue.ready_until(index(25)));
+    ASSERT_TRUE(queue.adopt(selected.end));
+    EXPECT_TRUE(queue.ready_until(index(28)));
+    EXPECT_FALSE(queue.ready_until(index(29)));
+    queue.release_rendered(index(27));
+    EXPECT_FALSE(queue.begin_callback(range(27, 28)));
+    queue.release_rendered(index(28));
+    ASSERT_TRUE(queue.begin_callback(range(28, 29)));
+    EXPECT_FALSE(queue.publish_callback());
+    auto const remaining = queue.select();
+    EXPECT_EQ(remaining.begin, selected.end);
+    EXPECT_EQ(remaining.end - remaining.begin, 1u);
+    ASSERT_EQ(queue.requests(remaining.begin).size(), 1u);
+    EXPECT_EQ(queue.requests(remaining.begin)[0].positions.runs[0], run);
 }
 
 std::vector<iv::GlobalIndexRange> coverage_regions(
@@ -1240,6 +1295,47 @@ TEST(ProjectPlayback, PauseReturnsToTheSelectedStartWithoutAudition)
     EXPECT_FALSE(playback.snapshot().running);
     (void)playback.toggle();
     EXPECT_EQ(playback.begin_block(48000).state.foreground_playhead, index(50));
+}
+
+TEST(ProjectPlayback, ForegroundToggleParksBothPlayheadsAndResumesOnlyTick)
+{
+    iv::ProjectPlayback playback;
+    (void)playback.seek(index(100));
+    (void)playback.set_running(true);
+    playback.end_block(playback.begin_block(48000), 16);
+
+    auto const hold = playback.toggle_foreground();
+    auto parked = playback.begin_block(48000);
+    EXPECT_EQ(parked.state.applied_command, hold);
+    EXPECT_EQ(parked.state.background_playhead, index(100));
+    EXPECT_EQ(parked.state.foreground_playhead, index(100));
+    EXPECT_FALSE(parked.state.running);
+    EXPECT_FALSE(parked.state.foreground_running);
+    EXPECT_FALSE(parked.audition);
+    playback.end_block(parked, 16);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(100));
+
+    (void)playback.seek(index(-20));
+    parked = playback.begin_block(48000);
+    EXPECT_FALSE(parked.audition);
+    playback.end_block(parked, 0);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(-20));
+
+    (void)playback.toggle_foreground();
+    playback.end_block(playback.begin_block(48000), 16);
+    auto resumed = playback.snapshot();
+    EXPECT_TRUE(resumed.foreground_running);
+    EXPECT_FALSE(resumed.running);
+    EXPECT_EQ(resumed.background_playhead, index(-20));
+    EXPECT_EQ(resumed.foreground_playhead, index(-4));
+
+    (void)playback.toggle_foreground();
+    (void)playback.toggle();
+    playback.end_block(playback.begin_block(48000), 16);
+    EXPECT_TRUE(playback.snapshot().foreground_running);
+    EXPECT_TRUE(playback.snapshot().running);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(-4));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(-4));
 }
 
 TEST(ProjectPlayback, FullCommandQueueRejectsNewCommandsWithoutReplacingAcceptedCommands)

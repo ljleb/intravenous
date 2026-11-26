@@ -57,6 +57,32 @@ TEST(FractionalGlobalIndexRange, ProjectsOneSharedIntervalOntoFasterAndSlowerLat
     EXPECT_EQ(half_rate->count, 2u);
 }
 
+TEST(FractionalGlobalIndex, InterpolationUsesExactGridCoordinatesAndWrapsSlowLattices)
+{
+    auto const three_quarters = std::uint64_t{3} << 62;
+    auto const fast = iv::interpolate_global_lattice(
+        iv::FractionalGlobalIndex::from_parts(index(12), three_quarters), 1);
+    ASSERT_TRUE(fast);
+    EXPECT_EQ(fast->lower, index(25));
+    EXPECT_EQ(fast->upper, index(26));
+    EXPECT_EQ(fast->fraction, std::uint64_t{1} << 63);
+
+    auto const last = std::numeric_limits<std::uint64_t>::max();
+    auto const half_before_zero = iv::FractionalGlobalIndex::from_parts(
+        index(last), std::uint64_t{1} << 63);
+    auto const slow = iv::interpolate_global_lattice(half_before_zero, -1);
+    ASSERT_TRUE(slow);
+    EXPECT_EQ(slow->lower, index(last >> 1));
+    EXPECT_EQ(slow->upper, index(0));
+    EXPECT_EQ(slow->fraction, three_quarters);
+
+    auto const one = iv::interpolate_global_lattice(half_before_zero, -64);
+    ASSERT_TRUE(one);
+    EXPECT_EQ(one->lower, index(0));
+    EXPECT_EQ(one->upper, index(0));
+    EXPECT_FALSE(iv::interpolate_global_lattice(half_before_zero, 65));
+}
+
 TEST(FractionalGlobalIndexRange, SlowLatticeCanProduceZeroValuesForAnInvocation)
 {
     auto const no_position = iv::FractionalGlobalIndexRange::from_global_range({

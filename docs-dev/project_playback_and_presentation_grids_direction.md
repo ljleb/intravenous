@@ -82,9 +82,11 @@ a Tick boundary, possibly after preparation):
 | Action | Background playhead | Foreground playhead |
 | --- | --- | --- |
 | Running Tick block | Advances with executed block | Advances with executed block, aligned |
-| Pause | Returns to the last selected start and holds there | Continues advancing on executed blocks |
-| Seek while paused | Changes to the destination | Unchanged by the seek |
-| Remain paused | Holds destination | Continues advancing on executed blocks |
+| Pause with Space | Returns to the last selected start and holds there | Continues advancing on executed blocks |
+| Seek during a project-only pause | Changes to the destination | Unchanged by the seek |
+| Hold with Shift+Space | Returns to the last selected start and holds there | Returns to the same position and stops executing |
+| Seek while both playheads are held | Changes to the destination | Moves to the destination and stays held |
+| Release the foreground with Shift+Space | Holds destination | Resumes Tick from the held position |
 | Resume/start | Advances from held position | Relocates to held position, then advances |
 | Seek while running | Relocates to destination, continues | Relocates to destination, continues in alignment |
 | Explicit foreground relocation while paused | Unchanged | Relocates the one shared foreground coordinate |
@@ -102,14 +104,19 @@ relocate the playhead (or be rejected as a separate operation), rather than
 breaking alignment.
 
 A counter-based noise generator using `ctx.index` keeps producing changing
-noise while paused. A microphone, live instrument, delay or reverb likewise
-continues ordinary Tick execution during an intentional pause. The playhead
-must not freeze, mute, or reset these computations. A transport-aware node can
+noise during an ordinary project-only pause. A microphone, live instrument,
+delay or reverb likewise continues ordinary Tick execution during that pause.
+Shift+Space holds all foreground callbacks without resetting their state.
+Live observations report no current capture while held. Recorded and other
+position-addressed observations continue to use background queries.
+Reset Graph State can prepare and activate fresh state while held. Starting
+project playback with Space resumes both playheads. A transport-aware node can
 choose to silence its own contribution or otherwise respond to transport;
 this is **authored node behavior**, not a global rule for Sample inputs.
 Similarly, smoothing is an explicit signal/input interpretation rather than a
 mandatory approximation for every parameter change; the compiled graph should
 preserve sample-exact authored behavior.
+[Earlier pause contract](./historical/foreground_playback_before_foreground_hold_2026-11-26.md)
 
 ### Reset graph state
 
@@ -144,6 +151,14 @@ playhead to it at the boundary. A graph transition must start from state after
 the reset if it activates afterward. The session action is the one reset
 control for this feature.
 [Earlier reset designs](./historical/runtime_reset_before_whole_graph_shortcut_2026-11-25.md).
+
+The old graph can keep recording while the replacement prepares. At the cut,
+close the old producer queues. The background executor still commits records
+that were finalized and queued before the cut. When the replacement's Tick
+input preparation depends on one of those recordings, hold its first block
+until the worker drains the old queues and publishes reconciled input views.
+Keep the playhead at the cut during that hold. A buffered output that the
+replacement's input preparation doesn't read creates no such hold.
 
 ### Background selection, coverage and pause
 

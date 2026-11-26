@@ -187,6 +187,7 @@ struct BackgroundPortPlan {
     std::string name{};
     InputAccessKind input_access = InputAccessKind::sequential;
     InputContentAccess content_access = InputContentAccess::windowed;
+    std::size_t deferred_tick_lead = 0;
     OutputProductionKind output_production = OutputProductionKind::sequential;
 
     // Input roles are independent because a Sequential input can require
@@ -214,6 +215,7 @@ struct BackgroundPortPlan {
     // Reproducible Sequential fallback in this compiled semantic snapshot.
     // Live knob interpolation uses the runtime control state instead.
     Sample sample_fallback_value{};
+    FractionalGlobalIndex coordinate_fallback_value{};
     std::optional<Sample> sample_manual_contribution{};
     // Authored Sequential-input history retained for callback-window playback.
     // Random Access inputs leave this at zero.

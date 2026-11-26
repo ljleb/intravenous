@@ -123,7 +123,7 @@ struct GetPlaybackRequest {
     bool include_diagnostics = false;
     std::optional<PlaybackOutputProfileRequest> output_profile{};
 };
-struct TogglePlaybackRequest {};
+struct TogglePlaybackRequest { bool foreground = false; };
 struct SetPlaybackRunningRequest { bool running = true; };
 struct SeekPlaybackRequest { GlobalIndex position{}; };
 struct DragPlaybackRequest {

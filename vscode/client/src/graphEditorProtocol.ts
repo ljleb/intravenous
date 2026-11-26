@@ -75,7 +75,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
 export type GraphEditorWebviewMessage = { type: "graphReady" }
     | { type: "setExpandedLanes"; lanes: NodeAddress[] }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
-    | { type: "playbackToggle" }
+    | { type: "playbackToggle"; foreground: boolean }
     | { type: "resetGraphState" }
     | { type: "playbackSeek"; position: string }
     | { type: "playbackDrag"; phase: PlaybackDragPhase; position: string; releaseId?: string }

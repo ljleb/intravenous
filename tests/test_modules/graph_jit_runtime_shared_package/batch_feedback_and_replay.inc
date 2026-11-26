@@ -683,6 +683,25 @@ struct ReplayTenMinus {
     }
 };
 IV_NODE("iv.test.replay.ten_minus", ReplayTenMinus, "Ten minus");
+
+struct ReplayLatentSample {
+    static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
+    static constexpr auto inputs() { return std::array{iv::input<iv::Sample>({"in", "In"})}; }
+    static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"latent", "Latent"})}; }
+    void constrain_ports(iv::ConstrainPortsContext<ReplayLatentSample>& ctx) const {
+        ctx.output<"latent">().latency() = 2;
+    }
+    void tick_block(iv::TickBlockContext<ReplayLatentSample> const& ctx) const {
+        auto input = ctx.input<"in">();
+        auto output = ctx.output<"latent">();
+        for (std::size_t frame = 0; frame < ctx.block_size; ++frame) {
+            output.update(input.get_value(frame), 1);
+            output.push(iv::Sample{-1});
+        }
+    }
+};
+IV_NODE("iv.test.replay.latent_sample", ReplayLatentSample, "Latent sample");
+
 // A persisted Tock window that demands one configured range of its input,
 // forcing background replay of the Tick node that feeds it.
 struct ReplayWindow {
@@ -721,6 +740,16 @@ struct ReplayWindow {
     }
 };
 IV_NODE("iv.test.replay.window", ReplayWindow, "Window");
+
+void replay_latent_sample_module(iv::GraphBuilder& graph) {
+    auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();
+    auto latent = graph.node<"iv.test.replay.latent_sample">();
+    auto window = graph.node<"iv.test.replay.window">(std::int64_t{18}, std::uint64_t{4});
+    latent(source);
+    window(latent);
+    graph.outputs();
+}
+IV_MODULE("iv.test.replay.latent_sample_module", replay_latent_sample_module, "Latent sample replay module");
 
 void coverage_manual_window_module(iv::GraphBuilder& graph) {
     auto source = graph.node<"iv.test.graph_jit.state_context.single_region_sample_source">();

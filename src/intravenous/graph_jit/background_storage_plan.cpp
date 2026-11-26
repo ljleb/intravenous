@@ -1495,7 +1495,7 @@ std::expected<void, std::string> validate_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && port.replay_sequential_input
+                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;
@@ -1862,7 +1862,7 @@ std::expected<void, std::string> finalize_background_runtime_plan(
         return port.direction == PortDirection::input
             ? node.authored_tock_execution
                 ? port.random_access_input
-                : node.replays_tick && port.replay_sequential_input
+                : node.replays_tick && (port.replay_sequential_input || port.random_access_input)
             : node.authored_tock_execution
                 ? port.authored_tock_output
                 : node.replays_tick && port.replayed_tick_output;

@@ -123,10 +123,11 @@ export class WorkspaceSession {
         const state = await rpc.getPlayback(diagnostics, outputProfile);
         return this.rpc === rpc && this.graphSessionStatus === "running" ? state : null;
     }
-    async playbackCommand(position?: string, drag?: PlaybackDrag): Promise<PlaybackSnapshot | null> {
+    async playbackCommand({ position, drag, foreground = false }:
+        { position?: string; drag?: PlaybackDrag; foreground?: boolean } = {}): Promise<PlaybackSnapshot | null> {
         const rpc = this.rpc;
         if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
-        const snapshot = await (position === undefined ? rpc.togglePlayback()
+        const snapshot = await (position === undefined ? rpc.togglePlayback(foreground)
             : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
         return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
     }

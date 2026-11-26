@@ -1477,7 +1477,7 @@ void describe_node(void const* node_data, NodeDescriptionSink& sink)
     }
     static_assert(replay_declaration_is_valid_v<Node>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State, Random Access inputs, or authored reverse coverage callback, "
+        "use complete buffers for Region/Coverage inputs, have no State or authored reverse coverage callback, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     sink.set_internal_latency(get_internal_latency(node));
@@ -1516,7 +1516,7 @@ NodeBuildRequest make_node_build_request(Node const& node)
         "nodes may declare only Tock outputs");
     static_assert(replay_declaration_is_valid_v<Value>,
         "intrinsically replayable nodes must author a Tick callback, "
-        "have no State, Random Access inputs, or authored reverse coverage callbacks, "
+        "use complete buffers for Region/Coverage inputs, have no State or authored reverse coverage callbacks, "
         "and declare only computed Sequential outputs; resolved timing is validated by "
         "the whole-graph planner");
     // Emit the build-local record in the LLVM module.  The builder consumes

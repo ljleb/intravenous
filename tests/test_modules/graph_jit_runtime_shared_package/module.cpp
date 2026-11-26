@@ -1,5 +1,7 @@
 // One translation unit keeps the fixture registrations and helpers available
 // to all scenarios. CTest builds this package once.
+#include <intravenous/basic_nodes/resampling.h>
+
 #include "tick_state_and_sample_feedback.inc"
 #include "sample_conversion_and_feedback.inc"
 #include "latency_and_event_feedback.inc"

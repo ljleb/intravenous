@@ -52,6 +52,10 @@ struct RandomAccessContinuousInputPort {
     IndexCoverage const* coverage_value = nullptr;
     ContinuousValueStorageGeometry geometry{};
     IndexCoverage const* prepared_coverage_value = nullptr;
+    std::int32_t absolute_pace_exponent = 0;
+    void* request_owner = nullptr;
+    bool (*request_samples)(void*, GlobalIndexRange, SamplePositionsView) noexcept = nullptr;
+    std::uint64_t request_generation = 0;
 
     [[nodiscard]] IndexCoverage const& prepared_coverage() const noexcept {
         return background_port_details::bound_coverage(
@@ -708,6 +712,31 @@ public:
     [[nodiscard]] constexpr IndexCoverage const& coverage() const noexcept
     {
         return port_->coverage();
+    }
+
+    [[nodiscard]] constexpr std::int32_t absolute_pace_exponent() const noexcept
+    {
+        return port_->absolute_pace_exponent;
+    }
+
+    [[nodiscard]] constexpr std::uint64_t request_generation() const noexcept
+    {
+        return port_->request_generation;
+    }
+
+    // A positional read selects the first logical Region that contains the
+    // position. It is empty if that Region has no prepared value there. Use
+    // coverage() to distinguish an uncovered position from one that is unprepared.
+    [[nodiscard]] constexpr std::optional<ContinuousRegion<Value>> prepared_window_at(
+        GlobalIndex position) const noexcept
+    {
+        for (auto const& region : port_->region_views()) {
+            if (!region.range.contains(position)) continue;
+            if (auto const* window = region.prepared_window(position))
+                return ContinuousRegion<Value>{*window};
+            break;
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] constexpr auto region() const noexcept

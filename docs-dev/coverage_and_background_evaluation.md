@@ -2056,15 +2056,22 @@ propagation direction choose one supported synchronous scalar, coroutine scalar,
 or synchronous batch form as specified in
 [Batched Node Callback Direction](./batched_node_callbacks_direction.md).
 
-The following is a source-status checkpoint and retains legacy type names:
-the checked-in replayability validation accepts `tick()`, `tick_block()`, or
-`tick_block_batch()` through the normalized `do_tick_block()` operation. It rejects
-`State`, `TockState`, Random Access inputs, nonzero port history or latency, and
-nonzero internal latency. This is an implementation checkpoint, not the target
-semantic rule. The target replayability trait removes the prohibition on Random
-Access inputs. It retains the deterministic, side-effect-free, state, history, and
-latency restrictions. Front 2 removed the callback-shape special case. The replay
-contract still requires pure deterministic evaluation under a fixed version.
+Replay invokes `tick()`, `tick_block()`, or `tick_block_batch()` through
+`do_tick_block()`. The replay contract requires deterministic, side-effect-free
+evaluation under a fixed version. It requires zero history, zero internal
+latency, and no `State` or `TockState`.
+An output can declare latency if its values can be finalized by replaying through
+that many positions past the requested range. Node code must be able to start
+at the requested range without relying on earlier pending output values.
+Replay publishes only the requested output values.
+Disjoint replay ranges start with fresh scratch for pending output values.
+Reverse propagation still selects the full finalization window for each range.
+The foreground playhead supplies no state to this evaluation.
+
+Replay accepts Region and Coverage inputs with complete buffers. It uses the
+selected version of each whole source buffer. A source change can affect any
+output position because the node chooses which source positions to read.
+[Earlier replay restrictions](./historical/tick_resampler_first_proposal_2026-11-26.md)
 
 Whole-project GraphJit validation resolves per-channel connections and semantic
 SCCs, derives contextual replayability and exact available coverage, rejects

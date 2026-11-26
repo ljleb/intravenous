@@ -11,10 +11,12 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <limits>
 #include <mutex>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace iv {
@@ -59,6 +61,9 @@ struct TickMaterializedSampleInput {
     std::vector<GlobalIndexRange> logical_regions{};
     std::vector<std::vector<ContinuousRegionStorageView>> region_windows{};
     IndexCoverage logical_coverage{};
+    // A positional selection may omit storage for parts of the logical
+    // source. Preserve the authoritative coverage from the transaction.
+    std::optional<IndexCoverage> semantic_coverage{};
 
     void rebuild_region_views();
 
@@ -196,6 +201,7 @@ class TickMaterializationSnapshot {
     std::uint64_t generation_ = 0;
     std::uint64_t semantic_version_ = 0;
     std::uint64_t promotion_sequence_ = 0;
+    std::optional<std::uint64_t> deferred_input_ticket_{};
     PersistedDataVersion data_version_{};
     std::vector<TickMaterializedSampleInput> samples_{};
     std::vector<TickMaterializedEventInput> events_{};
@@ -230,6 +236,14 @@ public:
     {
         return promotion_sequence_;
     }
+    [[nodiscard]] std::optional<std::uint64_t> deferred_input_ticket() const noexcept
+    {
+        return deferred_input_ticket_;
+    }
+    void set_deferred_input_ticket(std::uint64_t ticket) noexcept
+    {
+        deferred_input_ticket_ = ticket;
+    }
     [[nodiscard]] PersistedDataVersion data_version() const noexcept
     {
         return data_version_;
@@ -254,6 +268,12 @@ public:
     {
         output_coverages_.assign(coverage.begin(), coverage.end());
     }
+
+    // Validate the final view after both newly prepared and retained data
+    // have been selected. Known gaps do not require storage.
+    [[nodiscard]] std::expected<void, std::string> validate_positional_inputs(
+        std::span<IndexCoverage const> requests,
+        std::span<IndexCoverage const> input_coverages);
 
     [[nodiscard]] TickMaterializedSampleInput const* find_sample(
         graph_jit::BackgroundPortIndex port) const noexcept;

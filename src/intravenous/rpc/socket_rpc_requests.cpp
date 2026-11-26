@@ -724,7 +724,13 @@ ParsedSocketRpcRequest parse_socket_rpc_request(std::string_view line)
         }
         return parsed(std::move(request));
     }
-    if (method == "playback.toggle") return parsed(TogglePlaybackRequest{});
+    if (method == "playback.toggle") {
+        auto const foreground = params.find("foreground");
+        if (foreground == params.end()) return parsed(TogglePlaybackRequest{});
+        if (!foreground->is_boolean())
+            throw std::invalid_argument("playback.toggle requires boolean param 'foreground'");
+        return parsed(TogglePlaybackRequest{foreground->get<bool>()});
+    }
     if (method == "playback.setRunning") {
         if (!params.contains("running") || !params.at("running").is_boolean())
             throw std::invalid_argument("playback.setRunning requires boolean param 'running'");

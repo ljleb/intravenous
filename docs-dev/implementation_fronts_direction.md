@@ -92,6 +92,132 @@ _Implementation status and open questions, 2026-11-25._
   connect the proof obligations to launcher, IPC, and resource enforcement on
   the executable path before introducing either mechanism. [Security prerequisite](./package_sandbox_security_direction.md#installation-and-listing-prerequisite)
 
+### Tick resampling and computed source demand
+
+_Implementation status and friction, 2026-11-26._
+
+The complete-buffer branch uses `TickInvocationWorkspace::bind` to supply an
+already-pinned `RandomAccessContinuousInputPort` and has zero added output
+latency. The current `prepared_window_at()` walks logical Regions in their
+published order. Cost depends on the Region count. An indexed lookup would
+have to preserve the selected Region when Regions overlap and when ranges
+cross the signed ordering seam. [Complete-buffer API](./random_access_port_data_direction.md#complete-buffer-tick-resampling)
+
+`BackgroundPropagationWorkspace::replay_reverse_coverage` now includes each
+output's finalization latency in its Sequential input demand. The replay call
+frame runs those extra positions and publishes only the selected output range.
+This supports Tick nodes with zero history and bounded output latency.
+The replay root resets pending output scratch before a disjoint range. It
+retains values across adjacent callback blocks of the same range.
+
+`BackgroundEvaluationCallFrame` uses the resolved port geometry to store
+`Sample` and `FractionalGlobalIndex` values during replay. It binds complete
+Region and Coverage inputs to the same Tick callback that runs in the foreground.
+`validate_contextual_replay_realization` still requires project-rate Sequential
+ports. A resampler can use a source buffer at a different pace because its
+callback selects taps on the source grid.
+
+The deferred branch cannot reuse existing Tick port latency alone.
+`GraphExecutor::evaluate_generation` builds `CoveragePropagationRequest`
+before the Tick callback and `append_tick_materialization_demands` requests
+complete Random Access inputs or Sequential playhead ranges. Neither carries
+the sample coordinates learned from live Tick execution. There is also no
+completion keyed by the output sample whose finalization depends on those
+coordinates. Treating explicit coordinates as a Sequential input with latency
+would change which data it reads. Asking for complete buffers would force
+unbounded computation for sources such as a procedural Automation Curve.
+
+`DeferredTickInputRequests` now records callback requests against a physical
+execution range. It copies the requested source coordinates into a bounded
+queue and lets the worker select a fixed prefix. `BackgroundEvaluationTransaction`
+turns that prefix into sparse input demand. Its materialization snapshot carries
+the ticket for the prepared prefix.
+
+`TickInvocationWorkspace` binds the queue to continuous windowed inputs.
+`GraphExecutor` keeps their demand in each replacement snapshot until the last
+consuming sample runs. It gates Tick on the ticket carried by the adopted
+snapshot. The resampler stores its pending taps through a foreground seek.
+The worker selects the live graph's coherent data version when it prepares
+those taps. [Earlier request transport](./historical/tick_resampler_first_proposal_2026-11-26.md)
+
+Changing the compiled execution generation starts a new request queue and
+primes the deferred resampler again. A compatible steady-code replacement
+uses the same queue. Transferring pending requests and their selected source
+data through structural cutover remains open. Early execution and replay
+discovery also remain open.
+
+Design requirements for the deferred branch:
+
+1. Give GraphJit a way to distinguish complete-buffer access from bounded
+   coordinate demand. For the same algorithm, resolve zero added output
+   latency when the selected input strategy guarantees readiness by Tick.
+   Resolve a fixed output finalization lead for live coordinate requests.
+   Any request produced inside Tick needs a deadline in a later callback.
+2. Support `request_input()` in Tick with a fixed, executor-owned realtime
+   reserve. The declared preparation lead identifies when the request is due
+   in physical Sequential execution order, including across split callbacks.
+   Node code can retain coordinates with Sequential input history or `State`.
+   The executor can reserve descriptors and payload for a graph without
+   requiring a numeric maximum from every node author. A node-supplied bound
+   would help prove capacity before activation. The worker still needs measured
+   cost and request deadlines to decide what work to start first. The runtime
+   must report reserve exhaustion at submission and must not enqueue a partial
+   request.
+3. Batch those coordinates into `InputCoverageRequest::sample_positions` and
+   publish a complete prepared result for one selected data version through
+   the background transaction. Preserve the request's execution deadline and
+   version. A running seek cuts the old foreground segment and joins the new
+   segment in the same physical Sequential order. Keep requests issued by
+   executed callbacks whose output is still due across the seam. Discard
+   speculative requests beyond the cut. Reset clears the execution history.
+   Graph cutover needs an explicit rule for requests whose output history
+   migrates. [Earlier request ownership proposal](./historical/tick_resampler_first_proposal_2026-11-26.md)
+4. Check results for due output ranges before entering the Tick root. When the
+   background worker misses a deadline, report a playback underrun without
+   advancing the graph. Distinguish that failure from a known source gap.
+
+The earlier alternative is to derive coordinates ahead of time from Tock or
+replayable Tick and prepare their source taps before foreground execution.
+It can eliminate the finalization lead when the coordinate stream really is
+available off-thread. It cannot serve coordinates first produced from live
+inputs. Proving that earlier readiness and implementing live request delivery
+are separate dependencies. Both can eventually share sparse background demand
+and prepared-window access.
+
+`BackgroundEvaluationTransaction::prepare_evaluation()` seals input views before
+the imported Tick callback runs. A replay callback that requests computed source
+values would produce that demand after the views are already sealed. Selecting a
+whole source buffer would defeat sparse demand. A separate resampler callback
+would duplicate the coordinate and tap selection. A replay implementation needs
+a discovery step before the final evaluation. It can reuse the transaction's
+existing recursive discovery and selected data version. Live Tick already
+delivers requests from coordinates that only exist during foreground playback.
+
+`BackgroundEvaluationTransaction` currently passes positional `IndexCoverage`
+to `make_tick_materialization_snapshot`. The positional branch reads strided
+producer windows at their exact selected positions and freezes only the
+requested taps. It retains semantic coverage separately and validates the
+requested covered taps after carrying forward retained windows. A request
+entirely in a known gap can publish an empty input view. The prepared root
+binds a single coherent input view per port. The queue keeps the execution
+range for each deferred request and blocks a due callback until a snapshot
+covers its ticket.
+
+For early execution, the applied foreground seek chooses the cut. Each early
+branch must arrive at that cut with the state after the last valid callback
+in the old segment. It then projects the first block in the new segment from
+the new foreground coordinate. When an early branch already ran past the cut,
+it needs retained state at the cut or enough earlier state and inputs to
+recompute the valid prefix. The current executor can prepare candidate input
+views independently from applied playback. It has no corresponding checkpoints
+for early Tick state. Advancing early Tick state and publishing its outputs
+across the foreground cut requires this ownership contract first. Another
+option is to keep the seek pending until the foreground reaches a cut no
+early branch has crossed. That preserves forward-only state at the cost of
+delaying the seek. In either case, played output is committed. For output
+still due, a prepared result remains reusable only if its dependencies are
+valid on the joined execution sequence.
+
 ### Project-authored modules and constructor reference order
 
 _Implementation friction, 2026-11-25._

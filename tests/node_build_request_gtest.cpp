@@ -2907,15 +2907,15 @@ TEST(NodeBuildRequest, AutomaticCurveUsesIrregularSpacingAndClampedTangents)
 }
 
 
-struct ReplayWithoutRandomAccessPropagation {
+struct ReplayWithCompleteBufferInput {
     static constexpr iv::TickReplayMode replay_mode = iv::TickReplayMode::enabled;
     static constexpr auto inputs() {
         return std::array{iv::event_input({"points", "Points"}, iv::EventTypeId::sample, iv::InputAccess::region, iv::InputContentAccess::complete_buffer)};
     }
     static constexpr auto outputs() { return std::array{iv::output<iv::Sample>({"value", "Value"})}; }
-    void tick_block(iv::TickBlockContext<ReplayWithoutRandomAccessPropagation> const&) const {}
+    void tick_block(iv::TickBlockContext<ReplayWithCompleteBufferInput> const&) const {}
 };
-static_assert(!iv::details::replay_declaration_is_valid_v<ReplayWithoutRandomAccessPropagation>);
+static_assert(iv::details::replay_declaration_is_valid_v<ReplayWithCompleteBufferInput>);
 
 TEST(NodeBuildRequest, AutomationRejectsInvalidConstructionData)
 {

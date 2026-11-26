@@ -34,6 +34,7 @@ export type PlaybackSnapshot = {
     /** Foreground playhead as a signed decimal sample index. */
     executionIndex?: string;
     running: boolean;
+    foregroundRunning: boolean;
     sampleRate: number;
     appliedCommand: string;
     segment: string;
@@ -89,7 +90,7 @@ export class PlaybackDisplay {
             || snapshot.position !== this.selected?.position);
         const foregroundPlayhead = snapshot?.executionIndex;
         const previousForegroundPlayhead = this.selected?.executionIndex;
-        this.foregroundAdvancing = foregroundPlayhead !== undefined && (snapshot?.running ? this.backgroundAdvancing
+        this.foregroundAdvancing = snapshot?.foregroundRunning === true && foregroundPlayhead !== undefined && (snapshot.running ? this.backgroundAdvancing
             : previousForegroundPlayhead !== undefined && foregroundPlayhead !== previousForegroundPlayhead);
         this.selected = snapshot;
         this.receivedAt = now;

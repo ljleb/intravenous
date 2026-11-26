@@ -13,6 +13,11 @@
 
 namespace iv {
 
+// A replay callback can revise an output for its declared latency after the
+// output position. Keep this execution range separate from output demand.
+[[nodiscard]] IndexCoverage replay_callback_coverage(
+    IndexCoverage const& output, std::size_t latency);
+
 // Generation-local roots for one exact coverage-propagation operation. Port
 // and node indices come from the bound CompiledGraph's immutable background
 // plan.
@@ -314,6 +319,11 @@ public:
         static IndexCoverage const none{};
         if (port >= input_coverages_by_port_.size()) return none;
         return input_coverages_by_port_[port];
+    }
+
+    [[nodiscard]] std::span<IndexCoverage const> input_coverages() const noexcept
+    {
+        return input_coverages_by_port_;
     }
 
     // Whole logical Regions selected by the original reverse request, retaining

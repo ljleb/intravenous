@@ -107,4 +107,4 @@ expect_invalid(
 
 expect_invalid(
     invalid_tick_windowed_input.cpp
-    "IV_NODE Tick Region/Coverage inputs initially require complete-buffer access")
+    "IV_NODE Tick Region/Coverage event inputs require complete-buffer access")

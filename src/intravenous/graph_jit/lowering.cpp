@@ -60,6 +60,8 @@ struct BackgroundCallByteOffsets {
     std::size_t replay_tick_context = 0;
     std::size_t replay_regions_data = 0;
     std::size_t replay_regions_size = 0;
+    std::size_t replay_storage = 0;
+    std::size_t prepare_replay_region = 0;
 };
 
 struct EmittedNodeConfiguration {
@@ -93,6 +95,8 @@ constexpr BackgroundCallByteOffsets background_batch_byte_offsets() noexcept
             + offsetof(ReflectedSpan<GlobalIndexRange const>, pointer),
         .replay_regions_size = offsetof(BackgroundNodeCall, replay_regions)
             + offsetof(ReflectedSpan<GlobalIndexRange const>, extent),
+        .replay_storage = offsetof(BackgroundNodeCall, replay_storage),
+        .prepare_replay_region = offsetof(BackgroundNodeCall, prepare_replay_region),
     };
 }
 
@@ -885,6 +889,11 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                 "GraphJit replay program has no imported tick_block callback");
         }
         auto* tick = module.getFunction(callbacks.tick_block);
+        auto const has_latent_output = std::ranges::any_of(background_node.outputs, [&](auto port) {
+            auto const& output = plan.connections.background.ports[port];
+            return output.replayed_tick_output && output.kind == PortKind::sample
+                && output.output_latency != 0;
+        });
         emit_when_active(
             node,
             BackgroundNodeActivity::evaluate,
@@ -958,6 +967,17 @@ std::expected<llvm::Function*, std::string> define_background_root_operation(
                     advance);
 
                 builder.SetInsertPoint(invoke);
+                if (has_latent_output) {
+                    auto load_pointer = [&](std::size_t offset, char const* name) {
+                        auto* address = byte_offset_pointer(builder, node_frame, offset, name);
+                        return builder.CreateLoad(pointer_type, address);
+                    };
+                    auto* prepare = load_pointer(offsets.prepare_replay_region, "replay.prepare.region");
+                    auto* storage = load_pointer(offsets.replay_storage, "replay.storage");
+                    auto* function_type = llvm::FunctionType::get(
+                        builder.getVoidTy(), {pointer_type, size_type, size_type}, false);
+                    builder.CreateCall(function_type, prepare, {storage, begin, extent});
+                }
                 // A Tick wrapper addresses each continuous binding at its
                 // sequential_begin_index plus the frame offset. Replay storage
                 // is indexed by global position, so each region's invocation

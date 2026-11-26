@@ -3945,9 +3945,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             for (std::size_t port = 0;
                  port < configured.sample_output_count(); ++port) {
                 auto const& output = port_realization->output(bundle, port);
-                if (output.history != 0 || output.latency != 0)
+                if (output.history != 0)
                     return std::unexpected(
-                        "intrinsically replayable node resolves nonzero Tick output history or latency");
+                        "intrinsically replayable node resolves nonzero Tick output history");
             }
             for (std::size_t port = 0;
                  port < configured.event_input_count(); ++port) {
@@ -3958,9 +3958,9 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             for (std::size_t port = 0;
                  port < configured.event_output_count(); ++port) {
                 auto const& output = port_realization->event_output(bundle, port);
-                if (output.history != 0 || output.latency != 0)
+                if (output.history != 0)
                     return std::unexpected(
-                        "intrinsically replayable node resolves nonzero Tick event-output history or latency");
+                        "intrinsically replayable node resolves nonzero Tick event-output history");
             }
         }
     }

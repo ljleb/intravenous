@@ -90,6 +90,13 @@ public:
         return generation_;
     }
 
+    // A private preview may precede writes drained from its predecessor. A
+    // canonical playback view pins the published data and materialization.
+    [[nodiscard]] bool is_canonical_playback() const noexcept
+    {
+        return captured_ && !owned_data_ && !initial_data_;
+    }
+
     [[nodiscard]] PersistedDataStore::Snapshot const& data() const noexcept
     {
         assert(captured_);
