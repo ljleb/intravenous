@@ -168,7 +168,11 @@ class GraphExecutor {
         NodeStorage storage{};
         TickInvocationWorkspace tick_invocation;
         std::unique_ptr<DeferredTickInputRequests> deferred_inputs{};
-        GlobalIndex rendered_samples{};
+        // Physical index of the next callback in this deferred request queue.
+        // Compatible cutovers inherit it with the pending requests.
+        GlobalIndex next_deferred_input_index{};
+        [[nodiscard]] bool begin_deferred_input_callback(
+            RealtimePersistedState const& inputs, GlobalIndexRange range) noexcept;
         std::vector<std::unique_ptr<ProducerReserve>> producer_reserves{};
         // Declared after producer_reserves so registrations are removed before
         // their reserves are destroyed.
@@ -512,29 +516,91 @@ class GraphExecutor {
     // lookahead from this coordinate; explicit control-path demand overrides it.
     std::atomic<std::uint64_t> requested_playback_index_{0};
     struct PlaybackDemand {
-        GlobalIndex project{};
-        GlobalIndexRange execution{};
+        GlobalIndex background_position{};
+        GlobalIndexRange foreground_project_range{};
         bool paused = false;
         bool operator==(PlaybackDemand const&) const = default;
+
+        [[nodiscard]] static PlaybackDemand from_block(
+            ProjectPlayback::Block const& block, std::size_t frames) noexcept
+        {
+            return {block.state.background_playhead, {block.state.foreground_playhead, frames},
+                !block.state.running};
+        }
     };
     struct PublishedPlaybackDemand {
-        std::atomic<std::uint64_t> project{}, execution{}, extent{};
+        std::atomic<std::uint64_t> background_position{}, foreground_project_begin{}, frame_count{};
         std::atomic<bool> paused{};
     };
     std::array<PlaybackDemand, 2> last_playback_demand_{};
     std::array<PublishedPlaybackDemand, 2> published_playback_demand_{};
     std::atomic<std::uint64_t> playback_demand_revision_{0};
     ProjectPlayback playback_{};
-    // Written by foreground before publishing the reservation. The active
-    // generation, code and mailbox selection stay pinned until consumption.
-    struct EarlyTickPrefix {
-        ExecutionGeneration* generation = nullptr;
-        ExecutionGeneration::RealtimeCode* code = nullptr;
-        graph_jit::RealtimeRootPlan const* root = nullptr;
-        RealtimePersistedState const* persisted = nullptr;
-        LiveObservationFrame* observations = nullptr;
+    class ForegroundPrefix {
+    public:
+        struct Reservation {
+            ProjectPlayback::Block first;
+            std::size_t frames;
+            GlobalIndex deferred_input_begin;
+            ExecutionGeneration& generation;
+            ExecutionGeneration::RealtimeCode& code;
+            graph_jit::RealtimeRootPlan const& root;
+            RealtimePersistedState const& inputs;
+            LiveObservationFrame* observations;
+        };
+
+        struct Slice {
+            Reservation const& reservation;
+            ProjectPlayback::Block block;
+            std::size_t offset;
+            std::size_t frames;
+
+            [[nodiscard]] bool last() const noexcept
+            {
+                return offset + frames == reservation.frames;
+            }
+            [[nodiscard]] GlobalIndexRange deferred_input_range() const noexcept
+            {
+                return {reservation.deferred_input_begin.advanced_by(offset), frames};
+            }
+        };
+
+        enum class Mode : std::uint8_t { committed, provisional };
+
+        // Device side. All resources in the slot stay pinned until the last
+        // slice commits or the worker acknowledges a provisional discard.
+        [[nodiscard]] bool occupied() const noexcept;
+        [[nodiscard]] bool provisional() const noexcept;
+        [[nodiscard]] std::size_t limit_frames(std::size_t frames) const noexcept;
+        void reserve(Reservation reservation, Mode mode) noexcept;
+        [[nodiscard]] Reservation const& reservation() const noexcept { return *reservation_; }
+        [[nodiscard]] ProjectPlayback::Block next_block() const noexcept;
+        [[nodiscard]] std::optional<Slice> next_slice(std::size_t frames) const noexcept;
+        void consume(Slice const& slice) noexcept;
+        [[nodiscard]] bool matches(ProjectPlayback::Block const& block) const noexcept;
+        [[nodiscard]] bool promote(ProjectPlayback::Block const& block) noexcept;
+        [[nodiscard]] bool request_discard() noexcept;
+        void release_discarded() noexcept;
+
+        // Worker side. Claim and execute once, outside the retryable
+        // background transaction. Publication transfers access to the device.
+        [[nodiscard]] Reservation const* claim() noexcept;
+        void publish_ready() noexcept;
+        [[nodiscard]] Reservation const* to_discard() const noexcept;
+        void publish_discarded() noexcept;
+
+    private:
+        // Device reserves and consumes. Worker executes. A provisional
+        // discard goes through the worker before the device frees the slot.
+        enum class Phase : std::uint8_t { idle, reserved, executing, ready, discard_requested, discarded };
+        std::atomic<Phase> phase_{Phase::idle};
+        std::optional<Reservation> reservation_{};
+        std::size_t consumed_frames_ = 0; // Device only.
+        Mode mode_ = Mode::committed; // Device only.
+
+        void release() noexcept;
     };
-    EarlyTickPrefix early_tick_prefix_{};
+    ForegroundPrefix foreground_prefix_{};
     // Generations and gestures own their live targets. The registry shares
     // those cells without retaining controls after their last owner is gone.
     // Locked only for lookup, never by realtime.
@@ -564,15 +630,17 @@ class GraphExecutor {
         ExecutionGeneration const& generation, ExecutionGeneration::RealtimeCode const& code) noexcept;
     [[nodiscard]] bool reserve_early_tick_prefix(ExecutionGeneration& generation,
         RealtimePersistedState const& persisted, ProjectPlayback::Block const& first,
-        std::size_t frames, bool provisional = false) noexcept;
+        std::size_t frames, ForegroundPrefix::Mode mode = ForegroundPrefix::Mode::committed) noexcept;
     [[nodiscard]] std::optional<bool> playback_activation_pending(ExecutionGeneration const& generation) noexcept;
     [[nodiscard]] bool keep_provisional_prefix(ProjectPlayback::Block const& current,
         ProjectPlayback::Block const& candidate) noexcept;
     [[nodiscard]] bool discard_provisional_prefix_on_worker() noexcept;
     void run_early_tick_prefix() noexcept;
+    void render_foreground_prefix(std::size_t frames, PlaybackRenderSlice* profile);
     bool execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
         GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
-        PlaybackRenderSlice* profile = nullptr);
+        PlaybackRenderSlice* profile = nullptr, ForegroundPrefix::Slice const* slice = nullptr);
+    void record_playback_underrun(ExecutionGeneration const& generation) noexcept;
     [[nodiscard]] ExecutionGeneration const& realtime_execution_generation()
         const;
     [[nodiscard]] std::expected<BackgroundEvaluationResult, std::string>
@@ -628,14 +696,13 @@ public:
             };
         }
     }
-    // Device-clock entry. Applies session commands and activation at this
-    // boundary, then continues Tick execution even when the playhead is held.
-    // Call on the device render thread before binding device buffers for
-    // the slice. Playback may cut a slice at the end of a sealed prefix.
+    // Call on the device render thread before binding device buffers.
+    // A slice ends at or before the end of the reserved foreground range.
     [[nodiscard]] std::size_t playback_render_frames(std::size_t maximum_frames) const noexcept
     {
-        return playback_.render_frames(maximum_frames);
+        return foreground_prefix_.limit_frames(maximum_frames);
     }
+    // Applies session commands and activation at the next available boundary.
     void render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile = nullptr,
         bool start_early_prefix = false);
     // Called once per device request after consuming its ordinary slices.

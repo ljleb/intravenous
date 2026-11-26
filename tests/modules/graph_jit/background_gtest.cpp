@@ -1,5 +1,6 @@
 #include "test_support.h"
 #include <intravenous/execution/background/background_storage_realization.h>
+#include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/graph_jit/sequential_coverage.h>
 
 #include <chrono>
@@ -1402,86 +1403,109 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsFinalizeAtTheirAuthored
     auto& graph = *compiled.compiled_graph;
     auto const& plan = graph.background_evaluation_plan;
 
-    iv::PersistedDataStore data;
-    auto data_reader = data.register_reader();
-    iv::TickMaterializationStore materializations;
-    auto materialization_reader = materializations.register_reader();
-    iv::TickInvocationWorkspace workspace(
-        plan,
-        graph.project_generation,
-        data,
-        graph.specialization.block_size,
-        graph.root_operations.combine_sequential_input,
-        graph.root_operations.initialize_sequential_input);
-    auto const requirements = workspace.producer_requirements();
-    ASSERT_EQ(requirements.size(), 2u);
-    iv::AsyncCapacityManager manager{1};
-    iv::AsyncWorkSignal work_signal;
-    std::atomic<bool> reservation_failed{false};
-    std::vector<std::unique_ptr<iv::ProducerReserve>> reserves;
-    std::vector<std::unique_ptr<iv::PendingQueue>> pending;
-    std::optional<std::size_t> sample_endpoint;
-    std::optional<std::size_t> event_endpoint;
-    for (std::size_t endpoint = 0; endpoint < requirements.size(); ++endpoint) {
-        reserves.push_back(std::make_unique<iv::ProducerReserve>(
-            iv::realtime_produced_block_storage_size));
-        pending.push_back(std::make_unique<iv::PendingQueue>(
-            *reserves.back(), work_signal));
-        auto const blocks = requirements[endpoint].maximum_blocks_per_callback;
-        // Two callbacks, none drained in between.
-        ASSERT_EQ(manager.maintain(*reserves.back(),
-            {blocks, blocks, 2 * blocks}), 2 * blocks);
-        workspace.bind_producer_endpoint(
-            endpoint, *reserves.back(), *pending.back(), reservation_failed);
-        (requirements[endpoint].kind == iv::PortKind::sample
-            ? sample_endpoint
-            : event_endpoint) = endpoint;
-    }
-    ASSERT_TRUE(sample_endpoint && event_endpoint);
+    for (bool const split : {false, true}) {
+        SCOPED_TRACE(split ? "split Tick root" : "complete Tick root");
+        iv::PersistedDataStore data;
+        auto persisted = iv::RealtimePersistedState::prepare_initial(graph.project_generation, data);
+        ASSERT_TRUE(persisted->capture_initial());
+        iv::TickInvocationWorkspace workspace(
+            plan,
+            graph.project_generation,
+            data,
+            graph.specialization.block_size,
+            graph.root_operations.combine_sequential_input,
+            graph.root_operations.initialize_sequential_input);
+        auto const requirements = workspace.producer_requirements();
+        ASSERT_EQ(requirements.size(), 2u);
+        iv::AsyncCapacityManager manager{1};
+        iv::AsyncWorkSignal work_signal;
+        std::atomic<bool> reservation_failed{false};
+        std::vector<std::unique_ptr<iv::ProducerReserve>> reserves;
+        std::vector<std::unique_ptr<iv::PendingQueue>> pending;
+        std::optional<std::size_t> sample_endpoint;
+        std::optional<std::size_t> event_endpoint;
+        for (std::size_t endpoint = 0; endpoint < requirements.size(); ++endpoint) {
+            reserves.push_back(std::make_unique<iv::ProducerReserve>(
+                iv::realtime_produced_block_storage_size));
+            pending.push_back(std::make_unique<iv::PendingQueue>(
+                *reserves.back(), work_signal));
+            auto const blocks = requirements[endpoint].maximum_blocks_per_callback;
+            // Two callbacks, none drained in between.
+            ASSERT_EQ(manager.maintain(*reserves.back(),
+                {blocks, blocks, 2 * blocks}), 2 * blocks);
+            workspace.bind_producer_endpoint(
+                endpoint, *reserves.back(), *pending.back(), reservation_failed);
+            (requirements[endpoint].kind == iv::PortKind::sample
+                ? sample_endpoint
+                : event_endpoint) = endpoint;
+        }
+        ASSERT_TRUE(sample_endpoint && event_endpoint);
 
-    auto storage = graph.node_layout.create_storage(resources);
-    storage.initialize();
-    for (auto const begin : {0, 500}) {
-        iv::TickInvocationFrame frame{
-            data_reader, materialization_reader, workspace, index(begin), 64};
-        graph.root_operations.tick_block(
-            storage.buffer().data(), &frame.call(), index(begin), 64);
-    }
-    EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
+        auto storage = graph.node_layout.create_storage(resources);
+        storage.initialize();
+        auto const* root = graph.root_operations.tick_block.plan.get();
+        if (split) ASSERT_TRUE(iv::graph_jit::has_early_tick(root));
+        std::vector<std::byte> transfer(iv::graph_jit::tick_transfer_size(root));
+        auto execute_part = [&](std::int64_t begin, std::size_t frames,
+                                iv::graph_jit::TickRootPart part, bool publish) {
+            iv::TickInvocationFrame frame{*persisted, workspace, index(begin), frames, {}, publish};
+            iv::graph_jit::execute_tick_root_part(root, storage.buffer().data(),
+                &frame.call(), index(begin), frames, part, transfer);
+        };
+        for (auto const begin : {0, 500}) {
+            if (!split) {
+                iv::TickInvocationFrame frame{*persisted, workspace, index(begin), 64};
+                graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(begin), 64);
+                continue;
+            }
+            auto const previous_samples = captured_records(pending[*sample_endpoint]->pin()).size();
+            auto const previous_events = captured_records(pending[*event_endpoint]->pin()).size();
+            auto expect_no_publication = [&] {
+                EXPECT_EQ(captured_records(pending[*sample_endpoint]->pin()).size(), previous_samples);
+                EXPECT_EQ(captured_records(pending[*event_endpoint]->pin()).size(), previous_events);
+            };
+            execute_part(begin, 64, iv::graph_jit::TickRootPart::early, false);
+            expect_no_publication();
+            execute_part(begin, 17, iv::graph_jit::TickRootPart::foreground, false);
+            expect_no_publication();
+            execute_part(begin + 17, 47, iv::graph_jit::TickRootPart::foreground, true);
+        }
+        EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
 
-    auto const samples = captured_records(pending[*sample_endpoint]->pin());
-    ASSERT_EQ(samples.size(), 3u);
-    std::array const ranges{range(0, 63), range(63, 64), range(500, 563)};
-    std::array const initial_values{1000.0f, 1499.0f, 1500.0f};
-    for (std::size_t slot = 0; slot < samples.size(); ++slot) {
-        auto const& record = samples[slot];
-        EXPECT_EQ(record.header.begin, ranges[slot].begin);
-        ASSERT_EQ(record.header.range_extent, ranges[slot].extent);
-        ASSERT_EQ(record.payload.size(), ranges[slot].extent * sizeof(iv::Sample));
-        std::vector<iv::Sample> values(ranges[slot].extent);
-        std::memcpy(values.data(), record.payload.data(), record.payload.size());
-        EXPECT_FLOAT_EQ(values.front(), initial_values[slot]);
-        EXPECT_FLOAT_EQ(values.back(), initial_values[slot] + values.size() - 1);
-    }
+        auto const samples = captured_records(pending[*sample_endpoint]->pin());
+        ASSERT_EQ(samples.size(), 3u);
+        std::array const ranges{range(0, 63), range(63, 64), range(500, 563)};
+        std::array const initial_values{1000.0f, 1499.0f, 1500.0f};
+        for (std::size_t slot = 0; slot < samples.size(); ++slot) {
+            auto const& record = samples[slot];
+            EXPECT_EQ(record.header.begin, ranges[slot].begin);
+            ASSERT_EQ(record.header.range_extent, ranges[slot].extent);
+            ASSERT_EQ(record.payload.size(), ranges[slot].extent * sizeof(iv::Sample));
+            std::vector<iv::Sample> values(ranges[slot].extent);
+            std::memcpy(values.data(), record.payload.data(), record.payload.size());
+            EXPECT_FLOAT_EQ(values.front(), initial_values[slot]);
+            EXPECT_FLOAT_EQ(values.back(), initial_values[slot] + values.size() - 1);
+        }
 
-    auto const events = captured_records(pending[*event_endpoint]->pin());
-    ASSERT_EQ(events.size(), 3u);
-    std::array<std::size_t, 3> const counts{0, 2, 0};
-    for (std::size_t block = 0; block < events.size(); ++block) {
-        SCOPED_TRACE("event record of block " + std::to_string(block));
-        auto const& record = events[block];
-        EXPECT_EQ(record.header.begin, ranges[block].begin);
-        EXPECT_EQ(record.header.range_extent, ranges[block].extent);
-        ASSERT_EQ(record.header.event_count, counts[block]);
-        ASSERT_EQ(
-            record.payload.size(), counts[block] * sizeof(iv::TimedEvent));
-        for (std::size_t event = 0; event < counts[block]; ++event) {
-            iv::TimedEvent timed{};
-            std::memcpy(
-                &timed,
-                record.payload.data() + event * sizeof(iv::TimedEvent),
-                sizeof(timed));
-            EXPECT_EQ(timed.time, index(63));
+        auto const events = captured_records(pending[*event_endpoint]->pin());
+        ASSERT_EQ(events.size(), 3u);
+        std::array<std::size_t, 3> const counts{0, 2, 0};
+        for (std::size_t block = 0; block < events.size(); ++block) {
+            SCOPED_TRACE("event record of block " + std::to_string(block));
+            auto const& record = events[block];
+            EXPECT_EQ(record.header.begin, ranges[block].begin);
+            EXPECT_EQ(record.header.range_extent, ranges[block].extent);
+            ASSERT_EQ(record.header.event_count, counts[block]);
+            ASSERT_EQ(
+                record.payload.size(), counts[block] * sizeof(iv::TimedEvent));
+            for (std::size_t event = 0; event < counts[block]; ++event) {
+                iv::TimedEvent timed{};
+                std::memcpy(
+                    &timed,
+                    record.payload.data() + event * sizeof(iv::TimedEvent),
+                    sizeof(timed));
+                EXPECT_EQ(timed.time, index(63));
+            }
         }
     }
 }

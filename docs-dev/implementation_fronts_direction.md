@@ -220,14 +220,15 @@ covers its ticket.
 ### Foreground prefixes for early Tick
 
 The owner chose to drain the bounded prefix before applying a seek. This keeps
-stateful Tick execution forward-only. `ProjectPlayback` can reserve one prefix
-for an admitted selection. The reservation carries the execution generation,
-project position, playback segment, and consecutive physical execution range.
-The selected command becomes applied on the first successful foreground slice.
-One worker claims the reservation. `GraphExecutor::render_block()` checks
-readiness without waiting on the device thread and defers graph activation
-until the last frame of the prefix renders. The next reservation reuses the
-transfer buffer after that acknowledgment.
+stateful Tick execution forward-only. `GraphExecutor::ForegroundPrefix` owns
+one preallocated reservation. It brings the admitted transport block and the
+physical range in the deferred input queue together with the pinned generation,
+code, Tick root, input snapshot, and observation frame. The worker claims the
+reservation once and publishes it ready. The device thread obtains each slice
+from it without waiting. `ProjectPlayback` applies the selected command on the
+first successful foreground slice. Finishing the last slice releases the slot
+and permits a cutover or reuse of its transfer buffer. A discarded provisional
+reservation releases the slot after the worker acknowledges restoration.
 `SystemAudioDevices::output_render_loop()` and the playback benchmark split
 their device buffers at that boundary before binding the audio spans.
 [Earlier seek alternatives](./historical/tick_resampler_first_proposal_2026-11-26.md#seek-alternatives-for-early-tick)
@@ -7654,6 +7655,51 @@ continue to govern observable behavior._
   Stack-budget retries reuse that topology and recompute scheduling and storage.
   Authored detach validation still precedes planning for manual overrides.
   Native test verification is pending.
+
+### Semantic refactoring after core implementation
+
+_Planned work after the core application is implemented._
+
+Run one pass per large existing application module. Use the current module
+boundaries to set the scope of each pass. Trace the data and obligations that
+cross those boundaries while preserving their ownership and communication
+contracts.
+[Current module boundaries](./runtime_responsibility_audit.md#directory-layout-and-dependency-boundaries)
+
+1. Read the normative design and identify what the module must preserve.
+   Record which events it handles, what information is available at each
+   event, who owns the state, and which effects must occur in order.
+2. Temporarily put the implementation of the application module into a
+   single module or function. Inline its private helpers and bring their
+   intermediate values and state into the same scope. Use a sketch or trace
+   to help follow the flattened code.
+3. Restructure and simplify the code while it is still flat. Move operations
+   and state within that scope so their dependencies are visible together.
+   Follow what each consumer actually uses from the former helper boundaries.
+   Look for information that gets discarded and reconstructed, repeated
+   decisions or traversals, and multiple records that track the same state.
+   If the flattened code exposes an indirect route, derive a more direct
+   algorithm from the required behavior. Justify each reduction against
+   ownership, lifetimes, concurrency, and cost.
+4. Re-extract submodules, functions, and types from the simplified
+   computation. Extract each operation around the contract its consumers
+   need. Retain distinctions required by current semantics and established
+   future work.
+5. Compare the result with the normative contract. Use differential tests
+   where the old behavior is required. Measure resource use where a
+   simplification changes work, storage, or timing. Record any deliberate
+   correction to existing behavior separately.
+
+GraphJit is a priority candidate for a module-wide pass. Sample storage is
+one path through that pass. Follow connection analysis, callback scheduling,
+delivery routes, and bindings through to storage lifetimes and arena packing.
+That scope lets the pass determine whether different stages repeat decisions
+or reconstruct information.
+[Sample storage audit](./runtime_responsibility_audit.md#sample-storage-planning)
+
+After all module passes are complete, review the boundaries between modules.
+Use the resulting contracts and data flows to decide whether to move any
+responsibilities or change any interfaces.
 
 ### Project-authored presentation lanes (2026-11-20)
 

@@ -1544,116 +1544,32 @@ TEST(ProjectPlayback, RunningPositionWrapsThroughTheSignedSampleSeam)
     EXPECT_EQ(playback.snapshot().sample_rate, 96000);
 }
 
-TEST(ProjectPlayback, SealedPrefixDrainsBeforeASeekAndKeepsExecutionOrder)
-{
-    iv::ProjectPlayback playback;
-    (void)playback.seek(index(100));
-    (void)playback.set_running(true);
-    playback.end_block(playback.begin_block(48000), 4);
-
-    EXPECT_FALSE(playback.try_seal_foreground_prefix(1, 9, 8, 48000));
-    ASSERT_TRUE(playback.try_seal_foreground_prefix(1, 8, 8, 48000));
-    EXPECT_EQ(playback.ready_foreground_prefix(), nullptr);
-    auto const prefix = playback.try_begin_foreground_prefix();
-    ASSERT_TRUE(prefix);
-    EXPECT_EQ(prefix->execution_generation, 1u);
-    EXPECT_EQ(prefix->execution, range(4, 12));
-    EXPECT_EQ(prefix->first.state.foreground_playhead, index(104));
-
-    auto const seek = playback.seek(index(-800));
-    EXPECT_EQ(playback.begin_block(48000).state.applied_command, seek);
-    EXPECT_EQ(playback.sealed_foreground_frames(), 8u);
-    EXPECT_FALSE(playback.try_seal_foreground_prefix(1, 1, 8, 48000));
-    // Preparing a seek or attempting a callback does not consume the prefix.
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(104));
-    EXPECT_EQ(playback.ready_foreground_prefix(), nullptr);
-    EXPECT_FALSE(playback.try_begin_foreground_prefix());
-    EXPECT_FALSE(playback.release_consumed_foreground_prefix());
-
-    playback.publish_foreground_prefix();
-    auto const* ready_prefix = playback.ready_foreground_prefix();
-    ASSERT_NE(ready_prefix, nullptr);
-    EXPECT_EQ(ready_prefix->execution, prefix->execution);
-    auto const applied = playback.current_block(96000);
-    EXPECT_EQ(applied.state.sample_rate, prefix->first.state.sample_rate);
-    playback.end_block(applied, 3);
-    EXPECT_EQ(playback.sealed_foreground_frames(), 5u);
-    EXPECT_EQ(playback.ready_foreground_prefix(), ready_prefix);
-    EXPECT_FALSE(playback.try_begin_foreground_prefix());
-    EXPECT_FALSE(playback.release_consumed_foreground_prefix());
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(107));
-    EXPECT_NE(playback.snapshot().applied_command, seek);
-    auto const last_slice = playback.render_frames(8);
-    ASSERT_EQ(last_slice, 5u);
-    playback.end_block(playback.current_block(48000), last_slice);
-    EXPECT_EQ(playback.sealed_foreground_frames(), 0u);
-    EXPECT_EQ(playback.ready_foreground_prefix(), nullptr);
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(112));
-    EXPECT_EQ(playback.render_frames(8), 8u);
-    EXPECT_FALSE(playback.try_seal_foreground_prefix(1, 1, 8, 48000));
-
-    playback.end_block(playback.begin_block(48000), 2);
-    EXPECT_EQ(playback.snapshot().applied_command, seek);
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(-798));
-    EXPECT_FALSE(playback.try_seal_foreground_prefix(2, 4, 8, 48000));
-    EXPECT_TRUE(playback.release_consumed_foreground_prefix());
-    ASSERT_TRUE(playback.try_seal_foreground_prefix(2, 4, 8, 48000));
-    auto const after_seek = playback.try_begin_foreground_prefix();
-    ASSERT_TRUE(after_seek);
-    EXPECT_EQ(after_seek->execution_generation, 2u);
-    EXPECT_EQ(after_seek->execution, range(14, 18));
-    EXPECT_EQ(after_seek->first.state.foreground_playhead, index(-798));
-    EXPECT_NE(after_seek->first.state.segment, prefix->first.state.segment);
-}
-
-TEST(ProjectPlayback, ADragDoesNotChangeTheSelectionOfASealedPrefix)
+TEST(ProjectPlayback, QueuedCommandsDoNotChangeAnAdmittedBlock)
 {
     iv::ProjectPlayback playback;
     (void)playback.set_running(true);
-    playback.end_block(playback.begin_block(48000), 4);
-    ASSERT_TRUE(playback.try_seal_foreground_prefix(1, 4, 4, 48000));
-    ASSERT_TRUE(playback.try_begin_foreground_prefix());
-    playback.publish_foreground_prefix();
+    auto const admitted = playback.begin_block(48000);
+    ASSERT_TRUE(playback.can_reserve(admitted, false));
 
     using Phase = iv::ProjectPlaybackDragPhase;
-    ASSERT_TRUE(playback.drag({Phase::begin, 9}, index(100)));
+    auto const drag = playback.drag({Phase::begin, 9}, index(100));
+    ASSERT_TRUE(drag);
+    EXPECT_FALSE(playback.can_reserve(admitted, false));
     auto const candidate = playback.begin_block(48000);
+    EXPECT_EQ(candidate.state.applied_command, *drag);
     EXPECT_FALSE(candidate.state.running);
-    EXPECT_EQ(candidate.state.background_playhead, index(100));
-    auto const applied = playback.current_block(48000);
-    EXPECT_TRUE(applied.state.running);
-    EXPECT_FALSE(applied.selection().held_position);
-    playback.end_block(applied, 4);
+
+    auto const second_slice = admitted.after_frames(3);
+    EXPECT_TRUE(second_slice.state.running);
+    EXPECT_EQ(second_slice.state.foreground_playhead, index(3));
+    playback.end_block(second_slice, 5);
     EXPECT_EQ(playback.snapshot().foreground_playhead, index(8));
     EXPECT_EQ(playback.snapshot().background_playhead, index(8));
 
     playback.end_block(playback.begin_block(48000), 0);
+    EXPECT_EQ(playback.snapshot().applied_command, *drag);
     EXPECT_FALSE(playback.snapshot().running);
     EXPECT_EQ(playback.snapshot().background_playhead, index(100));
-}
-
-TEST(ProjectPlayback, PausedPrerollWaitsForTheWorkerAndAppliesPlayOnConsumption)
-{
-    iv::ProjectPlayback playback;
-    auto first = playback.current_block(48000);
-    EXPECT_FALSE(first.state.running);
-    EXPECT_FALSE(first.state.foreground_running);
-    first.state.running = first.state.foreground_running = true;
-    ASSERT_TRUE(playback.try_seal_foreground_prefix(1, 8, 8, first, [] { return true; }, true));
-
-    auto const play = playback.set_running(true);
-    auto const resume = playback.begin_block(48000);
-    EXPECT_TRUE(playback.provisional_prefix_matches(resume));
-    EXPECT_FALSE(playback.promote_provisional_prefix(resume));
-    ASSERT_TRUE(playback.try_begin_foreground_prefix());
-    playback.publish_foreground_prefix();
-    EXPECT_FALSE(playback.snapshot().foreground_running);
-    EXPECT_EQ(playback.snapshot().applied_command, 0u);
-    ASSERT_TRUE(playback.promote_provisional_prefix(resume));
-    EXPECT_EQ(playback.snapshot().applied_command, 0u);
-    playback.end_block(playback.current_block(48000), 3);
-    EXPECT_EQ(playback.snapshot().applied_command, play);
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(3));
 }
 
 TEST_F(GraphExecutorFixture, DeviceRenderingKeepsLiveTickStateAcrossPauseResumeAndSeek)

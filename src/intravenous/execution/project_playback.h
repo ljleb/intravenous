@@ -99,12 +99,27 @@ public:
         {
             return {state.running ? std::nullopt : std::optional{state.background_playhead}, audition};
         }
-    };
 
-    struct SealedForegroundPrefix {
-        std::uint64_t execution_generation;
-        Block first;
-        GlobalIndexRange execution;
+        [[nodiscard]] Block after_frames(std::size_t frames) const noexcept
+        {
+            auto next = *this;
+            if (next.state.foreground_running)
+                next.state.foreground_playhead = next.state.foreground_playhead.advanced_by(frames);
+            if (next.state.running) next.state.background_playhead = next.state.foreground_playhead;
+            if (frames != 0) next.audition = false;
+            return next;
+        }
+
+        [[nodiscard]] Block playing_from_start() const noexcept
+        {
+            auto next = *this;
+            next.state.foreground_playhead = next.state.start_position;
+            next.state.background_playhead = next.state.start_position;
+            next.state.foreground_running = true;
+            next.state.running = true;
+            next.audition = false;
+            return next;
+        }
     };
 
 private:
@@ -122,15 +137,6 @@ private:
     std::atomic<std::uint64_t> written_{0}, consumed_{0};
     ProjectPlaybackSnapshot state_{};
     ProjectPlaybackSnapshot pending_{};
-    // Counts rendered samples even when a command changes project position.
-    GlobalIndex rendered_through_{};
-    std::size_t sealed_foreground_frames_ = 0;
-    enum class ForegroundPrefixPhase : std::uint8_t {
-        idle, reserved, executing, ready, consumed, discard_requested, discarded,
-    };
-    std::atomic<ForegroundPrefixPhase> foreground_prefix_phase_{ForegroundPrefixPhase::idle};
-    SealedForegroundPrefix foreground_prefix_{};
-    bool provisional_foreground_prefix_ = false;
     std::optional<GlobalIndex> pending_position_{};
     std::optional<GlobalIndex> pending_foreground_position_{};
     bool pending_audition_ = false;
@@ -218,149 +224,18 @@ public:
         return sequence;
     }
 
-    // Audio side only. Reserve after the worker has the inputs and storage
-    // for this prefix. A seal commits the current playback selection so the
-    // worker can advance its state exactly once. Later commands wait for it.
-    [[nodiscard]] bool try_seal_foreground_prefix(std::uint64_t execution_generation,
-        std::size_t frames, std::size_t maximum_frames, double sample_rate) noexcept
+    [[nodiscard]] bool can_reserve(Block const& block, bool provisional) const noexcept
     {
-        return try_seal_foreground_prefix(execution_generation, frames, maximum_frames,
-            current_block(sample_rate), [] { return true; });
-    }
-
-    template<class Prepare>
-    [[nodiscard]] bool try_seal_foreground_prefix(std::uint64_t execution_generation,
-        std::size_t frames, std::size_t maximum_frames, Block const& first, Prepare prepare,
-        bool provisional = false) noexcept
-    {
-        if (frames == 0 || frames > maximum_frames
-            || !first.state.foreground_running
-            || (provisional && drag_resume_running_)
-            || written_.load(std::memory_order_acquire) != first.state.applied_command
-            || foreground_prefix_phase_.load(std::memory_order_acquire) != ForegroundPrefixPhase::idle)
-            return false;
-        if (!prepare()) return false;
-        foreground_prefix_ = {execution_generation, first, {rendered_through_, frames}};
-        sealed_foreground_frames_ = frames;
-        provisional_foreground_prefix_ = provisional;
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::reserved, std::memory_order_release);
-        return true;
-    }
-
-    // One worker claims the reservation once. It must retain completed
-    // output until consumption, including across retries of other publications.
-    [[nodiscard]] std::optional<SealedForegroundPrefix> try_begin_foreground_prefix() noexcept
-    {
-        if (foreground_prefix_phase_.load(std::memory_order_acquire) != ForegroundPrefixPhase::reserved)
-            return {};
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::executing, std::memory_order_relaxed);
-        return foreground_prefix_;
-    }
-
-    void publish_foreground_prefix() noexcept
-    {
-        IV_ASSERT(foreground_prefix_phase_.load(std::memory_order_relaxed) == ForegroundPrefixPhase::executing,
-            "foreground prefix publication requires a claimed reservation");
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::ready, std::memory_order_release);
-    }
-
-    // Transfer storage can be reused after both parts have returned and the
-    // foreground has consumed the whole prefix.
-    [[nodiscard]] bool release_consumed_foreground_prefix() noexcept
-    {
-        if (foreground_prefix_phase_.load(std::memory_order_acquire) != ForegroundPrefixPhase::consumed)
-            return false;
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::idle, std::memory_order_release);
-        return true;
-    }
-
-    [[nodiscard]] std::size_t sealed_foreground_frames() const noexcept
-    {
-        return sealed_foreground_frames_;
-    }
-
-    [[nodiscard]] bool has_provisional_foreground_prefix() const noexcept
-    {
-        return provisional_foreground_prefix_;
-    }
-
-    [[nodiscard]] bool provisional_prefix_matches(Block const& block) const noexcept
-    {
-        auto const& first = foreground_prefix_.first;
-        return provisional_foreground_prefix_
-            && block.state.foreground_running && first.state.running == block.state.running
-            && first.state.foreground_playhead == block.state.foreground_playhead
-            && first.selection().held_position == block.selection().held_position
-            && first.audition == block.audition && first.state.sample_rate == block.state.sample_rate;
-    }
-
-    [[nodiscard]] bool promote_provisional_prefix(Block const& block) noexcept
-    {
-        if (!provisional_prefix_matches(block) || !ready_foreground_prefix()) return false;
-        foreground_prefix_.first = block;
-        provisional_foreground_prefix_ = false;
-        return true;
-    }
-
-    // A prepared startup can be discarded until its first foreground slice.
-    // The worker restores fresh storage before releasing this reservation.
-    void request_provisional_prefix_discard() noexcept
-    {
-        IV_ASSERT(provisional_foreground_prefix_, "only a provisional prefix can be discarded");
-        auto ready = ForegroundPrefixPhase::ready;
-        (void)foreground_prefix_phase_.compare_exchange_strong(
-            ready, ForegroundPrefixPhase::discard_requested, std::memory_order_acq_rel);
-    }
-
-    [[nodiscard]] bool provisional_prefix_discard_requested() const noexcept
-    {
-        return foreground_prefix_phase_.load(std::memory_order_acquire) == ForegroundPrefixPhase::discard_requested;
-    }
-
-    void publish_provisional_prefix_discard() noexcept
-    {
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::discarded, std::memory_order_release);
-    }
-
-    void release_discarded_foreground_prefix() noexcept
-    {
-        if (foreground_prefix_phase_.load(std::memory_order_acquire) != ForegroundPrefixPhase::discarded) return;
-        sealed_foreground_frames_ = 0;
-        provisional_foreground_prefix_ = false;
-        foreground_prefix_phase_.store(ForegroundPrefixPhase::idle, std::memory_order_release);
-    }
-
-    // Audio side only. The acquire also makes the worker's output visible
-    // for all slices of this prefix, including after a later seek is queued.
-    [[nodiscard]] SealedForegroundPrefix const* ready_foreground_prefix() const noexcept
-    {
-        if (sealed_foreground_frames_ == 0
-            || foreground_prefix_phase_.load(std::memory_order_acquire) != ForegroundPrefixPhase::ready)
-            return nullptr;
-        return &foreground_prefix_;
-    }
-
-    [[nodiscard]] std::size_t render_frames(std::size_t maximum_frames) const noexcept
-    {
-        if (sealed_foreground_frames_ != 0 && sealed_foreground_frames_ < maximum_frames)
-            return sealed_foreground_frames_;
-        return maximum_frames;
+        return block.state.foreground_running && (!provisional || !drag_resume_running_)
+            && written_.load(std::memory_order_acquire) == block.state.applied_command;
     }
 
     [[nodiscard]] Block current_block(double sample_rate) const noexcept
     {
-        if (provisional_foreground_prefix_) {
-            auto state = state_;
-            state.sample_rate = sample_rate;
-            return {state};
-        }
-        if (sealed_foreground_frames_ != 0 && sealed_foreground_frames_ == foreground_prefix_.execution.extent)
-            return foreground_prefix_.first;
         auto state = state_;
-        state.sample_rate = sealed_foreground_frames_ == 0 ? sample_rate : foreground_prefix_.first.state.sample_rate;
-        // Once begin_block has seen a drag, hold the last applied position
-        // while the drag destination is being prepared.
-        if (drag_resume_running_ && sealed_foreground_frames_ == 0) state.running = false;
+        state.sample_rate = sample_rate;
+        // Hold the last applied position while a drag destination is being prepared.
+        if (drag_resume_running_) state.running = false;
         return {state};
     }
 
@@ -435,37 +310,12 @@ public:
 
     void end_block(Block const& executed, std::size_t frames) noexcept
     {
-        bool const consumes_prefix = sealed_foreground_frames_ != 0;
-        if (consumes_prefix) {
-            IV_ASSERT(!provisional_foreground_prefix_, "playback consumed a provisional prefix before resume");
-            IV_ASSERT(ready_foreground_prefix(), "playback consumed an unpublished foreground prefix");
-            auto const expected = current_block(executed.state.sample_rate);
-            IV_ASSERT(executed.state.applied_command == expected.state.applied_command
-                    && executed.state.segment == expected.state.segment
-                    && executed.state.foreground_playhead == expected.state.foreground_playhead
-                    && executed.state.background_playhead == expected.state.background_playhead
-                    && executed.state.running == expected.state.running
-                    && executed.audition == expected.audition
-                    && executed.state.sample_rate == foreground_prefix_.first.state.sample_rate
-                    && executed.state.foreground_running,
-                "playback selected a different block before its sealed foreground prefix drained");
-            IV_ASSERT(frames <= sealed_foreground_frames_, "playback crosses the sealed foreground prefix boundary");
-            sealed_foreground_frames_ -= frames;
-        }
-        state_ = executed.state;
-        if (state_.foreground_running) {
-            state_.foreground_playhead = state_.foreground_playhead.advanced_by(frames);
-            rendered_through_ = rendered_through_.advanced_by(frames);
-        }
-        if (state_.running) state_.background_playhead = state_.foreground_playhead;
+        state_ = executed.after_frames(frames).state;
         publish();
-        if (consumes_prefix && sealed_foreground_frames_ == 0)
-            foreground_prefix_phase_.store(ForegroundPrefixPhase::consumed, std::memory_order_release);
     }
 
     void align_foreground_after_reset() noexcept
     {
-        IV_ASSERT(sealed_foreground_frames_ == 0, "graph reset cannot overtake the sealed foreground prefix");
         state_.foreground_playhead = state_.background_playhead;
         ++state_.segment;
         ++pending_.segment;

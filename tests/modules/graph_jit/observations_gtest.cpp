@@ -4,6 +4,7 @@
 #include <intravenous/project/runtime_project_events.h>
 #include <nlohmann/json.hpp>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <iterator>
 #include <limits>
@@ -114,6 +115,8 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
         std::array<Sample, 16> output{};
         std::thread::id foreground = std::this_thread::get_id();
         std::atomic<bool> called_from_worker{false};
+        std::atomic<bool> hold_early_callback{false};
+        std::atomic<unsigned> ramp_callbacks{0};
 
         bool on_foreground() noexcept
         {
@@ -124,7 +127,15 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
     } device;
     resources.system_audio = {
         .owner = &device,
-        .resolve_input_fn = [](void* owner, std::string_view) {
+        .resolve_input_fn = [](void* owner, std::string_view id) {
+            if (id == "early_tick_test_gate") {
+                return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
+                    auto& selected = *static_cast<DeviceBuffers*>(owner);
+                    selected.ramp_callbacks.fetch_add(1, std::memory_order_release);
+                    selected.hold_early_callback.wait(true, std::memory_order_acquire);
+                    return {};
+                }};
+            }
             return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
                 auto& selected = *static_cast<DeviceBuffers*>(owner);
                 return selected.on_foreground() ? std::span<Sample const>{selected.input} : std::span<Sample const>{};
@@ -138,7 +149,23 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
         },
     };
     GraphExecutor executor(resources);
+    struct ReleaseGate {
+        std::atomic<bool>& held;
+        void release() const
+        {
+            held.store(false, std::memory_order_release);
+            held.notify_all();
+        }
+        ~ReleaseGate() { release(); }
+    } gate{device.hold_early_callback};
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    auto wait_for_ramp = [&](unsigned calls) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (device.ramp_callbacks.load(std::memory_order_acquire) < calls) {
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            std::this_thread::yield();
+        }
+    };
     PlaybackRenderSlice slice;
     auto render_when_ready = [&](std::size_t frames, bool start_early_prefix = false) {
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -163,10 +190,17 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
             std::this_thread::yield();
         } while (true);
     };
+    device.hold_early_callback.store(true);
     ASSERT_NO_FATAL_FAILURE(wait_for_paused_prefix(703, index(0)));
+    ASSERT_NO_FATAL_FAILURE(wait_for_ramp(1));
 
-    // Replace the provisional position without rendering the old prefix.
+    // Queue the seek while the worker owns the old provisional reservation.
     auto const paused_seek = executor.seek_playback(index(20));
+    executor.render_block(4, 88200, &slice, true);
+    EXPECT_FALSE(slice.rendered);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(0));
+    EXPECT_NE(executor.playback_snapshot().applied_command, paused_seek);
+    gate.release();
     auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     do {
         executor.render_block(4, 88200, &slice, true);
@@ -182,17 +216,31 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
     ASSERT_NO_FATAL_FAILURE(render_when_ready(4, true));
     EXPECT_FLOAT_EQ(device.output[0].value, 21.0f);
     EXPECT_FLOAT_EQ(device.output[6].value, 27.0f);
+    auto const first = device.output;
 
+    auto const callbacks = device.ramp_callbacks.load();
+    device.hold_early_callback.store(true);
     executor.prepare_next_playback_slice(8, 88200);
     ASSERT_EQ(executor.playback_render_frames(64), 8u);
-    auto const seek = executor.seek_playback(index(320));
+    ASSERT_NO_FATAL_FAILURE(wait_for_ramp(callbacks + 1));
+    auto const blocked_seek = executor.seek_playback(index(300));
     device.input.fill(Sample{.25f});
     device.output.fill(Sample{});
+    executor.render_block(3, 88200, &slice);
+    EXPECT_FALSE(slice.rendered);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(24));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(24));
+    EXPECT_NE(executor.playback_snapshot().applied_command, blocked_seek);
+    gate.release();
+    // The worker services reclamation after its current callback publishes.
+    (void)executor.reclaim_retired_snapshots();
+    auto const seek = executor.seek_playback(index(320));
     ASSERT_NO_FATAL_FAILURE(render_when_ready(3));
     EXPECT_EQ(slice.foreground_sample, index(24));
     EXPECT_FLOAT_EQ(device.output[0].value, 29.25f);
     EXPECT_FLOAT_EQ(device.output[4].value, 33.25f);
     EXPECT_NE(executor.playback_snapshot().applied_command, seek);
+    auto const second = device.output;
 
     ASSERT_EQ(executor.playback_render_frames(64), 5u);
     device.input.fill(Sample{.5f});
@@ -202,12 +250,15 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
     EXPECT_FLOAT_EQ(device.output[0].value, 35.5f);
     EXPECT_FLOAT_EQ(device.output[8].value, 43.5f);
     EXPECT_NE(executor.playback_snapshot().applied_command, seek);
+    auto const third = device.output;
+    EXPECT_EQ(device.ramp_callbacks.load(), callbacks + 1);
 
     device.output.fill(Sample{});
     ASSERT_NO_FATAL_FAILURE(render_when_ready(2, true));
     EXPECT_EQ(slice.foreground_sample, index(320));
     EXPECT_EQ(executor.playback_snapshot().applied_command, seek);
     EXPECT_FLOAT_EQ(device.output[0].value, 333.5f);
+    auto const after_seek = device.output;
 
     ProjectPlaybackRequest pause{.operation = ProjectPlaybackOperation::toggle_foreground};
     executor.handle_playback(pause);
@@ -220,13 +271,67 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
         });
     });
     ASSERT_TRUE(reset.succeeded()) << (reset.diagnostics.empty() ? "" : reset.diagnostics.front().message);
+    auto const callbacks_before_reset = device.ramp_callbacks.load();
+    device.hold_early_callback.store(true);
     ASSERT_EQ(executor.stage(reset.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_NO_FATAL_FAILURE(wait_for_paused_prefix(704, index(320)));
+    ASSERT_NO_FATAL_FAILURE(wait_for_ramp(callbacks_before_reset + 1));
     device.output.fill(Sample{});
-    (void)executor.set_playback_running(true);
+    auto const play = executor.set_playback_running(true);
+    executor.render_block(4, 88200, &slice, true);
+    EXPECT_FALSE(slice.rendered);
+    EXPECT_FALSE(executor.playback_snapshot().foreground_running);
+    EXPECT_NE(executor.playback_snapshot().applied_command, play);
+    gate.release();
     ASSERT_NO_FATAL_FAILURE(render_when_ready(4, true));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, play);
     EXPECT_FLOAT_EQ(device.output[0].value, 321.5f);
     EXPECT_FALSE(device.called_from_worker.load(std::memory_order_relaxed));
+
+    // Compare the split execution and carried state against the complete root.
+    GraphExecutor reference(resources);
+    ASSERT_EQ(reference.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    (void)reference.seek_playback(index(20));
+    (void)reference.set_playback_running(true);
+    auto compare_complete_root = [&](std::size_t frames, float input, auto const& expected) {
+        device.input.fill(Sample{input});
+        device.output.fill(Sample{});
+        PlaybackRenderSlice rendered;
+        reference.render_block(frames, 88200, &rendered);
+        ASSERT_TRUE(rendered.rendered);
+        for (std::size_t i = 0; i < 2 * frames; ++i)
+            EXPECT_FLOAT_EQ(device.output[i].value, expected[i].value);
+    };
+    ASSERT_NO_FATAL_FAILURE(compare_complete_root(4, 0.f, first));
+    ASSERT_NO_FATAL_FAILURE(compare_complete_root(3, .25f, second));
+    ASSERT_NO_FATAL_FAILURE(compare_complete_root(5, .5f, third));
+    (void)reference.seek_playback(index(320));
+    ASSERT_NO_FATAL_FAILURE(compare_complete_root(2, .5f, after_seek));
+
+    auto next_reset = in_event_source([&] {
+        return jit->handle_project_graph_transaction({
+            .successor = {.project_generation = 705, .graph = graph, .definitions = definitions, .reset_state = true},
+            .predecessor = reset.compiled_graph,
+        });
+    });
+    ASSERT_TRUE(next_reset.succeeded()) << (next_reset.diagnostics.empty() ? "" : next_reset.diagnostics.front().message);
+    executor.prepare_next_playback_slice(4, 88200);
+    ASSERT_EQ(executor.playback_render_frames(64), 4u);
+    ASSERT_NO_FATAL_FAILURE(render_when_ready(1));
+    ASSERT_EQ(executor.playback_render_frames(64), 3u);
+    ASSERT_EQ(executor.stage(next_reset.compiled_graph), GraphExecutorStageResult::accepted);
+    EXPECT_FALSE(executor.activate_pending(index(325)));
+    executor.render_block(3, 88200, &slice);
+    ASSERT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.execution_generation, 704u);
+    EXPECT_EQ(slice.foreground_sample, index(325));
+    EXPECT_EQ(executor.playback_render_frames(64), 64u);
+    auto const reset_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (executor.active_generation() != 705) {
+        executor.render_block(1, 88200, &slice);
+        ASSERT_LT(std::chrono::steady_clock::now(), reset_deadline);
+        std::this_thread::yield();
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePlayhead)
