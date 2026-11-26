@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/compat.h>
 #include <intravenous/node/tick_input_request.h>
 
 #include <algorithm>
@@ -42,6 +43,7 @@ public:
 
 private:
     struct Frame {
+        GlobalIndexRange execution{};
         std::size_t request_begin = 0;
         std::size_t request_count = 0;
         std::size_t run_end = 0;
@@ -95,8 +97,8 @@ private:
     Ticket retired_ = 0;
     Ticket adopted_ = 0;
     Ticket writing_ = 0;
+    Ticket inherited_ready_ = 0;
     Frame* open_ = nullptr;
-    GlobalIndexRange callback_execution_{};
     bool submission_failed_ = false;
 
     [[nodiscard]] Frame& frame(Ticket ticket) noexcept
@@ -127,15 +129,25 @@ public:
 
     [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
 
+    // Staging can shrink the ordinary reserve when a port disappears. Allow
+    // enough room to copy the surviving records from the previous reserve.
+    void reserve_inherited_capacity(DeferredTickInputRequests const& previous)
+    {
+        frames_.resize(std::max(frames_.size(), previous.frames_.size()));
+        requests_.values.resize(std::max(requests_.values.size(), previous.requests_.values.size()));
+        runs_.values.resize(std::max(runs_.values.size(), previous.runs_.values.size()));
+        positions_.values.resize(std::max(positions_.values.size(), previous.positions_.values.size()));
+    }
+
     // Foreground. Reserve before entering the root so a full queue can stall
     // the callback without executing any node or advancing the playhead.
     [[nodiscard]] bool begin_callback(GlobalIndexRange execution) noexcept
     {
         if (execution.empty() || execution.extent >= (Ticket{1} << 63)
             || open_ || writing_ - retired_ == frames_.size()) return false;
-        callback_execution_ = execution;
         submission_failed_ = false;
         open_ = &frame(writing_);
+        open_->execution = execution;
         open_->request_begin = requests_.end;
         open_->request_count = 0;
         return true;
@@ -145,8 +157,8 @@ public:
     {
         auto const positions = request.positions;
         if (!open_ || request.port >= ports_.size() || request.execution.empty()
-            || !callback_execution_.contains(request.execution)
-            || callback_execution_.end().forward_distance_to(request.first_due) >= (Ticket{1} << 63)
+            || !open_->execution.contains(request.execution)
+            || open_->execution.end().forward_distance_to(request.first_due) >= (Ticket{1} << 63)
             || !std::ranges::all_of(positions.runs, &SamplePositionRun::valid)) {
             submission_failed_ = true;
             return false;
@@ -168,7 +180,7 @@ public:
         // asked for no values, which differs from a request lost in transit.
         request.positions = {.runs = runs_.store(*runs_at, positions.runs),
             .individual_positions = positions_.store(*points_at, positions.individual_positions)};
-        auto const begin = callback_execution_.begin;
+        auto const begin = open_->execution.begin;
         auto const due_end = request.first_due.advanced_by(request.execution.extent);
         if (open_->request_count == 0
             || begin.forward_distance_to(request.first_due) < begin.forward_distance_to(open_->first_due)) {
@@ -233,6 +245,36 @@ public:
               });
     }
 
+    // Foreground, at the exact cut. Only the foreground reads the live ring
+    // cursors. The successor's background reader starts after publication.
+    [[nodiscard]] Ticket inherit_pending_from(DeferredTickInputRequests const& previous,
+        std::span<std::optional<std::size_t> const> successor_ports,
+        GlobalIndex execution_begin, Ticket selected_ticket) noexcept
+    {
+        IV_ASSERT(writing_ == 0 && !open_, "inherited Tick requests require a fresh queue");
+        rendered_.store(execution_begin.bits(), std::memory_order_relaxed);
+        auto const ready_frames = selected_ticket - previous.retired_;
+        IV_ASSERT(ready_frames <= previous.writing_ - previous.retired_,
+            "inherited Tick selection does not name a live prefix");
+        for (auto ticket = previous.retired_; ticket != previous.writing_; ++ticket) {
+            auto const& frame = previous.frame(ticket);
+            for (auto request : previous.requests(ticket)) {
+                if (!successor_ports[request.port]
+                    || request.due_range().end().forward_distance_to(execution_begin) < (Ticket{1} << 63)) continue;
+                if (!open_) {
+                    auto const opened = begin_callback(frame.execution);
+                    IV_ASSERT(opened, "inherited Tick callback exceeds its prepared reserve");
+                }
+                request.port = *successor_ports[request.port];
+                auto const submitted = submit(request);
+                IV_ASSERT(submitted, "inherited Tick request exceeds its prepared reserve");
+            }
+            if (open_) (void)publish_callback();
+            if (ticket - previous.retired_ < ready_frames) inherited_ready_ = writing_;
+        }
+        return inherited_ready_;
+    }
+
     // Background. Publish a snapshot carrying batch.end after its sparse
     // materialization commits. Slot reclamation belongs to the foreground.
     [[nodiscard]] bool complete(Batch batch) noexcept
@@ -246,9 +288,11 @@ public:
     }
 
     // Foreground. A newer worker result cannot make an older pinned view ready.
-    [[nodiscard]] bool adopt(Ticket ticket) noexcept
+    [[nodiscard]] bool adopt(Ticket ticket, bool inherited = false) noexcept
     {
-        if (ticket - adopted_ > prepared_.load(std::memory_order_acquire) - adopted_) return false;
+        auto const prepared = inherited ? inherited_ready_ : prepared_.load(std::memory_order_acquire);
+        if (ticket - adopted_ > writing_ - adopted_
+            || ticket - adopted_ > prepared - adopted_) return false;
         adopted_ = ticket;
         return true;
     }
@@ -258,7 +302,10 @@ public:
     void release_rendered(GlobalIndex execution_end) noexcept
     {
         rendered_.store(execution_end.bits(), std::memory_order_release);
-        while (retired_ != adopted_) {
+        auto const prepared = prepared_.load(std::memory_order_acquire);
+        // An inherited view can satisfy Tick while the successor worker still
+        // needs to read these records for its own coherent selection.
+        while (retired_ != adopted_ && retired_ != prepared) {
             auto const& selected = frame(retired_);
             if (selected.last_due_end.forward_distance_to(execution_end) >= (Ticket{1} << 63)) break;
             for (auto const& request : requests(retired_)) {

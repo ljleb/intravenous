@@ -19,7 +19,7 @@ void count_playback_root(iv::graph_jit::RealtimeRootPlan const* plan,
     observed_playback_root(plan, storage, invocation, index, count);
 }
 
-struct ResetRecordingProbe {
+struct PlaybackPreparationProbe {
     iv::CompiledGraphBackgroundFunction evaluate = nullptr;
     iv::CompiledGraphBlockFunction tick = nullptr;
     std::atomic<unsigned> started{0};
@@ -35,11 +35,16 @@ struct ResetRecordingProbe {
     }
 };
 
-ResetRecordingProbe* reset_recording_probe = nullptr;
+PlaybackPreparationProbe* playback_preparation_probe = nullptr;
 
-void gate_reset_recording_evaluation(iv::graph_jit::BackgroundEvaluationCall* call)
+struct ReleasePlaybackEvaluation {
+    PlaybackPreparationProbe& probe;
+    ~ReleasePlaybackEvaluation() { probe.allow(2); }
+};
+
+void gate_playback_evaluation(iv::graph_jit::BackgroundEvaluationCall* call)
 {
-    auto& probe = *reset_recording_probe;
+    auto& probe = *playback_preparation_probe;
     auto const number = probe.started.fetch_add(1, std::memory_order_acq_rel) + 1;
     if (number <= 2) {
         auto permitted = probe.allowed.load(std::memory_order_acquire);
@@ -55,7 +60,7 @@ void inspect_reset_recording(iv::graph_jit::RealtimeRootPlan const* plan,
     std::byte* storage, iv::graph_jit::TickInvocationCall const* invocation,
     iv::GlobalIndex index, std::size_t count)
 {
-    auto& probe = *reset_recording_probe;
+    auto& probe = *playback_preparation_probe;
     if (probe.tick_calls++ == 0 && !invocation->random_access_sample_inputs.empty()) {
         iv::details::StaticBackgroundContinuousInputAccess<iv::Sample,
             iv::InputAccessKind::coverage> source{*invocation->random_access_sample_inputs.data()};
@@ -755,16 +760,13 @@ TEST_F(GraphJitRuntimeFixture, ResetStartsPlaybackAfterItsPredecessorsLastRecord
     ASSERT_TRUE(reset.succeeded()) << (reset.diagnostics.empty() ? "" : reset.diagnostics.front().message);
     auto replacement = std::const_pointer_cast<iv::CompiledGraph>(reset.compiled_graph);
     ASSERT_EQ(replacement->background_evaluation_plan.tick_runtime.random_access_sample_inputs.size(), 1u);
-    ResetRecordingProbe probe{.evaluate = replacement->background_operations.evaluate,
+    PlaybackPreparationProbe probe{.evaluate = replacement->background_operations.evaluate,
         .tick = replacement->root_operations.tick_block.function};
-    reset_recording_probe = &probe;
-    replacement->background_operations.evaluate = &gate_reset_recording_evaluation;
+    playback_preparation_probe = &probe;
+    replacement->background_operations.evaluate = &gate_playback_evaluation;
     replacement->root_operations.tick_block.function = &inspect_reset_recording;
     iv::GraphExecutor executor{resources};
-    struct ReleaseEvaluation {
-        ResetRecordingProbe& probe;
-        ~ReleaseEvaluation() { probe.allow(2); }
-    } release{probe};
+    ReleasePlaybackEvaluation release{probe};
 
     auto wait_for = [](auto ready) {
         auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -2952,6 +2954,73 @@ TEST_F(GraphJitRuntimeFixture, LiveComputedResamplerPreservesPendingSamplesAcros
     ASSERT_TRUE(render(13, 17));
     ASSERT_TRUE(render(30, 47));
     ASSERT_TRUE(render(77, 64));
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
+TEST_F(GraphJitRuntimeFixture, LiveComputedResamplerKeepsReadyTapsThroughAnUnrelatedGraphEdit)
+{
+    auto const fixture = configured_module_graph(*revision, "iv.test.resampler.deferred");
+    ASSERT_NE(fixture, nullptr);
+    auto const configured = with_node_identities(fixture);
+    auto first = compile_graph(configured, 3023);
+    ASSERT_TRUE(first.succeeded()) << (first.diagnostics.empty() ? "" : first.diagnostics.front().message);
+
+    auto edited = std::make_shared<iv::ConfiguredGraph>(*configured);
+    for (iv::NodeBundleHandle bundle = 0; bundle < configured->node_bundles.size(); ++bundle) {
+        auto const& node = configured->node_bundles.bundle(bundle);
+        if (!node.is_concrete() || node.sample_output_count() != 1
+            || node.sample_output_config(0).name != "position") continue;
+        edited->node_bundles.append_concrete(iv::GraphBuilderNodeBundles::make_concrete_node(
+            configured->node_bundles.materialize_concrete_description(bundle)));
+        break;
+    }
+    ASSERT_EQ(edited->node_bundles.size(), configured->node_bundles.size() + 1);
+    auto edit = in_event_source([&] { return jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 3024, .graph = edited, .definitions = definitions},
+        .predecessor = first.compiled_graph,
+    }); });
+    ASSERT_TRUE(edit.succeeded()) << (edit.diagnostics.empty() ? "" : edit.diagnostics.front().message);
+    ASSERT_TRUE(edit.compiled_graph->cutover);
+    auto replacement = std::const_pointer_cast<iv::CompiledGraph>(edit.compiled_graph);
+    PlaybackPreparationProbe probe{.evaluate = replacement->background_operations.evaluate};
+    playback_preparation_probe = &probe;
+    replacement->background_operations.evaluate = &gate_playback_evaluation;
+    iv::GraphExecutor executor{resources};
+    ReleasePlaybackEvaluation release{probe};
+    probe.allow(1);
+
+    auto activate = [&](std::uint64_t generation, iv::GlobalIndex at) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            (void)executor.activate_pending(at);
+            if (executor.active_generation() == generation) return true;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline && !executor.has_failed_pending_generation());
+        return false;
+    };
+    ASSERT_EQ(executor.stage(first.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(activate(3023, index(0)));
+    executor.tick_block(index(0), 64);
+    ASSERT_EQ(executor.playback_underrun_blocks(), 0u);
+
+    ASSERT_EQ(executor.stage(replacement), iv::GraphExecutorStageResult::accepted);
+    ASSERT_TRUE(activate(3024, index(64)));
+    // The successor's canonical transaction is gated. This callback must use
+    // the ready predecessor taps while submitting new requests after a seek.
+    executor.tick_block(index(13), 64);
+    EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
+
+    probe.allow(2);
+    // A non-rendered attempt does not advance the probe's expected samples.
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (;;) {
+        auto const underruns = executor.playback_underrun_blocks();
+        executor.tick_block(index(77), 64);
+        if (underruns == executor.playback_underrun_blocks()) break;
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        ASSERT_FALSE(executor.background_execution_failures().any());
+        std::this_thread::yield();
+    }
     EXPECT_FALSE(executor.background_execution_failures().any());
 }
 

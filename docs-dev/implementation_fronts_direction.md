@@ -140,10 +140,15 @@ snapshot. The queue retains pending tap requests across a foreground seek.
 The worker selects the live graph's coherent data version when it prepares
 those taps. [Earlier request transport](./historical/tick_resampler_first_proposal_2026-11-26.md)
 
-Changing the compiled execution generation starts a new request queue and
-primes the deferred resampler again. A compatible steady-code replacement
-uses the same queue. Transferring pending requests and their selected source
-data through structural cutover remains open.
+At a structural cutover, `GraphExecutor` copies the outstanding requests for
+each matching deferred input. The consumer, preparation lead, and resolved
+source routes must match. The copy keeps the original execution range, tap
+coordinates, and deadline. Tick can read ready taps from the predecessor's
+immutable selection while the worker establishes a canonical selection for
+the successor. The successor worker takes over preparation of requests that
+were still unready. A compatible steady-code replacement keeps the same
+queue. Reset and incompatible inputs start fresh.
+[Earlier structural cutover behavior](./historical/tick_resampler_first_proposal_2026-11-26.md#request-ownership-before-structural-cutover-support)
 
 Design requirements for the deferred branch:
 
@@ -169,8 +174,9 @@ Design requirements for the deferred branch:
    segment in the same physical Sequential order. Keep requests issued by
    executed callbacks whose output is still due across the seam. Discard
    speculative requests beyond the cut. Reset clears the execution history.
-   Graph cutover needs an explicit rule for requests whose output history
-   migrates. [Earlier request ownership proposal](./historical/tick_resampler_first_proposal_2026-11-26.md)
+   A structural cutover preserves the unrendered requests for compatible
+   deferred inputs along with their execution deadlines.
+   [Earlier request ownership proposal](./historical/tick_resampler_first_proposal_2026-11-26.md)
 4. Check results for due output ranges before entering the Tick root. When the
    background worker misses a deadline, report a playback underrun without
    advancing the graph. Distinguish that failure from a known source gap.
@@ -196,8 +202,7 @@ range, including its output finalization tail.
 This path keeps a replay node on the current worker until its selected ranges
 finish. It batches the due ports for one callback. It does not suspend the
 generated background traversal to run several independent replay nodes in
-parallel. Early Tick, handoff of pending requests across structural cutover,
-and scheduling by measured fetch cost remain open.
+parallel. Early Tick and scheduling by measured fetch cost remain open.
 See [Front 16](#background-work-for-foreground-deadlines) for the measurement
 plan and the follow-up on preparation lead.
 [Earlier replay discovery options](./historical/tick_resampler_first_proposal_2026-11-26.md#replay-discovery-before-the-deadline-pipeline)

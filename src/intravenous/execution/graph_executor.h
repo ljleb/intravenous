@@ -299,6 +299,9 @@ class GraphExecutor {
         std::optional<NodeStorage::Migration> realtime_migration{};
         std::optional<BackgroundCoverageState::Migration>
             background_coverage_migration{};
+        std::vector<std::optional<graph_jit::BackgroundPortIndex>> deferred_input_successors{};
+        // Published with Activation::active, before the worker selects this queue.
+        bool inherited_deferred_requests = false;
         // Fully checked ownership/range reconciliation and physical transfer
         // program for the realtime cutover. Preparation performs every
         // recoverable validation before publication to the audio thread.

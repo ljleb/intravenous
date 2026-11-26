@@ -656,6 +656,12 @@ void GraphExecutor::ExecutionGeneration::prepare_background_migration_from(
             previous.graph->background_evaluation_plan,
             graph->specialization.sample_rate
                 != previous.graph->specialization.sample_rate));
+    if (realtime.deferred_inputs && previous.realtime.deferred_inputs
+        && !background_coverage_migration->deferred_input_successors.empty()) {
+        deferred_input_successors = std::move(background_coverage_migration->deferred_input_successors);
+        realtime.deferred_inputs->reserve_inherited_capacity(*previous.realtime.deferred_inputs);
+        realtime.tick_invocation.prepare_deferred_input_transfer(deferred_input_successors);
+    }
     background.retired_outputs = retired_persisted_outputs(
         *graph, *previous.graph, data);
 
@@ -1858,6 +1864,14 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         // is still expiring.
         return false;
     }
+    RealtimePersistedState const* previous_deferred_playback = nullptr;
+    if (!next->deferred_input_successors.empty()) {
+        previous_deferred_playback = realtime_persisted_state_.adopt(previous.graph->project_generation);
+        // The next canonical snapshot covers the imported prefix and replaces
+        // the bridge. Wait for it rather than chaining older playback owners.
+        if (!previous_deferred_playback || previous_deferred_playback->inherited_deferred_materialization())
+            return false;
+    }
     auto initial = initial_selection(*next);
     if (!initial) return false;
     if (next->graph->reset_state) {
@@ -1865,6 +1879,15 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     } else {
         next->commit_realtime_migration(selected_boundary->execution.begin);
         next->realtime.tick_invocation.transfer_recording_from(previous.realtime.tick_invocation);
+        if (previous_deferred_playback) {
+            auto& queue = *next->realtime.deferred_inputs;
+            next->realtime.rendered_samples = previous.realtime.rendered_samples;
+            auto const ready = queue.inherit_pending_from(*previous.realtime.deferred_inputs,
+                next->deferred_input_successors, next->realtime.rendered_samples,
+                previous_deferred_playback->deferred_input_ticket());
+            next->inherited_deferred_requests = !queue.select().empty();
+            if (ready) initial->inherit_deferred_playback(realtime_persisted_state_.take_active(), ready);
+        }
     }
     previous.background.close_inputs();
     install_initial(*next, std::move(initial));
@@ -2004,7 +2027,8 @@ GraphExecutor::evaluate_generation(
         append_tick_materialization_demands(generation.graph->background_evaluation_plan,
             background.tick_materialization_demand, roots);
     }
-    auto* const request_queue = publish_realtime_state ? generation.realtime.deferred_inputs.get() : nullptr;
+    auto* const request_queue = publish_realtime_state && !prepare_only
+        ? generation.realtime.deferred_inputs.get() : nullptr;
     DeferredTickInputRequests::Batch request_batch{};
     std::vector<BackgroundGeneration::DeferredDemand> pending_demands;
     if (request_queue) {
@@ -2026,6 +2050,7 @@ GraphExecutor::evaluate_generation(
             auto const first = pending_demands.size();
             for (auto const& request : request_queue->requests(ticket)) {
                 auto const due_end = request.first_due.advanced_by(request.execution.extent);
+                if (due_end.forward_distance_to(rendered) < (std::uint64_t{1} << 63)) continue;
                 auto const batch_demands = std::span{pending_demands}.subspan(first);
                 auto demand = std::ranges::find(batch_demands, request.port, &BackgroundGeneration::DeferredDemand::port);
                 if (demand == batch_demands.end()) {
@@ -2114,7 +2139,8 @@ GraphExecutor::evaluate_generation(
             else {
                 // Initial adoption can race the last private refresh. Forward
                 // that older refresh first, then publish this newer selection.
-                if (auto pending = generation.prepared_initial_states.take_pending())
+                if (auto pending = generation.prepared_initial_states.take_pending();
+                    pending && !generation.inherited_deferred_requests)
                     realtime_persisted_state_.publish(std::move(pending));
                 realtime_persisted_state_.publish(std::move(published_state));
             }
@@ -2337,7 +2363,8 @@ GraphExecutor::BackgroundExecutor::process_available_work()
             if (&prepared == &current) {
                 if (prepared.activation.load(std::memory_order_acquire) != ExecutionGeneration::Activation::active)
                     return prepare_pending_playback(prepared);
-                if (auto pending = prepared.prepared_initial_states.take_pending())
+                if (auto pending = prepared.prepared_initial_states.take_pending();
+                    pending && !prepared.inherited_deferred_requests)
                     owner_.realtime_persisted_state_.publish(std::move(pending));
                 // The first selection was private. Publish its reusable
                 // output roots into the canonical store on this actor now.
@@ -2362,7 +2389,8 @@ GraphExecutor::BackgroundExecutor::process_available_work()
                 current.background.discard_empty_selection();
                 if (!current.background.inputs_closed_and_drained() || !advance_generation())
                     return std::unexpected("prepared cutover could not drain its predecessor");
-                if (auto pending = prepared.prepared_initial_states.take_pending())
+                if (auto pending = prepared.prepared_initial_states.take_pending();
+                    pending && !prepared.inherited_deferred_requests)
                     owner_.realtime_persisted_state_.publish(std::move(pending));
                 prepared_generation_ = nullptr;
                 continue;
@@ -2642,8 +2670,8 @@ bool GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
     auto* const requests = realtime.deferred_inputs.get();
     auto const execution_end = realtime.rendered_samples.advanced_by(block_size);
     if (ready && requests) {
-        auto const ticket = persisted.materialization().deferred_input_ticket().value_or(0);
-        ready = requests->adopt(ticket) && requests->ready_until(execution_end)
+        ready = requests->adopt(persisted.deferred_input_ticket(), persisted.inherited_deferred_materialization() != nullptr)
+            && requests->ready_until(execution_end)
             && requests->begin_callback({realtime.rendered_samples, block_size});
         if (ready) realtime.tick_invocation.bind_deferred_input_requests(*requests, realtime.rendered_samples);
     }

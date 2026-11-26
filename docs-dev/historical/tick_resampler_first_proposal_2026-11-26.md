@@ -146,3 +146,12 @@ version. [GraphJit Direction](../graph_jit_direction.md) required the background
 transaction to install immutable Random Access views before replay invoked
 Tick. The deadline pipeline preserves that rule for each invocation and
 can prepare the contents of a windowed input between invocations.
+
+## Request ownership before structural cutover support
+
+The earlier [Tick resampling status](../implementation_fronts_direction.md#tick-resampling-and-computed-source-demand)
+recorded that a new compiled execution generation always started a fresh
+request queue. A compatible replacement of steady code kept the existing
+queue. Transfer of pending requests and their selected source data was open.
+The structural cutover now transfers the compatible requests at the audio
+boundary and can borrow the predecessor's prepared input windows.

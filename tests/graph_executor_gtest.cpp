@@ -139,6 +139,57 @@ TEST(DeferredTickInputRequests, DueResultsFollowPortAndExecutionRange)
     EXPECT_TRUE(queue.due(1, range(110, 112)).empty());
 }
 
+TEST(DeferredTickInputRequests, CutoverCopiesLiveRequestsAndKeepsTheirPreparedPrefix)
+{
+    using Requests = iv::DeferredTickInputRequests;
+    auto const capacity = Requests::Capacity{.callbacks = 2, .requests = 4, .positions = 4, .ports = 2};
+    Requests previous{1, capacity};
+    std::array const taps{index(-200), index(1000000)};
+    ASSERT_TRUE(previous.begin_callback(range(100, 104)));
+    ASSERT_TRUE(previous.submit({.port = 0, .execution = range(100, 104),
+        .first_due = index(104), .positions = {.individual_positions = taps}}));
+    ASSERT_TRUE(previous.submit({.port = 1, .execution = range(100, 104), .first_due = index(104)}));
+    ASSERT_TRUE(previous.publish_callback());
+    auto const ready = previous.select();
+    ASSERT_TRUE(previous.complete(ready));
+    ASSERT_TRUE(previous.adopt(ready.end));
+
+    ASSERT_TRUE(previous.begin_callback(range(104, 106)));
+    ASSERT_TRUE(previous.submit({.port = 0, .execution = range(104, 106), .first_due = index(108)}));
+    ASSERT_TRUE(previous.publish_callback());
+    previous.release_rendered(index(106));
+
+    Requests successor{2, capacity};
+    std::array<std::optional<std::size_t>, 2> const successor_ports{1, std::nullopt};
+    auto const ticket = successor.inherit_pending_from(previous, successor_ports, index(106), ready.end);
+    EXPECT_EQ(successor.rendered_through(), index(106));
+    ASSERT_EQ(ticket, 1u);
+    ASSERT_TRUE(successor.adopt(ticket, true));
+    EXPECT_TRUE(successor.ready_until(index(108)));
+    EXPECT_FALSE(successor.ready_until(index(109)));
+    EXPECT_TRUE(successor.due(0, range(106, 108)).empty());
+    auto const due = successor.due(1, range(106, 108));
+    ASSERT_EQ(std::ranges::distance(due), 1);
+    EXPECT_EQ(due.begin()->due_range(), range(104, 108));
+    EXPECT_TRUE(std::ranges::equal(due.begin()->positions.individual_positions, taps));
+
+    // The first result already rendered from an inherited view. Its records
+    // still belong to the successor's background selection until it commits.
+    successor.release_rendered(index(108));
+    EXPECT_FALSE(successor.begin_callback(range(108, 110)));
+    auto const pending = successor.select();
+    ASSERT_EQ(pending.end - pending.begin, 2u);
+    EXPECT_EQ(successor.requests(pending.begin).size(), 1u);
+    ASSERT_TRUE(successor.complete(pending));
+    ASSERT_TRUE(successor.adopt(pending.end));
+    successor.release_rendered(index(108));
+    ASSERT_TRUE(successor.begin_callback(range(108, 110)));
+    auto const later = successor.due(1, range(108, 110));
+    ASSERT_EQ(std::ranges::distance(later), 1);
+    EXPECT_TRUE(later.begin()->positions.empty());
+    EXPECT_FALSE(successor.publish_callback());
+}
+
 std::vector<iv::GlobalIndexRange> coverage_regions(
     iv::IndexCoverage const& coverage)
 {

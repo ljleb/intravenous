@@ -932,6 +932,7 @@ public:
         std::span<ContinuousRegionStorageView const> regions{};
         DeferredTickInputRequests* requests = nullptr;
         std::size_t request_lead = 0;
+        std::optional<graph_jit::BackgroundPortIndex> inherited_port{};
         GlobalIndex execution_begin{};
         GlobalIndex project_begin{};
 
@@ -1445,7 +1446,8 @@ public:
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
-        std::size_t block_size, TickPlaybackSelection selection) noexcept
+        std::size_t block_size, TickPlaybackSelection selection,
+        TickMaterializationSnapshot const* inherited_deferred) noexcept
     {
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
@@ -1497,6 +1499,8 @@ public:
                     && selected.accepts_materialization
                 ? materialized.find_sample(selected.port)
                 : nullptr;
+            if (inherited_deferred && selected.inherited_port)
+                selected.materialized = inherited_deferred->find_sample(*selected.inherited_port);
             auto const materialized_sample_is_complete = selected.materialized
                 && selected.materialized->layout == selected.layout
                 && selected.materialized->geometry == selected.geometry
@@ -1732,13 +1736,23 @@ void TickInvocationWorkspace::bind_deferred_input_requests(DeferredTickInputRequ
     }
 }
 
+void TickInvocationWorkspace::prepare_deferred_input_transfer(
+    std::span<std::optional<graph_jit::BackgroundPortIndex> const> successor_ports) noexcept
+{
+    for (auto& slot : impl_->sample_slots) {
+        auto const previous = std::ranges::find(successor_ports, std::optional{slot.port});
+        if (previous != successor_ports.end()) slot.inherited_port = previous - successor_ports.begin();
+    }
+}
+
 graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
     PersistedDataStore::Snapshot const& published,
     TickMaterializationSnapshot const& materialized,
     GlobalIndex sample_index,
-    std::size_t block_size, TickPlaybackSelection selection) noexcept
+    std::size_t block_size, TickPlaybackSelection selection,
+    TickMaterializationSnapshot const* inherited_deferred) noexcept
 {
-    return impl_->bind(published, materialized, sample_index, block_size, selection);
+    return impl_->bind(published, materialized, sample_index, block_size, selection, inherited_deferred);
 }
 
 TickInvocationFrame::TickInvocationFrame(
@@ -1771,7 +1785,7 @@ TickInvocationFrame::TickInvocationFrame(
         *published_data_view_,
         *materialized_storage_view_,
         sample_index,
-        block_size, selection))
+        block_size, selection, persisted.inherited_deferred_materialization()))
 {}
 
 } // namespace iv

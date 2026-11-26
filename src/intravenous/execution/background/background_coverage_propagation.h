@@ -221,6 +221,8 @@ struct BackgroundCoverageState::Migration {
     graph_jit::BackgroundEvaluationPlan const* previous_plan = nullptr;
     std::vector<OutputTransfer> outputs{};
     std::vector<ChangedInput> changed_inputs{};
+    // Indexed by predecessor background port. Empty when no request can migrate.
+    std::vector<std::optional<graph_jit::BackgroundPortIndex>> deferred_input_successors{};
     CoveragePropagationRequest reconciliation_roots{};
     bool committed = false;
 

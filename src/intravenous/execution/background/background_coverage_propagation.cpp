@@ -2310,21 +2310,28 @@ BackgroundCoverageState::prepare_migration_from(
          current_index < current_plan.ports.size(); ++current_index) {
         auto const& current = current_plan.ports[current_index];
         if (current.direction != graph_jit::PortDirection::input
-            || !current.stable_input_identity
-            || !current.accumulators.input_change) {
+            || !current.stable_input_identity) {
             continue;
         }
         auto const found = previous_inputs.find(*current.stable_input_identity);
-        if (found == previous_inputs.end()
-            || !previous_plan.ports[found->second].accumulators.input_change) {
-            continue;
-        }
-        if (!input_connections_equal(
-                current_plan, current_index, previous_plan, found->second)) {
+        if (found == previous_inputs.end()) continue;
+        auto const& previous_input = previous_plan.ports[found->second];
+        auto const tracks_changes = current.accumulators.input_change && previous_input.accumulators.input_change;
+        auto const transfers_requests = current.deferred_tick_lead != 0
+            && current.deferred_tick_lead == previous_input.deferred_tick_lead
+            && !std::ranges::contains(migration.reconciliation_roots.locally_changed_nodes, current.node);
+        if (!tracks_changes && !transfers_requests) continue;
+        auto const same_connections = input_connections_equal(
+            current_plan, current_index, previous_plan, found->second);
+        if (tracks_changes && !same_connections) {
             migration.changed_inputs.push_back({
                 .current = current_index,
                 .previous = found->second,
             });
+        }
+        if (transfers_requests && same_connections) {
+            migration.deferred_input_successors.resize(previous_plan.ports.size());
+            migration.deferred_input_successors[found->second] = current_index;
         }
     }
     return migration;

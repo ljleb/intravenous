@@ -28,6 +28,10 @@ class RealtimePersistedState {
     std::unique_ptr<TickMaterializationSnapshot> initial_materialization_{};
     std::unique_ptr<PersistedDataStore::Snapshot> initial_data_{};
     std::shared_ptr<PersistedDataStore::Snapshot const> owned_data_{};
+    // An initial successor can borrow ready deferred input windows. The
+    // mailbox reclaims both owners together away from the audio thread.
+    std::unique_ptr<RealtimePersistedState> inherited_deferred_state_{};
+    std::uint64_t inherited_deferred_ticket_ = 0;
     RealtimePersistedState* returned_next_ = nullptr;
     bool captured_ = false;
     IndexCoverage prepared_playback_{};
@@ -83,6 +87,25 @@ public:
     void set_prepared_playback(IndexCoverage demand) { prepared_playback_ = std::move(demand); }
     [[nodiscard]] bool prepares(GlobalIndexRange range) const noexcept {
         return prepared_playback_.contains(range);
+    }
+
+    void inherit_deferred_playback(std::unique_ptr<RealtimePersistedState> previous,
+        std::uint64_t ticket) noexcept
+    {
+        assert(previous && !previous->inherited_deferred_state_ && !inherited_deferred_state_);
+        inherited_deferred_ticket_ = ticket;
+        inherited_deferred_state_ = std::move(previous);
+    }
+
+    [[nodiscard]] TickMaterializationSnapshot const* inherited_deferred_materialization() const noexcept
+    {
+        return inherited_deferred_state_ ? &inherited_deferred_state_->materialization() : nullptr;
+    }
+
+    [[nodiscard]] std::uint64_t deferred_input_ticket() const noexcept
+    {
+        return inherited_deferred_state_ ? inherited_deferred_ticket_
+            : materialization().deferred_input_ticket().value_or(0);
     }
 
     [[nodiscard]] std::uint64_t generation() const noexcept

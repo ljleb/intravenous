@@ -53,7 +53,8 @@ class TickInvocationWorkspace {
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
-        std::size_t block_size, TickPlaybackSelection selection) noexcept;
+        std::size_t block_size, TickPlaybackSelection selection,
+        TickMaterializationSnapshot const* inherited_deferred = nullptr) noexcept;
 
 public:
     TickInvocationWorkspace(
@@ -96,6 +97,8 @@ public:
         PendingQueue& pending,
         std::atomic<bool>& reservation_failed);
 
+    void prepare_deferred_input_transfer(
+        std::span<std::optional<graph_jit::BackgroundPortIndex> const> successor_ports) noexcept;
     void prepare_recording_transfer_from(TickInvocationWorkspace const& previous,
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::span<NodeBundlePortId const> inherited_outputs);
