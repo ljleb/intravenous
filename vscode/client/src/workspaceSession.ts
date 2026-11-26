@@ -2,7 +2,7 @@ import type { ObservationInterest } from "./observations";
 import type { ObservationDelivery } from "./observationDelivery";
 import { ManualControlInteractions, type ManualControlId } from "./manualControls";
 import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
-import { addressFromKey, addressKey, graphScopeWithChildren, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress, type ProjectEditReceipt } from "./graphScope";
+import { addressFromKey, addressKey, graphScopeWithChildren, laneParentFallbacks, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress, type ProjectEditReceipt } from "./graphScope";
 import type { GraphPresentationPatch } from "./graphEditorProtocol";
 import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
 import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
@@ -333,11 +333,13 @@ export class WorkspaceSession {
             throw new Error("A selected node is no longer available");
         }
         const parents = scope.presentation?.laneParents ?? [];
-        const unavailable = new Set(scope.unavailableLaneParents?.map(addressKey));
+        const fallbacks = laneParentFallbacks(scope);
         const parentsByChild = new Map(parents.map(({ instanceId, parent }) => [instanceId, parent]));
         const duplicateParents = copies.flatMap(({ sourceInstanceId, instanceId }) => {
             const parent = parentsByChild.get(sourceInstanceId);
-            return parent && !unavailable.has(addressKey(parent)) ? [{ instanceId, parent }] : [];
+            if (!parent) return [];
+            const fallback = fallbacks.get(addressKey(parent));
+            return fallback === null ? [] : [{ instanceId, parent: fallback === undefined ? parent : addressFromKey(fallback) }];
         });
         const operations = [
             { method: "nodeInstances.duplicate", params: { copies } },

@@ -104,7 +104,7 @@ export type GraphScope = {
     childScopes?: Array<{ subject: NodeAddress; nodes: GraphScopeNode[]; hasBoundary?: boolean }>;
     connections: GraphScopeConnection[];
     timelineNodes?: NodeAddress[];
-    unavailableLaneParents?: NodeAddress[];
+    laneParentFallbacks?: Array<{ requested: NodeAddress; effective: NodeAddress | null }>;
     presentation?: ProjectPresentation;
 };
 export type Point = { x: number; y: number };
@@ -164,6 +164,15 @@ export function presentationStateKey(address: NodeAddress, presentationId: strin
 export function addressFromKey(key: string): NodeAddress {
     const [instanceId, path] = JSON.parse(key) as [string, NodeAddress["path"]];
     return { instanceId, path };
+}
+
+export function laneOccurrenceAddress(node: GraphScopeNode): NodeAddress {
+    return node.membershipAddress ?? node.address;
+}
+
+export function laneParentFallbacks(scope: GraphScope): Map<string, string | null> {
+    return new Map(scope.laneParentFallbacks?.map(({ requested, effective }) =>
+        [addressKey(requested), effective ? addressKey(effective) : null]));
 }
 
 export function laneViewFromKey(key: string, state: SerializedPresentationState): Omit<ProjectLaneView, "version"> & { state: SerializedPresentationState } {

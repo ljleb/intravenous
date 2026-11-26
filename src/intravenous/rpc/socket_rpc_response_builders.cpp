@@ -604,10 +604,13 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
     for (auto const& address : result->timeline_nodes)
         timelines.push_back(node_address_json(address, ProjectConnectionJsonNames::socket_rpc));
     auto lane_order = Json::array();
-    auto unavailable_lane_parents = Json::array();
+    auto lane_parent_fallbacks = Json::array();
     constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
-    for (auto const& address : result->unavailable_lane_parents)
-        unavailable_lane_parents.push_back(node_address_json(address, names));
+    for (auto const& fallback : result->lane_parent_fallbacks)
+        lane_parent_fallbacks.push_back({
+            {"requested", node_address_json(fallback.requested, names)},
+            {"effective", fallback.effective ? node_address_json(*fallback.effective, names) : Json(nullptr)},
+        });
     for (auto const& address : result->presentation.lane_order)
         lane_order.push_back(node_address_json(address, names));
     return jsonrpc_result(request_id, Json{
@@ -618,7 +621,7 @@ std::string SocketRpcGraphScopeResultBuilder::build(int request_id) const {
             {"activeGeneration", result->active_generation ? Json(*result->active_generation) : Json(nullptr)}}},
         {"editable", result->editable},
         {"timelineNodes", std::move(timelines)},
-        {"unavailableLaneParents", std::move(unavailable_lane_parents)},
+        {"laneParentFallbacks", std::move(lane_parent_fallbacks)},
         {"presentation", {{"laneOrder", std::move(lane_order)}, {"laneViews", lane_view_references_json(result->presentation.lane_views)},
             {"laneParents", project_lane_parents_json(result->presentation.lane_parents, names)},
             {"timelineSnapMemory", Json::parse(result->presentation.timeline_snap_memory_json)}}},

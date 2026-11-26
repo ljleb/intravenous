@@ -15,10 +15,10 @@ const node = useNode();
 const lane = useLane();
 const editor = useOptionalGraphEditor();
 const moduleChild = computed(() => !props.moduleBoundary && !!node.value.address && !isProjectInstance(node.value.address));
-const canExpand = computed(() => !props.moduleBoundary && !!editor && node.value.hasChildren
-    && node.value.loadState === "ready" && !!node.value.address);
-const expanded = computed(() => !!node.value.address && (editor?.expandedModules.value.has(addressKey(node.value.address)) ?? false));
-const footerAction = computed(() => expanded.value ? "Collapse module" : "Expand module");
+const occurrence = computed(() => node.value.membershipAddress ?? node.value.address);
+const canExpand = computed(() => !props.moduleBoundary && !!editor && node.value.hasChildren && !!occurrence.value);
+const expanded = computed(() => !!occurrence.value && (editor?.expandedLanes.value.has(addressKey(occurrence.value)) ?? false));
+const footerAction = computed(() => expanded.value ? "Collapse lane" : "Expand lane");
 const editableHeight = `${editableHeightPx}px`;
 const inlineHeader = computed(() => props.mode === "mini" || props.mode === "nano"
     || (props.mode === "compact" && (lane?.regionHeight.value ?? Infinity) < editableHeightPx));
@@ -101,7 +101,7 @@ function finishRename(commit: boolean) {
             </div>
             <button v-if="canExpand" type="button" tabindex="-1" class="module-footer"
                 :aria-label="footerAction" :aria-expanded="expanded" :data-status-hint="footerAction"
-                @click.exact.stop="editor?.toggleModule(node.address!)">
+                @click.exact.stop="editor?.toggleLane(occurrence!)">
                 <span class="module-footer-chevron" aria-hidden="true" />
             </button>
         </header>

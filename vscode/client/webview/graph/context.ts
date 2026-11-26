@@ -48,10 +48,10 @@ type GraphEditorContext = {
     copyNodeDebugDetails: (address: NodeAddress) => void;
     scope: Readonly<Ref<GraphScope | null>>;
     lanes: Readonly<Ref<GraphLane[]>>;
-    expandedModules: Readonly<Ref<ReadonlyMap<string, NodeAddress>>>;
+    expandedLanes: Readonly<Ref<ReadonlySet<string>>>;
     implicitOutputModules: Readonly<Ref<ReadonlySet<string>>>;
     connectionFeedback: Readonly<Ref<ReturnType<typeof laneConnectionFeedback>>>;
-    toggleModule: (address: NodeAddress) => void;
+    toggleLane: (address: NodeAddress) => void;
     selectedLanes: Readonly<Ref<ReadonlySet<string>>>;
     portsChanged: () => void;
     profileGraphUi: <T>(label: string, run: () => T) => T;

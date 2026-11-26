@@ -527,7 +527,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             return;
         }
         const [scope, definitions] = await Promise.all([
-            this.session.readGraphScope(this.expandedModules()), this.session.graphDefinitions(),
+            this.session.readGraphScope(this.expandedLanes()), this.session.graphDefinitions(),
         ]);
         if (!this.panels.has(panel)) return;
         this.session.manualControls.reconcile(graphScopeWithChildren(scope));
@@ -572,7 +572,7 @@ export class GraphEditorProvider implements vscode.Disposable {
             placeHolder: "Select a node" });
         if (!selected || !this.panels.has(panel)) return;
         if (action === "editNode") {
-            const current = await this.session.readGraphScope(this.expandedModules());
+            const current = await this.session.readGraphScope(this.expandedLanes());
             if (!current.nodes.some((node) => node.instance.instanceId === selected.instanceId)) {
                 throw new Error("The selected node is no longer available");
             }
@@ -775,9 +775,9 @@ export class GraphEditorProvider implements vscode.Disposable {
                     }
                     if (this.panels.has(panel)) void panel.webview.postMessage(reply);
                 });
-            } else if (message?.type === "setExpandedModules" && Array.isArray(message.modules)) {
-                this.recordClientView(panel, { type: "expanded", nodes: message.modules });
-                this.expandedByPanel.set(panel, message.modules);
+            } else if (message?.type === "setExpandedLanes" && Array.isArray(message.lanes)) {
+                this.recordClientView(panel, { type: "expanded", nodes: message.lanes });
+                this.expandedByPanel.set(panel, message.lanes);
                 await this.refresh();
             } else if (message?.type === "copyNodeDebugDetails") {
                 const scope = this.state.scope && graphScopeWithChildren(this.state.scope);
@@ -917,7 +917,7 @@ export class GraphEditorProvider implements vscode.Disposable {
         else void waits.measureAsync("Post graph state to webview", () => panel.webview.postMessage(message));
     }
 
-    private expandedModules(): NodeAddress[] {
+    private expandedLanes(): NodeAddress[] {
         const addresses = [...this.expandedByPanel.values()].flat();
         return [...new Map(addresses.map((address) => [addressKey(address), address])).values()];
     }
@@ -934,7 +934,7 @@ export class GraphEditorProvider implements vscode.Disposable {
 
     private refresh(): Promise<void> {
         if (!this.panels.size || this.disposed) return Promise.resolve();
-        const expanded = this.expandedModules();
+        const expanded = this.expandedLanes();
         const key = JSON.stringify([this.session.graphSessionStatus, this.session.graphConnectionNumber, this.session.graphDefinitionCatalogVersion,
             expanded.map(addressKey).sort()]);
         const revision = this.session.graphRevision ?? 0;

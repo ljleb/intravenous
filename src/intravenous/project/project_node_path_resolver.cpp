@@ -395,6 +395,28 @@ std::vector<ProjectChildNode> project_child_nodes(
     return children;
 }
 
+std::optional<ProjectNodePathMatch> resolve_project_lane_child(ConfiguredGraph const& configured,
+    ProjectNodePathMatch const& subject, ProjectNodePathSelector const& selector)
+{
+    ProjectNodePathGraph const graph{configured.node_bundles, configured.symbolic_nodes};
+    if (auto const* symbol = std::get_if<ProjectSymbolicNodeSelector>(&selector)) {
+        // Only a subgraph lane lists symbolic children. Its emitted child
+        // addresses qualify the declaration with its type.
+        if (!symbol->type_identity || subject.kind != ProjectNodePathMatch::Kind::bundle
+            || !graph.node_bundles.bundle(subject.bundle).is_subgraph()) return std::nullopt;
+    }
+    auto matches = apply_selector(graph, std::span{&subject, 1}, selector);
+    if (matches.size() != 1) return std::nullopt;
+    auto& match = matches.front();
+    if (match.kind == ProjectNodePathMatch::Kind::symbolic_node) {
+        auto const& record = graph.symbolic_nodes.record(match.symbolic_node);
+        if (!record.has_lane() || std::ranges::any_of(match.symbolic_member_indices, [&](auto index) {
+                return record.node_bundle_handles[index] == subject.bundle;
+            })) return std::nullopt;
+    }
+    return std::move(match);
+}
+
 std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
     ConfiguredGraph const& configured, NodeBundleHandle root, NodeBundleHandle target)
 {

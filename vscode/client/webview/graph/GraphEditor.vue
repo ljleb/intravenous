@@ -12,7 +12,7 @@ import { ObservationProfile } from "../../src/observationProfile";
 import { GraphUiRecording } from "./graphUiRecording";
 import { usePresentationFrame } from "../presentation/presentationFrames";
 import { ObservationDeliverySequence } from "../../src/observationDelivery";
-import { addressKey, graphScopeNodeLabel, isProjectInstance, laneViewReadBatchSize, newGraphLayout, presentationStateKey, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
+import { addressKey, graphScopeNodeLabel, isProjectInstance, laneOccurrenceAddress, laneViewReadBatchSize, newGraphLayout, presentationStateKey, readGraphViewState, type NodeAddress, type Point } from "../../src/graphScope";
 import { isTimelineSnapAddress, isTimelineSnapNode } from "../../src/timelineSnap";
 import { webviewApi } from "../host";
 import PresentationHost from "../presentation/PresentationHost.vue";
@@ -44,7 +44,7 @@ import type { StatusHint } from "../../src/statusBarText";
 import { projectHistoryShortcut } from "../../src/projectHistoryShortcut";
 import { graphEditorShortcut, isTextEditingTarget } from "../../src/graphEditorShortcuts";
 import { listenPortConnectionFocus } from "../../src/portConnectionFocus";
-import { dropSelectedLanes, expandedGraphLanes, mergeLaneOrder, movableLaneSelection, moveLaneNesting, moveSelectedSiblingLanes,
+import { dropSelectedLanes, expandedGraphLanes, isLaneWithinSelection, mergeLaneOrder, movableLaneSelection, moveLaneNesting, moveSelectedSiblingLanes,
     orderLanes, selectedProjectLaneIds, selectLaneRange, type LaneDestination } from "../../src/laneSelection";
 import { connectionEndKey, connectionWirePath, laneConnectionFeedback, LaneConnectionViewport, portEndpointKey, portSlotKey,
     resolveLaneConnectionEnds, selectedLaneConnections, selectedLaneWireClips, selectedLaneWirePath,
@@ -497,13 +497,21 @@ const hoveredPortGroup = shallowRef<HoveredPortGroup | null>(null);
 const previewColorColumns = shallowRef<PortColorColumns[]>([]);
 let sourceGroupToLeave: HoveredPortGroup | null = null;
 const selectedLanes = shallowRef<ReadonlySet<string>>(new Set());
-const expandedModules = shallowRef<ReadonlyMap<string, NodeAddress>>(new Map());
+const expandedLanes = shallowRef<ReadonlySet<string>>(new Set());
 const lanes = computed(() => profileGraphUi("Build lane list", () => {
     const scope = state.value.scope;
-    return scope ? expandedGraphLanes(scope, layout.value.laneOrder, expandedModules.value, layout.value.laneParents)
-        .filter(({ node }) => !isTimelineSnapNode(node)) : [];
+    return scope ? expandedGraphLanes(scope, layout.value.laneOrder, expandedLanes.value, layout.value.laneParents) : [];
 }));
 const lanesByRow = computed(() => new Map(lanes.value.map((lane) => [lane.rowKey, lane])));
+// Project children are already in the root scope. Only expanding source
+// children or Module Ports needs a new scope read.
+const expandedSourceLanes = computed(() => new Map(lanes.value.filter(({ node, rowKey }) =>
+    expandedLanes.value.has(rowKey) && node.hasChildren && node.loadState === "ready")
+    .map(({ node, rowKey }) => [rowKey, laneOccurrenceAddress(node)])));
+watch(expandedSourceLanes, (next, previous) => {
+    if (next.size === previous.size && [...next.keys()].every((key) => previous.has(key))) return;
+    webviewApi.postMessage({ type: "setExpandedLanes", lanes: [...next.values()] } satisfies GraphEditorWebviewMessage);
+}, { flush: "post" });
 const visibleScope = computed(() => {
     const scope = state.value.scope;
     if (!scope) return null;
@@ -566,35 +574,26 @@ const laneKeys = computed(() => lanes.value.map(({ node }) => addressKey(node.ad
 const projectLanes = computed(() => lanes.value.filter(({ node }) => isProjectInstance(node.address)).map(({ node }) => node));
 const selectedLaneIds = computed(() => selectedProjectLaneIds(lanes.value, selectedLanes.value));
 
-function toggleModule(address: NodeAddress) {
-    const expanded = new Map(expandedModules.value);
+function toggleLane(address: NodeAddress) {
+    const expanded = new Set(expandedLanes.value);
     const key = addressKey(address);
     if (expanded.delete(key)) {
         const scope = state.value.scope;
         if (scope) {
             const remaining = expandedGraphLanes(scope, layout.value.laneOrder, expanded, layout.value.laneParents);
-            const keys = new Set(remaining.map(({ node }) => addressKey(node.address)));
+            const keys = new Set(remaining.map(({ rowKey }) => rowKey));
             for (const candidate of expanded.keys())
                 if (!keys.has(candidate)) expanded.delete(candidate);
         }
-    } else expanded.set(key, address);
-    applyExpandedModules(expanded);
-}
-function applyExpandedModules(expanded: ReadonlyMap<string, NodeAddress>) {
-    expandedModules.value = expanded;
-    webviewApi.postMessage({ type: "setExpandedModules", modules: [...expanded.values()] } satisfies GraphEditorWebviewMessage);
+    } else expanded.add(key);
+    expandedLanes.value = expanded;
 }
 function showLaneParents(parents: Readonly<Record<string, string>>, moved: ReadonlySet<string>) {
-    const expanded = new Map(expandedModules.value);
+    const expanded = new Set(expandedLanes.value);
     const destinations = new Set([...moved].map((child) => parents[child]));
-    for (const lane of lanes.value) {
-        const address = lane.node.membershipAddress ?? lane.node.address;
-        const key = addressKey(lane.node.address);
-        if (!expanded.has(key) && destinations.has(addressKey(address))) {
-            expanded.set(key, lane.node.address);
-        }
-    }
-    if (expanded.size !== expandedModules.value.size) applyExpandedModules(expanded);
+    for (const { rowKey } of lanes.value)
+        if (destinations.has(rowKey)) expanded.add(rowKey);
+    if (expanded.size !== expandedLanes.value.size) expandedLanes.value = expanded;
 }
 function currentProjectLaneOrder() {
     const nodes = state.value.scope?.nodes.filter((node) => !isTimelineSnapNode(node)) ?? [];
@@ -602,7 +601,7 @@ function currentProjectLaneOrder() {
 }
 function startLaneDrag(event: PointerEvent, key: string) {
     const selected = new Set(selectedLanes.value);
-    const roots = movableLaneSelection(lanes.value, selected);
+    const roots = new Set(movableLaneSelection(lanes.value, selected).map(({ rowKey }) => rowKey));
     const origin = { x: event.clientX, y: event.clientY };
     let moved = false;
     let marked: HTMLElement | undefined;
@@ -610,18 +609,16 @@ function startLaneDrag(event: PointerEvent, key: string) {
         const row = document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>("[data-lane-row]");
         if (!row || !surface.value?.contains(row)) return;
         const target = lanesByRow.value.get(row.dataset.laneRow!);
-        if (!target || roots.some(({ rowKey }) => target.rowKey === rowKey || target.rowKey.startsWith(rowKey + "/"))) return;
-        const address = addressKey(target.node.address);
-        if (selected.has(address)) return;
+        if (!target || isLaneWithinSelection(target, roots, lanesByRow.value)) return;
+        if (selected.has(addressKey(target.node.address))) return;
         const rect = row.getBoundingClientRect();
         const fraction = (point.y - rect.top) / rect.height;
-        if (target.node.isModule && fraction >= .25 && fraction <= .75)
+        if (fraction >= .25 && fraction <= .75)
             return { destination: { parent: target }, row, placement: "inside" };
-        if (!isProjectInstance(target.node.address)) return;
         const parent = target.parentRowKey === undefined ? undefined : lanesByRow.value.get(target.parentRowKey);
         return fraction < .5
-            ? { destination: { parent, before: address }, row, placement: "before" }
-            : { destination: { parent, after: address }, row, placement: "after" };
+            ? { destination: { parent, before: target.rowKey }, row, placement: "before" }
+            : { destination: { parent, after: target.rowKey }, row, placement: "after" };
     };
     const update = (point: Point) => {
         moved ||= Math.hypot(point.x - origin.x, point.y - origin.y) >= 5;
@@ -812,7 +809,7 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     },
     setTimelineZoomHint: (hint) => { timelineZoomHint.value = hint; },
     copyNodeDebugDetails: (address) => webviewApi.postMessage({ type: "copyNodeDebugDetails", nodeKey: addressKey(address) }),
-    scope: visibleScope, lanes, expandedModules, implicitOutputModules, connectionFeedback, toggleModule,
+    scope: visibleScope, lanes, expandedLanes, implicitOutputModules, connectionFeedback, toggleLane,
     connectionDrag, hoveredPortGroup, startConnection, cancelConnection, activeKnob, startKnob,
     toggleConnectionDetach: (end) => webviewApi.postMessage({ type: "editGraphConnectionEnd", edit: { end, toggleDetach: true } }),
     setConnectionDelay: (end, loopExtraLatency) => requestGraphEdit((requestId) =>
@@ -1508,7 +1505,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         graphUiProfileTimer = setTimeout(() => {
             graphUiRecording = undefined;
             const summary = recording.finish({
-                lanes: lanes.value.length, expandedModules: expandedModules.value.size,
+                lanes: lanes.value.length, expandedModules: lanes.value.filter(({ node, rowKey }) => node.isModule && expandedLanes.value.has(rowKey)).length,
                 connections: state.value.scope?.connections.length ?? 0,
                 drawnWires: selectedWires.value.length, laneHeight: layout.value.timeline.laneHeight,
             });

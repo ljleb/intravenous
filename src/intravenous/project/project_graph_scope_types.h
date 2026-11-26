@@ -89,6 +89,13 @@ struct ProjectGraphScopePresentation {
     std::string timeline_snap_memory_json{"{}"};
 };
 
+struct ProjectGraphScopeLaneParentFallback {
+    // Saved row address and its nearest available ancestor. An empty
+    // effective address places the child at the project root.
+    NodeAddress requested{};
+    std::optional<NodeAddress> effective{};
+};
+
 // The project root, its requested child scopes, and their connections share
 // one configured graph and project revision.
 struct ProjectGraphScope {
@@ -106,7 +113,8 @@ struct ProjectGraphScope {
     std::vector<ProjectGraphChildScope> child_scopes{};
     std::vector<ProjectGraphScopeConnection> connections{};
     std::vector<NodeAddress> timeline_nodes{};
-    std::vector<NodeAddress> unavailable_lane_parents{};
+    // Omitted entries keep the saved parent, even while it is collapsed.
+    std::vector<ProjectGraphScopeLaneParentFallback> lane_parent_fallbacks{};
     ProjectGraphScopePresentation presentation{};
 };
 } // namespace iv

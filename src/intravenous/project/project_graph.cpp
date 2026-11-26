@@ -2753,12 +2753,33 @@ void append_project_instance_duplicates(ProjectEditBatch& edit,
         }, connection);
     }
 }
-bool is_module_lane_parent(ProjectGraphGeneration const& generation, NodeAddress const& address)
-{
-    auto const matches = resolve_node_address(*generation.graph, generation.placements, address);
-    return matches.size() == 1 && matches.front().kind == ProjectNodePathMatch::Kind::bundle
-        && generation.graph->node_bundles.bundle(matches.front().bundle).is_subgraph();
-}
+class LaneParentPaths {
+public:
+    explicit LaneParentPaths(ProjectGraphGeneration const* generation) : generation_(generation) {}
+
+    std::size_t length(NodeAddress const& address)
+    {
+        if (address.path.empty() || !generation_ || !generation_->graph) return 0;
+        auto const placement = generation_->placements.find(address.instance_id);
+        if (placement == generation_->placements.end()) return 0;
+        ProjectNodePathMatch root{.bundle = placement->second.root};
+        auto const* match = &root;
+        NodeAddress prefix{.instance_id = address.instance_id};
+        prefix.path.reserve(address.path.size());
+        for (auto const& step : address.path) {
+            prefix.path.push_back(step);
+            auto [entry, inserted] = matches_.try_emplace(prefix);
+            if (inserted) entry->second = resolve_project_lane_child(*generation_->graph, *match, step);
+            if (!entry->second) return prefix.path.size() - 1;
+            match = &*entry->second;
+        }
+        return prefix.path.size();
+    }
+
+private:
+    ProjectGraphGeneration const* generation_;
+    std::unordered_map<NodeAddress, std::optional<ProjectNodePathMatch>, ProjectRecordKeyHash> matches_;
+};
 
 auto lane_view_history_edits(std::vector<ProjectLaneView> const& current,
     std::vector<ProjectRecordChange<ProjectLaneView>> const& changes, bool undo)
@@ -2862,12 +2883,12 @@ ProjectGraph::RebuildResult ProjectGraph::apply_edit_locked(
                 std::unordered_map<std::string_view, NodeAddress const*> old_parents;
                 for (auto const& placement : presentation_.lane_parents)
                     old_parents.emplace(placement.instance_id, &placement.parent);
+                LaneParentPaths lane_paths(current_generation_.get());
                 for (auto const& placement : *edit.lane_parents) {
                     auto const old = old_parents.find(placement.instance_id);
                     if (old != old_parents.end() && *old->second == placement.parent) continue;
-                    if (!current_generation_ || !current_generation_->graph
-                        || !is_module_lane_parent(*current_generation_, placement.parent))
-                        throw std::invalid_argument("lane nesting requires a module instance as its parent");
+                    if (lane_paths.length(placement.parent) != placement.parent.path.size())
+                        throw std::invalid_argument("lane nesting requires an existing parent lane");
                 }
             }
             next.lane_parents = *edit.lane_parents;
@@ -4207,11 +4228,23 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
         for (auto const& view : presentation_.lane_views)
             scope.presentation.lane_views.push_back({view.id, view.version()});
         auto const generation = current_generation_;
-        if (generation && generation->graph) {
+        if (!presentation_.lane_parents.empty()) {
+            LaneParentPaths lane_paths(generation.get());
+            std::unordered_set<std::string_view> roots;
+            for (auto const& instance : instances.instances) roots.insert(instance.instance_id);
             std::unordered_set<NodeAddress, ProjectRecordKeyHash> seen;
             for (auto const& placement : presentation_.lane_parents) {
-                if (seen.insert(placement.parent).second && !is_module_lane_parent(*generation, placement.parent))
-                    scope.unavailable_lane_parents.push_back(placement.parent);
+                auto const& parent = placement.parent;
+                if (!seen.insert(parent).second) continue;
+                if (!roots.contains(parent.instance_id)) {
+                    scope.lane_parent_fallbacks.push_back({.requested = parent});
+                    continue;
+                }
+                auto const length = lane_paths.length(parent);
+                if (length == parent.path.size()) continue;
+                auto effective = parent;
+                effective.path.resize(length);
+                scope.lane_parent_fallbacks.push_back({parent, std::move(effective)});
             }
         }
         if (generation) scope.generation = generation->configured_generation;
@@ -4312,28 +4345,33 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
             if (matches.front().kind == ProjectNodePathMatch::Kind::symbolic_node
                 && !graph.symbolic_nodes.record(matches.front().symbolic_node).has_lane()) continue;
             auto& child_scope = scope.child_scopes.emplace_back(ProjectGraphChildScope{.subject = address});
+            auto canonical_subject = address;
+            auto const placement = generation->placements.find(address.instance_id);
             if (matches.front().kind == ProjectNodePathMatch::Kind::bundle) {
+                if (!address.path.empty() && placement != generation->placements.end()) {
+                    if (auto path = project_member_path(graph, placement->second.root, matches.front().bundle))
+                        canonical_subject.path = std::move(*path);
+                }
                 if (auto const boundary = graph.node_bundles.bundle(matches.front().bundle).subgraph_boundary_handle()) {
                     child_scope.has_boundary = true;
-                    source_ports.boundaries[*boundary].push_back(address);
+                    auto& addresses = source_ports.boundaries[*boundary];
+                    if (!std::ranges::contains(addresses, canonical_subject)) addresses.push_back(canonical_subject);
                 }
             }
             for (auto const& child : project_child_nodes(graph, matches.front())) {
                 auto const* record = child.symbolic_node ? &graph.symbolic_nodes.record(*child.symbolic_node) : nullptr;
                 if (record && !record->has_lane()) continue;
-                auto child_address = address;
+                auto child_address = canonical_subject;
                 child_address.path.insert(child_address.path.end(), child.path.begin(), child.path.end());
+                auto occurrence = address;
+                occurrence.path.insert(occurrence.path.end(), child.path.begin(), child.path.end());
                 std::optional<NodeAddress> membership_address;
                 std::optional<std::size_t> symbolic_member_count;
                 std::optional<ProjectGraphScopeSource> declaration_source;
                 if (!record) {
-                    auto const placement = generation->placements.find(address.instance_id);
                     if (placement != generation->placements.end()) {
                         auto path = project_member_path(graph, placement->second.root, child.bundle);
-                        if (path && *path != child_address.path) {
-                            membership_address = child_address;
-                            child_address.path = std::move(*path);
-                        }
+                        if (path) child_address.path = std::move(*path);
                     }
                     auto& lanes = source_ports.children[child.bundle];
                     if (!std::ranges::contains(lanes, child_address, &SourceScopeLane::address))
@@ -4382,6 +4420,7 @@ void ProjectGraph::handle_socket_rpc_get_graph_scope(
                         }
                     }
                 }
+                if (occurrence != child_address) membership_address = std::move(occurrence);
                 auto const& bundle = graph.node_bundles.bundle(child.bundle);
                 if (!record) add_visible_module(graph.node_bundles, child.bundle, child_address);
                 auto const* registered = graph.node_bundles.registered_node_type_identity(child.bundle);

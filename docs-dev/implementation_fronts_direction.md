@@ -63,21 +63,17 @@ The fronts below follow five rules:
 
 _Implementation status and open questions, 2026-11-25._
 
-- **Lane nesting.** `ProjectLaneParent::parent` already stores the chosen
-  `NodeAddress`, including the path to a generated lane. `ProjectGraph` currently
-  uses `is_module_lane_parent()` both to validate edits and to fill
-  `ProjectGraphScope::unavailable_lane_parents`. The webview uses that list to
-  place the child at the top level. The parent lookup needs to return the
-  effective occurrence, including a surviving ancestor, from the same graph
-  revision as the child scopes. `ProjectGraphScopeNode::membership_address`
-  identifies the row under a particular symbolic lane when the canonical
-  `address` identifies a concrete node shared by several rows. The webview only
-  receives generated children for requested expansions, so it cannot infer
-  that a missing row means a missing parent. Resolve the saved path against
-  the authoritative presentation tree, then use the resulting parent for
-  expansion, ordering, and drag validation. Verify shrink and restore, collapsed
-  ancestors, shared concrete rows, save and reopen while using a fallback, and
-  cycle rejection. [Lane nesting design](./module_interoperability_and_graph_macros_direction.md#project-lane-nesting)
+- **Lane nesting.** `ProjectLaneParent::parent` stores the chosen row address.
+  `ProjectGraphScope::lane_parent_fallbacks` supplies the nearest surviving
+  ancestor from the same configured graph as the child scopes. Lookups share
+  resolved prefixes within each scope read or layout edit. The editor uses
+  `ProjectGraphScopeNode::membership_address` for row expansion and placement
+  where several lanes share one canonical node address. Project-only expansion
+  uses the root scope already in memory. Keyboard and drag edits commit parent
+  and ordering changes together, and reordering within a fallback group
+  preserves the saved path. Regressions cover collapse, shared occurrences,
+  cycle rejection, and save and reopen during fallback before a member returns.
+  [Lane nesting design](./module_interoperability_and_graph_macros_direction.md#project-lane-nesting)
 - **Graph state reset.** Shift+R submits `graph.resetState`. `ProjectGraph`
   stages a reset through the compile worker and retains one compatible startup
   artifact separately from observation prediction. Initial load supplies this

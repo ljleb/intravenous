@@ -73,7 +73,7 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | { type: "nodeDefinitionSearchResult"; requestId: string; result?: NodeDefinitionSearch; error?: string }
     | { type: "graphAction"; action: "addNode" | "editNode" | "createPackage"; instanceId?: string };
 export type GraphEditorWebviewMessage = { type: "graphReady" }
-    | { type: "setExpandedModules"; modules: NodeAddress[] }
+    | { type: "setExpandedLanes"; lanes: NodeAddress[] }
     | { type: "setTimelineSnapMode"; mode: TimelineGridMode }
     | { type: "playbackToggle" }
     | { type: "resetGraphState" }

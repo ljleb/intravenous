@@ -79,6 +79,11 @@ struct ProjectChildNode {
 [[nodiscard]] std::vector<ProjectChildNode> project_child_nodes(
     ConfiguredGraph const&, ProjectNodePathMatch const& subject);
 
+// A direct child row in the presentation tree. Wiring selectors use
+// resolve_project_node_path and can address hidden nodes.
+[[nodiscard]] std::optional<ProjectNodePathMatch> resolve_project_lane_child(
+    ConfiguredGraph const&, ProjectNodePathMatch const&, ProjectNodePathSelector const&);
+
 // Finds a semantic member path when the target belongs to this authored instance.
 [[nodiscard]] std::optional<std::vector<ProjectNodePathSelector>> project_member_path(
     ConfiguredGraph const&, NodeBundleHandle root, NodeBundleHandle target);

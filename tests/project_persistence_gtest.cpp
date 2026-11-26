@@ -3,9 +3,11 @@
 #include "event_source_test_support.h"
 #include "node_instances_test_driver.h"
 
+#include <intravenous/basic_nodes/constant.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/project/node_instances.h>
 #include <intravenous/packages/node_definitions_events.h>
+#include <intravenous/packages/package_definitions.h>
 #include <intravenous/packages/package_pipeline_types.h>
 #include <intravenous/project/persistence/project_connection_json.h>
 #include <intravenous/project/persistence/project_persistence.h>
@@ -16,8 +18,10 @@
 #include <intravenous/project/project_graph.h>
 #include <intravenous/app/bridges/project_graph_graph_connections_bridge.h>
 #include <intravenous/app/bridges/project_graph_node_instances_bridge.h>
+#include <intravenous/app/bridges/project_graph_package_definitions_bridge.h>
 #include <intravenous/project/runtime_project_events.h>
 #include <intravenous/rpc/socket_rpc_requests.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
 #include <intravenous/presentation/state_json.h>
 
 #include <gtest/gtest.h>
@@ -96,7 +100,8 @@ void configure_persisted_successor(
 }
 
 std::shared_ptr<iv::NodeDefinitionsSnapshot const>
-persisted_replacement_definitions()
+persisted_replacement_definitions(std::uint64_t generation = 1,
+    iv::details::IvModuleConfigureFunction original = &configure_persisted_original)
 {
     using iv::details::PackageDefinition;
     using iv::details::PackageDefinitionKind;
@@ -104,7 +109,7 @@ persisted_replacement_definitions()
     auto revision = std::make_shared<iv::PackageRevision>();
     revision->package_id = "iv.test.persistence.package";
     revision->package_root = persisted_package_root;
-    revision->revision = 1;
+    revision->revision = generation;
     auto add_provider = [&](char const* id,
                             std::size_t id_size,
                             iv::details::IvModuleConfigureFunction configure) {
@@ -123,21 +128,21 @@ persisted_replacement_definitions()
     add_provider(
         persisted_original_definition_id,
         sizeof(persisted_original_definition_id) - 1,
-        &configure_persisted_original);
+        original);
     add_provider(
         persisted_successor_definition_id,
         sizeof(persisted_successor_definition_id) - 1,
         &configure_persisted_successor);
 
     auto snapshot = std::make_shared<iv::NodeDefinitionsSnapshot>();
-    snapshot->generation = 1;
+    snapshot->generation = generation;
     snapshot->package_revisions.push_back(revision);
     auto add_definition = [&](std::string id,
                               iv::details::IvModuleConfigureFunction configure) {
         snapshot->by_id.emplace(id, iv::NodeDefinitionEntry{
             .definition_id = id,
             .kind = iv::NodeDefinitionKind::module,
-            .version = 1,
+            .version = generation,
             .definition = iv::ModuleNodeDefinition{
                 .definition_id = id,
                 .package_id = revision->package_id,
@@ -152,11 +157,24 @@ persisted_replacement_definitions()
     };
     add_definition(
         persisted_original_definition_id,
-        &configure_persisted_original);
+        original);
     add_definition(
         persisted_successor_definition_id,
         &configure_persisted_successor);
     return snapshot;
+}
+
+template<std::size_t MemberCount>
+void configure_persisted_lane_parents(iv::GraphBuilder& graph,
+    std::span<iv::details::ConfigurationArgument>)
+{
+    for (std::size_t index = 0; index < MemberCount; ++index) {
+        auto child = iv::details::configure_concrete_node<iv::Constant>(graph);
+        child._annotate_source_info("members", persisted_source_file, 1, 2, "members");
+        auto alias = child;
+        alias._annotate_source_info("aliases", persisted_source_file, 4, 5, "aliases");
+    }
+    graph.outputs();
 }
 
 std::filesystem::path fresh_workspace(std::string_view name)
@@ -880,6 +898,85 @@ TEST(ProjectPersistence, LaneNestingRoundTripsAndUndoesWithoutReconfiguringTheGr
     EXPECT_EQ(save(), nested);
     ASSERT_TRUE(persistence.load().empty());
     EXPECT_EQ(save(), nested);
+}
+
+TEST(ProjectPersistence, NestedLaneReturnsToItsSavedOccurrenceAfterSavingAndReopeningDuringFallback)
+{
+    using namespace iv;
+    constexpr auto names = ProjectConnectionJsonNames::socket_rpc;
+    auto const workspace = fresh_workspace("lane_parent_fallback");
+    auto const project_file = workspace / "iv_project.jsonl";
+    write_text(project_file,
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"module","definition_id":"iv.test.persistence.original"}})" "\n"
+        R"({"command":"nodeInstances.upsert","args":{"instance_id":"curve","definition_id":"iv.test.persistence.successor"}})" "\n");
+    ProjectPersistence persistence(workspace, startup_for(workspace));
+    NodeInstances instances;
+    GraphConnections connections;
+    ProjectGraph graph;
+    PackageDefinitions packages{workspace};
+    auto const persistence_bridge = project_persistence_project_graph_bridge::bind(persistence, graph);
+    auto const instances_bridge = project_graph_node_instances_bridge::bind(graph, instances);
+    auto const connections_bridge = project_graph_graph_connections_bridge::bind(graph, connections);
+    auto const packages_bridge = project_graph_package_definitions_bridge::bind(graph, packages);
+    publish_definitions_snapshot(graph, {.snapshot = persisted_replacement_definitions(1, &configure_persisted_lane_parents<30>)});
+    ASSERT_TRUE(persistence.load().empty());
+    auto read_scope = [&](std::vector<NodeAddress> expanded = {}) {
+        SocketRpcGraphScopeResultBuilder builder;
+        in_event_source([&] { graph.handle_socket_rpc_get_graph_scope({.expanded = std::move(expanded)}, builder); });
+        return Json::parse(builder.build(1)).at("result");
+    };
+    NodeAddress const module{.instance_id = "module"};
+    auto const initial = read_scope({module});
+    auto const& symbols = initial.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(symbols.size(), 2u);
+    auto const aliases = std::ranges::find_if(symbols, [](auto const& row) {
+        return row.at("childSourceLabel") == "aliases";
+    });
+    ASSERT_NE(aliases, symbols.end());
+    auto const parent_symbol = parse_node_address_json(aliases->at("address"), names);
+    auto const expanded = read_scope({parent_symbol});
+    auto const& members = expanded.at("childScopes").at(0).at("nodes");
+    ASSERT_EQ(members.size(), 30u);
+    auto const& member = members.at(29);
+    auto const saved = member.value("membershipAddress", member.at("address"));
+    auto const parent = parse_node_address_json(saved, names);
+    ASSERT_EQ(parent.path.size(), 2u);
+
+    auto edit = [&](std::vector<ProjectLaneParent> parents) {
+        ProjectAckBuilder builder;
+        in_event_source([&] { graph.handle_project_apply_edit({.lane_parents = std::move(parents)}, builder); });
+        builder.build();
+    };
+    auto const generation = graph.current_generation();
+    ASSERT_TRUE(generation);
+    ASSERT_NO_THROW(edit({{"curve", parent}}));
+    expect_same_configuration(graph, *generation);
+    EXPECT_THROW(edit({{"curve", parent}, {"module", {.instance_id = "curve"}}}), std::invalid_argument);
+    EXPECT_TRUE(read_scope().at("laneParentFallbacks").empty());
+
+    auto check_fallback = [&](NodeAddress const& effective) {
+        auto const scope = read_scope();
+        EXPECT_TRUE(scope.at("childScopes").empty());
+        ASSERT_EQ(scope.at("presentation").at("laneParents").size(), 1u);
+        EXPECT_EQ(scope.at("presentation").at("laneParents").at(0).at("parent"), saved);
+        auto const& fallbacks = scope.at("laneParentFallbacks");
+        ASSERT_EQ(fallbacks.size(), 1u);
+        EXPECT_EQ(fallbacks.at(0).at("requested"), saved);
+        EXPECT_EQ(fallbacks.at(0).at("effective"), node_address_json(effective, names));
+    };
+    publish_definitions_snapshot(graph, {.snapshot = persisted_replacement_definitions(2, &configure_persisted_lane_parents<20>)});
+    check_fallback(parent_symbol);
+    in_event_source([&] { persistence.save(); });
+    ASSERT_TRUE(persistence.load().empty());
+    check_fallback(parent_symbol);
+    publish_definitions_snapshot(graph, {.snapshot = persisted_replacement_definitions(3, &configure_persisted_lane_parents<0>)});
+    check_fallback(module);
+    publish_definitions_snapshot(graph, {.snapshot = persisted_replacement_definitions(4, &configure_persisted_lane_parents<30>)});
+    auto const restored = read_scope({parent_symbol});
+    EXPECT_TRUE(restored.at("laneParentFallbacks").empty());
+    EXPECT_EQ(restored.at("presentation").at("laneParents").at(0).at("parent"), saved);
+    auto const& restored_member = restored.at("childScopes").at(0).at("nodes").at(29);
+    EXPECT_EQ(restored_member.value("membershipAddress", restored_member.at("address")), saved);
 }
 
 TEST(ProjectPersistence, SavingUnchangedContentsKeepsExistingFile)

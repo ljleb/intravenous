@@ -53,6 +53,7 @@ export type SemanticNode = {
     sourceLabel?: string;
     realized?: boolean;
     hasChildren?: boolean;
+    membershipAddress?: NodeAddress;
     symbolicNode?: boolean;
     errorMessage?: string;
     address?: NodeAddress;
@@ -99,6 +100,7 @@ export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphSc
     const definitionId = child.definitionId ?? child.instance.definitionId;
     return {
         address: child.address,
+        membershipAddress: child.membershipAddress,
         id: isProjectInstance(child.address) ? child.instance.instanceId : addressKey(child.address),
         construction: child.construction,
         constructionError: child.constructionError,

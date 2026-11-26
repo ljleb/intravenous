@@ -150,10 +150,10 @@ test("Shift+Up and Shift+Down move a project lane across source-owned siblings",
     assert.ok(withAlias.indexOf(copyKey) < withAlias.indexOf(a));
 });
 
-test("project lanes move into modules per sibling run and move one level out", () => {
+test("project lanes nest per sibling run and move one level out", () => {
     const nodes: GraphScopeNode[] = ["m", "a", "b", "n", "c", "d"].map((instanceId) => ({
         address: { instanceId }, instance: { instanceId, definitionId: "test", realized: true },
-        loadState: "ready", hasChildren: true, isModule: instanceId === "m" || instanceId === "n",
+        loadState: "ready", hasChildren: false,
         sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [],
     }));
     const [m, a, b, n, c, d] = nodes.map(({ address }) => addressKey(address));
@@ -182,9 +182,81 @@ test("project lanes move into modules per sibling run and move one level out", (
     assert.deepEqual(dropped.parents, { [a]: n, [b]: m, [c]: n });
     assert.deepEqual(expandedGraphLanes(scope, dropped.order, new Set([m]), dropped.parents)
         .map(({ node }) => addressKey(node.address)), [m, b, n, d]);
-    const unavailable = { ...scope, unavailableLaneParents: [nodes[3].address] };
+    const unavailable = { ...scope, laneParentFallbacks: [{ requested: nodes[3].address, effective: null }] };
     assert.deepEqual(expandedGraphLanes(unavailable, dropped.order, new Set([m]), dropped.parents)
         .map(({ node }) => addressKey(node.address)), [m, b, n, d, a, c]);
+});
+
+test("lane parent fallback preserves the saved occurrence through collapse and restoration", () => {
+    const root = { instanceId: "module", path: [] };
+    const symbol = { instanceId: "module", path: [{ kind: "symbolicNode", sourceIdentity: "first", typeIdentity: "Leaf" }] };
+    const alias = { ...symbol, path: [{ ...symbol.path[0], sourceIdentity: "second" }] };
+    const member = { ...root, path: [...symbol.path, { kind: "symbolicMember", index: 29 }] };
+    const aliasMember = { ...root, path: [...alias.path, { kind: "symbolicMember", index: 29 }] };
+    const project = { instanceId: "automation" };
+    const node = (address: GraphScopeNode["address"], membershipAddress?: GraphScopeNode["membershipAddress"]): GraphScopeNode => ({
+        address, membershipAddress, instance: { instanceId: address.instanceId, definitionId: "test", realized: true },
+        loadState: "ready", hasChildren: false, sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [],
+    });
+    const [r, s, a, m, am, p] = [root, symbol, alias, member, aliasMember, project].map(addressKey);
+    const scope: GraphScope = {
+        generation: 1, editable: true, nodes: [node(root), node(project)], connections: [],
+        presentation: {
+            laneOrder: [root, project],
+            laneParents: [{ instanceId: project.instanceId, parent: aliasMember }],
+            laneViews: [],
+            timelineSnapMemory: {},
+        },
+        childScopes: [
+            { subject: root, nodes: [node(symbol), node(alias)] },
+            { subject: symbol, nodes: [node(member)] },
+            { subject: alias, nodes: [node(member, aliasMember)] },
+        ],
+    };
+    const visible = (scope: GraphScope, ...expanded: string[]) => expandedGraphLanes(scope, [r, p], new Set(expanded));
+    const restored = visible(scope, r, s, a, m, am);
+    assert.deepEqual(restored.map(({ rowKey }) => rowKey), [r, s, m, a, am, p]);
+    assert.equal(restored.find(({ rowKey }) => rowKey === m)?.hasProjectChildren, false);
+    assert.equal(restored.find(({ rowKey }) => rowKey === am)?.hasProjectChildren, true);
+    assert.equal(restored.at(-1)?.parentRowKey, am);
+    const shrunk = {
+        ...scope,
+        childScopes: scope.childScopes!.slice(0, 1),
+        laneParentFallbacks: [{ requested: aliasMember, effective: alias }],
+    };
+    assert.deepEqual(visible(shrunk, r).map(({ rowKey }) => rowKey), [r, s, a]);
+    const fallback = visible(shrunk, r, a);
+    assert.equal(fallback.at(-1)?.parentRowKey, a);
+    assert.equal(dropSelectedLanes(restored, [r, p], { [p]: am }, new Set([r]),
+        { parent: restored.find((lane) => lane.rowKey === am) }), undefined);
+    const out = moveLaneNesting(restored, [r, p], { [p]: am }, new Set([p]), -1)!;
+    assert.deepEqual(out.parents, { [p]: a });
+    assert.equal(out.order[out.order.indexOf(am) + 1], p);
+    assert.equal(visible(scope, r, a, am).at(-1)?.parentRowKey, am);
+});
+
+test("dropping beside a source child keeps a saved fallback path and source sibling order", () => {
+    const root = { instanceId: "root" };
+    const first = { ...root, path: [{ kind: "symbolicNode", sourceIdentity: "first" }] };
+    const second = { ...root, path: [{ kind: "symbolicNode", sourceIdentity: "second" }] };
+    const missing = { ...second, path: [...second.path, { kind: "symbolicMember", index: 29 }] };
+    const child = { instanceId: "child" };
+    const node = (address: GraphScopeNode["address"]): GraphScopeNode => ({
+        address, instance: { instanceId: address.instanceId, definitionId: "test", realized: true },
+        loadState: "ready", hasChildren: false, sampleInputs: [], sampleOutputs: [], eventInputs: [], eventOutputs: [],
+    });
+    const [r, a, b, m, c] = [root, first, second, missing, child].map(addressKey);
+    const scope: GraphScope = {
+        generation: 1, editable: true, nodes: [node(root), node(child)], connections: [],
+        childScopes: [{ subject: root, nodes: [node(first), node(second)] }],
+        laneParentFallbacks: [{ requested: missing, effective: root }],
+    };
+    const parents = { [c]: m };
+    const expanded = new Set([r]);
+    const initial = expandedGraphLanes(scope, [r, c], expanded, parents);
+    const drop = dropSelectedLanes(initial, [r, c], parents, new Set([c]), { parent: initial[0], before: b })!;
+    assert.deepEqual(drop.parents, parents);
+    assert.deepEqual(expandedGraphLanes(scope, drop.order, expanded, parents).map(({ rowKey }) => rowKey), [r, a, c, b]);
 });
 
 test("graph shortcuts distinguish add, duplicate, and select all", () => {

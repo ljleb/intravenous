@@ -46,7 +46,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedModules, implicitOutputModules, finishPointerLock, setTimelineZoomHint,
+const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedLanes, implicitOutputModules, finishPointerLock, setTimelineZoomHint,
     profileGraphUi, portsChanged, startObjectDrag } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
@@ -56,11 +56,12 @@ function openSymbolicNodeSource(address: NodeAddress) {
 }
 const children = computed(() => profileGraphUi("Build lane presentation data", () => {
     const boundaries = new Set(scope.value.childScopes?.filter((scope) => scope.hasBoundary).map(({ subject }) => addressKey(subject)));
-    return lanes.value.flatMap(({ node: child, depth, rowKey }) => {
+    return lanes.value.flatMap(({ node: child, depth, rowKey, hasProjectChildren }) => {
         const address = addressKey(child.address);
         const semantic = semanticNodeFromScopeChild(child, scope.value);
+        semantic.hasChildren = hasProjectChildren || (child.hasChildren && child.loadState === "ready");
         const lane = { child, depth, rowKey, semantic, moduleBoundary: false };
-        if (!expandedModules.value.has(address) || !boundaries.has(address)
+        if (!expandedLanes.value.has(rowKey) || !boundaries.has(rowKey)
             || (!semantic.ports.length && !implicitOutputModules.value.has(address))) return [lane];
         return [lane, { ...lane, depth: depth + 1, rowKey: `${rowKey}/module-ports`, moduleBoundary: true }];
     });
@@ -867,11 +868,11 @@ onBeforeUnmount(() => {
                 :data-lane-address="addressKey(child.address)"
                 :data-lane-key="moduleBoundary ? undefined : addressKey(child.address)"
                 :style="{ height: `${laneHeight}px` }" tabindex="-1"
-                :data-status-hint="depth ? `Module nesting depth ${depth}` : undefined"
+                :data-status-hint="depth ? `Lane nesting depth ${depth}` : undefined"
                 :aria-label="(moduleBoundary ? `${nodeDisplayName(semantic)} module ports`
                     : formatLaneLabel(laneLabels(nodeDisplayName(semantic), semantic.sourceLabel))
                         + (selectedLanes.has(addressKey(child.address)) ? ', selected' : ''))
-                    + (depth ? `, module nesting depth ${depth}` : '')">
+                    + (depth ? `, lane nesting depth ${depth}` : '')">
                 <PresentationHost v-if="moduleBoundary" :node="semantic" :region-height="laneContentHeight" module-boundary />
                 <PresentationHost v-else :node="semantic" :region-height="laneContentHeight" lane
                     :open-source="child.symbolicNode && child.declarationSource
