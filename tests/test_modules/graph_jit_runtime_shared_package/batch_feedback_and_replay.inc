@@ -785,7 +785,7 @@ void replay_input_history_module(iv::GraphBuilder& graph) {
     auto const delayed = graph.node<"iv.test.replay.input_history">();
     auto const window = graph.node<"iv.test.replay.window">(std::int64_t{22}, std::uint64_t{13});
     delayed.connect_input("in", samples);
-    delayed.connect_input("trigger", events);
+    delayed.connect_event_input("trigger", events.event_port());
     window(delayed);
     graph.outputs();
 }

@@ -669,7 +669,7 @@ RegisteredSignature const* node_constructor_signature()
         "IV_NODE Tick Region/Coverage event inputs require complete-buffer access."); \
     static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
         "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
-        "use complete buffers for Region/Coverage inputs, have no State or authored reverse coverage callbacks, " \
+        "use complete buffers for Region/Coverage event inputs, have no State or authored reverse coverage callbacks, " \
         "and declare only computed Sequential outputs; resolved timing is validated by " \
         "the whole-graph planner."); \
     static_assert(::iv::details::background_state_type_is_valid_v<Node>, \

@@ -198,6 +198,8 @@ finish. It batches the due ports for one callback. It does not suspend the
 generated background traversal to run several independent replay nodes in
 parallel. Early Tick, handoff of pending requests across structural cutover,
 and scheduling by measured fetch cost remain open.
+See [Front 16](#background-work-for-foreground-deadlines) for the measurement
+plan and the follow-up on preparation lead.
 [Earlier replay discovery options](./historical/tick_resampler_first_proposal_2026-11-26.md#replay-discovery-before-the-deadline-pipeline)
 
 `BackgroundEvaluationTransaction` currently passes positional `IndexCoverage`
@@ -7411,6 +7413,43 @@ spans.
 
 Runtime PGO remains an optional discovery direction rather than a prerequisite for the
 architecture.
+
+### Background work for foreground deadlines
+
+The goal is to use as little memory as possible while delivering prepared
+inputs before Tick needs them. The current executor reuses valid data where
+successive playback windows overlap. It gives Sequential inputs an eight-block
+lookahead by default. Optional cache eviction uses output realization, recency,
+use count, and size. The existing phase timers do not attribute cost to
+individual producers or measure the full lifetime of a request.
+
+1. Measure the fixed cost of a producer call and the cost per unit of work.
+   Use work the producer actually performs, such as frames or events produced
+   and the number of separate runs. Track queue wait and the cost of publishing
+   a ready result separately. Use the playback benchmark to compare straight
+   playback, a short loop, and repeated seeks. Record deadline misses,
+   recomputation, retained bytes, and resident bytes.
+2. Use the estimates to choose how far ahead to prepare and what to retain for
+   reuse. Reserve space first for inputs Tick will need soon. Batch adjacent
+   predictable ranges when that saves setup work and leaves time for urgent
+   requests. Rank optional cached ranges by the recomputation time they are
+   likely to save per byte before invalidation. A short loop can reuse an
+   expensive range. Straight playback can benefit from preparing that range
+   early and releasing it after use. Prefer one shared upstream result when it
+   saves more work than retaining several derived copies. Size the reserve for
+   temporary delays on workloads that fit the available processing capacity.
+3. Use the same measurements to plan `preparation_lead` for positions chosen
+   live. Choose the smallest lead that covers measured request-to-publication
+   time with headroom under the cache budget. Include cold misses and queue
+   delays. Treat sustained overload as a separate capacity problem. Apply the
+   chosen lead when compiling a graph. Live updates need a cutover policy for
+   outstanding requests and their history.
+
+`constrain_ports()` already accepts expressions such as `lead + 2` for
+algorithms that need extra history or output latency. The expression leaves
+the request deadline unchanged. GraphJit still chooses one compiled realtime
+block for a computed source and zero for a buffered or unconnected source.
+The measurements, adaptive reserves, and cost-based cache policy remain open.
 
 ### Owner-requested panner investigation, 2026-11-14
 

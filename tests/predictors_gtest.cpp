@@ -48,8 +48,9 @@ namespace {
         };
 
         expect_history(Nlms{0.1f, 0.9f}, 7, 3);
-        expect_history(Residual{0.1f}, 6, 5);
-        expect_history(ResidualAr2{0.1f}, 8, 6);
+        // Before push(), the deepest prediction read uses offset LookAhead + ArOrder.
+        expect_history(Residual{0.1f}, 6, 6);
+        expect_history(ResidualAr2{0.1f}, 8, 7);
         expect_history(Poly{0.1f}, 3, 1);
     }
 }
