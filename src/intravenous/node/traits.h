@@ -455,6 +455,21 @@ namespace iv {
         inline constexpr bool intrinsically_replayable_v =
             tick_replay_mode_v<Node> != TickReplayMode::disabled;
 
+        // A live node requires foreground time. GraphJit propagates that
+        // requirement from the configured node to its downstream consumers.
+        template<typename Node>
+        consteval bool node_is_live()
+        {
+            if constexpr (requires { Node::is_live; }) {
+                static_assert(std::is_same_v<
+                    std::remove_cvref_t<decltype(Node::is_live)>, bool>,
+                    "is_live must be a static constexpr bool");
+                return Node::is_live;
+            } else {
+                return false;
+            }
+        }
+
         template<typename Node>
         inline constexpr bool has_coverage_propagation_domain_v =
             has_tock_family_v<Node>;

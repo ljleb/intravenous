@@ -357,6 +357,7 @@ struct RealtimeRootPlan {
     // Indexed like ExecutionPlan::ready_groups. Entries of cyclic groups stay
     // empty.
     std::vector<realtime::RootAcyclicGroup> acyclic_groups{};
+    std::size_t first_foreground_group = 0;
     // Primitives with Tick runtime slots.
     std::vector<std::size_t> tick_primitives{};
     std::vector<realtime::RootAddress> sample_addresses{};

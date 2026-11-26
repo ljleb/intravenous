@@ -345,6 +345,7 @@ TEST(SystemAudioDevices, MissingOutputUsesFallbackGraphClock)
         executor.stage(graph),
         iv::GraphExecutorStageResult::accepted);
     render_probe_calls.store(0, std::memory_order_relaxed);
+    (void)executor.set_playback_running(true);
     devices.attach_graph_executor(executor);
 
     auto const deadline = std::chrono::steady_clock::now()
@@ -388,10 +389,21 @@ TEST(SystemAudioDevices, OutputClockActivatesAndRendersTheGraphExecutor)
 
     auto output = current_output(lifetime);
     ASSERT_TRUE(output);
+    auto const paused = request_output_block(output, 64);
+    auto const startup = executor.playback_snapshot();
+    auto const startup_generation = executor.active_generation();
+    (void)executor.set_playback_running(true);
     auto const rendered = request_output_block(output, 64);
 
     devices.detach_graph_executor(executor);
     devices.stop();
+    EXPECT_EQ(startup_generation, 1u);
+    EXPECT_FALSE(startup.running);
+    EXPECT_FALSE(startup.foreground_running);
+    ASSERT_EQ(paused.size(), 128u);
+    for (auto const sample : paused) {
+        EXPECT_FLOAT_EQ(sample.value, 0.0f);
+    }
     ASSERT_EQ(rendered.size(), 128u);
     EXPECT_EQ(executor.active_generation(), 1u);
     for (auto const sample : rendered) {
@@ -423,6 +435,7 @@ TEST(SystemAudioDevices, OutputClockSlicesLargeDeviceRequestsIntoProjectBlocks)
         executor.stage(graph),
         iv::GraphExecutorStageResult::accepted);
     render_probe_calls.store(0, std::memory_order_relaxed);
+    (void)executor.set_playback_running(true);
     devices.attach_graph_executor(executor);
 
     auto output = current_output(lifetime);
@@ -584,6 +597,7 @@ TEST(SystemAudioDevices, LogicalOutputBindingFollowsDeviceSelection)
     ASSERT_EQ(
         executor.stage(graph),
         iv::GraphExecutorStageResult::accepted);
+    (void)executor.set_playback_running(true);
     devices.attach_graph_executor(executor);
 
     auto default_output = current_output(lifetime);

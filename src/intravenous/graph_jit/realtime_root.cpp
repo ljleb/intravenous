@@ -2262,12 +2262,24 @@ void run_region_specialization(
 }
 } // namespace
 
-void execute_realtime_root(
+bool has_early_tick(RealtimeRootPlan const* plan) noexcept
+{
+    return plan && plan->first_foreground_group != 0;
+}
+
+std::size_t tick_transfer_size(RealtimeRootPlan const* plan) noexcept
+{
+    return plan ? plan->root_stack.transfer_size_bytes : 0;
+}
+
+void execute_tick_root_part(
     RealtimeRootPlan const* root,
     std::byte* storage_base,
     TickInvocationCall const* invocation,
     GlobalIndex sample_index,
-    std::size_t block_size) noexcept
+    std::size_t block_size,
+    TickRootPart part,
+    std::span<std::byte> transfer) noexcept
 {
     auto const& plan = *root;
     auto const& layout = plan.frame;
@@ -2378,10 +2390,17 @@ void execute_realtime_root(
     }
     initialize_bindings(frame);
     initialize_tick_slots(frame);
+    if (part != TickRootPart::complete)
+        IV_ASSERT(transfer.size() == plan.root_stack.transfer_size_bytes, "early Tick transfer size changed");
+    if (part == TickRootPart::foreground) {
+        for (auto const& value : plan.root_stack.early_to_foreground)
+            std::memcpy(scratch + value.scratch_offset, transfer.data() + value.transfer_offset, value.size_bytes);
+    }
 
     auto const& execution = plan.execution;
-    for (std::size_t group_index = 0;
-         group_index < execution.ready_groups.size(); ++group_index) {
+    auto const first_group = part == TickRootPart::foreground ? plan.first_foreground_group : 0;
+    auto const end_group = part == TickRootPart::early ? plan.first_foreground_group : execution.ready_groups.size();
+    for (auto group_index = first_group; group_index < end_group; ++group_index) {
         auto const& group = execution.ready_groups[group_index];
         if (group.cyclic_regions.empty()) {
             auto const& acyclic = plan.acyclic_groups[group_index];
@@ -2465,6 +2484,12 @@ void execute_realtime_root(
         }
     }
 
+    if (part == TickRootPart::early) {
+        for (auto const& value : plan.root_stack.early_to_foreground)
+            std::memcpy(transfer.data() + value.transfer_offset, scratch + value.scratch_offset, value.size_bytes);
+        return;
+    }
+
     for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {
         auto const& extent = storage.producer_authored_extents[index];
         auto const current = std::min(
@@ -2486,5 +2511,11 @@ void execute_realtime_root(
                     sample_index, block_size, cursor.absolute_pace_exponent)
                     .value_count);
     }
+}
+
+void execute_realtime_root(RealtimeRootPlan const* root, std::byte* storage_base,
+    TickInvocationCall const* invocation, GlobalIndex sample_index, std::size_t block_size) noexcept
+{
+    execute_tick_root_part(root, storage_base, invocation, sample_index, block_size, TickRootPart::complete, {});
 }
 } // namespace iv::graph_jit

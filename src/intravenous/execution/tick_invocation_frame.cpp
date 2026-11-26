@@ -143,6 +143,11 @@ public:
             }
         }
 
+        void clear() noexcept
+        {
+            head = count = extent = next_sequential_index = 0;
+        }
+
         template<typename Finalize>
         void capture(Span span, std::size_t latency, Finalize&& finalize) noexcept
         {
@@ -202,6 +207,11 @@ public:
         {
             if (callback_chain && !callback_failed
                 && !pending->publish(std::move(callback_chain))) fail_queue_reservation();
+            clear_callback_chain();
+        }
+
+        void clear_callback_chain() noexcept
+        {
             callback_chain = {};
             writer = {};
             callback_failed = false;
@@ -1610,8 +1620,8 @@ TickInvocationWorkspace::TickInvocationWorkspace(
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;
 
-TickInvocationWorkspace::CaptureScope::CaptureScope(Impl& impl) noexcept
-    : impl_(&impl)
+TickInvocationWorkspace::CaptureScope::CaptureScope(Impl& impl, bool publish) noexcept
+    : impl_(publish ? &impl : nullptr)
 {}
 
 TickInvocationWorkspace::CaptureScope::~CaptureScope()
@@ -1719,10 +1729,23 @@ void TickInvocationWorkspace::transfer_recording_from(TickInvocationWorkspace co
     }
 }
 
-TickInvocationWorkspace::CaptureScope
-TickInvocationWorkspace::begin_capture() noexcept
+void TickInvocationWorkspace::discard_unpublished_startup() noexcept
 {
-    return CaptureScope{*impl_};
+    for (auto& slot : impl_->sample_capture_slots) {
+        slot.clear_callback_chain();
+        slot.spans.clear();
+    }
+    for (auto& slot : impl_->event_capture_slots) {
+        slot.clear_callback_chain();
+        slot.spans.clear();
+        slot.pending_count = 0;
+    }
+}
+
+TickInvocationWorkspace::CaptureScope
+TickInvocationWorkspace::begin_capture(bool publish) noexcept
+{
+    return CaptureScope{*impl_, publish};
 }
 
 void TickInvocationWorkspace::bind_deferred_input_requests(DeferredTickInputRequests& requests,
@@ -1777,10 +1800,10 @@ TickInvocationFrame::TickInvocationFrame(
     RealtimePersistedState const& persisted,
     TickInvocationWorkspace& workspace,
     GlobalIndex sample_index,
-    std::size_t block_size, TickPlaybackSelection selection) noexcept
+    std::size_t block_size, TickPlaybackSelection selection, bool publish_captures) noexcept
     : published_data_view_(&persisted.data())
     , materialized_storage_view_(&persisted.materialization())
-    , capture_scope_(workspace.begin_capture())
+    , capture_scope_(workspace.begin_capture(publish_captures))
     , call_(workspace.bind(
         *published_data_view_,
         *materialized_storage_view_,

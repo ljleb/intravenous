@@ -31,6 +31,7 @@ struct SccRegionPlan {
     // feedback dependencies omitted.
     std::vector<NodeBundleHandle> execution_order{};
     bool cyclic = false;
+    bool run_ahead = false;
     std::size_t maximum_block_size = 0;
     // Scheduling quantum exposed to callbacks in this region. This is derived
     // from node block limits and internal detach latencies; it is not the
@@ -47,6 +48,10 @@ struct SchedulePlan {
     // callback batch classes. Later lowering may keep the group scalar, but it
     // need not rediscover whether its members form an antichain.
     std::vector<std::vector<std::size_t>> ready_groups{};
+    // Ready groups and flattened execution positions have the same boundary.
+    // Finish the early groups before starting the foreground groups.
+    std::size_t early_ready_groups = 0;
+    std::size_t early_execution_steps = 0;
     // Entry positions correspond to configured NodeBundleHandle values.
     // Boundary/non-concrete bundles have no region.
     std::vector<std::optional<std::size_t>> bundle_to_region{};
@@ -58,6 +63,12 @@ struct SchedulePlan {
     // entry means planning proved that the node's Tick result is immutable and
     // omitted its callback before constructing the schedule.
     std::vector<std::uint8_t> callback_elided{};
+
+    // Raw outputs crossing from an early SCC to a foreground consumer.
+    // One entry per source even when several connections read that source.
+    // The normalized routes still own conversion, history and read latency.
+    std::vector<SampleOutputChannelId> early_sample_outputs{};
+    std::vector<EventOutputPortId> early_event_outputs{};
 };
 
 // Assign Tick callback order and feedback regions, then align feed-forward

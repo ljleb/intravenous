@@ -72,11 +72,12 @@ TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResu
     GraphExecutor executor(resources);
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
+    ProjectPlaybackRequest toggle{.operation = ProjectPlaybackOperation::toggle_foreground};
+    executor.handle_playback(toggle);
     executor.render_block(32, 48000);
     auto const* frame = executor.collect_observations();
     ASSERT_TRUE(frame && frame->count == 1 && frame->values[0].value.captured);
 
-    ProjectPlaybackRequest toggle{.operation = ProjectPlaybackOperation::toggle_foreground};
     executor.handle_playback(toggle);
     executor.render_block(32, 48000);
     frame = executor.collect_observations();
@@ -101,6 +102,131 @@ TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResu
     EXPECT_EQ(frame->sample_index, index(20));
     EXPECT_EQ(frame->block_size, 32u);
     EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
+}
+
+TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBeforeSeek)
+{
+    auto graph = configured_module_graph(*revision, "iv.test.graph_jit.early_tick_audio_mix");
+    auto compiled = compile_graph(graph, 703);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    struct DeviceBuffers {
+        std::array<Sample, 16> input{};
+        std::array<Sample, 16> output{};
+        std::thread::id foreground = std::this_thread::get_id();
+        std::atomic<bool> called_from_worker{false};
+
+        bool on_foreground() noexcept
+        {
+            if (foreground == std::this_thread::get_id()) return true;
+            called_from_worker.store(true, std::memory_order_relaxed);
+            return false;
+        }
+    } device;
+    resources.system_audio = {
+        .owner = &device,
+        .resolve_input_fn = [](void* owner, std::string_view) {
+            return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
+                auto& selected = *static_cast<DeviceBuffers*>(owner);
+                return selected.on_foreground() ? std::span<Sample const>{selected.input} : std::span<Sample const>{};
+            }};
+        },
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            return SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<Sample> {
+                auto& selected = *static_cast<DeviceBuffers*>(owner);
+                return selected.on_foreground() ? std::span<Sample>{selected.output} : std::span<Sample>{};
+            }};
+        },
+    };
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
+    PlaybackRenderSlice slice;
+    auto render_when_ready = [&](std::size_t frames, bool start_early_prefix = false) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            executor.render_block(frames, 88200, &slice, start_early_prefix);
+            if (slice.rendered) return;
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            std::this_thread::yield();
+        } while (true);
+    };
+    auto wait_for_paused_prefix = [&](std::uint64_t generation, GlobalIndex position) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            slice = {};
+            executor.render_block(4, 88200, &slice, true);
+            ASSERT_FALSE(slice.rendered);
+            auto const playback = executor.playback_snapshot();
+            if (executor.active_generation() == generation && !playback.foreground_running
+                && playback.foreground_playhead == position && executor.playback_render_frames(64) == 4)
+                return;
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            std::this_thread::yield();
+        } while (true);
+    };
+    ASSERT_NO_FATAL_FAILURE(wait_for_paused_prefix(703, index(0)));
+
+    // Replace the provisional position without rendering the old prefix.
+    auto const paused_seek = executor.seek_playback(index(20));
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        executor.render_block(4, 88200, &slice, true);
+        ASSERT_FALSE(slice.rendered);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    } while (executor.playback_snapshot().applied_command != paused_seek);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(20));
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(20));
+    ASSERT_EQ(executor.playback_render_frames(64), 4u);
+
+    (void)executor.set_playback_running(true);
+    ASSERT_NO_FATAL_FAILURE(render_when_ready(4, true));
+    EXPECT_FLOAT_EQ(device.output[0].value, 21.0f);
+    EXPECT_FLOAT_EQ(device.output[6].value, 27.0f);
+
+    executor.prepare_next_playback_slice(8, 88200);
+    ASSERT_EQ(executor.playback_render_frames(64), 8u);
+    auto const seek = executor.seek_playback(index(320));
+    device.input.fill(Sample{.25f});
+    device.output.fill(Sample{});
+    ASSERT_NO_FATAL_FAILURE(render_when_ready(3));
+    EXPECT_EQ(slice.foreground_sample, index(24));
+    EXPECT_FLOAT_EQ(device.output[0].value, 29.25f);
+    EXPECT_FLOAT_EQ(device.output[4].value, 33.25f);
+    EXPECT_NE(executor.playback_snapshot().applied_command, seek);
+
+    ASSERT_EQ(executor.playback_render_frames(64), 5u);
+    device.input.fill(Sample{.5f});
+    device.output.fill(Sample{});
+    executor.render_block(5, 88200, &slice);
+    ASSERT_TRUE(slice.rendered);
+    EXPECT_FLOAT_EQ(device.output[0].value, 35.5f);
+    EXPECT_FLOAT_EQ(device.output[8].value, 43.5f);
+    EXPECT_NE(executor.playback_snapshot().applied_command, seek);
+
+    device.output.fill(Sample{});
+    ASSERT_NO_FATAL_FAILURE(render_when_ready(2, true));
+    EXPECT_EQ(slice.foreground_sample, index(320));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, seek);
+    EXPECT_FLOAT_EQ(device.output[0].value, 333.5f);
+
+    ProjectPlaybackRequest pause{.operation = ProjectPlaybackOperation::toggle_foreground};
+    executor.handle_playback(pause);
+    executor.render_block(4, 88200, &slice, true);
+    ASSERT_FALSE(executor.playback_snapshot().foreground_running);
+    auto reset = in_event_source([&] {
+        return jit->handle_project_graph_transaction({
+            .successor = {.project_generation = 704, .graph = graph, .definitions = definitions, .reset_state = true},
+            .predecessor = compiled.compiled_graph,
+        });
+    });
+    ASSERT_TRUE(reset.succeeded()) << (reset.diagnostics.empty() ? "" : reset.diagnostics.front().message);
+    ASSERT_EQ(executor.stage(reset.compiled_graph), GraphExecutorStageResult::accepted);
+    ASSERT_NO_FATAL_FAILURE(wait_for_paused_prefix(704, index(320)));
+    device.output.fill(Sample{});
+    (void)executor.set_playback_running(true);
+    ASSERT_NO_FATAL_FAILURE(render_when_ready(4, true));
+    EXPECT_FLOAT_EQ(device.output[0].value, 321.5f);
+    EXPECT_FALSE(device.called_from_worker.load(std::memory_order_relaxed));
 }
 
 TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePlayhead)
@@ -134,6 +260,8 @@ TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePl
         if (auto const& cutover = reset.compiled_graph->cutover) EXPECT_TRUE(cutover->from_empty_graph);
 
         GraphExecutor executor(resources);
+        ProjectPlaybackRequest resume{.operation = ProjectPlaybackOperation::toggle_foreground};
+        executor.handle_playback(resume);
         auto render_first = [&](std::shared_ptr<CompiledGraph const> const& compiled, PlaybackRenderSlice& slice) {
             ASSERT_EQ(executor.stage(compiled), GraphExecutorStageResult::accepted);
             auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);

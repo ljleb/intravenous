@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <expected>
 #include <memory>
+#include <span>
 #include <string>
 
 namespace iv::graph_jit {
@@ -45,4 +46,19 @@ void execute_realtime_root(
     TickInvocationCall const* invocation,
     GlobalIndex sample_index,
     std::size_t block_size) noexcept;
+
+enum class TickRootPart { complete, early, foreground };
+
+// The executor serializes the parts of a sealed prefix. The early part uses
+// the current physical cursors. Only foreground consumption advances them.
+[[nodiscard]] bool has_early_tick(RealtimeRootPlan const* plan) noexcept;
+[[nodiscard]] std::size_t tick_transfer_size(RealtimeRootPlan const* plan) noexcept;
+void execute_tick_root_part(
+    RealtimeRootPlan const* plan,
+    std::byte* storage_base,
+    TickInvocationCall const* invocation,
+    GlobalIndex sample_index,
+    std::size_t block_size,
+    TickRootPart part,
+    std::span<std::byte> transfer) noexcept;
 } // namespace iv::graph_jit

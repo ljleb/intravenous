@@ -229,6 +229,17 @@ public:
         return nonempty;
     }
 
+    // A discarded startup has never rendered or published any requests.
+    void discard_unpublished_startup() noexcept
+    {
+        IV_ASSERT(writing_ == 0 && adopted_ == 0 && retired_ == 0,
+            "cannot discard published deferred Tick requests");
+        open_ = nullptr;
+        requests_.end = runs_.end = positions_.end = 0;
+        std::ranges::fill(ports_, PortRequests{});
+        submission_failed_ = false;
+    }
+
     // Background. A failed transaction can retry this exact prefix. Producer
     // writes after selection never enter the selected transaction.
     [[nodiscard]] Batch select() const noexcept

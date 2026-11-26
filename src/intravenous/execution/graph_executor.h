@@ -243,8 +243,8 @@ class GraphExecutor {
             ReleasedBlockQueue& released) noexcept;
     };
 
-    // Complete prepared hot-reload unit. Realtime and the background worker
-    // never share mutable NodeStorage or generation-local workspaces.
+    // Complete prepared hot-reload unit. Early Tick uses realtime storage
+    // only while the foreground holds a sealed prefix for that worker.
     struct ExecutionGeneration {
         std::shared_ptr<CompiledGraph const> graph{};
         // The structural graph owns layout, background state, and transition
@@ -263,6 +263,7 @@ class GraphExecutor {
             std::uint64_t publication_id = 0;
             std::shared_ptr<CompiledGraph const> graph{};
             std::vector<LiveTargetBinding> live_targets{};
+            std::vector<std::byte> early_tick_transfer{};
         };
         struct RealtimeObservations {
             std::uint64_t publication_id = 0;
@@ -318,6 +319,9 @@ class GraphExecutor {
         std::atomic<CompiledGraphRealtimePhase> realtime_phase{
             CompiledGraphRealtimePhase::steady};
         bool realtime_initialized = false;
+        // Only the unplayed first/reset state can be reconstructed after a
+        // paused seek invalidates its provisional prefix.
+        bool fresh_for_preroll = false;
         bool background_initialized = false;
         std::unique_ptr<ExecutionGeneration> successor_owner{};
         std::atomic<ExecutionGeneration*> published_successor{nullptr};
@@ -521,6 +525,16 @@ class GraphExecutor {
     std::array<PublishedPlaybackDemand, 2> published_playback_demand_{};
     std::atomic<std::uint64_t> playback_demand_revision_{0};
     ProjectPlayback playback_{};
+    // Written by foreground before publishing the reservation. The active
+    // generation, code and mailbox selection stay pinned until consumption.
+    struct EarlyTickPrefix {
+        ExecutionGeneration* generation = nullptr;
+        ExecutionGeneration::RealtimeCode* code = nullptr;
+        graph_jit::RealtimeRootPlan const* root = nullptr;
+        RealtimePersistedState const* persisted = nullptr;
+        LiveObservationFrame* observations = nullptr;
+    };
+    EarlyTickPrefix early_tick_prefix_{};
     // Generations and gestures own their live targets. The registry shares
     // those cells without retaining controls after their last owner is gone.
     // Locked only for lookup, never by realtime.
@@ -544,6 +558,18 @@ class GraphExecutor {
     [[nodiscard]] LiveObservationFrame* begin_observation_frame(
         ExecutionGeneration const& generation, ExecutionGeneration::RealtimeCode const& code,
         GlobalIndex sample_index, std::size_t block_size) noexcept;
+    void update_live_control_targets(ExecutionGeneration& generation,
+        ExecutionGeneration::RealtimeCode& code) noexcept;
+    [[nodiscard]] static graph_jit::RealtimeRootPlan const* early_tick_root(
+        ExecutionGeneration const& generation, ExecutionGeneration::RealtimeCode const& code) noexcept;
+    [[nodiscard]] bool reserve_early_tick_prefix(ExecutionGeneration& generation,
+        RealtimePersistedState const& persisted, ProjectPlayback::Block const& first,
+        std::size_t frames, bool provisional = false) noexcept;
+    [[nodiscard]] std::optional<bool> playback_activation_pending(ExecutionGeneration const& generation) noexcept;
+    [[nodiscard]] bool keep_provisional_prefix(ProjectPlayback::Block const& current,
+        ProjectPlayback::Block const& candidate) noexcept;
+    [[nodiscard]] bool discard_provisional_prefix_on_worker() noexcept;
+    void run_early_tick_prefix() noexcept;
     bool execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
         GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
         PlaybackRenderSlice* profile = nullptr);
@@ -604,7 +630,17 @@ public:
     }
     // Device-clock entry. Applies session commands and activation at this
     // boundary, then continues Tick execution even when the playhead is held.
-    void render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile = nullptr);
+    // Call on the device render thread before binding device buffers for
+    // the slice. Playback may cut a slice at the end of a sealed prefix.
+    [[nodiscard]] std::size_t playback_render_frames(std::size_t maximum_frames) const noexcept
+    {
+        return playback_.render_frames(maximum_frames);
+    }
+    void render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile = nullptr,
+        bool start_early_prefix = false);
+    // Called once per device request after consuming its ordinary slices.
+    // The worker can prepare the next slice while the device plays this one.
+    void prepare_next_playback_slice(std::size_t frames, double sample_rate) noexcept;
     explicit GraphExecutor(
         ResourceContext resources = {},
         RealtimeProducerCapacityConfig producer_capacity = {},

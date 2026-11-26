@@ -2918,6 +2918,64 @@ private:
         return {};
     }
 };
+Checked plan_crossing_representations(detail::RootStackBufferPlan& root,
+    detail::SchedulePlan const& schedule, detail::SamplePortBindingPlan const& samples,
+    detail::EventPortBindingPlan const& events)
+{
+    auto const boundary = schedule.early_execution_steps;
+    if (boundary == 0 || schedule.early_ready_groups == schedule.ready_groups.size()) return {};
+
+    auto crosses = [&](detail::ConnectionLiveIntervalPlan const& interval) {
+        return interval.begin < boundary && interval.end >= boundary;
+    };
+    for (auto const& allocation : samples.storage.transient_allocations) {
+        if (allocation.representation_index >= samples.storage.representations.size())
+            return invalid("GraphJit early Tick scratch references missing Sample storage");
+        auto const& representation = samples.storage.representations[allocation.representation_index];
+        if (crosses(representation.live_interval))
+            root.early_to_foreground.push_back({
+                .kind = PortKind::sample,
+                .representation = allocation.representation_index,
+                .scratch_offset = root.sample_offset + allocation.region_relative_offset,
+                .size_bytes = allocation.size_bytes,
+                .alignment = allocation.alignment,
+            });
+    }
+    for (auto const& allocation : events.transient_allocations) {
+        if (allocation.representation_index >= events.ports.size())
+            return invalid("GraphJit early Tick scratch references missing Event storage");
+        if (crosses(allocation.live_interval))
+            root.early_to_foreground.push_back({
+                .kind = PortKind::event,
+                .representation = allocation.representation_index,
+                .scratch_offset = root.event_offset + allocation.region_relative_offset,
+                .size_bytes = allocation.size_bytes,
+                .alignment = allocation.alignment,
+            });
+    }
+    std::ranges::sort(root.early_to_foreground, {},
+        &detail::RootStackBufferPlan::CrossingRepresentation::scratch_offset);
+    std::size_t previous_scratch_end = 0;
+    for (auto& transfer : root.early_to_foreground) {
+        if (!std::has_single_bit(transfer.alignment)
+            || transfer.scratch_offset % transfer.alignment != 0
+            || transfer.scratch_offset < previous_scratch_end
+            || transfer.scratch_offset > root.size_bytes
+            || transfer.size_bytes > root.size_bytes - transfer.scratch_offset)
+            return std::unexpected("GraphJit invalid scratch lifetime at early Tick boundary");
+
+        // The stack slots all overlap in time at the cut. Preserve their
+        // order and alignment while removing space assigned to other slots.
+        auto const mask = transfer.alignment - 1;
+        auto const padding = (transfer.scratch_offset - root.transfer_size_bytes) & mask;
+        transfer.transfer_offset = root.transfer_size_bytes + padding;
+        root.transfer_size_bytes = transfer.transfer_offset + transfer.size_bytes;
+        root.transfer_alignment = std::max(root.transfer_alignment, transfer.alignment);
+        previous_scratch_end = transfer.scratch_offset + transfer.size_bytes;
+    }
+    return {};
+}
+
 } // namespace
 
 std::expected<std::shared_ptr<RealtimeRootPlan const>, std::string>
@@ -2930,7 +2988,13 @@ build_realtime_root_plan(
     root->sample_ports = std::move(plan.sample_ports);
     root->event_ports = std::move(plan.event_ports);
     root->execution = std::move(plan.execution);
+    root->first_foreground_group = static_cast<std::size_t>(std::ranges::distance(
+        root->execution.ready_groups.begin(),
+        std::ranges::find(root->execution.ready_groups, false, &detail::ExecutionReadyGroupPlan::run_ahead)));
     root->root_stack = plan.root_stack;
+    if (auto transfers = plan_crossing_representations(root->root_stack, plan.connections.schedule,
+            root->sample_ports, root->event_ports);
+        !transfers) return std::unexpected(std::move(transfers.error()));
     root->primitive_activity = std::move(plan.declarations.primitive_activity);
     root->activity_frontiers = std::move(plan.declarations.activity_frontiers);
     if (auto built = RootPlanBuilder(input, plan, *root, specializations).build();

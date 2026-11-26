@@ -1,6 +1,7 @@
 #include <intravenous/graph_jit/package_callback_abi.h>
 #include <intravenous/module/abi.h>
 #include <intravenous/module/package_definitions.h>
+#include <intravenous/node/compiler_record.h>
 #include <intravenous/node/node_state_structure.h>
 #include <intravenous/node/tick_replay_mode.h>
 
@@ -363,7 +364,8 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto const section = global.getSection();
         if (section != "iv_node_types" && !section.ends_with("__iv_node_types")) continue;
         auto* record = dyn_cast_or_null<ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 11) fail("malformed iv_node_types record");
+        if (!record || record->getNumOperands() != iv::details::node_compiler_record_field_count)
+            fail("malformed iv_node_types record");
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         if (!key || key->getNumOperands() != 2) fail("malformed iv_node_types key");
         auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
@@ -392,6 +394,9 @@ std::vector<IrNodeRecord> scan_node_records(Module& module)
         auto const block_input_marker = constant_u64(record->getOperand(10));
         if (block_input_marker > 1) {
             fail("malformed iv_node_types block input access flag");
+        }
+        if (constant_u64(record->getOperand(11)) > 1) {
+            fail("malformed iv_node_types is_live flag");
         }
         result.push_back({
             .key = {
@@ -1079,7 +1084,8 @@ void reject_node_runtime_mutable_globals(std::span<IrNodeRecord const> records)
     };
     for (auto const& record : records) {
         auto const* initializer = dyn_cast_or_null<ConstantStruct>(record.initializer);
-        if (!initializer || initializer->getNumOperands() != 11) {
+        if (!initializer
+            || initializer->getNumOperands() != iv::details::node_compiler_record_field_count) {
             fail("malformed compiler record while validating node runtime globals");
         }
         SmallPtrSet<GlobalValue const*, 32> reachable;
@@ -1144,7 +1150,7 @@ iv::NodeCodeKey compiler_record_key(Constant* pointer)
         fail("node type definition does not reference a compiler record global");
     }
     auto const* record = dyn_cast<ConstantStruct>(global->getInitializer());
-    if (!record || record->getNumOperands() != 11) {
+    if (!record || record->getNumOperands() != iv::details::node_compiler_record_field_count) {
         fail("node type definition references a malformed compiler record");
     }
     auto const* key = dyn_cast<ConstantStruct>(record->getOperand(0));
@@ -2495,7 +2501,8 @@ void reduce_to_node_code(Module& module, NodeCodeTarget const& host)
         auto* record = global.hasInitializer()
             ? dyn_cast<ConstantStruct>(global.getInitializer())
             : nullptr;
-        if (!record || record->getNumOperands() != 11) fail("malformed iv_node_types record");
+        if (!record || record->getNumOperands() != iv::details::node_compiler_record_field_count)
+            fail("malformed iv_node_types record");
         auto* key = dyn_cast<ConstantStruct>(record->getOperand(0));
         auto* operations = dyn_cast<ConstantStruct>(record->getOperand(1));
         if (!key || key->getNumOperands() != 2 || !operations

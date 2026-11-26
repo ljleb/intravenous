@@ -1412,6 +1412,7 @@ IV_NODE_COMPILER_RECORD_ATTR inline const NodeCompilerRecord
             || has_tick_block_batch<Node>
             || has_skip_block<Node>
             || has_skip_block_batch<Node>,
+        .is_live = node_is_live<Node>(),
     };
 
 #undef IV_NODE_COMPILER_RECORD_ATTR

@@ -454,6 +454,7 @@ std::expected<void, std::string> inventory_nodes(
                 .event_input_count = view.ports->event_input_count(),
                 .event_output_count = view.ports->event_output_count(),
                 .tick_execution = has_tick_callback,
+                .is_live = view.operations->runtime.is_live,
                 .replay_mode = view.replay_mode,
                 .authored_reverse_coverage = !has_tick_callback
                     && view.operations->runtime.has_propagate_reverse_coverage,

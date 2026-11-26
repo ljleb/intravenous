@@ -2777,6 +2777,7 @@ std::expected<ExecutionPlan, std::string> plan_execution(
                 "GraphJit connection schedule contains an empty ready group");
         }
         ExecutionReadyGroupPlan group;
+        group.run_ahead = connections.schedule.regions[scheduled_group.front()].run_ahead;
         auto const group_is_cyclic = connections.schedule
             .regions[scheduled_group.front()].cyclic;
         std::vector<std::size_t> execution_regions;
@@ -2790,9 +2791,10 @@ std::expected<ExecutionPlan, std::string> plan_execution(
             auto const execution_region =
                 *schedule_region_execution_region[schedule_region];
             auto const& source_region = connections.schedule.regions[schedule_region];
-            if (source_region.cyclic != group_is_cyclic) {
+            if (source_region.cyclic != group_is_cyclic
+                || source_region.run_ahead != group.run_ahead) {
                 return std::unexpected(
-                    "GraphJit ready group mixes cyclic and acyclic regions");
+                    "GraphJit ready group mixes region execution kinds or owners");
             }
             execution_regions.push_back(execution_region);
         }
@@ -3262,6 +3264,7 @@ std::expected<RootStackBufferPlan, std::string> plan_root_stack_buffers(
     }
     return result;
 }
+
 // Decides whether lowering emits one multi-step ready group as a native
 // batch. The decision belongs to planning rather than LLVM emission so that
 // the planner can restore the scalar schedule for a group that would only be
@@ -4301,7 +4304,7 @@ std::expected<LoweringPlan, std::string> build_lowering_plan(
             .event_ports = std::move(realtime_ports->event_ports),
             .realtime_port_state_realizations =
                 std::move(*realtime_port_state_realizations),
-            .root_stack = realtime_ports->root_stack,
+            .root_stack = std::move(realtime_ports->root_stack),
             .execution = std::move(*execution),
         };
     }
@@ -4337,12 +4340,13 @@ std::expected<void, std::string> split_unbatched_ready_groups(LoweringPlan& plan
                 groups.push_back(ExecutionReadyGroupPlan{
                     .primitive_steps = plan.execution.regions[region].primitive_steps,
                     .cyclic_regions = {region},
+                    .run_ahead = group.run_ahead,
                 });
             }
             continue;
         }
         for (auto const step : group.primitive_steps) {
-            groups.push_back(ExecutionReadyGroupPlan{.primitive_steps = {step}});
+            groups.push_back(ExecutionReadyGroupPlan{.primitive_steps = {step}, .run_ahead = group.run_ahead});
         }
     }
     plan.execution.ready_groups = std::move(groups);

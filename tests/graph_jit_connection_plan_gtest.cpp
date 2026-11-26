@@ -295,6 +295,52 @@ struct PlainEventPass {
     void tick_block(iv::TickBlockContext<PlainEventPass> const&) const {}
 };
 
+struct StatefulSamplePass {
+    struct State { iv::Sample previous{}; };
+
+    static constexpr auto inputs() { return PlainSamplePass::inputs(); }
+    static constexpr auto outputs() { return PlainSamplePass::outputs(); }
+
+    void tick_block(iv::TickBlockContext<StatefulSamplePass> const& ctx) const
+    {
+        auto& state = ctx.state();
+        auto output = ctx.output<"out">();
+        for (auto sample : ctx.input<"in">().block())
+            output.push(std::exchange(state.previous, sample));
+    }
+};
+
+struct LiveSamplePass {
+    static constexpr bool is_live = true;
+    static constexpr auto inputs() { return PlainSamplePass::inputs(); }
+    static constexpr auto outputs() { return PlainSamplePass::outputs(); }
+    void tick_block(iv::TickBlockContext<LiveSamplePass> const&) const {}
+};
+
+struct LiveEventPass {
+    static constexpr bool is_live = true;
+    static constexpr auto inputs() { return PlainEventPass::inputs(); }
+    static constexpr auto outputs() { return PlainEventPass::outputs(); }
+    void tick_block(iv::TickBlockContext<LiveEventPass> const&) const {}
+};
+
+struct LiveBufferedSamplePass {
+    static constexpr bool is_live = true;
+    static constexpr auto inputs() { return PersistedSccPass::inputs(); }
+    static constexpr auto outputs() { return PersistedSccPass::outputs(); }
+    void tick_block(iv::TickBlockContext<LiveBufferedSamplePass> const&) const {}
+};
+
+struct TickRecordingReader {
+    static constexpr auto inputs()
+    {
+        return std::array{iv::input<iv::Sample>(
+            {"in", "In"}, iv::InputAccess::coverage, iv::InputContentAccess::complete_buffer)};
+    }
+    static constexpr auto outputs() { return PlainSamplePass::outputs(); }
+    void tick_block(iv::TickBlockContext<TickRecordingReader> const&) const {}
+};
+
 struct PersistedTickEventSource {
     static constexpr auto inputs()
     {
@@ -1409,6 +1455,116 @@ TEST(GraphJitConnectionPlan, GroupsOneCompatibleReadyFrontierWithoutHidingDepend
             first_target_handle, second_target_handle}));
 }
 
+TEST(GraphJitConnectionPlan, EarlyTickKeepsIndependentBranchesAndSharesTransferredOutputs)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto independent_live = details::configure_concrete_node<LiveSamplePass>(graph);
+    auto background = details::configure_concrete_node<BackgroundRegionSource>(graph);
+    auto early = details::configure_concrete_node<StatefulSamplePass>(graph);
+    auto early_tail = details::configure_concrete_node<StatefulSamplePass>(graph);
+    auto live = details::configure_concrete_node<LiveSamplePass>(graph);
+    auto live_other = details::configure_concrete_node<LiveSamplePass>(graph);
+    auto follows_live = details::configure_concrete_node<StatefulSamplePass>(graph);
+    auto follows_indirectly = details::configure_concrete_node<StatefulSamplePass>(graph);
+    early(background);
+    early_tail(early);
+    live(early_tail);
+    live_other(early_tail);
+    follows_live(live);
+    follows_indirectly(follows_live);
+
+    auto background_events = details::configure_concrete_node<TockTriggerSource>(graph);
+    auto early_events = details::configure_concrete_node<PlainEventPass>(graph);
+    auto live_events = details::configure_concrete_node<LiveEventPass>(graph);
+    auto live_other_events = details::configure_concrete_node<LiveEventPass>(graph);
+    auto follows_live_events = details::configure_concrete_node<PlainEventPass>(graph);
+    early_events.connect_event_input(0, background_events.event_port());
+    live_events.connect_event_input(0, early_events.event_port());
+    live_other_events.connect_event_input(0, early_events.event_port());
+    follows_live_events.connect_event_input(0, live_events.event_port());
+    graph.outputs();
+
+    auto plan = build_connection_analysis_plan(std::move(graph).finish(), 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    auto const& schedule = plan->schedule;
+    auto runs_ahead = [&](auto const& ref) {
+        return schedule.regions[schedule.bundle_to_region[ref.node_bundle_handle()].value()].run_ahead;
+    };
+    EXPECT_TRUE(runs_ahead(early));
+    EXPECT_TRUE(runs_ahead(early_tail));
+    EXPECT_TRUE(runs_ahead(early_events));
+    EXPECT_FALSE(runs_ahead(live));
+    EXPECT_FALSE(runs_ahead(independent_live));
+    EXPECT_FALSE(runs_ahead(follows_live));
+    EXPECT_FALSE(runs_ahead(follows_indirectly));
+    EXPECT_FALSE(runs_ahead(follows_live_events));
+    EXPECT_EQ(schedule.early_sample_outputs,
+        (std::vector<SampleOutputChannelId>{{early_tail.node_bundle_handle(), 0, 0}}));
+    EXPECT_EQ(schedule.early_event_outputs,
+        (std::vector<EventOutputPortId>{{early_events.node_bundle_handle(), 0}}));
+    ASSERT_LT(schedule.early_ready_groups, schedule.ready_groups.size());
+    EXPECT_EQ(schedule.early_execution_steps, 3u);
+    for (std::size_t group = 0; group < schedule.ready_groups.size(); ++group) {
+        for (auto const region : schedule.ready_groups[group])
+            EXPECT_EQ(schedule.regions[region].run_ahead, group < schedule.early_ready_groups);
+    }
+    EXPECT_LT(schedule.bundle_execution_position[early_tail.node_bundle_handle()].value(),
+        schedule.early_execution_steps);
+    EXPECT_GE(schedule.bundle_execution_position[independent_live.node_bundle_handle()].value(),
+        schedule.early_execution_steps);
+}
+
+TEST(GraphJitConnectionPlan, LiveRequirementFollowsRecordingsTockAndFeedback)
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto input = iv::programmatic::declare_input(graph, "input", {"Input"});
+    auto writer = details::configure_concrete_node<PersistedSccPass>(graph);
+    writer(input);
+    auto reader = details::configure_concrete_node<TickRecordingReader>(graph);
+    reader(writer);
+    auto live_writer = details::configure_concrete_node<LiveBufferedSamplePass>(graph);
+    auto live_reader = details::configure_concrete_node<TickRecordingReader>(graph);
+    live_reader(live_writer);
+    auto tock = details::configure_concrete_node<BackgroundSamplePass>(graph);
+    tock(live_writer);
+    auto follows_tock = details::configure_concrete_node<StatefulSamplePass>(graph);
+    follows_tock(tock);
+    auto controlled = details::configure_concrete_node<StatefulSamplePass>(graph);
+    auto downstream = details::configure_concrete_node<StatefulSamplePass>(graph);
+    downstream(controlled);
+    auto feedback_head = details::configure_concrete_node<StatefulSamplePass>(graph);
+    auto feedback_tail = details::configure_concrete_node<LiveSamplePass>(graph);
+    feedback_head(static_cast<SamplePortRef>(feedback_tail).detach(1));
+    feedback_tail(feedback_head);
+    graph.outputs();
+
+    auto configured = std::move(graph).finish();
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "controlled"}, .port_name = "in"},
+        .input = {controlled.node_bundle_handle(), PortKind::sample, 0},
+        .dynamic = true,
+    });
+    auto plan = build_connection_analysis_plan(configured, 64);
+    ASSERT_TRUE(plan.has_value()) << (plan ? std::string{} : plan.error());
+    auto const& schedule = plan->schedule;
+    auto region = [&](auto const& ref) -> auto const& {
+        return schedule.regions[schedule.bundle_to_region[ref.node_bundle_handle()].value()];
+    };
+    EXPECT_TRUE(region(reader).run_ahead);
+    EXPECT_TRUE(region(writer).run_ahead);
+    EXPECT_FALSE(region(live_writer).run_ahead);
+    EXPECT_FALSE(region(live_reader).run_ahead);
+    EXPECT_FALSE(region(follows_tock).run_ahead);
+    EXPECT_TRUE(region(controlled).run_ahead);
+    EXPECT_TRUE(region(downstream).run_ahead);
+    EXPECT_TRUE(region(feedback_head).cyclic);
+    EXPECT_EQ(&region(feedback_head), &region(feedback_tail));
+    EXPECT_FALSE(region(feedback_head).run_ahead);
+    EXPECT_TRUE(schedule.early_sample_outputs.empty());
+}
+
 TEST(GraphJitConnectionPlan, GroupsCompatibleCyclicRegionsInExecutionPhaseOrder)
 {
     using namespace iv;
@@ -1449,6 +1605,7 @@ TEST(GraphJitConnectionPlan, GroupsCompatibleCyclicRegionsInExecutionPhaseOrder)
         ASSERT_LT(region_index, plan->schedule.regions.size());
         auto const& region = plan->schedule.regions[region_index];
         EXPECT_TRUE(region.cyclic);
+        EXPECT_TRUE(region.run_ahead);
         EXPECT_EQ(region.maximum_block_size, 1u);
         EXPECT_EQ(region.scc_feedback_latency, 1u);
         ASSERT_EQ(region.execution_order.size(), 2u);

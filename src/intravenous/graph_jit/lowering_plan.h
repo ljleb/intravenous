@@ -239,6 +239,7 @@ struct ExecutionReadyGroupPlan {
     // one contiguous lane set per corresponding cyclic-region step.
     std::vector<std::size_t> primitive_steps{};
     std::vector<std::size_t> cyclic_regions{};
+    bool run_ahead = false;
 };
 
 struct ExecutionPlan {
@@ -252,10 +253,25 @@ struct ExecutionPlan {
 
 
 struct RootStackBufferPlan {
+    struct CrossingRepresentation {
+        PortKind kind = PortKind::sample;
+        std::size_t representation = 0;
+        std::size_t scratch_offset = 0;
+        std::size_t transfer_offset = 0;
+        std::size_t size_bytes = 0;
+        std::size_t alignment = 1;
+    };
+
     std::size_t size_bytes = 0;
     std::size_t alignment = 1;
     std::size_t sample_offset = 0;
     std::size_t event_offset = 0;
+    // Only transient representations still needed after the early groups.
+    // Their lifetimes can include compiler-generated conversion and carry
+    // operations, so this is derived after port storage planning.
+    std::vector<CrossingRepresentation> early_to_foreground{};
+    std::size_t transfer_size_bytes = 0;
+    std::size_t transfer_alignment = 1;
 };
 
 struct LoweringPlan {

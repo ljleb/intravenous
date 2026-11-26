@@ -217,20 +217,92 @@ binds a single coherent input view per port. The queue keeps the execution
 range for each deferred request and blocks a due callback until a snapshot
 covers its ticket.
 
-For early execution, the applied foreground seek chooses the cut. Each early
-branch must arrive at that cut with the state after the last valid callback
-in the old segment. It then projects the first block in the new segment from
-the new foreground coordinate. When an early branch already ran past the cut,
-it needs retained state at the cut or enough earlier state and inputs to
-recompute the valid prefix. The current executor can prepare candidate input
-views independently from applied playback. It has no corresponding checkpoints
-for early Tick state. Advancing early Tick state and publishing its outputs
-across the foreground cut requires this ownership contract first. Another
-option is to keep the seek pending until the foreground reaches a cut no
-early branch has crossed. That preserves forward-only state at the cost of
-delaying the seek. In either case, played output is committed. For output
-still due, a prepared result remains reusable only if its dependencies are
-valid on the joined execution sequence.
+### Foreground prefixes for early Tick
+
+The owner chose to drain the bounded prefix before applying a seek. This keeps
+stateful Tick execution forward-only. `ProjectPlayback` can reserve one prefix
+for an admitted selection. The reservation carries the execution generation,
+project position, playback segment, and consecutive physical execution range.
+The selected command becomes applied on the first successful foreground slice.
+One worker claims the reservation. `GraphExecutor::render_block()` checks
+readiness without waiting on the device thread and defers graph activation
+until the last frame of the prefix renders. The next reservation reuses the
+transfer buffer after that acknowledgment.
+`SystemAudioDevices::output_render_loop()` and the playback benchmark split
+their device buffers at that boundary before binding the audio spans.
+[Earlier seek alternatives](./historical/tick_resampler_first_proposal_2026-11-26.md#seek-alternatives-for-early-tick)
+
+The graph worker executes the early groups outside the retryable publication
+transaction. `BackgroundEvaluationTransaction::run()` can fail at residency or
+publication after `background_operations.evaluate()` returns. The worker can
+retry that transaction. If it ran a stateful early Tick callback inside that
+transaction, a retry would advance the node through the same samples again.
+`NodeStorage` transfers state across cutovers, and it has no checkpoint or
+rollback operation for arbitrary authored `State` and local arrays.
+
+_Implementation friction._ The worker was expected to reuse parts of
+`RealtimeRootPlan`. `execute_realtime_root()` binds Sample and Event representations
+to stack scratch for one invocation. `plan_transient_arena()` can reuse the
+same bytes for values with disjoint lifetimes in that root. Its Sequential
+pace cursors also advance at the end of the whole invocation. Merely skipping
+early steps in the device root would lose their output views and leave
+both roots updating the same cursor state. Keeping a complete root frame alive
+for every prepared block would retain all transient bytes and still require
+new cursor ownership.
+
+Partition the schedule before lowering transient storage. Give each root its
+own scratch and cursor updates. Plan owned Sample and Event views only for
+dependencies that cross from the early root to the foreground root. Reserve
+those views and pin the early inputs before advancing authored state. Delivery
+can then retry from the same views. The runtime will also need a way to prepare
+the next prefix while the current one plays, within the same bounded committed
+range. The present handoff supports one outstanding reservation.
+
+`assign_tick_region_owners()` follows the semantic SCCs in dependency order.
+An SCC stays live if a member declares `is_live` or an incoming SCC is live.
+GraphJit assigns every other Tick SCC to the early schedule. The default for
+`is_live` is false. The two system audio device nodes declare it. Package ABI
+19 carries the declaration through the compiler record.
+`SchedulePlan` identifies the unique Sample channels and Event ports crossing
+to foreground consumers. Each normalized connection retains its conversion,
+IO history, and read latency.
+
+`finalize_schedule()` now orders early groups before foreground groups and
+forms batches within each owner. `plan_crossing_representations()` identifies
+the lowered transient Sample and Event allocations that are still needed at
+that boundary. It gives each an aligned offset in a compact transfer buffer.
+These allocations include compiler-generated storage with a lifetime across
+the boundary.
+
+`execute_tick_root_part()` now executes the two group ranges with separate
+scratch calls. For one sealed prefix, the worker uses the current physical
+cursors and copies the crossing scratch ranges to the transfer buffer.
+The foreground uses those bytes and advances the persistent cursors as it
+consumes slices. The one-prefix ownership handoff keeps persistent Sample
+and Event rings, live coverage, and the selected input snapshot available
+until the last foreground slice. Recording chains, deferred request batches,
+and the shared observation frame publish at that boundary.
+
+`SystemAudioDevices::output_render_loop()` can start a prefix at a device
+boundary or request the next one after rendering. A remainder of an oversized
+device request can still use the complete root. A fresh graph can use its
+startup transition root for its first prefix. The worker and every foreground
+slice use the same pinned root through that prefix.
+
+While the foreground is paused after load or reset, the executor requests
+the first running playback window at the selected start. The worker prepares
+one provisional prefix. Play promotes it when the position, input selection,
+and sample rate match and the worker has finished. The playhead stays held
+until the first slice renders. A paused seek or a replacement graph can
+discard an unplayed prefix. The worker releases its unpublished recording and
+request batches and reinstates the fresh NodeStorage before allowing the new
+selection to run. This reset of provisional state applies only until the
+first foreground slice plays.
+
+The startup prefix uses the existing declared node latency. Removing
+computed-source latency requires a separate early execution cursor and
+enough additional prepared frames to finalize the first audible window.
+The current worker prepares one prefix at a time.
 
 ### Project-authored modules and constructor reference order
 

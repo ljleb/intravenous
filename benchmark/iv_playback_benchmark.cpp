@@ -126,12 +126,13 @@ Options parse(int argc, char** argv)
 // this preallocated buffer instead of handing samples to a device.
 struct OutputBuffer {
     std::vector<iv::Sample> samples;
+    std::span<iv::Sample> slice{};
 
     iv::ResourceContext resources() noexcept
     {
         return {.system_audio = {.owner = this, .resolve_output_fn = [](void* owner, std::string_view) {
             return iv::SystemAudioOutputBinding{owner, [](void* data) noexcept -> std::span<iv::Sample> {
-                return static_cast<OutputBuffer*>(data)->samples;
+                return static_cast<OutputBuffer*>(data)->slice;
             }};
         }}};
     }
@@ -318,7 +319,13 @@ void run(Options const& options)
 
     auto render = [&] {
         std::ranges::fill(output.samples, iv::Sample{});
-        executor.render_block(block_size, static_cast<double>(sample_rate));
+        for (std::size_t offset = 0; offset < block_size;) {
+            auto const frames = executor.playback_render_frames(block_size - offset);
+            output.slice = std::span{output.samples}.subspan(offset * 2, frames * 2);
+            executor.render_block(frames, static_cast<double>(sample_rate), nullptr, offset == 0);
+            offset += frames;
+        }
+        executor.prepare_next_playback_slice(block_size, static_cast<double>(sample_rate));
     };
     auto const startup_deadline = Clock::now() + 15s;
     while (!executor.active_generation()) {

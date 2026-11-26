@@ -130,7 +130,11 @@ struct NodeCompilerRecord {
     // block_extended() as history plus its one current value; the storage
     // planner accounts for that separately when resolved history is nonzero.
     bool block_input_access = false;
+    bool is_live = false;
 };
+
+// Number of fields in the emitted LLVM aggregate.
+inline constexpr unsigned node_compiler_record_field_count = 12;
 
 } // namespace details
 } // namespace iv

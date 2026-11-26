@@ -16,6 +16,8 @@ inline constexpr ChannelLayout system_audio_channel_layout{
 };
 
 struct SystemAudioInput {
+    static constexpr bool is_live = true;
+
     char const* device_id = "default";
 
     struct State {
@@ -60,6 +62,8 @@ struct SystemAudioInput {
 };
 
 struct SystemAudioOutput {
+    static constexpr bool is_live = true;
+
     char const* device_id = "default";
 
     struct State {

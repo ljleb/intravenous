@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/reflected_node_operations.h>
 #include <intravenous/graph_jit/package_callback_abi.h>
+#include <intravenous/node/compiler_record.h>
 
 #include <llvm/ADT/APFloat.h>
 #include <llvm/ADT/APInt.h>
@@ -835,7 +836,7 @@ package_tick_block_symbols(llvm::Module& package)
             return std::unexpected("iv_node_types record has no initializer");
         }
         auto const* record = llvm::dyn_cast<llvm::ConstantStruct>(global.getInitializer());
-        if (!record || record->getNumOperands() != 11) {
+        if (!record || record->getNumOperands() != iv::details::node_compiler_record_field_count) {
             return std::unexpected("malformed iv_node_types record in package bitcode");
         }
         auto const* key = llvm::dyn_cast<llvm::ConstantStruct>(record->getOperand(0));

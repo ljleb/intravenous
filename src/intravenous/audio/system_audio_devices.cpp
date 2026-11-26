@@ -276,7 +276,9 @@ void SystemAudioDevices::output_render_loop(
             for (auto& sample : output) sample = Sample{};
             auto const frames = output.size() / channels;
             for (std::size_t offset = 0; offset < frames;) {
-                auto const count = std::min(block_size_, frames - offset);
+                auto* executor = graph_executor_.load(std::memory_order_acquire);
+                auto const available = std::min(block_size_, frames - offset);
+                auto const count = executor ? executor->playback_render_frames(available) : available;
                 auto const sample_offset = offset * channels;
                 auto const sample_count = count * channels;
                 auto output_slice = output.subspan(sample_offset, sample_count);
@@ -308,10 +310,9 @@ void SystemAudioDevices::output_render_loop(
                 current_input_samples = input_slice;
                 current_output_samples = output_slice;
 
-                auto* executor = graph_executor_.load(std::memory_order_acquire);
                 PlaybackRenderSlice slice;
                 if (executor) {
-                    executor->render_block(count, sample_rate_, profile ? &slice : nullptr);
+                    executor->render_block(count, sample_rate_, profile ? &slice : nullptr, offset == 0);
                 }
                 if (profile) profile.observe(previous_slice, slice, output_slice);
 
@@ -321,6 +322,8 @@ void SystemAudioDevices::output_render_loop(
                 current_output_samples = {};
                 offset += count;
             }
+            if (auto* executor = graph_executor_.load(std::memory_order_acquire))
+                executor->prepare_next_playback_slice(std::min(block_size_, frames), sample_rate_);
             auto const rendered_at = profile ? PlaybackOutputProfile::Clock::now() : PlaybackOutputProfile::Clock::time_point{};
             output_device->device.submit_response();
             if (profile) profile.submitted(rendered_at, frames, sample_rate_);

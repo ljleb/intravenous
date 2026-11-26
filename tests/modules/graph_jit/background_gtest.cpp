@@ -688,6 +688,8 @@ TEST_F(GraphJitRuntimeFixture, ResetPreparesBackgroundPlaybackBeforeActivatingAt
 
     iv::GraphExecutor executor{resources};
     executor.set_tick_materialization_demand(index_coverage({{10, 74}}));
+    iv::ProjectPlaybackRequest toggle_foreground{.operation = iv::ProjectPlaybackOperation::toggle_foreground};
+    executor.handle_playback(toggle_foreground);
     (void)executor.seek_playback(index(10));
     auto render_until_activated = [&](std::shared_ptr<iv::CompiledGraph const> const& compiled,
                                       iv::PlaybackRenderSlice& slice) {
@@ -711,7 +713,6 @@ TEST_F(GraphJitRuntimeFixture, ResetPreparesBackgroundPlaybackBeforeActivatingAt
     EXPECT_EQ(slice.foreground_sample, index(10));
     EXPECT_EQ(executor.playback_snapshot().background_playhead, index(10));
 
-    iv::ProjectPlaybackRequest toggle_foreground{.operation = iv::ProjectPlaybackOperation::toggle_foreground};
     executor.handle_playback(toggle_foreground);
     executor.render_block(6, 48000, &slice);
     EXPECT_FALSE(slice.rendered);

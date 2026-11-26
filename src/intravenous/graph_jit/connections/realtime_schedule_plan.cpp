@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <limits>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace iv::graph_jit::detail {
@@ -168,6 +169,10 @@ std::expected<void, std::string> finalize_schedule(
             auto const source_region = *node_to_region[source];
             auto const target_region = *node_to_region[target];
             if (source_region == target_region) continue;
+            if (schedule.regions[target_region].run_ahead && !schedule.regions[source_region].run_ahead) {
+                return std::unexpected(
+                    "GraphJit early Tick region depends on a foreground Tick region");
+            }
             region_outgoing[source_region].push_back(target_region);
         }
     }
@@ -177,7 +182,8 @@ std::expected<void, std::string> finalize_schedule(
         for (auto const target : targets) ++region_indegree[target];
     }
     auto region_key = [&](std::size_t region) {
-        return schedule.regions[region].nodes.front();
+        auto const& planned = schedule.regions[region];
+        return std::pair{!planned.run_ahead, planned.nodes.front()};
     };
     auto callback_class = [&](NodeBundleHandle bundle)
         -> std::optional<std::size_t> {
@@ -204,7 +210,7 @@ std::expected<void, std::string> finalize_schedule(
     auto same_batch_class = [&](std::size_t left, std::size_t right) {
         auto const& a = schedule.regions[left];
         auto const& b = schedule.regions[right];
-        if (!batchable(left) || !batchable(right) || a.cyclic != b.cyclic
+        if (!batchable(left) || !batchable(right) || a.run_ahead != b.run_ahead || a.cyclic != b.cyclic
             || a.execution_order.size() != b.execution_order.size()) {
             return false;
         }
@@ -228,8 +234,10 @@ std::expected<void, std::string> finalize_schedule(
     std::ranges::sort(ready_regions, {}, region_key);
     while (!ready_regions.empty()) {
         auto selected_representative = ready_regions.front();
+        bool const run_ahead = schedule.regions[selected_representative].run_ahead;
         std::size_t selected_count = 1;
         for (auto const candidate : ready_regions) {
+            if (schedule.regions[candidate].run_ahead != run_ahead) break;
             if (!batchable(candidate)) continue;
             auto const count = static_cast<std::size_t>(std::ranges::count_if(
                 ready_regions,
@@ -258,6 +266,7 @@ std::expected<void, std::string> finalize_schedule(
             schedule.ready_groups.emplace_back(
                 selected.begin() + static_cast<std::ptrdiff_t>(begin),
                 selected.begin() + static_cast<std::ptrdiff_t>(end));
+            if (run_ahead) ++schedule.early_ready_groups;
         }
         for (auto const region : selected) {
             schedule.region_order.push_back(region);
@@ -286,6 +295,11 @@ std::expected<void, std::string> finalize_schedule(
 
     std::size_t execution_position = 0;
     for (auto const& group : schedule.ready_groups) {
+        auto const& first = schedule.regions[group.front()];
+        if (first.run_ahead) {
+            for (auto const region : group)
+                schedule.early_execution_steps += schedule.regions[region].execution_order.size();
+        }
         auto const cyclic = schedule.regions[group.front()].cyclic;
         if (cyclic) {
             auto const phase_count = schedule.regions[group.front()]
@@ -390,6 +404,60 @@ std::expected<void, std::string> bind_detach_regions(
             : 0;
     }
     return {};
+}
+
+// Assign owners before ordering callbacks and allocating their storage.
+// Signal flow includes Tock nodes and feedback edges.
+void assign_tick_region_owners(ConnectionAnalysisPlan& plan)
+{
+    auto& schedule = plan.schedule;
+    if (schedule.regions.empty()) return;
+    auto const& topology = plan.background;
+    std::vector<bool> live(topology.semantic_sccs.size());
+    for (auto const index : topology.semantic_condensation_order) {
+        auto const& scc = topology.semantic_sccs[index];
+        live[index] = std::ranges::any_of(scc.nodes, [&](auto node) { return plan.nodes[node].is_live; })
+            || std::ranges::any_of(scc.incoming, [&](auto predecessor) { return live[predecessor]; });
+        for (auto const node : scc.nodes) {
+            if (auto region = schedule.bundle_to_region[plan.nodes[node].bundle])
+                schedule.regions[*region].run_ahead = !live[index];
+        }
+    }
+}
+
+void plan_early_tick_outputs(ConnectionAnalysisPlan& plan)
+{
+    auto& schedule = plan.schedule;
+    auto runs_ahead = [&](NodeBundleHandle bundle) {
+        auto const region = schedule.bundle_to_region[bundle];
+        return region && schedule.regions[*region].run_ahead;
+    };
+
+    for (auto const& connection : plan.sample_connections) {
+        if (runs_ahead(connection.target_port.node_bundle_handle)) continue;
+        for (auto const& source : connection.source_channel_timings) {
+            if (uses_realtime_storage(source.delivery) && runs_ahead(source.source.bundle))
+                schedule.early_sample_outputs.push_back(source.source);
+        }
+    }
+    for (auto const& connection : plan.event_connections) {
+        for (auto const& delivery : connection.deliveries) {
+            auto const source = connection.source_plans[delivery.source_index].source;
+            auto const target = connection.target_plans[delivery.target_index].target;
+            if (uses_realtime_storage(delivery.mechanism) && runs_ahead(source.bundle) && !runs_ahead(target.bundle))
+                schedule.early_event_outputs.push_back(source);
+        }
+    }
+    auto order_outputs = [](auto& outputs, auto key) {
+        std::ranges::sort(outputs, {}, key);
+        outputs.erase(std::ranges::unique(outputs).begin(), outputs.end());
+    };
+    order_outputs(schedule.early_sample_outputs, [](SampleOutputChannelId output) {
+        return std::tuple{output.bundle, output.port, output.channel};
+    });
+    order_outputs(schedule.early_event_outputs, [](EventOutputPortId output) {
+        return std::tuple{output.bundle, output.port};
+    });
 }
 
 // One Tick-to-Sequential path into a concrete node's input, of either stream
@@ -673,6 +741,7 @@ std::expected<void, std::string> plan_realtime_schedule(
     if (auto detach_regions = bind_detach_regions(plan, explicit_outgoing); !detach_regions) {
         return std::unexpected(std::move(detach_regions.error()));
     }
+    assign_tick_region_owners(plan);
     if (auto finalized = finalize_schedule(
             plan, explicit_outgoing, callback_batch_classes, plan.schedule);
         !finalized) {
@@ -681,6 +750,7 @@ std::expected<void, std::string> plan_realtime_schedule(
     if (auto latency = plan_latency_compensation(graph, plan); !latency) {
         return std::unexpected(std::move(latency.error()));
     }
+    plan_early_tick_outputs(plan);
     return {};
 }
 

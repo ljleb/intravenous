@@ -155,3 +155,30 @@ request queue. A compatible replacement of steady code kept the existing
 queue. Transfer of pending requests and their selected source data was open.
 The structural cutover now transfers the compatible requests at the audio
 boundary and can borrow the predecessor's prepared input windows.
+
+## Seek alternatives for early Tick
+
+The earlier [early execution status](../implementation_fronts_direction.md#tick-resampling-and-computed-source-demand)
+considered two seek policies. One kept a checkpoint or recomputed enough of
+the old segment to restore the state at the seek cut. The other delayed the
+seek until playback reached a cut that no early branch had crossed.
+Both policies preserved played output. A prepared result could be reused
+only if its dependencies were valid on the joined execution sequence.
+The owner chose the bounded drain policy in the
+[playback design](../project_playback_and_presentation_grids_direction.md#background-preparation-pending-seeks-and-missed-deadlines).
+
+## Rejected early Tick opt-in
+
+Preserved on 2026-11-26 from the
+[implementation front](../implementation_fronts_direction.md#foreground-prefixes-for-early-tick)
+and the [playback design](../project_playback_and_presentation_grids_direction.md#background-preparation-pending-seeks-and-missed-deadlines).
+The planner prototype used `can_tick_ahead` in package ABI 18. Its default
+followed the intrinsic replay declaration. The prototype kept device input
+paths, buffered Tick writers, live manual controls, and SCCs reachable from
+those sources through current Tick deliveries on the foreground. A committed
+recording read or Tock delivery could feed an early SCC independently.
+The playback design assigned feedback SCCs to Sequential foreground execution
+and treated a possible pure, isolated Sequential renderer as separate from
+ordinary pointwise replay. The owner rejected the opt-in and confirmed that
+`is_live` propagates downstream. Feedback stays within the Sequential Tick
+schedule and follows the same live dependency rule.

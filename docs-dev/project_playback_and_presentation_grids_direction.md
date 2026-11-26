@@ -68,9 +68,9 @@ node-visible time, and it continues contiguously across global-coordinate
 jumps. The physical audio-device clock is likewise not another project
 cursor. See [Global Indexing](./global_indexing.md#sequential-execution-order).
 
-Each new project session opens paused with its background playhead and selected
-start at sample index zero. Every explicit seek sets the selected start when
-applied, including seeks during playback. Running Tick blocks advance the
+Each new project session opens with both playheads paused at sample index zero
+and selects that index as the start. Every explicit seek sets the selected start
+when applied, including seeks during playback. Running Tick blocks advance the
 background playhead independently of the remembered start. Play/Pause returns
 to that start when stopping, and the next Play begins there. The selected start
 belongs to the shared session. The previous startup and pause behavior is
@@ -343,10 +343,8 @@ becomes final later.
 
 Background evaluation is a feed-forward DAG. Its dependencies are prepared
 and bound before the foreground Tick root consumes them; background execution
-does not execute Tock from the audio callback. Feedback SCCs belong to
-Sequential foreground execution and cannot enter ordinary pointwise
-background replay. A proposed future pure, isolated Sequential renderer is
-separate from ordinary replay and does not change these rules.
+does not execute Tock from the audio callback. Feedback SCCs belong to the
+Sequential Tick schedule. Ordinary pointwise background replay excludes them.
 
 A seek is a **requested** destination until its required background data are
 ready. A running seek retains execution at the old applied position while its
@@ -359,6 +357,19 @@ selection consumed by the graph. Superseded pending cursor requests need not
 all be applied or auditioned. Control-command ordering and any coalescing
 must be defined so the last intended destination is not lost and so an
 obsolete request cannot indefinitely block a newer one.
+
+The executor can seal a bounded foreground prefix before an early Tick branch
+advances through it. A seek requested after the seal applies after the foreground
+consumes the prefix and the destination is ready. The prefix uses the applied
+project positions and the consecutive physical execution indices. At the cut,
+stateful early branches continue from the state at the end of that prefix.
+A node with `static constexpr bool is_live = true` requires foreground time.
+`is_live` defaults to false. The requirement follows signal flow through
+every downstream node. Every Tick branch outside that set can advance ahead
+of playback, including branches with node state or feedback. A branch that
+feeds a live mixer can advance ahead if its own inputs allow it. Both branches
+use the same applied playback selection.
+[Earlier opt-in prototype](historical/tick_resampler_first_proposal_2026-11-26.md#rejected-early-tick-opt-in)
 
 The frontend may display a **ghost/requested cursor** immediately at a pending
 destination while continuing to display the **applied background playhead**

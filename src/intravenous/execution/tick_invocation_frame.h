@@ -34,7 +34,7 @@ class TickInvocationWorkspace {
     class CaptureScope {
         Impl* impl_ = nullptr;
 
-        explicit CaptureScope(Impl& impl) noexcept;
+        explicit CaptureScope(Impl& impl, bool publish) noexcept;
         friend class TickInvocationWorkspace;
 
     public:
@@ -48,7 +48,7 @@ class TickInvocationWorkspace {
     std::unique_ptr<Impl> impl_{};
 
     friend class TickInvocationFrame;
-    [[nodiscard]] CaptureScope begin_capture() noexcept;
+    [[nodiscard]] CaptureScope begin_capture(bool publish = true) noexcept;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
@@ -103,6 +103,7 @@ public:
         graph_jit::BackgroundEvaluationPlan const& plan,
         std::span<NodeBundlePortId const> inherited_outputs);
     void transfer_recording_from(TickInvocationWorkspace const& previous) noexcept;
+    void discard_unpublished_startup() noexcept;
 };
 
 // Callback-scoped owner for the narrow generated Tick invocation record.
@@ -131,7 +132,8 @@ public:
         RealtimePersistedState const& persisted,
         TickInvocationWorkspace& workspace,
         GlobalIndex sample_index = {},
-        std::size_t block_size = 0, TickPlaybackSelection selection = {}) noexcept;
+        std::size_t block_size = 0, TickPlaybackSelection selection = {},
+        bool publish_captures = true) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
     TickInvocationFrame& operator=(TickInvocationFrame const&) = delete;

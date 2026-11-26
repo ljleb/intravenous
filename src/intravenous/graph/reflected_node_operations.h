@@ -326,6 +326,7 @@ struct ReflectedNodeRuntimeOperations {
     // planning needs their presence, without retaining native callback pointers.
     bool has_propagate_forward_coverage = false;
     bool has_propagate_reverse_coverage = false;
+    bool is_live = false;
 
     constexpr bool valid() const
     {
@@ -363,6 +364,7 @@ constexpr ReflectedNodeRuntimeOperations make_runtime_operations(
             record.operations.propagate_forward_coverage != nullptr,
         .has_propagate_reverse_coverage =
             record.operations.propagate_reverse_coverage != nullptr,
+        .is_live = record.is_live,
     };
 }
 

@@ -53,6 +53,7 @@ struct PlannedGraphNode {
     // Tock-only primitives participate in background dependency planning but
     // never acquire a position in the realtime execution schedule.
     bool tick_execution = true;
+    bool is_live = false;
     // Proven for current live Tick values, independently of a recording's
     // selected coverage and independently of contextual value replayability.
     bool full_live_tick_coverage = false;
