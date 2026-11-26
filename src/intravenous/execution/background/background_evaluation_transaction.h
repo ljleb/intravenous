@@ -1,7 +1,6 @@
 #pragma once
 
 #include <intravenous/execution/background/background_coverage_propagation.h>
-#include <intravenous/execution/deferred_tick_input_requests.h>
 #include <intravenous/execution/storage/async_capacity_manager.h>
 #include <intravenous/graph_jit/graph_jit.h>
 #include <intravenous/execution/storage/persisted_data_store.h>
@@ -84,11 +83,9 @@ struct BackgroundTransactionInputs {
     // Historical reconstruction uses these exact recorded boundaries instead
     // of the current canonical recording. It is always a private transaction.
     std::shared_ptr<PersistedDataStore::Reconstruction const> reconstruction{};
-    // A selected foreground request prefix stays alive until the worker
-    // commits and foreground execution consumes the corresponding result.
-    DeferredTickInputRequests const* deferred_tick_inputs = nullptr;
-    DeferredTickInputRequests::Batch deferred_tick_input_batch{};
-    std::optional<DeferredTickInputRequests::Ticket> deferred_tick_prepared_through{};
+    // The caller supplies the selected tap positions in roots. Carry its
+    // ticket on the immutable result after those inputs are prepared.
+    std::optional<std::uint64_t> deferred_tick_input_ticket{};
 };
 
 enum class BackgroundEvaluationStatus : std::uint8_t {

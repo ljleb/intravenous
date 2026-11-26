@@ -1,5 +1,6 @@
 #pragma once
 
+#include <intravenous/compat.h>
 #include <intravenous/observation.h>
 #include <intravenous/graph/port_ids.h>
 #include <intravenous/node/region_selection.h>
@@ -7,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -171,22 +173,39 @@ struct ObservationCollectRequest {
     bool handled = false;
 };
 
-// One realtime writer and one control-path collector. Each owns a private
-// buffer; an atomic exchange transfers the third buffer. Unread frames may be
-// replaced. A reader never examines storage that the writer can modify.
+// One realtime publisher and one control-path collector. While the collector
+// and the atomic handoff own their slots, two prepared ranges can accumulate
+// independently. Unread publications may be replaced.
 class LiveObservationHandoff {
     static_assert(std::atomic<unsigned>::is_always_lock_free);
-    static constexpr unsigned dirty = 4;
-    std::array<LiveObservationFrame, 3> frames_{};
+    static constexpr unsigned slot_count = 4;
+    static constexpr unsigned dirty = slot_count;
+    std::array<LiveObservationFrame, slot_count> frames_{};
     std::atomic<unsigned> middle_{1};
-    unsigned writer_ = 0;
     unsigned reader_ = 2;
+    unsigned available_ = (1u << 0) | (1u << 3);
+    unsigned reserved_ = 0;
+
+    unsigned take(LiveObservationFrame& frame) noexcept
+    {
+        auto const index = static_cast<unsigned>(&frame - frames_.data());
+        IV_ASSERT(index < slot_count && (reserved_ & (1u << index)),
+            "observation frame must be reserved before publication or discard");
+        reserved_ &= ~(1u << index);
+        return index;
+    }
+
 public:
     LiveObservationFrame& begin(CompiledObservationPlan const& plan,
         std::uint64_t activation, std::uint64_t generation,
         GlobalIndex index, std::size_t block_size) noexcept
     {
-        auto& frame = frames_[writer_];
+        IV_ASSERT(available_ != 0, "observation handoff is out of reserved frame storage");
+        auto const frame_index = static_cast<unsigned>(std::countr_zero(available_));
+        auto const bit = 1u << frame_index;
+        available_ &= ~bit;
+        reserved_ |= bit;
+        auto& frame = frames_[frame_index];
         frame.activation_id = activation;
         frame.project_generation = generation;
         frame.configured_generation = generation;
@@ -208,9 +227,15 @@ public:
         }
         return frame;
     }
-    void publish() noexcept
+    void publish(LiveObservationFrame& frame) noexcept
     {
-        writer_ = middle_.exchange(writer_ | dirty, std::memory_order_acq_rel) & ~dirty;
+        auto const index = take(frame);
+        auto const returned = middle_.exchange(index | dirty, std::memory_order_acq_rel) & ~dirty;
+        available_ |= 1u << returned;
+    }
+    void discard(LiveObservationFrame& frame) noexcept
+    {
+        available_ |= 1u << take(frame);
     }
     // The borrowed frame remains valid until this collector's next successful
     // collect(). No audio-thread pointer or mutable NodeStorage escapes here.

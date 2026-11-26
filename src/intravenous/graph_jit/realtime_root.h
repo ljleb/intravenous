@@ -3,10 +3,12 @@
 #include <intravenous/global_index.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace iv::graph_jit {
 struct LoweringInput;
@@ -47,18 +49,74 @@ void execute_realtime_root(
     GlobalIndex sample_index,
     std::size_t block_size) noexcept;
 
-enum class TickRootPart { complete, early, foreground };
-
-// The executor serializes the parts of a sealed prefix. The early part uses
-// the current physical cursors. Only foreground consumption advances them.
 [[nodiscard]] bool has_early_tick(RealtimeRootPlan const* plan) noexcept;
-[[nodiscard]] std::size_t tick_transfer_size(RealtimeRootPlan const* plan) noexcept;
-void execute_tick_root_part(
+// Number of consecutive project frames that can be prepared without
+// overwriting values still required at the beginning of the prefix.
+[[nodiscard]] std::size_t independent_early_frame_limit(RealtimeRootPlan const* plan) noexcept;
+
+// An invocation owns the transient Sample and Event representations read by
+// both roots. The same aligned bytes are bound in the worker and device calls.
+class TickTransferBuffer {
+    std::vector<std::byte> bytes_{};
+    std::size_t capacity_ = 0;
+    std::size_t alignment_ = 1;
+
+public:
+    void reserve(RealtimeRootPlan const* plan);
+    [[nodiscard]] std::span<std::byte> view(RealtimeRootPlan const& plan) noexcept;
+};
+
+enum class TickRootPart : std::uint8_t { complete, early, foreground };
+
+struct TickInvocationSlotRange {
+    std::size_t begin = 0;
+    std::size_t count = 0;
+};
+
+struct TickInvocationSlotPlan {
+    std::vector<TickInvocationSlotRange> sequential_samples{};
+    std::vector<TickInvocationSlotRange> sequential_events{};
+    std::vector<TickInvocationSlotRange> random_access_samples{};
+    std::vector<TickInvocationSlotRange> random_access_events{};
+    std::vector<TickInvocationSlotRange> sample_captures{};
+    std::vector<TickInvocationSlotRange> event_captures{};
+};
+
+// A split root binds only the runtime slots that its callbacks can consume.
+[[nodiscard]] TickInvocationSlotPlan const& tick_invocation_slots(
+    RealtimeRootPlan const& plan, TickRootPart part) noexcept;
+
+// Mutable progress of early Tick. Prepare its storage away from the audio
+// thread. A fresh range starts from the committed root cursors. Subsequent
+// early callbacks advance these positions without moving the foreground.
+class EarlyTickCursor {
+    std::vector<std::uint64_t> pace_indices_{};
+    std::vector<std::size_t> authored_extents_{};
+    RealtimeRootPlan const* root_ = nullptr;
+
+    friend void execute_early_tick_root(
+        RealtimeRootPlan const&, std::byte*, TickInvocationCall const*,
+        GlobalIndex, std::size_t, EarlyTickCursor&, std::span<std::byte>) noexcept;
+
+public:
+    void reserve(RealtimeRootPlan const* root);
+    void start_from_committed_position() noexcept { root_ = nullptr; }
+};
+
+void execute_early_tick_root(
+    RealtimeRootPlan const& plan,
+    std::byte* storage_base,
+    TickInvocationCall const* invocation,
+    GlobalIndex sample_index,
+    std::size_t block_size,
+    EarlyTickCursor& cursor,
+    std::span<std::byte> transfer) noexcept;
+
+void execute_foreground_tick_root(
     RealtimeRootPlan const* plan,
     std::byte* storage_base,
     TickInvocationCall const* invocation,
     GlobalIndex sample_index,
     std::size_t block_size,
-    TickRootPart part,
     std::span<std::byte> transfer) noexcept;
 } // namespace iv::graph_jit

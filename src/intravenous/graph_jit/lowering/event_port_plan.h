@@ -299,6 +299,7 @@ struct EventPortBindingPlan {
     std::vector<EventTransientAllocationPlan> transient_allocations{};
     std::size_t transient_arena_size = 0;
     std::size_t transient_arena_alignment = 1;
+    bool persistent_storage_crosses_tick_partition = false;
     // One entry per analyzed concrete primitive.
     std::vector<PrimitiveEventPortPlan> primitives{};
 };

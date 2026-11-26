@@ -1776,35 +1776,8 @@ class BackgroundEvaluationTransaction::Impl {
         executed_ = true;
         if (inputs_.reconstruction && !inputs_.prepare_only)
             return std::unexpected("historical reconstruction cannot publish canonical data");
-        if (!inputs_.deferred_tick_input_batch.empty()) {
-            if (!inputs_.deferred_tick_inputs || !materializations_)
-                return std::unexpected("deferred Tick requests require a materialization result");
-            if (inputs_.deferred_tick_inputs->generation() != graph_->project_generation)
-                return std::unexpected("deferred Tick requests belong to another graph generation");
-            auto const& plan = graph_->background_evaluation_plan;
-            auto const batch = inputs_.deferred_tick_input_batch;
-            auto const pending = inputs_.deferred_tick_inputs->select();
-            if (batch.begin != pending.begin || batch.end - batch.begin > pending.end - pending.begin)
-                return std::unexpected("deferred Tick requests do not match the selected prefix");
-            for (auto ticket = batch.begin; ticket != batch.end; ++ticket) {
-                for (auto const& request : inputs_.deferred_tick_inputs->requests(ticket)) {
-                    if (request.port >= plan.ports.size()
-                        || plan.ports[request.port].content_access != InputContentAccess::windowed
-                        || !std::ranges::contains(plan.tick_runtime.random_access_sample_inputs,
-                            request.port, &graph_jit::TickSampleInputBindingPlan::port)) {
-                        return std::unexpected("deferred Tick request has no windowed continuous input");
-                    }
-                    auto& demands = inputs_.roots.input_demands;
-                    auto demand = std::ranges::find(demands, request.port, &InputCoverageRequest::port);
-                    if (demand == demands.end()) {
-                        demands.push_back({.port = request.port});
-                        demands.back().sample_positions.include(request.positions);
-                    } else {
-                        demand->sample_positions.include(request.positions);
-                    }
-                }
-            }
-        }
+        if (inputs_.deferred_tick_input_ticket && !materializations_)
+            return std::unexpected("deferred Tick requests require a materialization result");
         auto const plan_is_empty = graph_->background_evaluation_plan.nodes.empty()
             && graph_->background_evaluation_plan.ports.empty()
             && graph_->background_evaluation_plan.storage.ports.empty();
@@ -2063,10 +2036,8 @@ class BackgroundEvaluationTransaction::Impl {
                     storage_selection.tick_input_requirements, prepared_->input_coverages()); !ready) {
                 return std::unexpected(std::move(ready.error()));
             }
-            if (!inputs_.deferred_tick_input_batch.empty())
-                tick_materialization->set_deferred_input_ticket(inputs_.deferred_tick_input_batch.end);
-            else if (inputs_.deferred_tick_prepared_through)
-                tick_materialization->set_deferred_input_ticket(*inputs_.deferred_tick_prepared_through);
+            if (inputs_.deferred_tick_input_ticket)
+                tick_materialization->set_deferred_input_ticket(*inputs_.deferred_tick_input_ticket);
             // All allocation/faulting/locking precedes publication. The audio
             // callback adopts the immutable payload and its residency lease.
             measure_playback_preparation(PlaybackPreparationPhase::prepare_tick_residency,

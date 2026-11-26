@@ -317,12 +317,73 @@ public:
         if (auto valid = build_primitives(); !valid) return valid;
         if (auto valid = build_steps(); !valid) return valid;
         if (auto valid = build_groups(); !valid) return valid;
+        plan_tick_parts();
         build_region_specializations();
         build_binding_template_copies();
         return build_layout();
     }
 
 private:
+    void plan_tick_parts()
+    {
+        auto const& execution = plan_.execution;
+        std::vector<bool> early_primitives(plan_.sample_ports.primitives.size());
+        for (auto const& group : std::span{execution.ready_groups}.first(plan_.first_foreground_group)) {
+            for (auto const step : group.primitive_steps)
+                early_primitives[execution.primitive_steps[step].configuration_index] = true;
+        }
+        for (auto const index : plan_.tick_primitives) {
+            auto& slots = early_primitives[index] ? plan_.early_tick_slots : plan_.foreground_tick_slots;
+            slots.primitives.push_back(index);
+            auto const& invocation = plan_.primitives[index].tick->invocation;
+            auto& bindings = slots.bindings;
+            auto add = [](auto& ranges, std::size_t begin, std::size_t count) {
+                if (count == 0) return;
+                if (!ranges.empty() && ranges.back().begin + ranges.back().count == begin)
+                    ranges.back().count += count;
+                else ranges.push_back({begin, count});
+            };
+            add(bindings.sequential_samples, invocation.sequential_sample_begin, invocation.sequential_sample_count);
+            add(bindings.sequential_events, invocation.sequential_event_begin, invocation.sequential_event_count);
+            add(bindings.random_access_samples, invocation.random_access_sample_begin, invocation.random_access_sample_count);
+            add(bindings.random_access_events, invocation.random_access_event_begin, invocation.random_access_event_count);
+            add(bindings.sample_captures, invocation.sample_capture_begin, invocation.sample_capture_count);
+            add(bindings.event_captures, invocation.event_capture_begin, invocation.event_capture_count);
+        }
+        plan_manual_control_latches(early_primitives);
+    }
+
+    void plan_manual_control_latches(std::vector<bool> const& early_primitives)
+    {
+        auto const& controls = plan_.sample_ports.manual_controls;
+        plan_.manual_target_latches.resize(controls.size());
+        plan_.split_manual_target_latches.resize(controls.size());
+        for (std::size_t index = 0; index < controls.size(); ++index) {
+            auto const& control = controls[index];
+            auto const early = early_primitives[control.primitive_index];
+            auto& selected = early ? plan_.early_manual_controls : plan_.foreground_manual_controls;
+            auto& target = plan_.manual_target_latches[index];
+            auto& split_target = plan_.split_manual_target_latches[index];
+            target = split_target = index;
+            if (control.stages_timeline) {
+                auto same_target = [&](std::size_t previous) {
+                    return controls[previous].stages_timeline
+                        && controls[previous].configured.id == control.configured.id;
+                };
+                for (std::size_t previous = 0; previous < index; ++previous) {
+                    if (!same_target(previous)) continue;
+                    target = previous;
+                    break;
+                }
+                auto const local = std::ranges::find_if(selected, [&](std::size_t previous) {
+                    return same_target(previous) && controls[previous].configured.dynamic;
+                });
+                if (local != selected.end()) split_target = *local;
+            }
+            selected.push_back(index);
+        }
+    }
+
     // --- storage ----------------------------------------------------------
 
     // The scratch offset of one region of a root-stack arena.
@@ -2867,18 +2928,6 @@ private:
             sizeof(EventActivitySummary),
             alignof(EventActivitySummary));
         layout.manual_control_latches = take(plan_.sample_ports.manual_controls.size(), sizeof(ManualControlLatch), alignof(ManualControlLatch));
-        plan_.manual_target_latches.resize(plan_.sample_ports.manual_controls.size());
-        for (std::size_t index = 0; index < plan_.sample_ports.manual_controls.size(); ++index) {
-            plan_.manual_target_latches[index] = index;
-            if (!plan_.sample_ports.manual_controls[index].stages_timeline) continue;
-            for (std::size_t previous = 0; previous < index; ++previous) {
-                if (plan_.sample_ports.manual_controls[previous].stages_timeline
-                    && plan_.sample_ports.manual_controls[previous].configured.id == plan_.sample_ports.manual_controls[index].configured.id) {
-                    plan_.manual_target_latches[index] = plan_.manual_target_latches[previous];
-                    break;
-                }
-            }
-        }
         layout.tick_lanes = take(
             plan_.maximum_batch_lanes,
             sizeof(ReflectedNodeTickBatchLane),
@@ -2976,6 +3025,65 @@ Checked plan_crossing_representations(detail::RootStackBufferPlan& root,
     return {};
 }
 
+std::size_t independent_early_frames(RealtimeRootPlan const& root, detail::LoweringPlan const& lowering,
+    std::size_t block_size) noexcept
+{
+    if (root.first_foreground_group == 0) return 0;
+    auto frames = block_size + std::min(block_size, std::numeric_limits<std::size_t>::max() - block_size);
+    if (root.first_foreground_group == root.execution.ready_groups.size()) return frames;
+
+    auto const boundary = lowering.connections.schedule.early_execution_steps;
+    auto const& storage = root.sample_ports.storage;
+    if (!lowering.declarations.live_coverage_histories.empty()
+        || root.event_ports.persistent_storage_crosses_tick_partition
+        || std::ranges::any_of(storage.carry_operations, [boundary](auto const& carry) {
+            return carry.restore_execution_position < boundary && carry.commit_execution_position >= boundary;
+        }))
+        return 0;
+
+    for (auto const& representation : storage.representations) {
+        if (representation.constant_value || representation.transient_allocation != detail::no_sample_transient_allocation
+            || representation.live_interval.begin >= boundary || representation.live_interval.end < boundary)
+            continue;
+
+        // A canonical producer writes its current block and may revise only
+        // its declared latency window. Foreground reads from the finalized
+        // side of that window. The ring must retain both those older reads
+        // and the consecutive samples produced ahead of the device.
+        if (!representation.canonical_producer_representation
+            || representation.persistent_allocation >= storage.persistent_allocations.size()
+            || representation.producer_group_index >= lowering.connections.sample_producer_groups.size()) return 0;
+        auto const& group = lowering.connections.sample_producer_groups[representation.producer_group_index];
+        if (!group.source_port || group.external_boundary) return 0;
+        for (auto const connection_index : group.connection_indices) {
+            auto const& connection = lowering.connections.sample_connections[connection_index];
+            auto const reads_unfinalized = std::ranges::any_of(connection.source_channel_timings,
+                [&](auto const& source) {
+                    return source.source.bundle == group.source_port->node_bundle_handle
+                        && source.source.port == group.source_port->port_index
+                        && detail::uses_realtime_storage(source.delivery)
+                        && source.read_latency < source.source_latency;
+                });
+            if (reads_unfinalized) return 0;
+        }
+        auto const& allocation = storage.persistent_allocations[representation.persistent_allocation];
+        if (allocation.kind != detail::SamplePersistentStorageKind::ring
+            || allocation.frame_capacity != representation.frame_capacity
+            || allocation.retained_frames > allocation.frame_capacity) return 0;
+        auto const spare_values = allocation.frame_capacity - allocation.retained_frames;
+
+        std::size_t first = 0;
+        while (first < frames) {
+            auto const candidate = frames - (frames - first) / 2;
+            auto const projected = FractionalGlobalIndexRange::maximum_projection_count(
+                candidate, representation.absolute_pace_exponent);
+            if (projected && *projected <= spare_values) first = candidate;
+            else frames = candidate - 1;
+        }
+    }
+    return frames;
+}
+
 } // namespace
 
 std::expected<std::shared_ptr<RealtimeRootPlan const>, std::string>
@@ -2995,6 +3103,7 @@ build_realtime_root_plan(
     if (auto transfers = plan_crossing_representations(root->root_stack, plan.connections.schedule,
             root->sample_ports, root->event_ports);
         !transfers) return std::unexpected(std::move(transfers.error()));
+    root->independent_early_frames = independent_early_frames(*root, plan, input.specialization.block_size);
     root->primitive_activity = std::move(plan.declarations.primitive_activity);
     root->activity_frontiers = std::move(plan.declarations.activity_frontiers);
     if (auto built = RootPlanBuilder(input, plan, *root, specializations).build();

@@ -371,6 +371,24 @@ feeds a live mixer can advance ahead if its own inputs allow it. Both branches
 use the same applied playback selection.
 [Earlier opt-in prototype](historical/tick_resampler_first_proposal_2026-11-26.md#rejected-early-tick-opt-in)
 
+Early execution changes when the worker runs a callback. Given the same
+applied inputs and Tick callback ranges, the early and foreground parts
+together preserve the Sample values, Events, port delays, and node state
+of ordinary foreground execution.
+
+When an ordinary graph edit reaches a run-ahead branch, select one shared
+cutover in Tick execution order. The cutover can follow callbacks that already
+executed ahead of playback. Each branch uses the old graph before that index
+and the successor from that index. Compatible node state, finalized in-flight
+values, and pending input and output work follow the existing graph transition
+rules at the cutover.
+[Port state at cutover](./sequential_port_storage_planning.md#port-windows-are-semantically-node-owned-even-when-storage-is-shared)
+
+An edit can give a previously early Tick branch a live input. If compatible
+work admitted before the cutover still needs that input to finish, playback
+can wait for the block to become ready. Preserve its samples and their order
+when resuming the device output.
+
 The frontend may display a **ghost/requested cursor** immediately at a pending
 destination while continuing to display the **applied background playhead**
 separately.

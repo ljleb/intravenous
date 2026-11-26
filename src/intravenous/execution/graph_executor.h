@@ -1,10 +1,12 @@
 #pragma once
 
 #include <intravenous/graph_jit/realtime_port_state_transition.h>
+#include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/node/resources.h>
 #include <intravenous/execution/storage/async_capacity_manager.h>
 #include <intravenous/execution/background/background_evaluation_transaction.h>
 #include <intravenous/execution/background/background_coverage_propagation.h>
+#include <intravenous/execution/deferred_tick_input_requests.h>
 #include <intravenous/graph_jit/graph_jit.h>
 #include <intravenous/execution/storage/persisted_data_store.h>
 #include <intravenous/execution/storage/realtime_produced_record.h>
@@ -164,20 +166,31 @@ struct BackgroundExecutionFailures {
 // before the non-audio capacity worker stops, so prepared generations unregister
 // their producer reserves while the capacity manager is still alive.
 class GraphExecutor {
+    static constexpr std::size_t maximum_prepared_ranges = 2;
+
     struct RealtimeGeneration {
         NodeStorage storage{};
-        TickInvocationWorkspace tick_invocation;
-        std::unique_ptr<DeferredTickInputRequests> deferred_inputs{};
-        // Physical index of the next callback in this deferred request queue.
-        // Compatible cutovers inherit it with the pending requests.
-        GlobalIndex next_deferred_input_index{};
-        [[nodiscard]] bool begin_deferred_input_callback(
-            RealtimePersistedState const& inputs, GlobalIndexRange range) noexcept;
+        // The workspace and prepared ranges can own unpublished blocks.
+        // Destroy both before unregistering and destroying their reserves.
         std::vector<std::unique_ptr<ProducerReserve>> producer_reserves{};
-        // Declared after producer_reserves so registrations are removed before
-        // their reserves are destroyed.
         std::vector<std::unique_ptr<ProducerCapacityRegistration>>
             capacity_registrations{};
+        TickInvocationWorkspace tick_invocation;
+        std::unique_ptr<DeferredTickInputRequests> deferred_inputs{};
+        std::size_t deferred_input_lead = std::numeric_limits<std::size_t>::max();
+        // Physical execution order across seeks and ordinary graph edits.
+        // The worker publishes its position with the reserved Tick range.
+        GlobalIndex next_early_tick_index{};
+        GlobalIndex next_foreground_tick_index{};
+        [[nodiscard]] bool at_shared_tick_boundary() const noexcept
+        {
+            return next_early_tick_index == next_foreground_tick_index;
+        }
+        [[nodiscard]] bool begin_deferred_input_callback(
+            RealtimePersistedState const& inputs, GlobalIndexRange range, bool separate_foreground = false,
+            std::optional<GlobalIndex> next_preparation_boundary = {}) noexcept;
+        std::array<TickRecordingBatch, maximum_prepared_ranges> early_recordings;
+        std::unique_ptr<RealtimePersistedState> early_input_preview{};
 
         RealtimeGeneration(
             CompiledGraph const& graph,
@@ -267,7 +280,8 @@ class GraphExecutor {
             std::uint64_t publication_id = 0;
             std::shared_ptr<CompiledGraph const> graph{};
             std::vector<LiveTargetBinding> live_targets{};
-            std::vector<std::byte> early_tick_transfer{};
+            std::array<graph_jit::TickTransferBuffer, maximum_prepared_ranges> early_tick_transfers{};
+            graph_jit::EarlyTickCursor early_tick_cursor{};
         };
         struct RealtimeObservations {
             std::uint64_t publication_id = 0;
@@ -401,7 +415,11 @@ class GraphExecutor {
         Command* last_command_ = nullptr;
         bool stopping_ = false;
         std::atomic<bool> progress_failed_{false};
-        std::deque<std::shared_ptr<ObservationWindowQuery>> observation_windows_{};
+        struct QueuedObservationWindow {
+            std::shared_ptr<ObservationWindowQuery> query;
+            std::uint64_t work_revision;
+        };
+        std::deque<QueuedObservationWindow> observation_windows_{};
         struct CachedObservationWindow {
             NodeBundlePortId port{};
             ObservationSourceKind kind{};
@@ -413,8 +431,9 @@ class GraphExecutor {
         // The background worker owns this bounded, versioned cache.
         std::deque<CachedObservationWindow> sampled_windows_{};
         std::jthread worker_{};
-        void process_window(ObservationWindowQuery& query) noexcept;
-        void process_event_windows(ExecutionGeneration&, ObservationWindowQuery& query);
+        void process_window(ObservationWindowQuery& query, std::uint64_t work_revision) noexcept;
+        void process_event_windows(ExecutionGeneration&, ObservationWindowQuery& query,
+            std::uint64_t work_revision);
 
         [[nodiscard]] ExecutionGeneration& generation();
         [[nodiscard]] bool advance_generation();
@@ -538,30 +557,61 @@ class GraphExecutor {
     ProjectPlayback playback_{};
     class ForegroundPrefix {
     public:
+        struct Range {
+            ProjectPlayback::Block first{};
+            std::size_t frames = 0;
+            GlobalIndex execution_begin{};
+            LiveObservationFrame* observations = nullptr;
+            std::span<std::byte> transfer{};
+            TickRecordingBatch* recordings = nullptr;
+            RealtimePersistedState const* prepared_inputs = nullptr;
+        };
+
         struct Reservation {
-            ProjectPlayback::Block first;
-            std::size_t frames;
-            GlobalIndex deferred_input_begin;
             ExecutionGeneration& generation;
             ExecutionGeneration::RealtimeCode& code;
             graph_jit::RealtimeRootPlan const& root;
             RealtimePersistedState const& inputs;
-            LiveObservationFrame* observations;
+            bool publish_early_requests;
+            std::array<Range, maximum_prepared_ranges> storage{};
+            std::size_t range_count = 0;
+            std::size_t reserved_count = 0;
+
+            [[nodiscard]] std::span<Range const> ranges() const noexcept
+            {
+                return std::span{storage}.first(range_count);
+            }
+            [[nodiscard]] GlobalIndexRange execution_range() const noexcept
+            {
+                auto const admitted = ranges();
+                auto const& tail = admitted.back();
+                auto const end = tail.execution_begin.advanced_by(tail.frames);
+                return {admitted.front().execution_begin, admitted.front().execution_begin.forward_distance_to(end)};
+            }
         };
 
         struct Slice {
             Reservation const& reservation;
+            Range const& range;
             ProjectPlayback::Block block;
             std::size_t offset;
             std::size_t frames;
 
             [[nodiscard]] bool last() const noexcept
             {
-                return offset + frames == reservation.frames;
+                return offset + frames == range.frames;
             }
-            [[nodiscard]] GlobalIndexRange deferred_input_range() const noexcept
+            [[nodiscard]] bool begins_prefix() const noexcept
             {
-                return {reservation.deferred_input_begin.advanced_by(offset), frames};
+                return offset == 0 && &range == &reservation.ranges().front();
+            }
+            [[nodiscard]] bool ends_prefix() const noexcept
+            {
+                return last() && &range == &reservation.ranges().back();
+            }
+            [[nodiscard]] GlobalIndexRange execution_range() const noexcept
+            {
+                return {range.execution_begin.advanced_by(offset), frames};
             }
         };
 
@@ -576,15 +626,15 @@ class GraphExecutor {
         [[nodiscard]] Reservation const& reservation() const noexcept { return *reservation_; }
         [[nodiscard]] ProjectPlayback::Block next_block() const noexcept;
         [[nodiscard]] std::optional<Slice> next_slice(std::size_t frames) const noexcept;
-        void consume(Slice const& slice) noexcept;
+        void consume(Slice const& slice, LiveObservationHandoff& observations) noexcept;
         [[nodiscard]] bool matches(ProjectPlayback::Block const& block) const noexcept;
         [[nodiscard]] bool promote(ProjectPlayback::Block const& block) noexcept;
         [[nodiscard]] bool request_discard() noexcept;
-        void release_discarded() noexcept;
+        void release_discarded(LiveObservationHandoff& observations) noexcept;
 
         // Worker side. Claim and execute once, outside the retryable
         // background transaction. Publication transfers access to the device.
-        [[nodiscard]] Reservation const* claim() noexcept;
+        [[nodiscard]] Reservation* claim() noexcept;
         void publish_ready() noexcept;
         [[nodiscard]] Reservation const* to_discard() const noexcept;
         void publish_discarded() noexcept;
@@ -595,10 +645,12 @@ class GraphExecutor {
         enum class Phase : std::uint8_t { idle, reserved, executing, ready, discard_requested, discarded };
         std::atomic<Phase> phase_{Phase::idle};
         std::optional<Reservation> reservation_{};
+        std::size_t next_range_ = 0; // Device only.
         std::size_t consumed_frames_ = 0; // Device only.
         Mode mode_ = Mode::committed; // Device only.
 
-        void release() noexcept;
+        [[nodiscard]] Range const& current_range() const noexcept { return reservation_->storage[next_range_]; }
+        void release(std::size_t consumed, LiveObservationHandoff& observations) noexcept;
     };
     ForegroundPrefix foreground_prefix_{};
     // Generations and gestures own their live targets. The registry shares
@@ -630,12 +682,16 @@ class GraphExecutor {
         ExecutionGeneration const& generation, ExecutionGeneration::RealtimeCode const& code) noexcept;
     [[nodiscard]] bool reserve_early_tick_prefix(ExecutionGeneration& generation,
         RealtimePersistedState const& persisted, ProjectPlayback::Block const& first,
-        std::size_t frames, ForegroundPrefix::Mode mode = ForegroundPrefix::Mode::committed) noexcept;
+        std::size_t frames, ForegroundPrefix::Mode mode = ForegroundPrefix::Mode::committed,
+        std::size_t additional_frames = 0) noexcept;
     [[nodiscard]] std::optional<bool> playback_activation_pending(ExecutionGeneration const& generation) noexcept;
     [[nodiscard]] bool keep_provisional_prefix(ProjectPlayback::Block const& current,
         ProjectPlayback::Block const& candidate) noexcept;
     [[nodiscard]] bool discard_provisional_prefix_on_worker() noexcept;
     void run_early_tick_prefix() noexcept;
+    [[nodiscard]] std::unique_ptr<RealtimePersistedState> prepare_early_tick_inputs(
+        ForegroundPrefix::Reservation const& prefix, ForegroundPrefix::Range const& range);
+    void publish_deferred_input_requests(DeferredTickInputRequests& requests) noexcept;
     void render_foreground_prefix(std::size_t frames, PlaybackRenderSlice* profile);
     bool execute_tick_block(ExecutionGeneration& generation, RealtimePersistedState const& persisted,
         GlobalIndex sample_index, std::size_t block_size, TickPlaybackSelection selection, bool ready,
@@ -704,10 +760,10 @@ public:
     }
     // Applies session commands and activation at the next available boundary.
     void render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile = nullptr,
-        bool start_early_prefix = false);
+        bool start_early_prefix = false, std::size_t additional_frames = 0);
     // Called once per device request after consuming its ordinary slices.
     // The worker can prepare the next slice while the device plays this one.
-    void prepare_next_playback_slice(std::size_t frames, double sample_rate) noexcept;
+    void prepare_next_playback_slice(std::size_t frames, double sample_rate, std::size_t additional_frames = 0) noexcept;
     explicit GraphExecutor(
         ResourceContext resources = {},
         RealtimeProducerCapacityConfig producer_capacity = {},

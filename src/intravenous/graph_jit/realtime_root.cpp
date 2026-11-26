@@ -1536,10 +1536,10 @@ ReflectedSpan<T const> invocation_span(
 // Completes, once per root call, the parts of each Tick primitive's bindings
 // and context that its TickInvocationCall supplies: the bindings of inputs a
 // slot replaces, and the Random Access views.
-void initialize_tick_slots(RootFrame& frame) noexcept
+void initialize_tick_slots(RootFrame& frame, std::span<std::size_t const> primitives) noexcept
 {
     auto const& plan = frame.plan;
-    for (auto const primitive_index : plan.tick_primitives) {
+    for (auto const primitive_index : primitives) {
         auto const& primitive = plan.primitives[primitive_index];
         auto const& tick = *primitive.tick;
         auto const& invocation = tick.invocation;
@@ -2267,10 +2267,56 @@ bool has_early_tick(RealtimeRootPlan const* plan) noexcept
     return plan && plan->first_foreground_group != 0;
 }
 
-std::size_t tick_transfer_size(RealtimeRootPlan const* plan) noexcept
+std::size_t independent_early_frame_limit(RealtimeRootPlan const* plan) noexcept
 {
-    return plan ? plan->root_stack.transfer_size_bytes : 0;
+    return plan ? plan->independent_early_frames : 0;
 }
+
+void TickTransferBuffer::reserve(RealtimeRootPlan const* plan)
+{
+    if (!plan) return;
+    capacity_ = std::max(capacity_, plan->root_stack.transfer_size_bytes);
+    alignment_ = std::max(alignment_, plan->root_stack.transfer_alignment);
+    if (capacity_ == 0) return;
+    auto const padding = alignment_ - 1;
+    if (capacity_ > bytes_.max_size() || padding > bytes_.max_size() - capacity_)
+        throw std::length_error("early Tick transfer storage is too large");
+    bytes_.resize(capacity_ + padding);
+}
+
+std::span<std::byte> TickTransferBuffer::view(RealtimeRootPlan const& plan) noexcept
+{
+    auto const size = plan.root_stack.transfer_size_bytes;
+    if (size == 0) return {};
+    IV_ASSERT(size <= capacity_ && plan.root_stack.transfer_alignment <= alignment_,
+        "early Tick transfer storage must be reserved for its plan");
+    auto* data = reinterpret_cast<std::byte*>(
+        align_up(reinterpret_cast<std::uintptr_t>(bytes_.data()), alignment_));
+    return {data, size};
+}
+
+TickInvocationSlotPlan const& tick_invocation_slots(
+    RealtimeRootPlan const& plan, TickRootPart part) noexcept
+{
+    IV_ASSERT(part != TickRootPart::complete, "complete Tick binds the whole invocation");
+    auto const& slots = part == TickRootPart::early ? plan.early_tick_slots : plan.foreground_tick_slots;
+    return slots.bindings;
+}
+
+void EarlyTickCursor::reserve(RealtimeRootPlan const* root)
+{
+    if (!has_early_tick(root)) return;
+    auto const& storage = root->sample_ports.storage;
+    pace_indices_.resize(std::max(pace_indices_.size(), storage.sequential_pace_cursors.size()));
+    authored_extents_.resize(std::max(authored_extents_.size(), storage.producer_authored_extents.size()));
+}
+
+namespace {
+struct EarlyTickPositions {
+    std::span<std::uint64_t> pace_indices;
+    std::span<std::size_t> authored_extents;
+    bool resume;
+};
 
 void execute_tick_root_part(
     RealtimeRootPlan const* root,
@@ -2279,7 +2325,8 @@ void execute_tick_root_part(
     GlobalIndex sample_index,
     std::size_t block_size,
     TickRootPart part,
-    std::span<std::byte> transfer) noexcept
+    std::span<std::byte> transfer,
+    EarlyTickPositions const* early = nullptr) noexcept
 {
     auto const& plan = *root;
     auto const& layout = plan.frame;
@@ -2361,15 +2408,32 @@ void execute_tick_root_part(
         frame.event_representations[index] = resolve_address(
             plan.event_addresses[index], storage_base, scratch);
     }
-    for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {
-        frame.producer_authored_extents[index] = load_raw<std::size_t>(
-            storage_base, storage.producer_authored_extents[index].storage_offset);
+    if (part != TickRootPart::complete) {
+        IV_ASSERT(transfer.size() == plan.root_stack.transfer_size_bytes, "early Tick transfer size changed");
+        IV_ASSERT(reinterpret_cast<std::uintptr_t>(transfer.data()) % plan.root_stack.transfer_alignment == 0,
+            "early Tick transfer storage must be aligned");
+        for (auto const& value : plan.root_stack.early_to_foreground) {
+            auto const& addresses = value.kind == PortKind::sample
+                ? frame.sample_representations : frame.event_representations;
+            addresses[value.representation] = transfer.data() + value.transfer_offset;
+        }
     }
-    for (std::size_t index = 0; index < storage.sequential_pace_cursors.size(); ++index) {
-        frame.sequential_pace_cursors[index] = load_raw<std::uint64_t>(
-            storage_base, storage.sequential_pace_cursors[index].storage_offset);
+    if (early && early->resume) {
+        std::ranges::copy(early->authored_extents, frame.producer_authored_extents.begin());
+        std::ranges::copy(early->pace_indices, frame.sequential_pace_cursors.begin());
+    } else {
+        for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {
+            frame.producer_authored_extents[index] = load_raw<std::size_t>(
+                storage_base, storage.producer_authored_extents[index].storage_offset);
+        }
+        for (std::size_t index = 0; index < storage.sequential_pace_cursors.size(); ++index) {
+            frame.sequential_pace_cursors[index] = load_raw<std::uint64_t>(
+                storage_base, storage.sequential_pace_cursors[index].storage_offset);
+        }
     }
-    for (std::size_t index = 0; index < plan.sample_ports.manual_controls.size(); ++index) {
+    auto const& manual_targets = part == TickRootPart::complete
+        ? plan.manual_target_latches : plan.split_manual_target_latches;
+    auto prepare_control = [&](std::size_t index) {
         auto const& control = plan.sample_ports.manual_controls[index];
         auto* state = reinterpret_cast<ManualControlRuntimeState*>(storage_base + control.state_storage_offset);
         auto const settled = std::bit_cast<std::uint32_t>(control.configured.settled_value.value);
@@ -2379,24 +2443,41 @@ void execute_tick_root_part(
             // while preserving any target already submitted by the UI.
             state->effective_bits = settled;
         }
-        if (!control.stages_timeline) continue;
-        auto const target_index = plan.manual_target_latches[index];
+        if (!control.stages_timeline) return;
+        auto const target_index = manual_targets[index];
+        auto target_bits = settled;
+        if (control.configured.dynamic) {
+            if (target_index < index) {
+                target_bits = frame.manual_control_latches[target_index].target_bits;
+            } else {
+                // A split may have its canonical target on the other root.
+                // Read the shared atomic target without touching that root's
+                // effective value or its per-invocation latch.
+                auto const& canonical = plan.sample_ports.manual_controls[plan.manual_target_latches[index]];
+                auto* target = reinterpret_cast<ManualControlRuntimeState*>(storage_base + canonical.state_storage_offset);
+                target_bits = canonical.configured.dynamic
+                    ? std::atomic_ref<std::uint32_t>{target->target_bits}.load(std::memory_order_relaxed)
+                    : std::bit_cast<std::uint32_t>(canonical.configured.settled_value.value);
+            }
+        }
         frame.manual_control_latches[index] = {
-            .target_bits = !control.configured.dynamic ? settled : target_index < index
-                ? frame.manual_control_latches[target_index].target_bits
-                : std::atomic_ref<std::uint32_t>{state->target_bits}.load(std::memory_order_relaxed),
+            .target_bits = target_bits,
             .effective_bits = state->effective_bits,
         };
+    };
+    if (part == TickRootPart::complete) {
+        for (std::size_t index = 0; index < plan.sample_ports.manual_controls.size(); ++index)
+            prepare_control(index);
+    } else {
+        auto const& controls = part == TickRootPart::early
+            ? plan.early_manual_controls : plan.foreground_manual_controls;
+        for (auto const index : controls) prepare_control(index);
     }
     initialize_bindings(frame);
-    initialize_tick_slots(frame);
-    if (part != TickRootPart::complete)
-        IV_ASSERT(transfer.size() == plan.root_stack.transfer_size_bytes, "early Tick transfer size changed");
-    if (part == TickRootPart::foreground) {
-        for (auto const& value : plan.root_stack.early_to_foreground)
-            std::memcpy(scratch + value.scratch_offset, transfer.data() + value.transfer_offset, value.size_bytes);
-    }
-
+    auto const& tick_primitives = part == TickRootPart::complete ? plan.tick_primitives
+        : part == TickRootPart::early ? plan.early_tick_slots.primitives
+                                    : plan.foreground_tick_slots.primitives;
+    initialize_tick_slots(frame, tick_primitives);
     auto const& execution = plan.execution;
     auto const first_group = part == TickRootPart::foreground ? plan.first_foreground_group : 0;
     auto const end_group = part == TickRootPart::early ? plan.first_foreground_group : execution.ready_groups.size();
@@ -2484,33 +2565,49 @@ void execute_tick_root_part(
         }
     }
 
-    if (part == TickRootPart::early) {
-        for (auto const& value : plan.root_stack.early_to_foreground)
-            std::memcpy(transfer.data() + value.transfer_offset, scratch + value.scratch_offset, value.size_bytes);
-        return;
-    }
-
     for (std::size_t index = 0; index < storage.producer_authored_extents.size(); ++index) {
         auto const& extent = storage.producer_authored_extents[index];
         auto const current = std::min(
             frame.producer_authored_extents[index], extent.maximum_revision_frames);
         auto const projected = project_lattice(
             sample_index, block_size, extent.absolute_pace_exponent).value_count;
-        store_raw<std::size_t>(
-            storage_base,
-            extent.storage_offset,
-            current + std::min(projected, extent.maximum_revision_frames - current));
+        auto const next = current + std::min(projected, extent.maximum_revision_frames - current);
+        if (early) early->authored_extents[index] = next;
+        else store_raw<std::size_t>(storage_base, extent.storage_offset, next);
     }
     for (std::size_t index = 0; index < storage.sequential_pace_cursors.size(); ++index) {
         auto const& cursor = storage.sequential_pace_cursors[index];
-        store_raw<std::uint64_t>(
-            storage_base,
-            cursor.storage_offset,
-            frame.sequential_pace_cursors[index]
-                + project_lattice(
-                    sample_index, block_size, cursor.absolute_pace_exponent)
-                    .value_count);
+        auto const next = frame.sequential_pace_cursors[index]
+            + project_lattice(sample_index, block_size, cursor.absolute_pace_exponent).value_count;
+        if (early) early->pace_indices[index] = next;
+        else store_raw<std::uint64_t>(storage_base, cursor.storage_offset, next);
     }
+}
+} // namespace
+
+void execute_early_tick_root(RealtimeRootPlan const& plan, std::byte* storage_base,
+    TickInvocationCall const* invocation, GlobalIndex sample_index, std::size_t block_size,
+    EarlyTickCursor& cursor, std::span<std::byte> transfer) noexcept
+{
+    auto const& storage = plan.sample_ports.storage;
+    IV_ASSERT(cursor.pace_indices_.size() >= storage.sequential_pace_cursors.size()
+        && cursor.authored_extents_.size() >= storage.producer_authored_extents.size(),
+        "early Tick cursor must be prepared for its root");
+    EarlyTickPositions const early{
+        std::span{cursor.pace_indices_}.first(storage.sequential_pace_cursors.size()),
+        std::span{cursor.authored_extents_}.first(storage.producer_authored_extents.size()),
+        cursor.root_ == &plan,
+    };
+    execute_tick_root_part(&plan, storage_base, invocation, sample_index, block_size, TickRootPart::early,
+        transfer, &early);
+    cursor.root_ = &plan;
+}
+
+void execute_foreground_tick_root(RealtimeRootPlan const* root, std::byte* storage_base,
+    TickInvocationCall const* invocation, GlobalIndex sample_index, std::size_t block_size,
+    std::span<std::byte> transfer) noexcept
+{
+    execute_tick_root_part(root, storage_base, invocation, sample_index, block_size, TickRootPart::foreground, transfer);
 }
 
 void execute_realtime_root(RealtimeRootPlan const* root, std::byte* storage_base,

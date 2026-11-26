@@ -313,6 +313,7 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
     for (auto const& binding : plan.tick_runtime.random_access_sample_inputs) {
         auto const lead = plan.ports[binding.port].deferred_tick_lead;
         if (lead == 0) continue;
+        deferred_input_lead = std::min(deferred_input_lead, lead);
         largest_lead = std::max(largest_lead, lead);
         ++deferred_ports;
     }
@@ -325,12 +326,16 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
         }
         auto const samples = largest_lead + block * 2;
         auto const requests = std::bit_ceil(samples * deferred_ports);
+        // A split callback can publish once per root only if each root has
+        // a requesting port. Request and position limits remain shared.
+        auto const callbacks = std::bit_ceil(samples * std::min(deferred_ports, std::size_t{2}));
         deferred_inputs = std::make_unique<DeferredTickInputRequests>(graph.project_generation,
-            DeferredTickInputRequests::Capacity{.callbacks = std::bit_ceil(samples),
+            DeferredTickInputRequests::Capacity{.callbacks = callbacks,
                 .requests = requests, .runs = requests * 4, .positions = requests * 4,
                 .ports = plan.ports.size()});
     }
     auto const requirements = tick_invocation.producer_requirements();
+    for (auto& batch : early_recordings) batch = TickRecordingBatch{requirements.size()};
     producer_reserves.reserve(requirements.size());
     for (std::size_t index = 0; index < requirements.size(); ++index) {
         producer_reserves.push_back(std::make_unique<ProducerReserve>(
@@ -339,15 +344,14 @@ GraphExecutor::RealtimeGeneration::RealtimeGeneration(
 }
 
 bool GraphExecutor::RealtimeGeneration::begin_deferred_input_callback(
-    RealtimePersistedState const& inputs, GlobalIndexRange range) noexcept
+    RealtimePersistedState const& inputs, GlobalIndexRange range, bool separate_foreground,
+    std::optional<GlobalIndex> next_preparation_boundary) noexcept
 {
     auto* const requests = deferred_inputs.get();
     if (!requests) return true;
-    if (!requests->adopt(inputs.deferred_input_ticket(), inputs.inherited_deferred_materialization() != nullptr)
-        || !requests->ready_until(range.end()) || !requests->begin_callback(range))
-        return false;
-    tick_invocation.bind_deferred_input_requests(*requests, range.begin);
-    return true;
+    return requests->adopt(inputs.deferred_input_ticket(), inputs.inherited_deferred_materialization() != nullptr)
+        && requests->ready_until(range.end())
+        && requests->begin_callback(range, separate_foreground ? 2 : 1, next_preparation_boundary);
 }
 
 void GraphExecutor::RealtimeGeneration::provision_producers(
@@ -1094,18 +1098,21 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
                 command->next = nullptr;
             } else if (caught_up || (serve_visible_waveform && !prepared_generation_ && preparation_queue_.empty())) {
                 while (!observation_windows_.empty()
-                    && observation_windows_.front()->canceled.load(std::memory_order_acquire))
+                    && observation_windows_.front().query->canceled.load(std::memory_order_acquire))
                     observation_windows_.pop_front();
                 if (!observation_windows_.empty()) {
-                    auto next = std::ranges::find_if(observation_windows_, [caught_up](auto const& pending) {
-                        return !pending->prefetch.load(std::memory_order_relaxed)
-                            && (caught_up || pending->port.port_kind == PortKind::sample)
-                            && !pending->canceled.load(std::memory_order_acquire);
+                    auto ready = [observed_work_revision](QueuedObservationWindow const& pending) {
+                        return pending.work_revision <= observed_work_revision
+                            && !pending.query->canceled.load(std::memory_order_acquire);
+                    };
+                    auto next = std::ranges::find_if(observation_windows_, [&](auto const& pending) {
+                        return ready(pending) && !pending.query->prefetch.load(std::memory_order_relaxed)
+                            && (caught_up || pending.query->port.port_kind == PortKind::sample);
                     });
                     if (next == observation_windows_.end() && caught_up)
-                        next = observation_windows_.begin();
+                        next = std::ranges::find_if(observation_windows_, ready);
                     if (next != observation_windows_.end()) {
-                        query = std::move(*next);
+                        query = std::move(next->query);
                         observation_windows_.erase(next);
                     }
                 }
@@ -1118,7 +1125,7 @@ void GraphExecutor::BackgroundExecutor::run(std::stop_token stop) noexcept
             owner_.run_early_tick_prefix();
             serve_visible_waveform = false;
             if (query) {
-                if (!query->canceled.load(std::memory_order_acquire)) process_window(*query);
+                if (!query->canceled.load(std::memory_order_acquire)) process_window(*query, observed_work_revision);
                 continue; // Recheck playback and cutover work after each bounded query.
             }
             if (caught_up) {
@@ -1622,9 +1629,13 @@ GraphExecutor::prepare_realtime_code(std::shared_ptr<CompiledGraph const> graph)
 {
     static_assert(std::atomic<ExecutionGeneration::RealtimeCode*>::is_always_lock_free);
     auto prepared = std::make_unique<ExecutionGeneration::RealtimeCode>();
-    prepared->early_tick_transfer.resize(std::max(
-        graph_jit::tick_transfer_size(graph->root_operations.tick_block.plan.get()),
-        graph_jit::tick_transfer_size(graph->root_operations.transition_tick_block.plan.get())));
+    for (auto const* root : {graph->root_operations.tick_block.plan.get(),
+                            graph->root_operations.transition_tick_block.plan.get()}) {
+        prepared->early_tick_transfers[0].reserve(root);
+        if (graph_jit::independent_early_frame_limit(root) > 1) prepared->early_tick_transfers[1].reserve(root);
+    }
+    prepared->early_tick_cursor.reserve(graph->root_operations.tick_block.plan.get());
+    prepared->early_tick_cursor.reserve(graph->root_operations.transition_tick_block.plan.get());
     prepared->publication_id = next_observation_publication_++;
     prepared->graph = std::move(graph);
     auto const& bindings = prepared->graph->manual_controls;
@@ -1779,6 +1790,7 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     RealtimePersistedState const** activated_root, bool* applied_candidate, bool* reset_playhead)
 {
     if (foreground_prefix_.occupied()) return false;
+    if (realtime_active_ && !realtime_active_->realtime.at_shared_tick_boundary()) return false;
     if (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) {
         return false;
     }
@@ -1900,14 +1912,18 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
     } else {
         next->commit_realtime_migration(selected_boundary->foreground_project_range.begin);
         next->realtime.tick_invocation.transfer_recording_from(previous.realtime.tick_invocation);
+        auto const cutover_index = previous.realtime.next_foreground_tick_index;
+        next->realtime.next_early_tick_index = cutover_index;
+        next->realtime.next_foreground_tick_index = cutover_index;
         if (previous_deferred_playback) {
             auto& queue = *next->realtime.deferred_inputs;
-            next->realtime.next_deferred_input_index = previous.realtime.next_deferred_input_index;
             auto const ready = queue.inherit_pending_from(*previous.realtime.deferred_inputs,
-                next->deferred_input_successors, next->realtime.next_deferred_input_index,
+                next->deferred_input_successors, cutover_index,
                 previous_deferred_playback->deferred_input_ticket());
             next->inherited_deferred_requests = !queue.select().empty();
             if (ready) initial->inherit_deferred_playback(realtime_persisted_state_.take_active(), ready);
+        } else if (auto* queue = next->realtime.deferred_inputs.get()) {
+            queue->release_rendered(cutover_index);
         }
     }
     previous.background.close_inputs();
@@ -2053,6 +2069,9 @@ GraphExecutor::evaluate_generation(
     DeferredTickInputRequests::Batch request_batch{};
     std::vector<BackgroundGeneration::DeferredDemand> pending_demands;
     if (request_queue) {
+        auto const& plan = generation.graph->background_evaluation_plan;
+        IV_ASSERT(request_queue->generation() == generation.graph->project_generation,
+            "deferred Tick requests belong to another graph generation");
         if (!background.selected_deferred_inputs)
             background.selected_deferred_inputs = request_queue->select();
         request_batch = *background.selected_deferred_inputs;
@@ -2060,12 +2079,6 @@ GraphExecutor::evaluate_generation(
         for (auto const& demand : background.retained_deferred_inputs) {
             if (demand.due_end.forward_distance_to(rendered) < (std::uint64_t{1} << 63)) continue;
             pending_demands.push_back(demand);
-            auto found = std::ranges::find(roots.input_demands, demand.port, &InputCoverageRequest::port);
-            if (found == roots.input_demands.end()) {
-                roots.input_demands.push_back({.port = demand.port, .sample_positions = demand.positions});
-            } else {
-                found->sample_positions.include(demand.positions.view());
-            }
         }
         for (auto ticket = request_batch.begin; ticket != request_batch.end; ++ticket) {
             auto const first = pending_demands.size();
@@ -2075,6 +2088,11 @@ GraphExecutor::evaluate_generation(
                 auto const batch_demands = std::span{pending_demands}.subspan(first);
                 auto demand = std::ranges::find(batch_demands, request.port, &BackgroundGeneration::DeferredDemand::port);
                 if (demand == batch_demands.end()) {
+                    if (request.port >= plan.ports.size()
+                        || plan.ports[request.port].content_access != InputContentAccess::windowed
+                        || !std::ranges::contains(plan.tick_runtime.random_access_sample_inputs,
+                            request.port, &graph_jit::TickSampleInputBindingPlan::port))
+                        return std::unexpected("deferred Tick request has no windowed continuous input");
                     auto& new_demand = pending_demands.emplace_back(BackgroundGeneration::DeferredDemand{
                         .port = request.port, .due_end = due_end});
                     new_demand.positions.include(request.positions);
@@ -2083,6 +2101,14 @@ GraphExecutor::evaluate_generation(
                         demand->due_end = due_end;
                     demand->positions.include(request.positions);
                 }
+            }
+        }
+        for (auto const& demand : pending_demands) {
+            auto found = std::ranges::find(roots.input_demands, demand.port, &InputCoverageRequest::port);
+            if (found == roots.input_demands.end()) {
+                roots.input_demands.push_back({.port = demand.port, .sample_positions = demand.positions});
+            } else {
+                found->sample_positions.include(demand.positions.view());
             }
         }
     }
@@ -2103,9 +2129,7 @@ GraphExecutor::evaluate_generation(
             .reusable_data = background.prepared_data.get(),
             .reusable_materialization = background.prepared_materialization.get(),
             .reconstruction_graph = generation.graph,
-            .deferred_tick_inputs = request_queue,
-            .deferred_tick_input_batch = request_batch,
-            .deferred_tick_prepared_through = request_queue ? std::optional{request_batch.begin} : std::nullopt,
+            .deferred_tick_input_ticket = request_queue ? std::optional{request_batch.end} : std::nullopt,
         },
         background.input_routes,
         background.input_selections,
@@ -2577,8 +2601,10 @@ std::optional<std::array<GraphExecutor::PlaybackDemand, 2>> GraphExecutor::read_
 std::optional<bool> GraphExecutor::playback_activation_pending(ExecutionGeneration const& generation) noexcept
 {
     if (accepted_chain_guard_.test_and_set(std::memory_order_acquire)) return std::nullopt;
-    bool const pending = pending_head_ || generation.pending_realtime_code_owner
-        || generation.pending_observation_override;
+    auto const steady = generation.realtime_phase.load(std::memory_order_relaxed)
+        == CompiledGraphRealtimePhase::steady;
+    bool const pending = pending_head_ || (steady && (generation.pending_realtime_code_owner
+        || generation.pending_observation_override));
     unlock_accepted_chain();
     return pending;
 }
@@ -2588,9 +2614,7 @@ graph_jit::RealtimeRootPlan const* GraphExecutor::early_tick_root(
 {
     if (generation.realtime_phase.load(std::memory_order_relaxed) == CompiledGraphRealtimePhase::steady)
         return code.graph->root_operations.tick_block.plan.get();
-    return generation.fresh_for_preroll
-        ? generation.graph->root_operations.transition_tick_block.plan.get()
-        : nullptr;
+    return generation.graph->root_operations.transition_tick_block.plan.get();
 }
 
 bool GraphExecutor::ForegroundPrefix::occupied() const noexcept
@@ -2606,14 +2630,16 @@ bool GraphExecutor::ForegroundPrefix::provisional() const noexcept
 std::size_t GraphExecutor::ForegroundPrefix::limit_frames(std::size_t frames) const noexcept
 {
     if (!reservation_) return frames;
-    return std::min(frames, reservation_->frames - consumed_frames_);
+    return std::min(frames, current_range().frames - consumed_frames_);
 }
 
 void GraphExecutor::ForegroundPrefix::reserve(Reservation reservation, Mode mode) noexcept
 {
-    IV_ASSERT(!occupied() && reservation.frames != 0,
+    IV_ASSERT(!occupied() && reservation.range_count != 0 && reservation.storage[0].frames != 0,
         "foreground prefix reservation requires an idle slot and a nonempty range");
+    reservation.reserved_count = reservation.range_count;
     reservation_.emplace(reservation);
+    next_range_ = 0;
     consumed_frames_ = 0;
     mode_ = mode;
     phase_.store(Phase::reserved, std::memory_order_release);
@@ -2622,7 +2648,7 @@ void GraphExecutor::ForegroundPrefix::reserve(Reservation reservation, Mode mode
 ProjectPlayback::Block GraphExecutor::ForegroundPrefix::next_block() const noexcept
 {
     IV_ASSERT(reservation_ && !provisional(), "foreground range has no committed playback block");
-    return reservation_->first.after_frames(consumed_frames_);
+    return current_range().first.after_frames(consumed_frames_);
 }
 
 std::optional<GraphExecutor::ForegroundPrefix::Slice>
@@ -2630,21 +2656,25 @@ GraphExecutor::ForegroundPrefix::next_slice(std::size_t frames) const noexcept
 {
     if (provisional() || phase_.load(std::memory_order_acquire) != Phase::ready) return {};
     IV_ASSERT(frames != 0 && frames == limit_frames(frames), "slice crosses the foreground prefix boundary");
-    return Slice{*reservation_, next_block(), consumed_frames_, frames};
+    return Slice{*reservation_, current_range(), next_block(), consumed_frames_, frames};
 }
 
-void GraphExecutor::ForegroundPrefix::consume(Slice const& slice) noexcept
+void GraphExecutor::ForegroundPrefix::consume(Slice const& slice, LiveObservationHandoff& observations) noexcept
 {
     IV_ASSERT(phase_.load(std::memory_order_relaxed) == Phase::ready && !provisional()
         && slice.offset == consumed_frames_ && &slice.reservation == &*reservation_,
         "only the next ready foreground slice can be consumed");
-    if (slice.last()) release();
-    else consumed_frames_ += slice.frames;
+    if (!slice.last()) {
+        consumed_frames_ += slice.frames;
+        return;
+    }
+    if (++next_range_ == reservation_->range_count) release(next_range_, observations);
+    else consumed_frames_ = 0;
 }
 
 bool GraphExecutor::ForegroundPrefix::matches(ProjectPlayback::Block const& block) const noexcept
 {
-    auto const& first = reservation_->first;
+    auto const& first = current_range().first;
     return block.state.foreground_running && first.state.running == block.state.running
         && first.state.foreground_playhead == block.state.foreground_playhead
         && first.selection().held_position == block.selection().held_position
@@ -2655,7 +2685,11 @@ bool GraphExecutor::ForegroundPrefix::promote(ProjectPlayback::Block const& bloc
 {
     IV_ASSERT(provisional(), "only a provisional foreground prefix can be promoted");
     if (!matches(block) || phase_.load(std::memory_order_acquire) != Phase::ready) return false;
-    reservation_->first = block;
+    auto next = block;
+    for (auto& range : std::span{reservation_->storage}.first(reservation_->range_count)) {
+        range.first = next;
+        next = next.after_frames(range.frames);
+    }
     mode_ = Mode::committed;
     return true;
 }
@@ -2668,18 +2702,22 @@ bool GraphExecutor::ForegroundPrefix::request_discard() noexcept
         || ready == Phase::discard_requested;
 }
 
-void GraphExecutor::ForegroundPrefix::release_discarded() noexcept
+void GraphExecutor::ForegroundPrefix::release_discarded(LiveObservationHandoff& observations) noexcept
 {
-    if (phase_.load(std::memory_order_acquire) == Phase::discarded) release();
+    if (phase_.load(std::memory_order_acquire) != Phase::discarded) return;
+    release(0, observations);
 }
 
-void GraphExecutor::ForegroundPrefix::release() noexcept
+void GraphExecutor::ForegroundPrefix::release(std::size_t consumed, LiveObservationHandoff& observations) noexcept
 {
+    for (auto slot = consumed; slot < reservation_->reserved_count; ++slot) {
+        if (auto* frame = reservation_->storage[slot].observations) observations.discard(*frame);
+    }
     reservation_.reset();
     phase_.store(Phase::idle, std::memory_order_relaxed);
 }
 
-GraphExecutor::ForegroundPrefix::Reservation const* GraphExecutor::ForegroundPrefix::claim() noexcept
+GraphExecutor::ForegroundPrefix::Reservation* GraphExecutor::ForegroundPrefix::claim() noexcept
 {
     if (phase_.load(std::memory_order_acquire) != Phase::reserved) return nullptr;
     phase_.store(Phase::executing, std::memory_order_relaxed);
@@ -2705,7 +2743,8 @@ void GraphExecutor::ForegroundPrefix::publish_discarded() noexcept
     phase_.store(Phase::discarded, std::memory_order_release);
 }
 
-void GraphExecutor::prepare_next_playback_slice(std::size_t frames, double sample_rate) noexcept
+void GraphExecutor::prepare_next_playback_slice(
+    std::size_t frames, double sample_rate, std::size_t additional_frames) noexcept
 {
     if (frames == 0 || foreground_prefix_.occupied() || !realtime_active_) return;
     auto& generation = *realtime_active_;
@@ -2720,12 +2759,13 @@ void GraphExecutor::prepare_next_playback_slice(std::size_t frames, double sampl
 
     if (auto const* persisted = adopt_playback_state(generation))
         (void)reserve_early_tick_prefix(generation, *persisted, playback_.current_block(sample_rate),
-            std::min(frames, generation.graph->specialization.block_size));
+            std::min(frames, generation.graph->specialization.block_size), ForegroundPrefix::Mode::committed,
+            additional_frames);
 }
 
 bool GraphExecutor::reserve_early_tick_prefix(ExecutionGeneration& generation,
     RealtimePersistedState const& persisted, ProjectPlayback::Block const& first,
-    std::size_t count, ForegroundPrefix::Mode mode) noexcept
+    std::size_t count, ForegroundPrefix::Mode mode, std::size_t additional_frames) noexcept
 {
     if (foreground_prefix_.occupied() || count == 0 || count > generation.graph->specialization.block_size
         || !playback_.can_reserve(first, mode == ForegroundPrefix::Mode::provisional))
@@ -2737,17 +2777,65 @@ bool GraphExecutor::reserve_early_tick_prefix(ExecutionGeneration& generation,
         return false;
 
     auto& realtime = generation.realtime;
-    GlobalIndexRange const deferred_input_range{realtime.next_deferred_input_index, count};
-    if (!realtime.begin_deferred_input_callback(persisted, deferred_input_range)) return false;
-    update_live_control_targets(generation, code);
-    auto* observations = begin_observation_frame(generation, code, first.state.foreground_playhead, count);
-    if (observations) {
-        observations->measure_capture = measure_observation_capture_;
-        if (auto const* override = generation.active_observation_override.get())
-            observations->capture_slots = &override->capture_slots;
+    IV_ASSERT(realtime.at_shared_tick_boundary(), "a new foreground reservation starts at a shared Tick boundary");
+    GlobalIndexRange const execution{realtime.next_foreground_tick_index, count};
+    auto const* observation_override = generation.active_observation_override.get();
+    auto const next = first.after_frames(count);
+    auto const frame_limit = graph_jit::independent_early_frame_limit(root);
+    auto extra = std::min({additional_frames, generation.graph->specialization.block_size,
+        frame_limit - std::min(count, frame_limit)});
+    // Recheck the phase after each complete range. The transition can expire
+    // at the first range's end, in which case the next uses the steady root.
+    if (extra && (generation.realtime_phase.load(std::memory_order_relaxed) == CompiledGraphRealtimePhase::transition
+            || count > realtime.deferred_input_lead || extra > realtime.deferred_input_lead
+            || (observation_override && !observation_override->state_captures.empty()))) {
+        extra = 0;
     }
-    foreground_prefix_.reserve({first, count, deferred_input_range.begin, generation, code, *root, persisted, observations},
-        mode);
+    if (extra && extra > realtime.deferred_input_lead - count) {
+        // Early Tick can resolve its own requests between ranges. A live
+        // callback that has yet to run cannot supply the second range.
+        auto const& evaluation = generation.graph->background_evaluation_plan;
+        auto const& slots = graph_jit::tick_invocation_slots(*root, graph_jit::TickRootPart::foreground);
+        auto const bindings = std::span{evaluation.tick_runtime.random_access_sample_inputs};
+        auto const has_live_deferred_input = std::ranges::any_of(slots.random_access_samples,
+            [&](auto range) {
+                return std::ranges::any_of(bindings.subspan(range.begin, range.count),
+                    [&](auto const& binding) { return evaluation.ports[binding.port].deferred_tick_lead != 0; });
+            });
+        if (has_live_deferred_input || persisted.inherited_deferred_materialization()) extra = 0;
+    }
+    if (extra) {
+        auto const requirements = realtime.tick_invocation.producer_requirements();
+        auto const enough_recording_blocks = std::ranges::all_of(
+            std::views::iota(std::size_t{0}, requirements.size()), [&](auto index) {
+                return realtime.producer_reserves[index]->ready_block_count() / maximum_prepared_ranges
+                    >= requirements[index].maximum_blocks_per_callback;
+            });
+        if (!enough_recording_blocks) extra = 0;
+    }
+    // Provisional startup can be discarded on a paused seek. Its requests
+    // stay unpublished until the device commits the prefix.
+    auto const publish_early_requests = mode == ForegroundPrefix::Mode::committed;
+    if (!realtime.begin_deferred_input_callback(
+            persisted, {execution.begin, count + extra}, publish_early_requests, execution.end())) {
+        if (!extra || !realtime.begin_deferred_input_callback(persisted, execution, publish_early_requests)) return false;
+        extra = 0;
+    }
+    update_live_control_targets(generation, code);
+    ForegroundPrefix::Reservation reservation{generation, code, *root, persisted, publish_early_requests};
+    auto admit = [&](ProjectPlayback::Block block, std::size_t frames, GlobalIndex execution_begin) {
+        auto* observations = begin_observation_frame(generation, code, block.state.foreground_playhead, frames);
+        if (observations) {
+            observations->measure_capture = measure_observation_capture_;
+            if (observation_override) observations->capture_slots = &observation_override->capture_slots;
+        }
+        auto const index = reservation.range_count++;
+        reservation.storage[index] = {block, frames, execution_begin, observations,
+            code.early_tick_transfers[index].view(*root), &realtime.early_recordings[index]};
+    };
+    admit(first, count, execution.begin);
+    if (extra) admit(next, extra, execution.end());
+    foreground_prefix_.reserve(reservation, mode);
     background_executor_.work_signal().notify_work();
     return true;
 }
@@ -2778,7 +2866,11 @@ bool GraphExecutor::discard_provisional_prefix_on_worker() noexcept
 
     auto& generation = prefix->generation;
     IV_ASSERT(generation.fresh_for_preroll, "only the unplayed startup can be restored");
+    prefix->code.early_tick_cursor.start_from_committed_position();
     auto& realtime = generation.realtime;
+    realtime.next_early_tick_index = realtime.next_foreground_tick_index;
+    for (auto const& range : prefix->ranges()) range.recordings->discard();
+    realtime.early_input_preview.reset();
     realtime.tick_invocation.discard_unpublished_startup();
     if (realtime.deferred_inputs) realtime.deferred_inputs->discard_unpublished_startup();
     generation.realtime_initialized = false;
@@ -2799,23 +2891,115 @@ bool GraphExecutor::discard_provisional_prefix_on_worker() noexcept
     return restored;
 }
 
+std::unique_ptr<RealtimePersistedState> GraphExecutor::prepare_early_tick_inputs(
+    ForegroundPrefix::Reservation const& prefix, ForegroundPrefix::Range const& range)
+{
+    auto& generation = prefix.generation;
+    auto& background = generation.background;
+    if (!generation.background_initialized)
+        throw std::logic_error("early Tick tap preparation needs initialized Tock state");
+    auto const& graph = *generation.graph;
+    GlobalIndexRange const execution{range.execution_begin, range.frames};
+    auto roots = background.reconciliation_required ? background.reconciliation_roots : CoveragePropagationRequest{};
+    if (auto const* requests = generation.realtime.deferred_inputs.get()) {
+        requests->for_each_pending_request([&](TickInputRequest const& request) {
+            auto const due = request.due_range();
+            if (due.begin.signed_distance_to(execution.end()) <= 0
+                || execution.begin.signed_distance_to(due.end()) <= 0) return;
+            auto found = std::ranges::find(roots.input_demands, request.port, &InputCoverageRequest::port);
+            if (found == roots.input_demands.end()) {
+                roots.input_demands.push_back({.port = request.port});
+                found = std::prev(roots.input_demands.end());
+            }
+            found->sample_positions.include(request.positions);
+        });
+    }
+    auto const demand = PlaybackDemand::from_block(range.first, range.frames);
+    IndexCoverage playback;
+    playback.include({demand.background_position, demand.paused ? 1 : range.frames});
+    append_tick_materialization_demands(graph.background_evaluation_plan, playback, roots);
+    // An open frame belongs only to this prefix. Use a private coverage
+    // candidate and leave the canonical selection and ticket unchanged.
+    auto coverage = background.coverage;
+    BackgroundEvaluationTransaction transaction{graph, background.tock_states, coverage,
+        background.propagation, persisted_data_, tick_materializations_,
+        {.roots = std::move(roots), .prepare_only = true,
+            .reusable_data = &prefix.inputs.data(),
+            .reusable_materialization = &prefix.inputs.materialization(),
+            .reconstruction_graph = generation.graph}};
+    auto result = transaction.execute();
+    if (!result) throw std::runtime_error(result.error());
+    if (result->status != BackgroundEvaluationStatus::committed
+        || !result->prepared_data || !result->prepared_materialization)
+        throw std::runtime_error("early Tick tap preparation did not produce a coherent view");
+    auto selection = RealtimePersistedState::prepare_owned(graph.project_generation,
+        std::move(result->prepared_data), std::move(result->prepared_materialization));
+    if (auto leased = selection->select_payload(graph.background_evaluation_plan, persisted_data_); !leased)
+        throw std::runtime_error(leased.error());
+    selection->set_prepared_playback(std::move(playback));
+    return selection;
+}
+
 void GraphExecutor::run_early_tick_prefix() noexcept
 {
-    auto const* prefix = foreground_prefix_.claim();
+    auto* prefix = foreground_prefix_.claim();
     if (!prefix) return;
     auto& realtime = prefix->generation.realtime;
-    auto const position = prefix->first.state.foreground_playhead;
-    auto const frames = prefix->frames;
-    {
-        TickInvocationFrame invocation{prefix->inputs, realtime.tick_invocation,
-            position, frames, prefix->first.selection(), false};
-        auto call = invocation.call();
-        call.observations = prefix->observations;
-        graph_jit::execute_tick_root_part(&prefix->root,
-            realtime.storage.buffer().data(), &call, position, frames, graph_jit::TickRootPart::early,
-            std::span{prefix->code.early_tick_transfer}.first(graph_jit::tick_transfer_size(&prefix->root)));
+    realtime.early_input_preview.reset();
+    auto const* slots = &graph_jit::tick_invocation_slots(prefix->root, graph_jit::TickRootPart::early);
+    for (std::size_t index = 0; index < prefix->range_count; ++index) {
+        auto& range = prefix->storage[index];
+        IV_ASSERT(realtime.next_early_tick_index == range.execution_begin,
+            "early Tick must execute the next admitted range");
+        auto* requests = realtime.deferred_inputs.get();
+        if (index != 0) {
+            auto const block = PlaybackDemand::from_block(range.first, range.frames);
+            auto const submission_failed = requests && requests->submission_failed();
+            auto const needs_taps = requests
+                && requests->open_has_due_before(range.execution_begin.advanced_by(range.frames));
+            auto const needs_tock_inputs = !playback_ready(*prefix->generation.graph, prefix->inputs, block);
+            if (!submission_failed && (needs_taps || needs_tock_inputs)) {
+                try {
+                    realtime.early_input_preview = prepare_early_tick_inputs(*prefix, range);
+                    range.prepared_inputs = realtime.early_input_preview.get();
+                } catch (std::exception const& error) {
+                    std::fprintf(stderr, "early Tick input preparation failed: %s\n", error.what());
+                } catch (...) {
+                    std::fprintf(stderr, "early Tick input preparation failed\n");
+                }
+            }
+            if (submission_failed || ((needs_taps || needs_tock_inputs) && !range.prepared_inputs)) {
+                prefix->range_count = index;
+                if (requests) requests->restrict_open_callback(prefix->execution_range());
+                break;
+            }
+        }
+        if (requests)
+            realtime.tick_invocation.bind_deferred_input_requests(*requests, range.execution_begin, slots);
+        auto const position = range.first.state.foreground_playhead;
+        {
+            auto const& inputs = range.prepared_inputs ? *range.prepared_inputs : prefix->inputs;
+            TickInvocationFrame invocation{inputs, realtime.tick_invocation,
+                position, range.frames, range.first.selection(), true, slots, range.recordings};
+            auto call = invocation.call();
+            call.observations = range.observations;
+            graph_jit::execute_early_tick_root(prefix->root,
+                realtime.storage.buffer().data(), &call, position, range.frames, prefix->code.early_tick_cursor,
+                range.transfer);
+        }
+        realtime.next_early_tick_index = range.execution_begin.advanced_by(range.frames);
     }
+    if (prefix->publish_early_requests && realtime.deferred_inputs)
+        publish_deferred_input_requests(*realtime.deferred_inputs);
     foreground_prefix_.publish_ready();
+}
+
+void GraphExecutor::publish_deferred_input_requests(DeferredTickInputRequests& requests) noexcept
+{
+    auto const submitted = requests.publish_callback();
+    if (requests.submission_failed())
+        production_reservation_failed_.store(true, std::memory_order_release);
+    if (submitted) background_executor_.work_signal().notify_work();
 }
 
 void GraphExecutor::render_foreground_prefix(std::size_t frames, PlaybackRenderSlice* profile)
@@ -2832,19 +3016,21 @@ void GraphExecutor::render_foreground_prefix(std::size_t frames, PlaybackRenderS
         record_playback_underrun(reservation.generation);
         return;
     }
-    auto const rendered = execute_tick_block(reservation.generation, reservation.inputs,
+    auto const& inputs = slice->range.prepared_inputs ? *slice->range.prepared_inputs : reservation.inputs;
+    auto const rendered = execute_tick_block(reservation.generation, inputs,
         slice->block.state.foreground_playhead, slice->frames, slice->block.selection(), true, profile, &*slice);
     IV_ASSERT(rendered, "an admitted foreground slice must execute");
     if (profile) profile->rendered = rendered;
+    if (slice->last()) slice->range.recordings->publish();
     playback_.end_block(slice->block, slice->frames);
-    foreground_prefix_.consume(*slice);
+    foreground_prefix_.consume(*slice, observations_);
 }
 
 void GraphExecutor::render_block(std::size_t frames, double sample_rate, PlaybackRenderSlice* profile,
-    bool start_early_prefix)
+    bool start_early_prefix, std::size_t additional_frames)
 {
     IV_ASSERT(frames == playback_render_frames(frames), "device render crosses the foreground prefix boundary");
-    foreground_prefix_.release_discarded();
+    foreground_prefix_.release_discarded(observations_);
     auto const candidate = playback_.begin_block(sample_rate);
     auto applied = playback_.current_block(sample_rate);
     if (foreground_prefix_.provisional() && keep_provisional_prefix(applied, candidate)) {
@@ -2886,9 +3072,9 @@ void GraphExecutor::render_block(std::size_t frames, double sample_rate, Playbac
         if (!persisted) {
             auto const& code = *generation.realtime_code.load(std::memory_order_acquire);
             if (profile) profile->code_publication = code.publication_id;
-            if (!applied.state.foreground_running
-                && begin_observation_frame(generation, code, applied.state.foreground_playhead, 0)) {
-                observations_.publish();
+            if (!applied.state.foreground_running) {
+                if (auto* frame = begin_observation_frame(generation, code, applied.state.foreground_playhead, 0))
+                    observations_.publish(*frame);
             }
             return;
         }
@@ -2904,16 +3090,22 @@ void GraphExecutor::render_block(std::size_t frames, double sample_rate, Playbac
             profile->foreground_sample = selected.state.foreground_playhead;
             profile->segment = selected.state.segment;
         }
-        if (begin_observation_frame(generation, code, selected.state.foreground_playhead, 0))
-            observations_.publish();
+        if (auto* frame = begin_observation_frame(generation, code, selected.state.foreground_playhead, 0))
+            observations_.publish(*frame);
         if (can_apply) playback_.end_block(selected, 0);
         if (start_early_prefix && generation.fresh_for_preroll
             && !playback_activation_pending(generation).value_or(true))
             (void)reserve_early_tick_prefix(generation, *persisted, selected.playing_from_start(), frames,
-                ForegroundPrefix::Mode::provisional);
+                ForegroundPrefix::Mode::provisional, additional_frames);
         return;
     }
-    if (start_early_prefix && reserve_early_tick_prefix(generation, *persisted, selected, frames)) {
+    // An already running device request can render a complete block when
+    // there is no reservation to consume. This lets edits and seeks land
+    // without spending a device request waiting for a newly queued callback.
+    // Initial playback and reset still wait for their early work.
+    auto const needs_preroll = generation.fresh_for_preroll || !applied.state.foreground_running;
+    if (start_early_prefix && needs_preroll && reserve_early_tick_prefix(generation, *persisted, selected, frames,
+            ForegroundPrefix::Mode::committed, additional_frames)) {
         render_foreground_prefix(frames, profile);
         return;
     }
@@ -3006,33 +3198,43 @@ bool GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
     auto const* observation_override = generation.active_observation_override.get();
     auto& realtime = generation.realtime;
     auto* const requests = realtime.deferred_inputs.get();
-    auto const deferred_input_range = slice ? slice->deferred_input_range()
-        : GlobalIndexRange{realtime.next_deferred_input_index, block_size};
+    auto const execution = slice ? slice->execution_range()
+        : GlobalIndexRange{realtime.next_foreground_tick_index, block_size};
     auto const finish_prefix = !slice || slice->last();
 
-    if (!slice && ready) ready = realtime.begin_deferred_input_callback(persisted, deferred_input_range);
+    if (!slice && ready) {
+        IV_ASSERT(realtime.at_shared_tick_boundary(), "complete Tick must start at a shared boundary");
+        ready = realtime.begin_deferred_input_callback(persisted, execution);
+    }
     if (!ready) {
         record_playback_underrun(generation);
         // Activation and unavailability must reach observers even when no
         // DSP callback can run for this playback window.
-        if (begin_observation_frame(generation, code, sample_index, block_size))
-            observations_.publish();
+        if (auto* frame = begin_observation_frame(generation, code, sample_index, block_size))
+            observations_.publish(*frame);
         return false;
     }
-    if (slice && requests) {
-        IV_ASSERT(realtime.next_deferred_input_index == deferred_input_range.begin,
-            "foreground slice must consume the next deferred input range");
-        realtime.tick_invocation.bind_deferred_input_requests(*requests, deferred_input_range.begin);
+    if (slice) {
+        IV_ASSERT(realtime.next_foreground_tick_index == execution.begin
+            && execution.end().signed_distance_to(realtime.next_early_tick_index) >= 0,
+            "foreground slice must consume the next range already executed by early Tick");
+        if (requests && slice->begins_prefix() && slice->reservation.publish_early_requests) {
+            auto const opened = requests->begin_callback(slice->reservation.execution_range());
+            IV_ASSERT(opened, "foreground Tick must have its deferred input frame reserved");
+        }
     }
     generation.update_realtime_phase();
-    // An open gesture's latest value reaches the root's per-call latch here,
-    // independently of the control path's generation chain and locks.
+    // A reservation already selected the control targets for both roots.
+    // Changes received while it is sealed belong to the next range.
     auto* const storage_base = realtime.storage.buffer().data();
-    update_live_control_targets(generation, code);
+    if (!slice) update_live_control_targets(generation, code);
+    auto const* slots = slice
+        ? &graph_jit::tick_invocation_slots(slice->reservation.root, graph_jit::TickRootPart::foreground) : nullptr;
+    if (requests) realtime.tick_invocation.bind_deferred_input_requests(*requests, execution.begin, slots);
     TickInvocationFrame invocation{
-        persisted, realtime.tick_invocation, sample_index, block_size, selection, finish_prefix};
+        persisted, realtime.tick_invocation, sample_index, block_size, selection, finish_prefix, slots};
     auto call = invocation.call();
-    call.observations = slice ? slice->reservation.observations
+    call.observations = slice ? slice->range.observations
         : begin_observation_frame(generation, code, sample_index, block_size);
     if (call.observations) call.observations->measure_capture = measure_observation_capture_;
     if (call.observations && observation_override)
@@ -3041,9 +3243,8 @@ bool GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
     if (slice) {
         auto const* root = &slice->reservation.root;
         if (profile) profile->transition_tick = root == generation.graph->root_operations.transition_tick_block.plan.get();
-        graph_jit::execute_tick_root_part(root, storage_base, &call, sample_index,
-            block_size, graph_jit::TickRootPart::foreground,
-            std::span{code.early_tick_transfer}.first(graph_jit::tick_transfer_size(root)));
+        graph_jit::execute_foreground_tick_root(root, storage_base, &call, sample_index, block_size,
+            slice->range.transfer);
     } else {
         auto const transition = generation.realtime_phase.load(std::memory_order_relaxed)
             == CompiledGraphRealtimePhase::transition;
@@ -3051,18 +3252,15 @@ bool GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
         auto const& tick = transition ? generation.graph->root_operations.transition_tick_block
             : code.graph->root_operations.tick_block;
         if (!tick) throw std::logic_error("GraphExecutor active realtime realization has no root operation");
+        code.early_tick_cursor.start_from_committed_position();
         tick(storage_base, &call, sample_index, block_size);
     }
     if (requests) {
-        if (finish_prefix) {
-            auto const submitted = requests->publish_callback();
-            if (requests->submission_failed())
-                production_reservation_failed_.store(true, std::memory_order_release);
-            if (submitted) background_executor_.work_signal().notify_work();
-        }
-        realtime.next_deferred_input_index = deferred_input_range.end();
-        requests->release_rendered(realtime.next_deferred_input_index);
+        if (!slice || slice->ends_prefix()) publish_deferred_input_requests(*requests);
+        requests->release_rendered(execution.end());
     }
+    realtime.next_foreground_tick_index = execution.end();
+    if (!slice) realtime.next_early_tick_index = execution.end();
     if (auto* frame = call.observations; finish_prefix && frame) {
         frame->capture_slots = nullptr;
         if (observation_override) {
@@ -3076,7 +3274,7 @@ bool GraphExecutor::execute_tick_block(ExecutionGeneration& generation, Realtime
                 frame->capture_ns += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - started).count());
         }
-        observations_.publish();
+        observations_.publish(*frame);
     }
     generation.update_realtime_phase(block_size);
     generation.fresh_for_preroll = false;
@@ -3100,23 +3298,26 @@ void GraphExecutor::BackgroundExecutor::queue_windows(
     if (queries.empty()) return;
     {
         std::lock_guard lock{commands_mutex_};
-        std::erase_if(observation_windows_, [](auto const& query) {
-            return query->canceled.load(std::memory_order_acquire);
+        std::erase_if(observation_windows_, [](auto const& window) {
+            return window.query->canceled.load(std::memory_order_acquire);
         });
+        // A visible query can run between worker passes once the work already
+        // announced at admission has been handled. New work can keep arriving.
+        auto const work_revision = work_signal_.work_revision();
         for (auto const& query : queries) {
             if (query->complete.load(std::memory_order_acquire)) continue;
             if (stopping_ || observation_windows_.size() >= maximum_observation_windows) {
                 query->result.status = ObservationWindowResult::Status::failed;
                 query->result.error = "background observation queue is full or stopped";
                 query->complete.store(true, std::memory_order_release);
-            } else observation_windows_.push_back(query);
+            } else observation_windows_.push_back({query, work_revision});
         }
     }
     work_signal_.notify_control();
 }
 
 void GraphExecutor::BackgroundExecutor::process_event_windows(
-    ExecutionGeneration& current, ObservationWindowQuery& query)
+    ExecutionGeneration& current, ObservationWindowQuery& query, std::uint64_t work_revision)
 {
     auto const& graph = *current.graph;
     auto const& plan = graph.background_evaluation_plan;
@@ -3128,13 +3329,14 @@ void GraphExecutor::BackgroundExecutor::process_event_windows(
     {
         std::scoped_lock lock(commands_mutex_);
         for (auto it = observation_windows_.begin(); it != observation_windows_.end() && pending.size() < 31;) {
-            auto const& next = **it;
-            if (!next.canceled.load(std::memory_order_acquire) && next.port.port_kind == PortKind::event
+            auto const& next = *it->query;
+            if (it->work_revision <= work_revision
+                && !next.canceled.load(std::memory_order_acquire) && next.port.port_kind == PortKind::event
                 && next.kind == ObservationSourceKind::input
                 && next.configured_generation == query.configured_generation
                 && next.execution_generation == query.execution_generation
                 && next.window.begin == query.window.begin && next.window.length == query.window.length) {
-                pending.push_back(std::move(*it));
+                pending.push_back(std::move(it->query));
                 it = observation_windows_.erase(it);
             } else ++it;
         }
@@ -3207,7 +3409,8 @@ void GraphExecutor::BackgroundExecutor::process_event_windows(
     for (auto* item : batch) item->complete.store(true, std::memory_order_release);
 }
 
-void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& query) noexcept
+void GraphExecutor::BackgroundExecutor::process_window(
+    ObservationWindowQuery& query, std::uint64_t work_revision) noexcept
 {
     auto& result = query.result;
     result.configured_generation = query.configured_generation;
@@ -3234,7 +3437,7 @@ void GraphExecutor::BackgroundExecutor::process_window(ObservationWindowQuery& q
         auto const& plan = graph.background_evaluation_plan;
         if (query.port.port_kind == PortKind::event) {
             if (query.kind == ObservationSourceKind::input) {
-                process_event_windows(*current, query);
+                process_event_windows(*current, query, work_revision);
                 return;
             }
             auto const storage = recorded_event_window_storage(plan, query.port);

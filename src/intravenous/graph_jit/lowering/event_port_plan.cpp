@@ -3289,11 +3289,11 @@ std::expected<void, std::string> layout_event_ports(
         if (!layout) return std::unexpected(std::move(layout.error()));
     }
 
-    // Derive stack-buffer lifetimes from the operations that actually access
+    // Derive buffer lifetimes from the operations that actually access
     // each event sequence. Producer-group intervals are intentionally not used
     // here: a conversion result, merge input, or feedback working buffer often
     // exists for only a small suffix of the producer group's full interval.
-    std::vector<std::optional<ConnectionLiveIntervalPlan>> stack_buffer_lifetimes(
+    std::vector<std::optional<ConnectionLiveIntervalPlan>> buffer_lifetimes(
         plan.ports.size());
 
     std::vector<std::size_t> primitive_execution_positions(
@@ -3368,8 +3368,7 @@ std::expected<void, std::string> layout_event_ports(
             return std::unexpected(
                 "GraphJit event stack lifetime has an inverted schedule interval");
         }
-        if (plan.ports[representation_index].persistent) return {};
-        auto& live = stack_buffer_lifetimes[representation_index];
+        auto& live = buffer_lifetimes[representation_index];
         if (!live) {
             live = ConnectionLiveIntervalPlan{
                 .begin = begin,
@@ -3469,6 +3468,25 @@ std::expected<void, std::string> layout_event_ports(
             !touched) {
             return std::unexpected(std::move(touched.error()));
         }
+        if (auto touched = touch_buffer(carry.persistent_representation, std::min(*begin, *end), std::max(*begin, *end));
+            !touched) return std::unexpected(std::move(touched.error()));
+    }
+
+    for (auto const& ring : plan.persistent_rings) {
+        auto const position = scope_position(ring.prune_scope);
+        if (!position) return std::unexpected(std::move(position.error()));
+        if (auto touched = touch_at(ring.storage, *position); !touched)
+            return std::unexpected(std::move(touched.error()));
+    }
+
+    for (auto const& reset : plan.sequence_resets) {
+        if (reset.storage >= plan.ports.size())
+            return std::unexpected("GraphJit event sequence reset references an invalid buffer");
+        if (!plan.ports[reset.storage].persistent) continue;
+        auto const position = scope_position(reset.scope);
+        if (!position) return std::unexpected(std::move(position.error()));
+        if (auto touched = touch_at(reset.storage, *position); !touched)
+            return std::unexpected(std::move(touched.error()));
     }
 
     // A merge reads every source and writes/extends the target after the last
@@ -3587,15 +3605,22 @@ std::expected<void, std::string> layout_event_ports(
          representation_index < plan.ports.size();
          ++representation_index) {
         auto const& storage = plan.ports[representation_index];
-        if (storage.persistent || storage.immutable_empty) continue;
-        if (!stack_buffer_lifetimes[representation_index]) {
+        auto const& lifetime = buffer_lifetimes[representation_index];
+        if (storage.persistent) {
+            auto const boundary = connections.schedule.early_execution_steps;
+            plan.persistent_storage_crosses_tick_partition |= lifetime
+                && lifetime->begin < boundary && lifetime->end >= boundary;
+            continue;
+        }
+        if (storage.immutable_empty) continue;
+        if (!lifetime) {
             return std::unexpected(
                 "GraphJit transient event buffer has no scheduled reader or writer");
         }
         transient_requests.push_back(TransientArenaAllocationRequest{
             .size_bytes = storage.size_bytes,
             .alignment = storage.alignment,
-            .live_interval = *stack_buffer_lifetimes[representation_index],
+            .live_interval = *lifetime,
         });
         transient_representations.push_back(representation_index);
     }

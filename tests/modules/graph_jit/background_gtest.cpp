@@ -25,6 +25,8 @@ struct PlaybackPreparationProbe {
     iv::CompiledGraphBlockFunction tick = nullptr;
     std::atomic<unsigned> started{0};
     std::atomic<unsigned> allowed{0};
+    std::atomic<unsigned> evaluated{0};
+    std::atomic<bool> evaluated_requested_samples{false};
     iv::GlobalIndex recorded_position{};
     std::optional<float> first_recorded_value{};
     unsigned tick_calls = 0;
@@ -55,6 +57,19 @@ void gate_playback_evaluation(iv::graph_jit::BackgroundEvaluationCall* call)
         }
     }
     probe.evaluate(call);
+}
+
+void observe_deferred_tick_preparation(iv::graph_jit::BackgroundEvaluationCall* call)
+{
+    auto& probe = *playback_preparation_probe;
+    probe.evaluate(call);
+    for (auto const& node : std::span{call->nodes.data(), call->nodes.size()}) {
+        for (auto const& output : std::span{node.tock.outputs.data(), node.tock.outputs.size()}) {
+            if (!output.requested_coverage().empty())
+                probe.evaluated_requested_samples.store(true, std::memory_order_release);
+        }
+    }
+    probe.evaluated.fetch_add(1, std::memory_order_release);
 }
 
 void inspect_reset_recording(iv::graph_jit::RealtimeRootPlan const* plan,
@@ -1403,8 +1418,9 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsFinalizeAtTheirAuthored
     auto& graph = *compiled.compiled_graph;
     auto const& plan = graph.background_evaluation_plan;
 
-    for (bool const split : {false, true}) {
-        SCOPED_TRACE(split ? "split Tick root" : "complete Tick root");
+    enum class Execution { complete, split, early_across_seek };
+    for (auto const execution : {Execution::complete, Execution::split, Execution::early_across_seek}) {
+        SCOPED_TRACE(static_cast<int>(execution));
         iv::PersistedDataStore data;
         auto persisted = iv::RealtimePersistedState::prepare_initial(graph.project_generation, data);
         ASSERT_TRUE(persisted->capture_initial());
@@ -1444,16 +1460,37 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsFinalizeAtTheirAuthored
         auto storage = graph.node_layout.create_storage(resources);
         storage.initialize();
         auto const* root = graph.root_operations.tick_block.plan.get();
-        if (split) ASSERT_TRUE(iv::graph_jit::has_early_tick(root));
-        std::vector<std::byte> transfer(iv::graph_jit::tick_transfer_size(root));
-        auto execute_part = [&](std::int64_t begin, std::size_t frames,
-                                iv::graph_jit::TickRootPart part, bool publish) {
-            iv::TickInvocationFrame frame{*persisted, workspace, index(begin), frames, {}, publish};
-            iv::graph_jit::execute_tick_root_part(root, storage.buffer().data(),
-                &frame.call(), index(begin), frames, part, transfer);
+        if (execution != Execution::complete) ASSERT_TRUE(iv::graph_jit::has_early_tick(root));
+        iv::graph_jit::TickTransferBuffer transfer_buffer;
+        transfer_buffer.reserve(root);
+        auto const transfer = transfer_buffer.view(*root);
+        iv::graph_jit::EarlyTickCursor early_cursor;
+        early_cursor.reserve(root);
+        iv::TickRecordingBatch first_recordings{requirements.size()};
+        iv::TickRecordingBatch second_recordings{requirements.size()};
+        auto execute_early = [&](std::int64_t begin, iv::TickRecordingBatch* recordings = nullptr) {
+            auto const* slots = &iv::graph_jit::tick_invocation_slots(*root, iv::graph_jit::TickRootPart::early);
+            iv::TickInvocationFrame frame{*persisted, workspace, index(begin), 64, {},
+                recordings != nullptr, slots, recordings};
+            iv::graph_jit::execute_early_tick_root(*root, storage.buffer().data(),
+                &frame.call(), index(begin), 64, early_cursor, transfer);
         };
+        auto execute_foreground = [&](std::int64_t begin, std::size_t frames, bool publish) {
+            iv::TickInvocationFrame frame{*persisted, workspace, index(begin), frames, {}, publish};
+            iv::graph_jit::execute_foreground_tick_root(root, storage.buffer().data(),
+                &frame.call(), index(begin), frames, transfer);
+        };
+        if (execution == Execution::early_across_seek) {
+            // This root has no live readers. Exercise two early callbacks
+            // before any foreground cursor advances or recording publishes.
+            ASSERT_TRUE(transfer.empty());
+            execute_early(0, &first_recordings);
+            execute_early(500, &second_recordings);
+            EXPECT_TRUE(captured_records(pending[*sample_endpoint]->pin()).empty());
+            EXPECT_TRUE(captured_records(pending[*event_endpoint]->pin()).empty());
+        }
         for (auto const begin : {0, 500}) {
-            if (!split) {
+            if (execution == Execution::complete) {
                 iv::TickInvocationFrame frame{*persisted, workspace, index(begin), 64};
                 graph.root_operations.tick_block(storage.buffer().data(), &frame.call(), index(begin), 64);
                 continue;
@@ -1464,11 +1501,18 @@ TEST_F(GraphJitRuntimeFixture, PersistedLatentTickOutputsFinalizeAtTheirAuthored
                 EXPECT_EQ(captured_records(pending[*sample_endpoint]->pin()).size(), previous_samples);
                 EXPECT_EQ(captured_records(pending[*event_endpoint]->pin()).size(), previous_events);
             };
-            execute_part(begin, 64, iv::graph_jit::TickRootPart::early, false);
+            if (execution == Execution::split) execute_early(begin);
             expect_no_publication();
-            execute_part(begin, 17, iv::graph_jit::TickRootPart::foreground, false);
+            execute_foreground(begin, 17, false);
             expect_no_publication();
-            execute_part(begin + 17, 47, iv::graph_jit::TickRootPart::foreground, true);
+            execute_foreground(begin + 17, 47, execution == Execution::split);
+            if (execution == Execution::early_across_seek) {
+                auto& recordings = begin == 0 ? first_recordings : second_recordings;
+                recordings.publish();
+                auto const published_size = begin == 0 ? 1u : 3u;
+                EXPECT_EQ(captured_records(pending[*sample_endpoint]->pin()).size(), published_size);
+                EXPECT_EQ(captured_records(pending[*event_endpoint]->pin()).size(), published_size);
+            }
         }
         EXPECT_FALSE(reservation_failed.load(std::memory_order_relaxed));
 
@@ -2868,6 +2912,9 @@ TEST_F(GraphJitRuntimeFixture, DeferredTickInputBatchFreezesExactTapsAndReturnsI
 
     iv::PersistedDataStore data;
     iv::TickMaterializationStore materializations;
+    auto data_reader = data.register_reader();
+    auto materialization_reader = materializations.register_reader();
+    auto const original_version = data_reader.pin()->version();
     auto states = graph->tock_state_layout.create_storage(resources);
     states.initialize();
     iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
@@ -2875,13 +2922,21 @@ TEST_F(GraphJitRuntimeFixture, DeferredTickInputBatchFreezesExactTapsAndReturnsI
     iv::CoveragePropagationRequest roots;
     for (std::size_t node = 0; node < plan.nodes.size(); ++node)
         roots.locally_changed_nodes.push_back(node);
+    auto& demand = roots.input_demands.emplace_back(iv::InputCoverageRequest{.port = port});
+    for (auto const& request : queue.requests(batch.begin))
+        demand.sample_positions.include(request.positions);
     iv::BackgroundEvaluationTransaction transaction{*graph, states, coverage, propagation, data, materializations,
         {.semantic_version = 1, .roots = std::move(roots), .prepare_only = true,
-         .deferred_tick_inputs = &queue, .deferred_tick_input_batch = batch}};
+         .deferred_tick_input_ticket = batch.end}};
     auto prepared = transaction.execute();
     ASSERT_TRUE(prepared) << prepared.error();
     ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
     ASSERT_TRUE(prepared->prepared_materialization);
+    EXPECT_FALSE(prepared->published_data);
+    EXPECT_EQ(data_reader.pin()->version(), original_version);
+    EXPECT_EQ(materialization_reader.pin()->find_sample(port), nullptr);
+    EXPECT_EQ(queue.select().begin, batch.begin);
+    EXPECT_EQ(queue.select().end, batch.end);
     auto const& snapshot = *prepared->prepared_materialization;
     EXPECT_EQ(snapshot.deferred_input_ticket(), batch.end);
     auto const* input = snapshot.find_sample(port);
@@ -2980,6 +3035,214 @@ TEST_F(GraphJitRuntimeFixture, LiveComputedResamplerPreservesPendingSamplesAcros
     ASSERT_TRUE(render(30, 47));
     ASSERT_TRUE(render(77, 64));
     EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
+TEST_F(GraphJitRuntimeFixture, EarlyComputedResamplerCanConsumePreparedTapsBeforeForeground)
+{
+    auto compiled = compile("iv.test.resampler.deferred", 3018);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    auto const& plan = graph.background_evaluation_plan;
+    auto const* root = graph.root_operations.tick_block.plan.get();
+    ASSERT_TRUE(iv::graph_jit::has_early_tick(root));
+    ASSERT_EQ(plan.tick_runtime.random_access_sample_inputs.size(), 1u);
+    auto const port = plan.tick_runtime.random_access_sample_inputs.front().port;
+    auto const lead = plan.ports[port].deferred_tick_lead;
+    ASSERT_EQ(lead, 64u);
+
+    iv::PersistedDataStore data;
+    auto data_reader = data.register_reader();
+    auto const original_version = data_reader.pin()->version();
+    iv::TickMaterializationStore materializations;
+    auto initial = iv::RealtimePersistedState::prepare_initial(graph.project_generation, data);
+    ASSERT_TRUE(initial->capture_initial());
+    iv::DeferredTickInputRequests queue{graph.project_generation, {
+        .callbacks = 2, .requests = 128, .positions = 256, .ports = plan.ports.size()}};
+    iv::TickInvocationWorkspace workspace{plan, graph.project_generation, data, graph.specialization.block_size,
+        graph.root_operations.combine_sequential_input, graph.root_operations.initialize_sequential_input};
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    iv::graph_jit::EarlyTickCursor cursor;
+    cursor.reserve(root);
+    iv::graph_jit::TickTransferBuffer transfer_buffer;
+    transfer_buffer.reserve(root);
+    auto const transfer = transfer_buffer.view(*root);
+    auto const* slots = &iv::graph_jit::tick_invocation_slots(*root, iv::graph_jit::TickRootPart::early);
+    ASSERT_FALSE(slots->random_access_samples.empty());
+
+    auto tick = [&](iv::RealtimePersistedState const& inputs, std::int64_t begin) {
+        auto const start = index(begin);
+        ASSERT_TRUE(queue.adopt(inputs.deferred_input_ticket()));
+        ASSERT_TRUE(queue.ready_until(start.advanced_by(lead)));
+        ASSERT_TRUE(queue.begin_callback({start, lead}));
+        workspace.bind_deferred_input_requests(queue, start, slots);
+        iv::TickInvocationFrame frame{inputs, workspace, start, lead, {}, false, slots};
+        iv::graph_jit::execute_early_tick_root(*root, storage.buffer().data(), &frame.call(),
+            start, lead, cursor, transfer);
+        ASSERT_FALSE(queue.submission_failed());
+        ASSERT_TRUE(queue.publish_callback());
+    };
+    ASSERT_NO_FATAL_FAILURE(tick(*initial, 0));
+    ASSERT_FALSE(queue.ready_until(index(128)));
+
+    auto const batch = queue.select();
+    ASSERT_FALSE(batch.empty());
+    iv::CoveragePropagationRequest roots;
+    for (std::size_t node = 0; node < plan.nodes.size(); ++node)
+        roots.locally_changed_nodes.push_back(node);
+    auto& demand = roots.input_demands.emplace_back(iv::InputCoverageRequest{.port = port});
+    for (auto ticket = batch.begin; ticket != batch.end; ++ticket) {
+        for (auto const& request : queue.requests(ticket))
+            demand.sample_positions.include(request.positions);
+    }
+    auto states = graph.tock_state_layout.create_storage(resources);
+    states.initialize();
+    iv::BackgroundCoverageState coverage{plan.accumulators.output_change_count};
+    iv::BackgroundPropagationWorkspace propagation{plan, graph.specialization.sample_rate};
+    iv::BackgroundEvaluationTransaction transaction{graph, states, coverage, propagation, data, materializations,
+        {.roots = std::move(roots), .prepare_only = true, .deferred_tick_input_ticket = batch.end}};
+    auto prepared = transaction.execute();
+    ASSERT_TRUE(prepared) << prepared.error();
+    ASSERT_EQ(prepared->status, iv::BackgroundEvaluationStatus::committed);
+    ASSERT_TRUE(prepared->prepared_data && prepared->prepared_materialization);
+    auto inputs = iv::RealtimePersistedState::prepare_owned(graph.project_generation,
+        std::move(prepared->prepared_data), std::move(prepared->prepared_materialization));
+    ASSERT_TRUE(queue.complete(batch));
+
+    // DeferredResamplerProbe checks that these outputs match the coordinates
+    // requested by the first callback. No foreground pass has run.
+    ASSERT_NO_FATAL_FAILURE(tick(*inputs, 64));
+    EXPECT_EQ(data_reader.pin()->version(), original_version);
+}
+
+TEST_F(GraphJitRuntimeFixture, DevicePrerollResolvesFirstCallbackTapsBeforePlay)
+{
+    auto compiled = compile("iv.test.resampler.deferred", 3020);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled.compiled_graph);
+    ASSERT_GE(iv::graph_jit::independent_early_frame_limit(graph->root_operations.tick_block.plan.get()), 128u);
+    PlaybackPreparationProbe probe{.evaluate = graph->background_operations.evaluate};
+    playback_preparation_probe = &probe;
+    graph->background_operations.evaluate = &observe_deferred_tick_preparation;
+    iv::GraphExecutor executor{resources};
+    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::accepted);
+    iv::PlaybackRenderSlice slice;
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        executor.render_block(64, 88200, &slice, true, 64);
+        ASSERT_FALSE(slice.rendered);
+        ASSERT_FALSE(executor.background_execution_failures().any());
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    } while (!probe.evaluated_requested_samples.load(std::memory_order_acquire));
+    EXPECT_FALSE(executor.playback_snapshot().foreground_running);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(0));
+
+    (void)executor.set_playback_running(true);
+    do {
+        executor.render_block(64, 88200, &slice, true, 64);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        if (!slice.rendered) std::this_thread::yield();
+    } while (!slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(0));
+    ASSERT_EQ(executor.playback_render_frames(128), 64u);
+    // The second early callback has already run. DeferredResamplerProbe
+    // checks its output against the tap coordinates authored by the first.
+    executor.render_block(64, 88200, &slice);
+    EXPECT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(64));
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(128));
+    EXPECT_FALSE(executor.realtime_production_failures().any());
+}
+
+TEST_F(GraphJitRuntimeFixture, DevicePrerollPreparesTockInputsForTheSecondRange)
+{
+    auto compiled = compile("iv.test.computed.huge_playback", 3020);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    ASSERT_GE(iv::graph_jit::independent_early_frame_limit(graph.root_operations.tick_block.plan.get()), 8u);
+    ASSERT_FALSE(graph.background_evaluation_plan.tick_sequential_inputs.empty());
+    iv::GraphExecutor executor{resources};
+    // The published input selection intentionally covers just the first range.
+    // The worker must materialize the rest for this reservation.
+    executor.set_tick_materialization_demand(index_coverage({{0, 4}}));
+    ASSERT_EQ(executor.stage(compiled.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    iv::PlaybackRenderSlice slice;
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        executor.render_block(4, 88200, &slice, true, 4);
+        ASSERT_FALSE(slice.rendered);
+        ASSERT_FALSE(executor.background_execution_failures().any());
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    } while (executor.playback_render_frames(64) != 4);
+
+    (void)executor.set_playback_running(true);
+    do {
+        executor.render_block(4, 88200, &slice, true, 4);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        if (!slice.rendered) std::this_thread::yield();
+    } while (!slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(0));
+    ASSERT_EQ(executor.playback_render_frames(64), 4u);
+    executor.render_block(4, 88200, &slice);
+    EXPECT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(4));
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(8));
+    EXPECT_FALSE(executor.background_execution_failures().any());
+}
+
+TEST_F(GraphJitRuntimeFixture, CommittedEarlyTickSubmitsTapsBeforeDeviceConsumesItsPrefix)
+{
+    auto compiled = compile("iv.test.resampler.deferred", 3020);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto graph = std::const_pointer_cast<iv::CompiledGraph>(compiled.compiled_graph);
+    PlaybackPreparationProbe probe{.evaluate = graph->background_operations.evaluate};
+    playback_preparation_probe = &probe;
+    graph->background_operations.evaluate = &observe_deferred_tick_preparation;
+    iv::GraphExecutor executor{resources};
+    ASSERT_EQ(executor.stage(graph), iv::GraphExecutorStageResult::accepted);
+
+    auto wait_until = [&](auto done) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!done()) {
+            ASSERT_FALSE(executor.background_execution_failures().any());
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            std::this_thread::yield();
+        }
+    };
+    ASSERT_NO_FATAL_FAILURE(wait_until([&] {
+        (void)executor.activate_pending(index(0));
+        return executor.active_generation().has_value();
+    }));
+    (void)executor.set_playback_running(true);
+    iv::PlaybackRenderSlice slice;
+    executor.render_block(64, 88200, &slice);
+    ASSERT_TRUE(slice.rendered);
+    ASSERT_NO_FATAL_FAILURE(wait_until([&] {
+        return probe.evaluated_requested_samples.load(std::memory_order_acquire);
+    }));
+    // The wrapper runs before publication. Wait for the worker to finish
+    // this transaction so the early root can adopt its first results.
+    (void)executor.reclaim_retired_snapshots();
+    auto const evaluated = probe.evaluated.load(std::memory_order_acquire);
+    executor.prepare_next_playback_slice(8, 88200, 8);
+    ASSERT_EQ(executor.playback_render_frames(64), 8u);
+    ASSERT_NO_FATAL_FAILURE(wait_until([&] {
+        return probe.evaluated.load(std::memory_order_acquire) > evaluated;
+    }));
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(64));
+    executor.render_block(8, 88200, &slice);
+    EXPECT_TRUE(slice.rendered);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(72));
+    EXPECT_EQ(executor.playback_render_frames(64), 8u);
+    executor.render_block(8, 88200, &slice);
+    EXPECT_TRUE(slice.rendered);
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(80));
 }
 
 TEST_F(GraphJitRuntimeFixture, LiveComputedResamplerKeepsReadyTapsThroughAnUnrelatedGraphEdit)

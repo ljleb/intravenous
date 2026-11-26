@@ -139,6 +139,41 @@ TEST(DeferredTickInputRequests, DueResultsFollowPortAndExecutionRange)
     EXPECT_TRUE(queue.due(1, range(110, 112)).empty());
 }
 
+TEST(DeferredTickInputRequests, PreviewedStartupRequestsRemainPrivateUntilDeviceCommit)
+{
+    iv::DeferredTickInputRequests queue{1, {
+        .callbacks = 2, .requests = 4, .positions = 4, .ports = 1}};
+    std::array const taps{index(123)};
+    ASSERT_TRUE(queue.begin_callback(range(100, 108), 1, index(104)));
+    ASSERT_TRUE(queue.submit({.port = 0, .execution = range(100, 104), .first_due = index(104),
+        .positions = {.individual_positions = taps}}));
+    EXPECT_TRUE(queue.select().empty());
+    EXPECT_TRUE(queue.open_has_due_before(index(108)));
+    std::vector<iv::GlobalIndex> previewed;
+    queue.for_each_pending_request([&](auto const& request) {
+        previewed.assign(request.positions.individual_positions.begin(), request.positions.individual_positions.end());
+    });
+    EXPECT_TRUE(std::ranges::equal(previewed, taps));
+    queue.discard_unpublished_startup();
+    EXPECT_TRUE(queue.select().empty());
+    EXPECT_TRUE(queue.due(0, range(104, 108)).empty());
+
+    ASSERT_TRUE(queue.begin_callback(range(100, 108), 1, index(104)));
+    ASSERT_TRUE(queue.submit({.port = 0, .execution = range(100, 104), .first_due = index(104),
+        .positions = {.individual_positions = taps}}));
+    ASSERT_TRUE(queue.publish_callback());
+    auto const published = queue.select();
+    ASSERT_TRUE(queue.complete(published));
+    ASSERT_TRUE(queue.adopt(published.end));
+    iv::DeferredTickInputRequests successor{2, {
+        .callbacks = 2, .requests = 4, .positions = 4, .ports = 1}};
+    std::array<std::optional<std::size_t>, 1> const ports{0};
+    EXPECT_EQ(successor.inherit_pending_from(queue, ports, index(106), published.end), 1u);
+    auto const due = successor.due(0, range(106, 108));
+    ASSERT_FALSE(due.empty());
+    EXPECT_TRUE(std::ranges::equal(due.begin()->positions.individual_positions, taps));
+}
+
 TEST(DeferredTickInputRequests, CutoverCopiesLiveRequestsAndKeepsTheirPreparedPrefix)
 {
     using Requests = iv::DeferredTickInputRequests;

@@ -257,7 +257,7 @@ TEST(Observations, HandoffCoalescesFramesAndPublishesEmptyActivation)
     for (std::uint64_t activation : {1u, 2u}) {
         auto& frame = handoff->begin(plan, activation, 5, {}, 64);
         frame.values[0].value.store(activation);
-        handoff->publish();
+        handoff->publish(frame);
     }
     auto const* frame = handoff->collect();
     ASSERT_NE(frame, nullptr);
@@ -265,12 +265,40 @@ TEST(Observations, HandoffCoalescesFramesAndPublishesEmptyActivation)
     EXPECT_EQ(frame->values[0].value.load<std::uint64_t>(), 2u);
     EXPECT_EQ(handoff->collect(), nullptr);
     plan.probes.clear();
-    handoff->begin(plan, 3, 6, {}, 64);
-    handoff->publish();
+    auto& empty = handoff->begin(plan, 3, 6, {}, 64);
+    handoff->publish(empty);
     frame = handoff->collect();
     ASSERT_NE(frame, nullptr);
     EXPECT_EQ(frame->count, 0u);
     EXPECT_EQ(frame->activation_id, 3u);
+}
+
+TEST(Observations, HandoffKeepsPreparedRangesPrivateUntilPublication)
+{
+    auto handoff = std::make_unique<iv::LiveObservationHandoff>();
+    iv::CompiledObservationPlan plan{.revision = 1, .probes = {{.id = 1}}};
+    auto& first = handoff->begin(plan, 1, 1, iv::GlobalIndex::from_bits(20), 64);
+    auto& second = handoff->begin(plan, 1, 1, iv::GlobalIndex::from_bits(84), 64);
+    first.values[0].value.store(20.f);
+    second.values[0].value.store(84.f);
+    EXPECT_EQ(handoff->collect(), nullptr);
+
+    handoff->publish(first);
+    auto const* read = handoff->collect();
+    ASSERT_NE(read, nullptr);
+    EXPECT_EQ(read->sample_index.bits(), 20u);
+    EXPECT_FLOAT_EQ(read->values[0].value.load<float>(), 20.f);
+    handoff->discard(second);
+    EXPECT_EQ(handoff->collect(), nullptr);
+
+    auto& next = handoff->begin(plan, 1, 1, iv::GlobalIndex::from_bits(100), 64);
+    next.values[0].value.store(100.f);
+    EXPECT_FLOAT_EQ(read->values[0].value.load<float>(), 20.f);
+    handoff->publish(next);
+    read = handoff->collect();
+    ASSERT_NE(read, nullptr);
+    EXPECT_EQ(read->sample_index.bits(), 100u);
+    EXPECT_FLOAT_EQ(read->values[0].value.load<float>(), 100.f);
 }
 
 TEST(Observations, HandoffNeverExposesConcurrentWriterStorage)
@@ -282,7 +310,7 @@ TEST(Observations, HandoffNeverExposesConcurrentWriterStorage)
         for (std::uint64_t n = 1; n <= 20000; ++n) {
             auto& frame = handoff->begin(plan, n, n, iv::GlobalIndex::from_bits(n), 64);
             frame.values[0].value.store(n);
-            handoff->publish();
+            handoff->publish(frame);
         }
         done.store(true, std::memory_order_release);
     });

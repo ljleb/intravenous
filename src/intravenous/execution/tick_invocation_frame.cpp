@@ -3,6 +3,7 @@
 #include <intravenous/execution/storage/realtime_produced_record.h>
 
 #include <intravenous/graph_jit/background_storage_plan.h>
+#include <intravenous/graph_jit/realtime_root.h>
 
 #include <algorithm>
 #include <bit>
@@ -207,6 +208,17 @@ public:
         {
             if (callback_chain && !callback_failed
                 && !pending->publish(std::move(callback_chain))) fail_queue_reservation();
+            clear_callback_chain();
+        }
+
+        void seal_callback_chain(TickRecordingBatch::Output& output) noexcept
+        {
+            IV_ASSERT(!output.chain, "Tick recording batch must be consumed before it is reused");
+            if (!callback_failed && callback_chain) {
+                output.chain = std::move(callback_chain);
+                output.pending = pending;
+                output.reservation_failed = reservation_failed;
+            }
             clear_callback_chain();
         }
 
@@ -1442,13 +1454,35 @@ public:
         event_captures[event] = selected.operation();
     }
 
-    void finish_capture() noexcept
+    void finish_capture(graph_jit::TickInvocationSlotPlan const* slots, TickRecordingBatch* batch) noexcept
     {
-        for (auto& selected : sample_capture_slots) {
-            selected.publish_callback_chain();
+        IV_ASSERT(!batch || batch->outputs_.size() == producer_requirements.size(),
+            "Tick recording batch must reserve every output before execution");
+        auto finish = [&](RecordingProducer& selected, std::size_t output) {
+            if (batch) selected.seal_callback_chain(batch->outputs_[output]);
+            else selected.publish_callback_chain();
+        };
+        using Slots = graph_jit::TickInvocationSlotPlan;
+        for_each_slot(sample_capture_slots.size(), slots, &Slots::sample_captures, [&](std::size_t index) {
+            finish(sample_capture_slots[index], index);
+        });
+        for_each_slot(event_capture_slots.size(), slots, &Slots::event_captures, [&](std::size_t index) {
+            finish(event_capture_slots[index], sample_capture_slots.size() + index);
+        });
+    }
+
+    using SlotRanges = std::vector<graph_jit::TickInvocationSlotRange> graph_jit::TickInvocationSlotPlan::*;
+    template<class Fn>
+    static void for_each_slot(std::size_t size, graph_jit::TickInvocationSlotPlan const* slots,
+        SlotRanges selected, Fn&& bind) noexcept
+    {
+        if (!slots) {
+            for (std::size_t index = 0; index < size; ++index) bind(index);
+            return;
         }
-        for (auto& selected : event_capture_slots) {
-            selected.publish_callback_chain();
+        for (auto const& range : slots->*selected) {
+            auto const end = range.begin + range.count;
+            for (auto index = range.begin; index < end; ++index) bind(index);
         }
     }
 
@@ -1457,16 +1491,20 @@ public:
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
         std::size_t block_size, TickPlaybackSelection selection,
-        TickMaterializationSnapshot const* inherited_deferred) noexcept
+        TickMaterializationSnapshot const* inherited_deferred,
+        graph_jit::TickInvocationSlotPlan const* slots) noexcept
     {
+        using Slots = graph_jit::TickInvocationSlotPlan;
         auto const materialization_matches = materialized.generation() == generation
             && materialized.data_version() == published.version();
         auto const selected_block_size = std::min(block_size, maximum_block_size);
-        for (auto& selected : sample_capture_slots) {
+        for_each_slot(sample_capture_slots.size(), slots, &Slots::sample_captures, [&](std::size_t slot) {
+            auto& selected = sample_capture_slots[slot];
             selected.published = &published;
             selected.held_position = selection.held_position;
-        }
-        for (auto& selected : sequential_sample_slots) {
+        });
+        for_each_slot(sequential_sample_slots.size(), slots, &Slots::sequential_samples, [&](std::size_t slot) {
+            auto& selected = sequential_sample_slots[slot];
             auto const* materialized_sample = materialization_matches
                     && selected.accepts_materialization
                 ? materialized.find_sample(selected.port)
@@ -1488,8 +1526,9 @@ public:
                 materialized_sample_is_complete ? materialized_sample : nullptr,
                 sample_index,
                 selected_block_size, selection.held_position);
-        }
-        for (auto& selected : sequential_event_slots) {
+        });
+        for_each_slot(sequential_event_slots.size(), slots, &Slots::sequential_events, [&](std::size_t slot) {
+            auto& selected = sequential_event_slots[slot];
             auto const* materialized_event = materialization_matches
                     && selected.accepts_materialization
                 ? materialized.find_event(selected.port)
@@ -1501,8 +1540,8 @@ public:
                     : nullptr,
                 sample_index,
                 selected_block_size, selection);
-        }
-        for (std::size_t slot = 0; slot < sample_slots.size(); ++slot) {
+        });
+        for_each_slot(sample_slots.size(), slots, &Slots::random_access_samples, [&](std::size_t slot) {
             auto& selected = sample_slots[slot];
             selected.project_begin = sample_index;
             selected.materialized = materialization_matches
@@ -1552,8 +1591,8 @@ public:
                     : selected.coverage;
             if (!sample_views[slot].coverage_value) sample_views[slot].coverage_value = selected.coverage;
             sample_views[slot].prepared_coverage_value = selected.coverage;
-        }
-        for (std::size_t slot = 0; slot < event_slots.size(); ++slot) {
+        });
+        for_each_slot(event_slots.size(), slots, &Slots::random_access_events, [&](std::size_t slot) {
             auto& selected = event_slots[slot];
             selected.snapshot = &published;
             selected.materialized = materialization_matches
@@ -1587,7 +1626,7 @@ public:
                     : selected.coverage;
             if (!event_views[slot].coverage_value) event_views[slot].coverage_value = selected.coverage;
             event_views[slot].prepared_coverage_value = selected.coverage;
-        }
+        });
         return {
             .sequential_sample_inputs = sequential_sample_views,
             .sequential_event_inputs = sequential_event_views,
@@ -1620,13 +1659,31 @@ TickInvocationWorkspace::TickInvocationWorkspace(
 
 TickInvocationWorkspace::~TickInvocationWorkspace() = default;
 
-TickInvocationWorkspace::CaptureScope::CaptureScope(Impl& impl, bool publish) noexcept
-    : impl_(publish ? &impl : nullptr)
+void TickRecordingBatch::publish() noexcept
+{
+    for (auto& output : outputs_) {
+        if (output.chain && !output.pending->publish(std::move(output.chain))
+            && output.reservation_failed)
+            output.reservation_failed->store(true, std::memory_order_release);
+        output = {};
+    }
+}
+
+void TickRecordingBatch::discard() noexcept
+{
+    for (auto& output : outputs_) output = {};
+}
+
+TickInvocationWorkspace::CaptureScope::CaptureScope(Impl& impl, bool finish,
+    graph_jit::TickInvocationSlotPlan const* slots, TickRecordingBatch* batch) noexcept
+    : impl_(finish ? &impl : nullptr)
+    , slots_(slots)
+    , batch_(batch)
 {}
 
 TickInvocationWorkspace::CaptureScope::~CaptureScope()
 {
-    if (impl_) impl_->finish_capture();
+    if (impl_) impl_->finish_capture(slots_, batch_);
 }
 
 std::size_t TickInvocationWorkspace::sequential_sample_count() const noexcept
@@ -1743,20 +1800,24 @@ void TickInvocationWorkspace::discard_unpublished_startup() noexcept
 }
 
 TickInvocationWorkspace::CaptureScope
-TickInvocationWorkspace::begin_capture(bool publish) noexcept
+TickInvocationWorkspace::begin_capture(bool finish,
+    graph_jit::TickInvocationSlotPlan const* slots, TickRecordingBatch* batch) noexcept
 {
-    return CaptureScope{*impl_, publish};
+    return CaptureScope{*impl_, finish, slots, batch};
 }
 
 void TickInvocationWorkspace::bind_deferred_input_requests(DeferredTickInputRequests& requests,
-    GlobalIndex execution_begin) noexcept
+    GlobalIndex execution_begin,
+    graph_jit::TickInvocationSlotPlan const* slots) noexcept
 {
-    for (auto& slot : impl_->sample_slots) {
+    Impl::for_each_slot(impl_->sample_slots.size(), slots, &graph_jit::TickInvocationSlotPlan::random_access_samples,
+        [&](std::size_t index) {
+        auto& slot = impl_->sample_slots[index];
         if (slot.request_lead) {
             slot.requests = &requests;
             slot.execution_begin = execution_begin;
         }
-    }
+    });
 }
 
 void TickInvocationWorkspace::prepare_deferred_input_transfer(
@@ -1773,9 +1834,10 @@ graph_jit::TickInvocationCall TickInvocationWorkspace::bind(
     TickMaterializationSnapshot const& materialized,
     GlobalIndex sample_index,
     std::size_t block_size, TickPlaybackSelection selection,
-    TickMaterializationSnapshot const* inherited_deferred) noexcept
+    TickMaterializationSnapshot const* inherited_deferred,
+    graph_jit::TickInvocationSlotPlan const* slots) noexcept
 {
-    return impl_->bind(published, materialized, sample_index, block_size, selection, inherited_deferred);
+    return impl_->bind(published, materialized, sample_index, block_size, selection, inherited_deferred, slots);
 }
 
 TickInvocationFrame::TickInvocationFrame(
@@ -1800,15 +1862,16 @@ TickInvocationFrame::TickInvocationFrame(
     RealtimePersistedState const& persisted,
     TickInvocationWorkspace& workspace,
     GlobalIndex sample_index,
-    std::size_t block_size, TickPlaybackSelection selection, bool publish_captures) noexcept
+    std::size_t block_size, TickPlaybackSelection selection, bool finish_captures,
+    graph_jit::TickInvocationSlotPlan const* slots, TickRecordingBatch* recording_batch) noexcept
     : published_data_view_(&persisted.data())
     , materialized_storage_view_(&persisted.materialization())
-    , capture_scope_(workspace.begin_capture(publish_captures))
+    , capture_scope_(workspace.begin_capture(finish_captures, slots, recording_batch))
     , call_(workspace.bind(
         *published_data_view_,
         *materialized_storage_view_,
         sample_index,
-        block_size, selection, persisted.inherited_deferred_materialization()))
+        block_size, selection, persisted.inherited_deferred_materialization(), slots))
 {}
 
 } // namespace iv

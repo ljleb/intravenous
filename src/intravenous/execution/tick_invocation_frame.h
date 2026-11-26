@@ -12,6 +12,11 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
+
+namespace iv::graph_jit {
+struct TickInvocationSlotPlan;
+}
 
 namespace iv {
 
@@ -24,6 +29,30 @@ struct RealtimeProducerRequirement {
     std::size_t maximum_blocks_per_callback = 0;
 };
 
+// One prepared range's completed recording records. Their producer reserve
+// must outlive this owner. The worker can move on after handing these records
+// to the range; only the device publishes them after consuming it.
+class TickRecordingBatch {
+    struct Output {
+        ProducedBlockChain chain{};
+        PendingQueue* pending = nullptr;
+        std::atomic<bool>* reservation_failed = nullptr;
+    };
+
+    std::vector<Output> outputs_{};
+    friend class TickInvocationWorkspace;
+
+public:
+    TickRecordingBatch() = default;
+    explicit TickRecordingBatch(std::size_t output_count) : outputs_(output_count) {}
+    TickRecordingBatch(TickRecordingBatch const&) = delete;
+    TickRecordingBatch& operator=(TickRecordingBatch const&) = delete;
+    TickRecordingBatch(TickRecordingBatch&&) noexcept = default;
+    TickRecordingBatch& operator=(TickRecordingBatch&&) noexcept = default;
+    void publish() noexcept;
+    void discard() noexcept;
+};
+
 // Control-path allocation and identity resolution for the fixed Tick binding
 // slots retained by one CompiledGraph generation. Its arrays and bounded
 // Sequential playback windows remain address-stable for the realization's
@@ -33,8 +62,11 @@ class TickInvocationWorkspace {
     class Impl;
     class CaptureScope {
         Impl* impl_ = nullptr;
+        graph_jit::TickInvocationSlotPlan const* slots_ = nullptr;
+        TickRecordingBatch* batch_ = nullptr;
 
-        explicit CaptureScope(Impl& impl, bool publish) noexcept;
+        explicit CaptureScope(Impl& impl, bool finish, graph_jit::TickInvocationSlotPlan const* slots,
+            TickRecordingBatch* batch) noexcept;
         friend class TickInvocationWorkspace;
 
     public:
@@ -48,13 +80,15 @@ class TickInvocationWorkspace {
     std::unique_ptr<Impl> impl_{};
 
     friend class TickInvocationFrame;
-    [[nodiscard]] CaptureScope begin_capture(bool publish = true) noexcept;
+    [[nodiscard]] CaptureScope begin_capture(bool finish = true, graph_jit::TickInvocationSlotPlan const* slots = nullptr,
+        TickRecordingBatch* batch = nullptr) noexcept;
     [[nodiscard]] graph_jit::TickInvocationCall bind(
         PersistedDataStore::Snapshot const& published,
         TickMaterializationSnapshot const& materialized,
         GlobalIndex sample_index,
         std::size_t block_size, TickPlaybackSelection selection,
-        TickMaterializationSnapshot const* inherited_deferred = nullptr) noexcept;
+        TickMaterializationSnapshot const* inherited_deferred = nullptr,
+        graph_jit::TickInvocationSlotPlan const* slots = nullptr) noexcept;
 
 public:
     TickInvocationWorkspace(
@@ -80,7 +114,8 @@ public:
     [[nodiscard]] std::size_t sample_capture_count() const noexcept;
     [[nodiscard]] std::size_t event_capture_count() const noexcept;
     void bind_deferred_input_requests(DeferredTickInputRequests& requests,
-        GlobalIndex execution_begin) noexcept;
+        GlobalIndex execution_begin,
+        graph_jit::TickInvocationSlotPlan const* slots = nullptr) noexcept;
     // One entry per Tick/persisted producer queue which the prepared execution
     // generation must provision. Entries are aligned sample-first/event-second
     // with the workspace's capture-operation slots and include record-header
@@ -133,7 +168,9 @@ public:
         TickInvocationWorkspace& workspace,
         GlobalIndex sample_index = {},
         std::size_t block_size = 0, TickPlaybackSelection selection = {},
-        bool publish_captures = true) noexcept;
+        bool finish_captures = true,
+        graph_jit::TickInvocationSlotPlan const* slots = nullptr,
+        TickRecordingBatch* recording_batch = nullptr) noexcept;
 
     TickInvocationFrame(TickInvocationFrame const&) = delete;
     TickInvocationFrame& operator=(TickInvocationFrame const&) = delete;

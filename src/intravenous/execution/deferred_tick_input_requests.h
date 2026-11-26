@@ -16,8 +16,9 @@
 
 namespace iv {
 
-// One foreground writer and one background reader share this queue. Position
-// runs name source coordinates. Execution ranges count rendered samples and
+// The Tick writer and background reader share this queue. A sealed reservation
+// can hand the writer from early Tick to foreground Tick. Position runs name
+// source coordinates. Execution ranges count rendered samples and
 // continue across seeks. A result's ticket belongs to the generation that
 // owns the queue.
 class DeferredTickInputRequests {
@@ -44,6 +45,7 @@ public:
 private:
     struct Frame {
         GlobalIndexRange execution{};
+        GlobalIndex preparation_boundary{};
         std::size_t request_begin = 0;
         std::size_t request_count = 0;
         std::size_t run_end = 0;
@@ -141,13 +143,17 @@ public:
 
     // Foreground. Reserve before entering the root so a full queue can stall
     // the callback without executing any node or advancing the playhead.
-    [[nodiscard]] bool begin_callback(GlobalIndexRange execution) noexcept
+    [[nodiscard]] bool begin_callback(GlobalIndexRange execution, std::size_t frame_reserve = 1,
+        std::optional<GlobalIndex> next_preparation_boundary = {}) noexcept
     {
         if (execution.empty() || execution.extent >= (Ticket{1} << 63)
-            || open_ || writing_ - retired_ == frames_.size()) return false;
+            || open_ || frame_reserve > frames_.size() - (writing_ - retired_)) return false;
+        auto const boundary = next_preparation_boundary.value_or(execution.end());
+        if (execution.begin.forward_distance_to(boundary) > execution.extent) return false;
         submission_failed_ = false;
         open_ = &frame(writing_);
         open_->execution = execution;
+        open_->preparation_boundary = boundary;
         open_->request_begin = requests_.end;
         open_->request_count = 0;
         return true;
@@ -158,7 +164,8 @@ public:
         auto const positions = request.positions;
         if (!open_ || request.port >= ports_.size() || request.execution.empty()
             || !open_->execution.contains(request.execution)
-            || open_->execution.end().forward_distance_to(request.first_due) >= (Ticket{1} << 63)
+            || open_->preparation_boundary.signed_distance_to(request.first_due) < 0
+            || request.execution.end().signed_distance_to(request.first_due) < 0
             || !std::ranges::all_of(positions.runs, &SamplePositionRun::valid)) {
             submission_failed_ = true;
             return false;
@@ -217,6 +224,23 @@ public:
 
     [[nodiscard]] bool submission_failed() const noexcept { return submission_failed_; }
 
+    // The writer can inspect an open frame while its early callbacks are
+    // serialized. The canonical background selection sees only sealed work.
+    [[nodiscard]] bool open_has_due_before(GlobalIndex end) const noexcept
+    {
+        return open_ && open_->request_count != 0 && open_->first_due.signed_distance_to(end) > 0;
+    }
+
+    // Only the first range ran when preparing its successor failed. Keep
+    // that range's requests and release the unexecuted suffix of the prefix.
+    void restrict_open_callback(GlobalIndexRange executed) noexcept
+    {
+        IV_ASSERT(open_ && open_->execution.begin == executed.begin
+            && open_->execution.contains(executed), "deferred request prefix must retain its first callback");
+        open_->execution = executed;
+        open_->preparation_boundary = executed.end();
+    }
+
     // Foreground. Only a complete callback becomes visible to the worker.
     [[nodiscard]] bool publish_callback() noexcept
     {
@@ -256,6 +280,15 @@ public:
               });
     }
 
+    template<class Fn>
+    void for_each_pending_request(Fn&& visit) const
+    {
+        for (auto ticket = retired_; ticket != writing_; ++ticket) {
+            for (auto const& request : requests(ticket)) visit(request);
+        }
+        if (open_) for (auto const& request : requests(writing_)) visit(request);
+    }
+
     // Foreground, at the exact cut. Only the foreground reads the live ring
     // cursors. The successor's background reader starts after publication.
     [[nodiscard]] Ticket inherit_pending_from(DeferredTickInputRequests const& previous,
@@ -273,7 +306,7 @@ public:
                 if (!successor_ports[request.port]
                     || request.due_range().end().forward_distance_to(execution_begin) < (Ticket{1} << 63)) continue;
                 if (!open_) {
-                    auto const opened = begin_callback(frame.execution);
+                    auto const opened = begin_callback(frame.execution, 1, frame.preparation_boundary);
                     IV_ASSERT(opened, "inherited Tick callback exceeds its prepared reserve");
                 }
                 request.port = *successor_ports[request.port];

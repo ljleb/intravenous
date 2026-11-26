@@ -300,10 +300,135 @@ request batches and reinstates the fresh NodeStorage before allowing the new
 selection to run. This reset of provisional state applies only until the
 first foreground slice plays.
 
-The startup prefix uses the existing declared node latency. Removing
-computed-source latency requires a separate early execution cursor and
-enough additional prepared frames to finalize the first audible window.
-The current worker prepares one prefix at a time.
+_Accepted direction, 2026-11-26._
+
+The owner chose the stateful run-ahead pipeline with a single shared Tick
+cutover. An ordinary edit can wait for the first execution index neither
+part has passed. The existing state and in-flight transfer rules apply there.
+[Cutover contract](./project_playback_and_presentation_grids_direction.md#background-preparation-pending-seeks-and-missed-deadlines)
+
+_Implementation status, 2026-11-26._
+
+`EarlyTickCursor` now tracks Sequential indices and authored extents for
+the worker root across calls. A complete root call or a discarded startup
+reanchors the next early call to committed storage. Background evaluation
+consumes selected tap positions and a ticket without borrowing the queue.
+The new root-level regression runs two early resampler callbacks, resolves
+their taps privately, and checks the result before any foreground callback.
+
+`RealtimeGeneration` tracks the next physical execution index for each
+part. A complete Tick advances both indices. The early worker advances its
+index when it publishes the reservation, and the device advances the
+foreground index as it renders slices. Ordinary graph activation checks that
+the indices agree and carries that index into the successor, including when
+the successor introduces its first deferred input. A reset starts both
+indices at zero.
+
+For a committed `ForegroundPrefix`, `GraphExecutor::run_early_tick_prefix()`
+now publishes the early part's `DeferredTickInputRequests` before the device
+consumes any slices. The device opens the foreground part's request frame
+when it consumes the first slice. Admission reserves both request frames
+before early Tick advances authored state. They share one request reserve
+because the reservation hands off the writer from the worker to the device.
+The worker can materialize the early requests while the playhead is still
+held. This uses the canonical background transaction. Provisional startup
+still holds its requests unpublished so a paused seek can discard the
+unplayed state.
+
+`RealtimeRootPlan` now assigns each manual control's effective state and
+per-invocation latch to the Tick root that runs its consumer. A shared
+`ManualControlId` can still use the same atomic target across both roots.
+Each split root also binds its own ranges of `TickInvocationWorkspace`
+inputs and capture slots. Recording chains still publish in device order.
+
+`TickTransferBuffer` owns the aligned transient Sample and Event storage
+shared by a pair of split-root calls. The worker writes directly into the
+buffer and the device binds those same representations when it consumes the
+range. This removes the two scratch copies. The root-level Sample regression
+prepares two ranges before running any foreground callbacks, then reads each
+range from its own buffer in device order.
+
+`TickRecordingBatch` owns the finalized recording chains for one prepared
+range. The early root moves its chains into that batch, and the device
+publishes it after rendering the last slice. A discarded startup releases
+the batch before restarting node state. The recording regression prepares
+two ranges and checks that each publishes only its own Sample and Event
+records. `LiveObservationHandoff` can also reserve two private frames, and
+publishes or discards each frame individually.
+
+`SystemAudioDevices::output_render_loop()` can now request two adjacent
+ranges. `GraphExecutor` pins one input selection for the prefix and the
+worker prepares both ranges before the first device slice can consume them.
+Each range has its own transfer buffer, recording batch, and observation
+frame. Play promotes the entire provisional prefix. The foreground commits
+each range in order before applying a later seek. The two ranges still use
+the same generation and compiled Tick root.
+
+The second range requires enough recording reserve and an already prepared
+input selection. The initial two-range scheduler required the combined
+extent to fit before the earliest new deferred-input deadline.
+`RealtimeRootPlan` also checks that preparing the
+second range cannot displace persistent data needed by the first. Retained
+crossings initially used the single-range path, as do active state-field
+observation overrides. The regression exercises startup with two prepared
+ranges and applies a seek after both have rendered.
+
+The worker can prepare due requests from the open early Tick frame and
+materialize Sequential inputs for the second range when the published
+selection covers only the first. `GraphExecutor::prepare_early_tick_inputs()`
+uses a private `BackgroundEvaluationTransaction` and pins the result to
+that range. The canonical ticket and publication stay unchanged while a
+provisional prefix can still be discarded. The early and foreground
+callbacks use the same prepared selection for that range. If private
+preparation fails, the first range remains valid and the unexecuted second
+range is released. The native regressions exercise the resampler's first
+tap requests and a computed Tock input with just the first range published.
+
+`RealtimeRootPlan` now derives a preparation limit for canonical Sample
+rings that cross to live consumers. It subtracts the retained window from
+the existing ring capacity and projects the remaining slots to project
+frames at the port's pace. The device trims the second range to that
+limit. A retained Event sequence blocks the second range only when its
+scheduled accesses cross the early/foreground boundary. Within a compiled
+generation these changes let more prefixes preserve their data in place.
+The new Sample regression checks that the device drains both prepared
+ranges from a retained ring without substituting a wider allocation.
+
+#### Early Tick preserves foreground semantics
+
+Running Tick early changes when the worker performs the computation. The
+foreground root consumes the same Sample values and Events at the same
+execution indices, with the same declared latency, state updates, and edit
+semantics as the complete root. Play and reset can wait for the first
+prepared range to be ready. The resampler's declared latency is part of the
+current graph's timing.
+
+`GraphExecutor::activate_pending_at()` waits for the sealed prefix to drain
+and for the early and foreground cursors to agree before switching graphs.
+A pending edit can postpone admission of the next prefix until the new
+graph takes effect. The worker can prepare both ranges in a prefix, but
+the device still consumes them in the compiled graph's order. This
+cutover works without an early successor finalizing an old foreground
+range at a different read offset.
+
+Eligible Tick groups can use the transition root after a cutover. A
+transition reservation covers one range so the next reservation can
+select the steady root as soon as the transition expires. If a running
+device request arrives without a reservation, it can render a complete
+Tick block and then request worker preparation for the next block. This
+avoids a gap when an edit or seek is ready to apply. Both parts of a
+sealed range use the manual-control targets selected at admission.
+An observation query queued after a recording publication waits for the
+worker pass that covers that publication. Playback can keep announcing
+new work while the worker serves the query.
+
+`ReversedTickDependencyUsesLiveStateToFinalizeAnEarlierSample` exercises
+an edit that reverses the dependency between a revisable Sample output
+and a stateful live node. The existing delay makes each configuration and
+their cutover causal. Removing the delay would make one sample depend on
+itself. `RunAheadDrainsBeforeReversingALiveDependency` compares the split
+render to the complete root through the same edit.
+[Earlier latency-hiding proposal](./historical/early_tick_latency_hiding_proposal_2026-11-26.md)
 
 ### Project-authored modules and constructor reference order
 

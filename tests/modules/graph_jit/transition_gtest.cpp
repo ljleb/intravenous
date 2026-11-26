@@ -1,5 +1,8 @@
 #include "test_support.h"
 
+#include <chrono>
+#include <thread>
+
 namespace iv::test::graph_jit_tests {
 
 namespace {
@@ -1093,6 +1096,117 @@ TEST_F(GraphJitRuntimeFixture, LatentSampleOutputWindowSurvivesCutoverInRing)
             .source_latency = 1000,
         },
         302);
+}
+
+TEST_F(GraphJitRuntimeFixture, ReversedTickDependencyUsesLiveStateToFinalizeAnEarlierSample)
+{
+    constexpr auto module = "iv.test.graph_jit.reversed_tick_dependency";
+    bool reverse = true;
+    std::array arguments{iv::details::configuration_argument(reverse)};
+    auto const predecessor = configured_module_graph(*revision, module);
+    auto const successor = configured_module_graph_with_arguments(*revision, module, arguments);
+    ASSERT_TRUE(predecessor && successor);
+
+    auto const before = build_connection_analysis_plan(*predecessor, 64);
+    auto const after = build_connection_analysis_plan(*successor, 64);
+    ASSERT_TRUE(before) << before.error();
+    ASSERT_TRUE(after) << after.error();
+    ASSERT_EQ(before->schedule.early_sample_outputs.size(), 1u);
+    ASSERT_TRUE(after->schedule.early_sample_outputs.empty());
+
+    struct LiveState { float pending; };
+    struct SampleProbeState { float first, last; };
+    run_across_graph_edit(*jit, definitions, resources, predecessor, successor, 304, 64, 128,
+        [](iv::CompiledGraph const& graph, iv::NodeStorage const& storage, std::int64_t block_begin) {
+            auto const* live = find_unique_state<LiveState>(graph.node_layout, storage);
+            auto const* probe = find_unique_state<SampleProbeState>(graph.node_layout, storage);
+            ASSERT_NE(live, nullptr);
+            ASSERT_NE(probe, nullptr);
+            // At the end of the predecessor block, live Tick has consumed
+            // the declared-delay sample at 62 and saved its inverse for 64.
+            // At 64 that saved value finalizes the earlier sample at 63.
+            // Feeding sample 63 to live Tick at 63 would instead make that
+            // sample depend on its own inverse across the cutover.
+            EXPECT_FLOAT_EQ(live->pending, 1.f);
+            auto const expected = block_begin == 0 ? 0.f : 1.f;
+            EXPECT_FLOAT_EQ(probe->first, expected);
+            EXPECT_FLOAT_EQ(probe->last, expected);
+        });
+}
+
+TEST_F(GraphJitRuntimeFixture, RunAheadDrainsBeforeReversingALiveDependency)
+{
+    constexpr auto module = "iv.test.graph_jit.reversed_tick_dependency";
+    constexpr auto frames = 8u;
+    constexpr auto project_generation = 503u;
+    bool reverse = true;
+    std::array arguments{iv::details::configuration_argument(reverse)};
+    auto const previous = compile(module, project_generation);
+    ASSERT_TRUE(previous.succeeded()) << previous.diagnostics.front().message;
+    auto const configured = configured_module_graph_with_arguments(*revision, module, arguments);
+    auto const next = in_event_source([&] {
+        return jit->handle_project_graph_transaction({
+            .successor = {.project_generation = project_generation + 1, .graph = configured,
+                .definitions = definitions},
+            .predecessor = previous.compiled_graph,
+        });
+    });
+    ASSERT_TRUE(next.succeeded()) << next.diagnostics.front().message;
+
+    using AudioBlock = std::array<iv::Sample, 2 * frames>;
+    AudioBlock output{};
+    resources.system_audio = {
+        .owner = &output,
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            return iv::SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<iv::Sample> {
+                return *static_cast<AudioBlock*>(owner);
+            }};
+        },
+    };
+    iv::GraphExecutor early{resources};
+    ASSERT_EQ(early.stage(previous.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    auto wait_for_block = [&](iv::GraphExecutor& executor, iv::PlaybackRenderSlice& slice, bool reserve) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            executor.render_block(frames, 88200, &slice, reserve);
+            ASSERT_FALSE(executor.background_execution_failures().any());
+            ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+            if (!slice.rendered) std::this_thread::yield();
+        } while (!slice.rendered);
+    };
+    iv::PlaybackRenderSlice slice;
+    (void)early.set_playback_running(true);
+    ASSERT_NO_FATAL_FAILURE(wait_for_block(early, slice, true));
+    ASSERT_EQ(slice.foreground_sample, index(0));
+
+    early.prepare_next_playback_slice(frames, 88200, frames);
+    ASSERT_EQ(early.playback_render_frames(2 * frames), frames);
+    ASSERT_EQ(early.stage(next.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    EXPECT_FALSE(early.activate_pending(index(frames)));
+
+    std::array<AudioBlock, 3> split{};
+    for (std::size_t block = 0; block < split.size(); ++block) {
+        output.fill({});
+        ASSERT_NO_FATAL_FAILURE(wait_for_block(early, slice, block == 2));
+        EXPECT_EQ(slice.foreground_sample, index((block + 1) * frames));
+        EXPECT_EQ(slice.execution_generation, project_generation + (block == 2));
+        split[block] = output;
+    }
+    EXPECT_FLOAT_EQ(split[1].front().value, 0.f);
+    EXPECT_FLOAT_EQ(split[2].front().value, 1.f);
+
+    iv::GraphExecutor complete{resources};
+    ASSERT_EQ(complete.stage(previous.compiled_graph), iv::GraphExecutorStageResult::accepted);
+    (void)complete.set_playback_running(true);
+    ASSERT_NO_FATAL_FAILURE(wait_for_block(complete, slice, false));
+    for (std::size_t block = 0; block < split.size(); ++block) {
+        if (block == 2)
+            ASSERT_EQ(complete.stage(next.compiled_graph), iv::GraphExecutorStageResult::accepted);
+        output.fill({});
+        ASSERT_NO_FATAL_FAILURE(wait_for_block(complete, slice, false));
+        for (std::size_t i = 0; i < output.size(); ++i)
+            EXPECT_FLOAT_EQ(output[i].value, split[block][i].value);
+    }
 }
 
 TEST_F(GraphJitRuntimeFixture, LatentSampleConsumerStaysFinalAcrossCutoverInCompactCarry)

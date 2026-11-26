@@ -1,10 +1,12 @@
 #include "test_support.h"
+#include <intravenous/graph_jit/realtime/root_plan.h>
 #include <intravenous/observations/observation_resolution.h>
 #include <intravenous/rpc/socket_rpc_response_builders.h>
 #include <intravenous/project/runtime_project_events.h>
 #include <nlohmann/json.hpp>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <iterator>
 #include <limits>
@@ -103,6 +105,198 @@ TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResu
     EXPECT_EQ(frame->sample_index, index(20));
     EXPECT_EQ(frame->block_size, 32u);
     EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
+}
+
+TEST_F(GraphJitRuntimeFixture, EarlyTickLeavesForegroundManualStateUntouched)
+{
+    auto graph = compile_with_manual_input("iv.test.graph_jit.early_tick_audio_mix", 703,
+        "in", Sample{.25f});
+    ASSERT_TRUE(graph.succeeded()) << (graph.diagnostics.empty() ? "" : graph.diagnostics.front().message);
+    auto const& compiled = *graph.compiled_graph;
+    auto const* root = compiled.root_operations.tick_block.plan.get();
+    ASSERT_TRUE(graph_jit::has_early_tick(root));
+    ASSERT_EQ(compiled.manual_controls.size(), 1u);
+    auto storage = compiled.node_layout.create_storage(resources);
+    storage.initialize();
+    auto* state = reinterpret_cast<ManualControlRuntimeState*>(
+        storage.buffer().data() + compiled.manual_controls.front().state_storage_offset);
+    auto const preceding_value = std::bit_cast<std::uint32_t>(.75f);
+    state->effective_bits = preceding_value;
+
+    graph_jit::EarlyTickCursor cursor;
+    cursor.reserve(root);
+    graph_jit::TickTransferBuffer transfer_buffer;
+    transfer_buffer.reserve(root);
+    auto const transfer = transfer_buffer.view(*root);
+    graph_jit::TickInvocationCall call{};
+    graph_jit::execute_early_tick_root(*root, storage.buffer().data(), &call, index(0), 16, cursor, transfer);
+    EXPECT_EQ(state->effective_bits, preceding_value);
+    graph_jit::execute_foreground_tick_root(root, storage.buffer().data(), &call, index(0), 16, transfer);
+    EXPECT_EQ(state->effective_bits, std::bit_cast<std::uint32_t>(.25f));
+}
+
+TEST_F(GraphJitRuntimeFixture, EarlyTickKeepsTwoReservedSampleBlocksInDeviceOrder)
+{
+    auto graph = compile("iv.test.graph_jit.early_tick_audio_mix", 703);
+    ASSERT_TRUE(graph.succeeded()) << (graph.diagnostics.empty() ? "" : graph.diagnostics.front().message);
+    auto const& compiled = *graph.compiled_graph;
+    auto const* root = compiled.root_operations.tick_block.plan.get();
+    ASSERT_TRUE(graph_jit::has_early_tick(root));
+    std::array<Sample, 8> output{};
+    resources.system_audio = {
+        .owner = &output,
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            return SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<Sample> {
+                return *static_cast<std::array<Sample, 8>*>(owner);
+            }};
+        },
+    };
+    auto storage = compiled.node_layout.create_storage(resources);
+    storage.initialize();
+    graph_jit::EarlyTickCursor cursor;
+    cursor.reserve(root);
+    graph_jit::TickTransferBuffer first_buffer;
+    first_buffer.reserve(root);
+    graph_jit::TickTransferBuffer second_buffer;
+    second_buffer.reserve(root);
+    auto const first = first_buffer.view(*root);
+    auto const second = second_buffer.view(*root);
+    ASSERT_FALSE(first.empty());
+    graph_jit::TickInvocationCall call{};
+    graph_jit::execute_early_tick_root(*root, storage.buffer().data(), &call, index(20), 4, cursor, first);
+    graph_jit::execute_early_tick_root(*root, storage.buffer().data(), &call, index(40), 4, cursor, second);
+    EXPECT_EQ(output.front().value, 0.f);
+
+    graph_jit::execute_foreground_tick_root(root, storage.buffer().data(), &call, index(20), 4, first);
+    EXPECT_EQ(output.front().value, 21.f);
+    EXPECT_EQ(output.back().value, 27.f);
+    output.fill({});
+    graph_jit::execute_foreground_tick_root(root, storage.buffer().data(), &call, index(40), 4, second);
+    EXPECT_EQ(output.front().value, 45.f);
+    EXPECT_EQ(output.back().value, 51.f);
+}
+
+TEST_F(GraphJitRuntimeFixture, RetainedSampleRingHoldsTwoRangesUntilDevicePlayback)
+{
+    auto graph = compile("iv.test.graph_jit.retained_early_tick_audio", 703);
+    ASSERT_TRUE(graph.succeeded()) << (graph.diagnostics.empty() ? "" : graph.diagnostics.front().message);
+    auto const& compiled = *graph.compiled_graph;
+    auto const* root = compiled.root_operations.tick_block.plan.get();
+    ASSERT_NE(root, nullptr);
+    auto const& allocations = root->sample_ports.storage.persistent_allocations;
+    ASSERT_TRUE(std::ranges::any_of(allocations, [](auto const& allocation) {
+        return allocation.kind == graph_jit::detail::SamplePersistentStorageKind::ring
+            && allocation.retained_frames == 129 && allocation.frame_capacity == 256;
+    }));
+    EXPECT_EQ(graph_jit::independent_early_frame_limit(root), 127u);
+
+    std::array<Sample, 128> output{};
+    resources.system_audio = {
+        .owner = &output,
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            return SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<Sample> {
+                return *static_cast<std::array<Sample, 128>*>(owner);
+            }};
+        },
+    };
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(graph.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    PlaybackRenderSlice slice;
+    do {
+        executor.render_block(64, 88200, &slice, true, 64);
+        ASSERT_FALSE(slice.rendered);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    } while (executor.playback_render_frames(128) != 64);
+    (void)executor.set_playback_running(true);
+    do {
+        executor.render_block(64, 88200, &slice, true, 64);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        if (!slice.rendered) std::this_thread::yield();
+    } while (!slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(0));
+    EXPECT_FLOAT_EQ(output.front().value, 1.f);
+    EXPECT_FLOAT_EQ(output.back().value, 127.f);
+    ASSERT_EQ(executor.playback_render_frames(128), 63u);
+    output.fill({});
+    executor.render_block(63, 88200, &slice);
+    EXPECT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(64));
+    EXPECT_FLOAT_EQ(output.front().value, 129.f);
+    EXPECT_FLOAT_EQ(output[125].value, 253.f);
+    EXPECT_FLOAT_EQ(output[126].value, 0.f);
+}
+
+TEST_F(GraphJitRuntimeFixture, DevicePrerollDrainsTwoPreparedRangesBeforeApplyingASeek)
+{
+    auto graph = compile("iv.test.graph_jit.early_tick_audio_mix", 703);
+    ASSERT_TRUE(graph.succeeded()) << (graph.diagnostics.empty() ? "" : graph.diagnostics.front().message);
+    auto const& compiled = *graph.compiled_graph;
+    ASSERT_GE(graph_jit::independent_early_frame_limit(compiled.root_operations.tick_block.plan.get()), 8u);
+    struct AudioBuffers {
+        std::array<Sample, 8> input{};
+        std::array<Sample, 8> output{};
+        std::atomic<unsigned> early_calls{0};
+    } buffers;
+    resources.system_audio = {
+        .owner = &buffers,
+        .resolve_input_fn = [](void* owner, std::string_view id) {
+            if (id == "early_tick_test_gate") {
+                return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
+                    static_cast<AudioBuffers*>(owner)->early_calls.fetch_add(1, std::memory_order_release);
+                    return {};
+                }};
+            }
+            return SystemAudioInputBinding{owner, [](void* owner) noexcept -> std::span<Sample const> {
+                return static_cast<AudioBuffers*>(owner)->input;
+            }};
+        },
+        .resolve_output_fn = [](void* owner, std::string_view) {
+            return SystemAudioOutputBinding{owner, [](void* owner) noexcept -> std::span<Sample> {
+                return static_cast<AudioBuffers*>(owner)->output;
+            }};
+        },
+    };
+    GraphExecutor executor(resources);
+    ASSERT_EQ(executor.stage(graph.compiled_graph), GraphExecutorStageResult::accepted);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    PlaybackRenderSlice slice;
+    while (buffers.early_calls.load(std::memory_order_acquire) != 2) {
+        executor.render_block(4, 88200, &slice, true, 4);
+        ASSERT_FALSE(slice.rendered);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(0));
+    EXPECT_FLOAT_EQ(buffers.output.front().value, 0.f);
+
+    (void)executor.set_playback_running(true);
+    buffers.input.fill(Sample{.25f});
+    do {
+        executor.render_block(4, 88200, &slice, true, 4);
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        if (!slice.rendered) std::this_thread::yield();
+    } while (!slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(0));
+    EXPECT_FLOAT_EQ(buffers.output.front().value, 1.25f);
+    EXPECT_FLOAT_EQ(buffers.output.back().value, 7.25f);
+
+    auto const seek = executor.seek_playback(index(320));
+    buffers.input.fill(Sample{.5f});
+    buffers.output.fill({});
+    executor.render_block(4, 88200, &slice);
+    ASSERT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(4));
+    EXPECT_NE(executor.playback_snapshot().applied_command, seek);
+    EXPECT_FLOAT_EQ(buffers.output.front().value, 9.5f);
+    EXPECT_FLOAT_EQ(buffers.output.back().value, 15.5f);
+    EXPECT_EQ(buffers.early_calls.load(), 2u);
+
+    executor.render_block(4, 88200, &slice);
+    ASSERT_TRUE(slice.rendered);
+    EXPECT_EQ(slice.foreground_sample, index(320));
+    EXPECT_EQ(executor.playback_snapshot().applied_command, seek);
 }
 
 TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBeforeSeek)
@@ -254,7 +448,8 @@ TEST_F(GraphJitRuntimeFixture, PreparedTickPrefixMixesWithLiveInputAndDrainsBefo
     EXPECT_EQ(device.ramp_callbacks.load(), callbacks + 1);
 
     device.output.fill(Sample{});
-    ASSERT_NO_FATAL_FAILURE(render_when_ready(2, true));
+    executor.render_block(2, 88200, &slice, true);
+    ASSERT_TRUE(slice.rendered);
     EXPECT_EQ(slice.foreground_sample, index(320));
     EXPECT_EQ(executor.playback_snapshot().applied_command, seek);
     EXPECT_FLOAT_EQ(device.output[0].value, 333.5f);
@@ -1347,33 +1542,65 @@ TEST_F(GraphJitRuntimeFixture, BackgroundWaveformReadsPublishedTickRecordingWith
 {
     auto compiled = compile("iv.test.graph_jit.state_context.tick_capture_module", 732);
     ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
-    auto const& graph = *compiled.compiled_graph;
+    auto graph_owner = std::const_pointer_cast<CompiledGraph>(compiled.compiled_graph);
+    auto& graph = *graph_owner;
     auto port = std::ranges::find_if(graph.background_evaluation_plan.ports, [](auto const& port) {
         return port.kind == PortKind::sample && port.persisted_tick_output;
     });
     ASSERT_NE(port, graph.background_evaluation_plan.ports.end());
+
+    struct EvaluationGate {
+        CompiledGraphBackgroundFunction evaluate;
+        std::atomic<bool> entered{false};
+        std::atomic<bool> held{true};
+        void release()
+        {
+            held.store(false, std::memory_order_release);
+            held.notify_all();
+        }
+    } gate{graph.background_operations.evaluate};
+    static EvaluationGate* current_gate;
+    current_gate = &gate;
+    graph.background_operations.evaluate = [](graph_jit::BackgroundEvaluationCall* call) {
+        auto& gate = *current_gate;
+        if (!gate.entered.exchange(true, std::memory_order_acq_rel))
+            gate.held.wait(true, std::memory_order_acquire);
+        gate.evaluate(call);
+    };
     GraphExecutor executor(resources);
+    struct ReleaseGate {
+        EvaluationGate& gate;
+        ~ReleaseGate() { gate.release(); }
+    } release{gate};
     ASSERT_EQ(executor.stage(compiled.compiled_graph), GraphExecutorStageResult::accepted);
     ASSERT_TRUE(executor.activate_pending(index(0)));
     executor.tick_block(index(0), 32);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!gate.entered.load(std::memory_order_acquire)) {
+        ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+        std::this_thread::yield();
+    }
+    // Publish another recording while the worker is handling the first one.
+    // The visible waveform request needs the second recording's snapshot.
+    executor.tick_block(index(32), 32);
     auto query = std::make_shared<ObservationWindowQuery>();
     query->configured_generation = graph.configured_generation.value_or(graph.project_generation);
     query->port = port->configured_port;
     query->operation = &observation_details::sample_operations.back();
-    query->window = {index(4), 4, 4};
+    query->window = {index(36), 4, 4};
     ObservationCollectRequest collection{.windows = {query}};
     executor.handle_observation_collect(collection);
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    gate.release();
     while (!query->complete.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
         std::this_thread::yield();
     ASSERT_TRUE(query->complete.load(std::memory_order_acquire));
     ASSERT_EQ(query->result.status, ObservationWindowResult::Status::ready) << query->result.error;
     ASSERT_EQ(query->result.regions.size(), 1u);
-    EXPECT_EQ(query->result.regions[0].range, range(4, 8));
+    EXPECT_EQ(query->result.regions[0].range, range(36, 40));
     ASSERT_EQ(query->result.regions[0].values.size(), 4u);
     for (std::size_t i = 0; i < 4; ++i) {
         EXPECT_TRUE(query->result.regions[0].values[i].second.captured);
-        EXPECT_FLOAT_EQ(query->result.regions[0].values[i].second.load<float>(), static_cast<float>(i) + 4.5f);
+        EXPECT_FLOAT_EQ(query->result.regions[0].values[i].second.load<float>(), static_cast<float>(i) + 36.5f);
     }
     EXPECT_GT(query->result.data_version, 0u);
     EXPECT_FALSE(executor.background_execution_failures().any());

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/graph_jit/lowering_plan.h>
+#include <intravenous/graph_jit/realtime_root.h>
 #include <intravenous/graph_jit/region_specialization.h>
 
 #include <algorithm>
@@ -342,6 +343,9 @@ struct RealtimeRootPlan {
     // Plan sections only the realtime root reads, taken from the LoweringPlan.
     detail::SamplePortBindingPlan sample_ports{};
     std::vector<std::size_t> manual_target_latches{};
+    std::vector<std::size_t> split_manual_target_latches{};
+    std::vector<std::size_t> early_manual_controls{};
+    std::vector<std::size_t> foreground_manual_controls{};
     detail::EventPortBindingPlan event_ports{};
     detail::ExecutionPlan execution{};
     detail::RootStackBufferPlan root_stack{};
@@ -358,8 +362,15 @@ struct RealtimeRootPlan {
     // empty.
     std::vector<realtime::RootAcyclicGroup> acyclic_groups{};
     std::size_t first_foreground_group = 0;
+    std::size_t independent_early_frames = 0;
     // Primitives with Tick runtime slots.
     std::vector<std::size_t> tick_primitives{};
+    struct PartSlots {
+        std::vector<std::size_t> primitives{};
+        TickInvocationSlotPlan bindings{};
+    };
+    PartSlots early_tick_slots{};
+    PartSlots foreground_tick_slots{};
     std::vector<realtime::RootAddress> sample_addresses{};
     std::vector<realtime::RootAddress> event_addresses{};
     std::vector<realtime::AlignedBytes> immutable_storage{};
