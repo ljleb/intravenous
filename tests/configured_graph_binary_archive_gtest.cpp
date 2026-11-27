@@ -89,7 +89,7 @@ struct ArchiveFixture {
         iv::GraphBuilder graph;
         auto const trigger = iv::programmatic::declare_event_input(graph, "trigger", {"Trigger"}, iv::EventTypeId::trigger);
         (void)trigger;
-        auto const gain = iv::programmatic::declare_input(graph, "gain", {"Gain"}, 0.25f);
+        auto const gain = iv::programmatic::declare_input(graph, "gain", {"Gain"}, {.default_value = 0.25f});
         auto const source = iv::details::configure_concrete_node<iv::Constant>(
             graph, iv::Sample{0.75f});
         source._annotate_source_info("archive-source", "/tmp/archive-module.cpp", 1, 2);

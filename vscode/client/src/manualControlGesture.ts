@@ -161,7 +161,7 @@ export class ManualControlGestures {
         if (this.active && manualControlKey(this.active.control) === manualControlKey(control)) return;
         this.finish();
         const initial = this.state(control)?.value ?? descriptor.value;
-        const value = limits.circular ? normalizeKnobValue(initial, limits) : initial;
+        const value = limits.geometry === "circle" ? normalizeKnobValue(initial, limits) : initial;
         if (!Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
         this.retainedInteraction = null;
         this.ending.delete(manualControlKey(control));
@@ -218,7 +218,7 @@ export class ManualControlGestures {
         limits: ManualControlLimits = {}): void {
         if (this.active?.pointer || !Number.isFinite(value) || !canEditManualControl(control, descriptor)) return;
         const current = this.currentValue(control, descriptor) ?? descriptor.value;
-        const normalized = limits.circular ? normalizeKnobValue(value, limits) : value;
+        const normalized = limits.geometry === "circle" ? normalizeKnobValue(value, limits) : value;
         const target = fromDisplay && normalized !== 0 && this.outputInverted(control, current) ? -normalized : normalized;
         if (current === target) return;
         this.edit(control, { ...descriptor, value: current }, limits);

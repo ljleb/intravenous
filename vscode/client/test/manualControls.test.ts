@@ -26,7 +26,7 @@ test("circular knob gestures send canonical values through the seam and across r
     const actions: ManualControlAction[] = [];
     let sequence = 0;
     const gestures = new ManualControlGestures((action) => actions.push(action), () => `drag-${++sequence}`, () => {});
-    const limits = { min: -180, max: 180, circular: true };
+    const limits = { min: -180, max: 180, geometry: "circle" } as const;
     assert.ok(gestures.scrub(control, { ...descriptor, value: 179 }, 1, 0, 1, limits));
     gestures.moveBy(1, 2);
     gestures.release(1);

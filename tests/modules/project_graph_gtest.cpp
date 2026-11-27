@@ -250,7 +250,7 @@ void configure_module_with_circular_knob(iv::GraphBuilder& graph, std::span<Conf
 {
     using namespace iv;
     auto angle = programmatic::declare_input<Sample>(graph, "angle", {"Angle"},
-        {.min = -180, .max = 180, .circular = true});
+        {.min = -180, .max = 180, .geometry = iv::KnobGeometry::circle});
     graph.outputs("main"_P.with_display_name("Main") = angle);
 }
 
@@ -2812,7 +2812,7 @@ TEST_F(ProjectGraphFixture, GraphScopeExposesKnobsForANamedMonoQuotientWithoutAT
 {
     using namespace iv;
     auto configure = +[](GraphBuilder& graph, std::span<ConfigurationArgument>) {
-        auto const detune = iv::programmatic::declare_input(graph, "main", {"Main"}, 0, -100, 100);
+        auto const detune = iv::programmatic::declare_input(graph, "main", {"Main"}, {.default_value = 0, .min = -100, .max = 100});
         // Use private constant nodes because this fixture has no package-generated type metadata.
         auto const numerator_scale = graph.node<Constant>(Sample{2});
         auto const denominator = graph.node<Constant>(Sample{15});
@@ -4525,7 +4525,7 @@ TEST_F(ProjectGraphFixture, CircularKnobPersistsAndRelaysOnlyItsCanonicalValue)
     EXPECT_EQ(project_graph.manual_controls()[0].stored_value, iv::Sample{-179.f});
     auto const scope = read_graph_scope(project_graph);
     auto const& port = scope_node(scope, "pan").at("sampleInputs").at(0);
-    EXPECT_EQ(port.at("valueTypes").at(0).at("circular"), true);
+    EXPECT_EQ(port.at("valueTypes").at(0).at("geometry"), "circle");
 
     iv::ManualControlInteractionId gesture{.client_id = "client-a", .interaction_id = "drag"};
     iv::ProjectAckBuilder begin;

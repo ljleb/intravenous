@@ -69,6 +69,16 @@ are valid labels.
 Module input identifiers come from the receiving variable. Use
 `auto const dry = g.input();`, `auto const dry = g.input("Dry");`, or
 `auto const dry = g.input("Dry", "Dry signal");`.
+Set defaults and bounds in the options argument after the display names.
+Display names can still be omitted when you supply options.
+
+```cpp
+auto const wet = g.input("Wet", "Wet signal", {.default_value = 0, .min = 0, .max = 1});
+auto const azimuth = g.input("Azimuth", {
+    .min = -180, .max = 180, .geometry = iv::KnobGeometry::circle,
+});
+```
+
 Module outputs use the ID on the binding. Add labels with
 `g.outputs("wet"_P.with_display_name("Wet", "Wet signal") = wet_signal);`.
 Generated positional leaf ports can use `iv::PortNames::generated()`.

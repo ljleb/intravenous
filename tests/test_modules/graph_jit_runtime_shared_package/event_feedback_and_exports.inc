@@ -585,7 +585,7 @@ void manual_control_slice_module(iv::GraphBuilder& graph)
 void circular_manual_control_probe_module(iv::GraphBuilder& graph)
 {
     auto const azimuth = graph.input<iv::Sample>({"Azimuth"},
-        {.default_value = 179, .min = -180, .max = 180, .circular = true});
+        {.default_value = 179, .min = -180, .max = 180, .geometry = iv::KnobGeometry::circle});
     auto probe = graph.node<"iv.test.graph_jit.state_context.manual_control_slice_probe">();
     probe(azimuth);
     graph.outputs();

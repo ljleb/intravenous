@@ -28,7 +28,7 @@ struct PrivatePass {
     void build_graph(iv::GraphBuilder& graph) const
     {
         using namespace iv;
-        auto input = iv::programmatic::declare_input(graph, "in", {"In"}, default_value);
+        auto input = iv::programmatic::declare_input(graph, "in", {"In"}, {.default_value = default_value});
         details::iv_builder_prepare_node_source_identity(&graph, "inner-pass", "pass");
         auto pass = graph.node<Pass>();
         pass(input);

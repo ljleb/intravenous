@@ -27,6 +27,11 @@
 
 namespace iv {
 
+enum class KnobGeometry : std::uint8_t {
+    linear,
+    circle,
+};
+
 // The half-open range of a circular manual Sample control. It describes
 // knob values and their interpolation, independent of the input's signal.
 struct CircularSampleRange {
@@ -264,7 +269,7 @@ struct SampleContinuousValueExtension {
         // Absent means a stable speed derived from declared bounds/default.
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
-        bool circular = false;
+        KnobGeometry geometry = KnobGeometry::linear;
 
         constexpr bool operator==(BoundaryInputOptions const&) const = default;
     };
@@ -279,7 +284,7 @@ struct SampleContinuousValueExtension {
         combine_values_type combine_values = &add;
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
-        bool circular = false;
+        KnobGeometry geometry = KnobGeometry::linear;
 
         constexpr bool operator==(SequentialInputOptions const&) const = default;
     };
@@ -295,7 +300,7 @@ struct SampleContinuousValueExtension {
             .max = options.max,
             .scrub_speed = options.scrub_speed,
             .enabled_by_default = options.enabled_by_default,
-            .circular = options.circular,
+            .geometry = options.geometry,
         };
     }
 
@@ -306,7 +311,7 @@ struct SampleContinuousValueExtension {
         Sample neutral_value = 0.0f;
         std::optional<Sample> scrub_speed {};
         bool enabled_by_default = true;
-        bool circular = false;
+        KnobGeometry geometry = KnobGeometry::linear;
 
         constexpr bool operator==(SequentialInputMetadata const&) const = default;
 
@@ -320,7 +325,7 @@ struct SampleContinuousValueExtension {
             writer.pod(enabled_by_default);
             writer.pod(scrub_speed.has_value());
             if (scrub_speed) writer.pod(scrub_speed->value);
-            writer.pod(circular);
+            writer.pod(geometry);
         }
 
         template<class Reader>
@@ -338,8 +343,10 @@ struct SampleContinuousValueExtension {
             result.enabled_by_default = reader.template pod<bool>();
             if (reader.template pod<bool>())
                 result.scrub_speed = Sample{reader.template pod<Sample::storage>()};
-            result.circular = reader.template pod<bool>();
-            if (result.circular && !CircularSampleRange{result.min, result.max}.valid())
+            result.geometry = reader.template pod<KnobGeometry>();
+            if (result.geometry != KnobGeometry::linear && result.geometry != KnobGeometry::circle)
+                throw std::invalid_argument("unknown Sample knob geometry");
+            if (result.geometry == KnobGeometry::circle && !CircularSampleRange{result.min, result.max}.valid())
                 throw std::invalid_argument("circular Sample input requires finite min < max");
             return result;
         }
@@ -350,7 +357,7 @@ struct SampleContinuousValueExtension {
         std::optional<Sample> min {};
         std::optional<Sample> max {};
         std::optional<Sample> scrub_speed {};
-        bool circular = false;
+        KnobGeometry geometry = KnobGeometry::linear;
 
         constexpr bool operator==(
             IntrospectionMetadata const&) const = default;
@@ -368,7 +375,7 @@ struct SampleContinuousValueExtension {
                 write_value(json, "maxValue", *max);
             }
             if (scrub_speed) write_value(json, "scrubSpeed", *scrub_speed);
-            if (circular) json["circular"] = true;
+            if (geometry == KnobGeometry::circle) json["geometry"] = "circle";
         }
 
     private:
@@ -397,7 +404,7 @@ struct SampleContinuousValueExtension {
             .min = metadata.min,
             .max = metadata.max,
             .scrub_speed = metadata.scrub_speed,
-            .circular = metadata.circular,
+            .geometry = metadata.geometry,
         };
     }
 
@@ -473,7 +480,7 @@ struct SampleContinuousValueExtension {
     [[nodiscard]] static constexpr SequentialInputMetadata metadata(
         SequentialInputOptions const& options)
     {
-        if (options.circular && !CircularSampleRange{options.min, options.max}.valid())
+        if (options.geometry == KnobGeometry::circle && !CircularSampleRange{options.min, options.max}.valid())
             throw std::invalid_argument("circular Sample input requires finite min < max");
         return {
             .default_value = options.default_value,
@@ -482,7 +489,7 @@ struct SampleContinuousValueExtension {
             .neutral_value = options.neutral_value,
             .scrub_speed = options.scrub_speed,
             .enabled_by_default = options.enabled_by_default,
-            .circular = options.circular,
+            .geometry = options.geometry,
         };
     }
 

@@ -51,7 +51,7 @@ export function useManualInput(inputName: MaybeRefOrGetter<string>, direction: M
         const finite = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
         return { min: finite(metadata?.minValue), max: finite(metadata?.maxValue),
             defaultValue: metadata?.defaultValue === undefined ? 0 : finite(metadata?.defaultValue),
-            scrubSpeed: finite(metadata?.scrubSpeed), circular: metadata?.circular };
+            scrubSpeed: finite(metadata?.scrubSpeed), geometry: metadata?.geometry };
     });
     const available = computed(() => !!context && !!id.value && canEditManualControl(id.value, descriptor.value)
         && typeof value.value === "number" && Number.isFinite(value.value));

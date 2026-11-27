@@ -1,10 +1,11 @@
 import { detentHalfWidth, ScrubSensitivity } from "./scrubSensitivity";
+import type { KnobGeometry } from "./graphModel";
 
 export type KnobLimits = { min?: number; max?: number; defaultValue?: number; scrubSpeed?: number;
-    wholeByDefault?: boolean; integer?: boolean; circular?: boolean };
+    wholeByDefault?: boolean; integer?: boolean; geometry?: KnobGeometry };
 
-export function circularKnobRange({ min, max, circular }: KnobLimits): { min: number; span: number } | undefined {
-    if (!circular || min === undefined || max === undefined || !Number.isFinite(min) ||
+export function circularKnobRange({ min, max, geometry }: KnobLimits): { min: number; span: number } | undefined {
+    if (geometry !== "circle" || min === undefined || max === undefined || !Number.isFinite(min) ||
         !Number.isFinite(max) || max <= min || !Number.isFinite(max - min)) return undefined;
     return { min, span: max - min };
 }
@@ -38,7 +39,7 @@ export class KnobScrub {
     refresh(limits: KnobLimits, value: number): void {
         if (this.limits.defaultValue !== limits.defaultValue) this.plateau = 0;
         if (this.limits.defaultValue !== limits.defaultValue || this.limits.min !== limits.min ||
-            this.limits.max !== limits.max || this.limits.circular !== limits.circular)
+            this.limits.max !== limits.max || this.limits.geometry !== limits.geometry)
             this.anchor(value);
         this.limits = limits;
     }
@@ -52,14 +53,14 @@ export class KnobScrub {
         if (limits.defaultValue !== undefined && Number.isFinite(limits.defaultValue)) {
             const target = normalizeKnobValue(limits.defaultValue, limits);
             const speed = this.sensitivity.unitsPerPixel;
-            const anchor = normalizeKnobValue(this.sensitivity.anchorValue - target, { circular: true, min: 0, max: span });
+            const anchor = normalizeKnobValue(this.sensitivity.anchorValue - target, { geometry: "circle", min: 0, max: span });
             const detentWidth = 2 * detentHalfWidth;
             const anchorPixels = anchor === 0 ? this.anchorPlateau + detentHalfWidth : anchor / speed + detentWidth;
             const periodPixels = span / speed + detentWidth;
             // In pointer space each turn includes the full width of its
             // default detent. This is independent of pointer event frequency.
             const phase = normalizeKnobValue(anchorPixels + (position - this.sensitivity.anchorPosition),
-                { circular: true, min: 0, max: periodPixels });
+                { geometry: "circle", min: 0, max: periodPixels });
             this.plateau = Math.min(phase, detentWidth) - detentHalfWidth;
             if (phase <= detentWidth) return target;
             value = target + (phase - detentWidth) * speed;

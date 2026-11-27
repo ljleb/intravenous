@@ -32,19 +32,12 @@ namespace iv::programmatic {
 
 template<class ChannelType = mono, details::ModuleInputBuilder Builder>
     requires requires { ChannelTypeTraits<ChannelType>::id; }
-TypedPublicSampleInputRef<ChannelType> declare_input(Builder& builder, std::string_view name, PortDisplayName label) {
-    return TypedPublicSampleInputRef<ChannelType>{details::ProgrammaticInputAccess::create(
-        builder, details::make_default_boundary_input_config(
-            details::boundary_input_names(name, label), details::module_input_layout<ChannelType>()))};
-}
-
-template<class ChannelType = mono, details::ModuleInputBuilder Builder>
-    requires requires { ChannelTypeTraits<ChannelType>::id; }
 TypedPublicSampleInputRef<ChannelType> declare_input(Builder& builder, std::string_view name, PortDisplayName label,
-    Sample value, std::optional<Sample> min = {}, std::optional<Sample> max = {}) {
+    ContinuousValueType<DefaultContinuousValueType>::BoundaryInputOptions options = {}) {
+    options.channel_layout.channel_type = ChannelTypeTraits<ChannelType>::id;
     return TypedPublicSampleInputRef<ChannelType>{details::ProgrammaticInputAccess::create(
-        builder, details::make_sample_boundary_input_config(
-            details::boundary_input_names(name, label), details::module_input_layout<ChannelType>(), value, min, max))};
+        builder, details::make_boundary_input_config<DefaultContinuousValueType>(
+            details::boundary_input_names(name, label), std::move(options)))};
 }
 
 template<RegisteredContinuousValue... Types, details::ModuleInputBuilder Builder>

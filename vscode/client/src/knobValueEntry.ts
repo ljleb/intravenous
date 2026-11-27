@@ -1,6 +1,6 @@
 import { circularKnobRange, normalizeKnobValue, type KnobLimits } from "./knobScrub";
 
-export type KnobValueRange = Pick<KnobLimits, "min" | "max" | "integer" | "circular">;
+export type KnobValueRange = Pick<KnobLimits, "min" | "max" | "integer" | "geometry">;
 export type KnobValueEntry = {
     id: string;
     label: string;

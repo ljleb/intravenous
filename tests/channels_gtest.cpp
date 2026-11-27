@@ -375,8 +375,8 @@ TEST(Channels, NamedPublicInputsRetainRequestedChannelTypes)
 {
     iv::GraphBuilder graph;
     auto const default_type = iv::programmatic::declare_input(graph, "default_type", {"Default type"});
-    auto const mono = iv::programmatic::declare_input(graph, "mono", {"Mono"}, iv::Sample{0.25f});
-    auto const stereo = iv::programmatic::declare_input<iv::stereo>(graph, "stereo", {"Stereo"}, iv::Sample{0.5f});
+    auto const mono = iv::programmatic::declare_input(graph, "mono", {"Mono"}, {.default_value = iv::Sample{0.25f}});
+    auto const stereo = iv::programmatic::declare_input<iv::stereo>(graph, "stereo", {"Stereo"}, {.default_value = iv::Sample{0.5f}});
     auto const families = iv::host::public_sample_input_families(graph);
 
     static_assert(std::same_as<iv::DefaultContinuousValueType, iv::Sample>);

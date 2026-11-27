@@ -171,7 +171,7 @@ void configure_pointer_metadata_package(
 ConfiguredGraph configure_direct_public_sample_passthrough()
 {
     GraphBuilder g;
-    auto input = iv::programmatic::declare_input(g, "in", {"In"}, 0.0f);
+    auto input = iv::programmatic::declare_input(g, "in", {"In"}, {.default_value = 0.0f});
     g.outputs("out"_P.with_display_name("Out") = input);
     return std::move(g).finish();
 }
@@ -179,7 +179,7 @@ ConfiguredGraph configure_direct_public_sample_passthrough()
 ConfiguredGraph configure_introspection_regression()
 {
     GraphBuilder g;
-    auto input = iv::programmatic::declare_input(g, "in", {"In"}, 0.25f);
+    auto input = iv::programmatic::declare_input(g, "in", {"In"}, {.default_value = 0.25f});
     auto event = iv::programmatic::declare_event_input(g, "event", {"Event"}, EventTypeId::empty);
     auto sum = details::configure_concrete_node<SumN<mono, SampleStreamLayout::planar, 1>>(g);
     auto const sum_handle = sum.node_bundle_handle();
@@ -258,7 +258,7 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
     ASSERT_NE(session, nullptr);
 
     GraphBuilder builder(session.get());
-    auto input = iv::programmatic::declare_input(builder, "in", {"In"}, 0.0f);
+    auto input = iv::programmatic::declare_input(builder, "in", {"In"}, {.default_value = 0.0f});
     auto pass = details::configure_concrete_node<
         SumN<mono, SampleStreamLayout::planar, 1>>(builder);
     pass(input);
@@ -279,8 +279,8 @@ TEST(GraphModules, BuilderSessionOwnsStateRatherThanAGraphBuilderObject)
 TEST(GraphModules, TypedNodeCallsForwardNormalizedSampleAndEventRequests)
 {
     GraphBuilder graph;
-    auto left = iv::programmatic::declare_input(graph, "left", {"Left"}, 0.0f);
-    auto right = iv::programmatic::declare_input(graph, "right", {"Right"}, 0.0f);
+    auto left = iv::programmatic::declare_input(graph, "left", {"Left"}, {.default_value = 0.0f});
+    auto right = iv::programmatic::declare_input(graph, "right", {"Right"}, {.default_value = 0.0f});
     auto source = details::configure_concrete_node<NodeCallEventSource>(graph);
     auto sink = details::configure_concrete_node<NodeCallMixedSink>(graph);
     auto tiled_sink = details::configure_concrete_tiled_node<NodeCallMixedSink, stereo>(graph);

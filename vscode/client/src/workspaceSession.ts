@@ -741,7 +741,7 @@ export class WorkspaceSession {
             ...(minValue === undefined ? {} : { minValue }),
             ...(maxValue === undefined ? {} : { maxValue }),
             ...(scrubSpeed === undefined ? {} : { scrubSpeed }),
-            ...(candidate.circular === true ? { circular: true } : {}),
+            ...(candidate.geometry === "circle" || candidate.geometry === "linear" ? { geometry: candidate.geometry } : {}),
         };
     }
 

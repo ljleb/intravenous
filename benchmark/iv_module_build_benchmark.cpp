@@ -119,7 +119,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         return finish();
     }
     source << "    using namespace iv;\n"
-           << "    auto const frequency = g.input({\"Frequency\"}, 220.0f);\n";
+           << "    auto const frequency = g.input({\"Frequency\"}, {.default_value = 220.0f});\n";
     if (shape == SourceShape::input) {
         source << "}\n";
         return finish();

@@ -17,8 +17,8 @@ auto pan(auto&& g, double t)
 void module_main(iv::GraphBuilder& g)
 {
     constexpr size_t iters = 16;
-    auto const freq = g.input({"Frequency"}, 0, 0, 20000);
-    auto const detune = g.input({"Detune"}, 0, -100, 100);
+    auto const freq = g.input({"Frequency"}, {.default_value = 0, .min = 0, .max = 20000});
+    auto const detune = g.input({"Detune"}, {.default_value = 0, .min = -100, .max = 100});
     auto const detune_pair = detune*2 / (iters-1);
 
     for (size_t i = 0; i < iters + 1; ++i)

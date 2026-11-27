@@ -4,8 +4,6 @@
 #include <intravenous/ports.h>
 
 #include <concepts>
-#include <limits>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -112,25 +110,6 @@ template<ModuleInputAccess Access>
     return make_boundary_input_config<DefaultContinuousValueType>(names, access, options);
 }
 
-[[nodiscard]] inline ContinuousInputConfig make_default_boundary_input_config(
-    PortNames names, ChannelLayout layout =
-        continuous_value_details::default_audio_channel_layout)
-{
-    return make_default_boundary_input_config(names, layout, InputAccess::sequential);
-}
-
-[[nodiscard]] inline ContinuousInputConfig make_sample_boundary_input_config(
-    PortNames names, ChannelLayout layout, Sample value,
-    std::optional<Sample> min, std::optional<Sample> max)
-{
-    return make_boundary_input_config<Sample>(names, {
-        .channel_layout = layout,
-        .default_value = value,
-        .min = min.value_or(-std::numeric_limits<Sample::storage>::infinity()),
-        .max = max.value_or(std::numeric_limits<Sample::storage>::infinity()),
-    });
-}
-
 // The package compiler replaces these calls before they reach CodeGen.
 [[noreturn]] inline void uninstrumented_module_input()
 {
@@ -160,10 +139,8 @@ public:
 #define IV_MODULE_INPUT_TYPES (requires(sizeof...(Types) != 0))
 
     IV_MODULE_INPUT_NAMES(input, TypedPublicSampleInputRef<ChannelType>,
-        (template<class ChannelType = mono>), IV_MODULE_INPUT_CHANNEL)
-    IV_MODULE_INPUT_NAMES(input, TypedPublicSampleInputRef<ChannelType>,
         (template<class ChannelType = mono>), IV_MODULE_INPUT_CHANNEL,
-        Sample, std::optional<Sample> = {}, std::optional<Sample> = {})
+        ContinuousValueType<DefaultContinuousValueType>::BoundaryInputOptions = {})
     IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef, (template<RegisteredContinuousValue... Types>), IV_MODULE_INPUT_TYPES)
     IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef, (template<RegisteredContinuousValue... Types>),
         IV_MODULE_INPUT_TYPES, typename ContinuousValueType<Types>::BoundaryInputOptions...)

@@ -942,8 +942,9 @@ root, so remounting a port widget does not silently end its interaction.
 
 #### Circular Sample input knobs
 
-_Accepted 2026-11-26._ A Sequential Sample input can declare `.circular = true`
-with finite `.min` and `.max`, where `min < max`. Set the flag on the module
+_Accepted 2026-11-26._ A Sequential Sample input has `iv::KnobGeometry::linear`
+by default. Use `.geometry = iv::KnobGeometry::circle` with finite `.min` and
+`.max`, where `min < max`. Set the geometry on the module
 input to expose a circular knob on the module lane. The knob draws one full
 turn with a shared endpoint. Scrubbing, keyboard steps, numeric entry, and
 paste produce knob values in `[min, max)`. The project stores that value and
@@ -953,6 +954,7 @@ The manual-control ramp follows the shortest arc and emits values in the same
 half-open interval. An exact half-turn moves toward increasing values. The
 range describes the knob and its manual contribution. Cable values and the
 input's combination function keep their ordinary semantics.
+[Earlier flag declaration](historical/sample_knob_circular_flag_2026-11-26.md)
 
 ### Clipboard copy/paste is a full value gesture (accepted 2026-11-16)
 

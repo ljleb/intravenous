@@ -74,7 +74,7 @@ inline std::optional<CircularSampleRange> circular_manual_control_range(Continuo
     auto const& metadata = sequential_input_properties(config).value_metadata;
     if (metadata.size() != 1) return std::nullopt;
     auto const* sample = std::get_if<ContinuousValueType<Sample>::SequentialInputMetadata>(&metadata.front());
-    if (!sample || !sample->circular) return std::nullopt;
+    if (!sample || sample->geometry != KnobGeometry::circle) return std::nullopt;
     return CircularSampleRange{sample->min, sample->max};
 }
 

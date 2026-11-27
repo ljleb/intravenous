@@ -395,8 +395,10 @@ namespace {
     {
         using namespace iv;
         auto const in = g.input();
-        auto const azimuth = g.input("Azimuth", 0, -180, 180);
-        auto const elevation = g.input("Elev", "Elevation angle", 0, -180, 180);
+        auto const azimuth = g.input("Azimuth", {
+            .default_value = 5, .min = -180, .max = 180, .geometry = KnobGeometry::circle,
+        });
+        auto const elevation = g.input("Elev", "Elevation angle", {.default_value = 0, .min = -180, .max = 180});
         g.outputs("main"_P = in + azimuth + elevation);
     }
     IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
@@ -451,6 +453,12 @@ namespace {
     EXPECT_EQ(ports[1].input_config.display_name, "Azimuth");
     EXPECT_EQ(ports[2].input_config.display_name, "Elevation angle");
     EXPECT_EQ(ports[2].input_config.short_display_name, "Elev");
+    auto const& angle = iv::sequential_input_metadata<iv::Sample>(
+        iv::sequential_input_properties(ports[1].input_config));
+    EXPECT_FLOAT_EQ(angle.default_value.value, 5);
+    EXPECT_FLOAT_EQ(angle.min.value, -180);
+    EXPECT_FLOAT_EQ(angle.max.value, 180);
+    EXPECT_EQ(angle.geometry, iv::KnobGeometry::circle);
 }
 
 TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBindingStrings)
@@ -482,7 +490,7 @@ namespace {
     void token_provenance_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto frequency = g.input({"Frequency"}, 440.0);
+        auto frequency = g.input({"Frequency"}, {.default_value = 440.0});
         auto saw = details::configure_concrete_node<SawOscillator>(g);
         saw("frequency"_P = frequency);
         auto out = saw * 0.5f;

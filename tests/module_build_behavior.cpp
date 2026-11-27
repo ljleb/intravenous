@@ -74,9 +74,9 @@ int main(int, char** argv)
 
     auto voice_source = iv::test::read_text(voice_dst / "module.cpp");
     auto const voice_needle =
-        std::string("auto const amplitude = g.input({\"Amplitude\"}, 0.1);");
+        std::string("auto const amplitude = g.input({\"Amplitude\"}, {.default_value = 0.1});");
     auto const voice_replacement =
-        std::string("auto const amplitude = g.input({\"Amplitude\"}, 0.1);/* behavior dependency marker*/");
+        std::string("auto const amplitude = g.input({\"Amplitude\"}, {.default_value = 0.1});/* behavior dependency marker*/");
     iv::test::require(voice_source.contains(voice_needle), "voice fixture missing source marker");
     voice_source.replace(
         voice_source.find(voice_needle),

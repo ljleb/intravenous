@@ -37,6 +37,8 @@ export type ScalarPresentationNumber =
     | "positiveInfinity"
     | "negativeInfinity";
 
+export type KnobGeometry = "linear" | "circle";
+
 export type ContinuousValueAlternative = {
     type: string;
     rank: number;
@@ -45,7 +47,7 @@ export type ContinuousValueAlternative = {
     minValue?: ScalarPresentationNumber;
     maxValue?: ScalarPresentationNumber;
     scrubSpeed?: ScalarPresentationNumber;
-    circular?: boolean;
+    geometry?: KnobGeometry;
 };
 
 export type SymbolicContinuousPort = {

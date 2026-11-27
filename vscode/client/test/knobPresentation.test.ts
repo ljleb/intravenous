@@ -5,7 +5,7 @@ import { KnobScrub } from "../src/knobScrub";
 import { parseKnobValue } from "../src/knobValueEntry";
 
 test("a circular knob shares its endpoints and repeats the default detent each turn", () => {
-    const limits = { min: -180, max: 180, defaultValue: 0, circular: true };
+    const limits = { min: -180, max: 180, defaultValue: 0, geometry: "circle" } as const;
     assert.equal(knobFraction(-180, limits), knobFraction(180, limits));
     assert.equal(knobFraction(-179, limits), knobFraction(181, limits));
     assert.equal(parseKnobValue("540", limits), -180);
