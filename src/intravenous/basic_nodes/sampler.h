@@ -30,7 +30,7 @@ struct Sampler {
 
     static constexpr auto outputs()
     {
-        return std::array{output<Sample>({"recorded", "Recorded audio", "Recorded"}, OutputProduction::sequential,
+        return std::array{output<Sample>("recorded", "Recorded", "Recorded audio", OutputProduction::sequential,
                 OutputRealization::buffered, {.channel_layout = layout})};
     }
 

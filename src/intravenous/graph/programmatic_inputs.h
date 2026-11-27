@@ -21,9 +21,9 @@ constexpr ChannelLayout module_input_layout() {
 
 inline PortNames boundary_input_names(std::string_view identifier, PortDisplayName label)
 {
-    if (identifier.empty() && label.value.empty() && label.short_name.empty())
+    if (identifier.empty() && label.short_name.empty() && label.long_name.empty())
         return PortNames::generated();
-    return {identifier, label.value, label.short_name};
+    return {identifier, label.short_name, label.long_name};
 }
 
 } // namespace iv::details

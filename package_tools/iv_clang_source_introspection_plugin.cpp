@@ -994,7 +994,7 @@ public:
         auto const id = context_.getDiagnostics().getCustomDiagID(
             DiagnosticsEngine::Error,
             "module input must directly initialize a named local variable, "
-            "such as 'auto const frequency = g.input({\"Frequency\"});'");
+            "such as 'auto const frequency = g.input(\"Frequency\");'");
         context_.getDiagnostics().Report(call->getExprLoc(), id);
     }
 
@@ -1187,7 +1187,26 @@ private:
                 false, candidates.begin(), candidates.end(), false, false);
         }
         llvm::SmallVector<Expr*, 8> arguments{builder, make_string(variable.getNameAsString(), location)};
-        for (auto* argument : original.arguments()) {
+        auto const* method = original.getMethodDecl();
+        auto const* first = method->getNumParams() ? method->getParamDecl(0)->getIdentifier() : nullptr;
+        auto const label = first ? first->getName() : llvm::StringRef{};
+        unsigned name_arguments = 0;
+        if (label == "label") {
+            arguments.push_back(original.getArg(0));
+            name_arguments = 1;
+        } else {
+            llvm::SmallVector<Expr*, 2> names;
+            if (label == "short_name") {
+                names.push_back(original.getArg(0));
+                names.push_back(original.getArg(1));
+                name_arguments = 2;
+            }
+            auto init = sema().BuildInitList(location, names, location, /*IsExplicit=*/true);
+            if (init.isInvalid()) return;
+            arguments.push_back(init.get());
+        }
+        for (unsigned i = name_arguments; i < original.getNumArgs(); ++i) {
+            auto* argument = original.getArg(i);
             if (!isa<CXXDefaultArgExpr>(argument)) arguments.push_back(argument);
         }
         auto replacement = sema().BuildCallExpr(nullptr, callee, location, arguments, original.getRParenLoc());

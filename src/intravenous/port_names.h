@@ -2,6 +2,7 @@
 
 #include <intravenous/graph/error.h>
 
+#include <concepts>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -89,8 +90,10 @@ constexpr void validate_port_names(
     if (!valid_port_identifier(identifier))
         error("invalid port identifier '" + std::string(identifier)
             + "'. Use [a-z][a-z0-9]*(?:_[a-z0-9]+)*");
-    if (auto issue = port_display_name_error(display); !issue.empty())
-        error("port '" + std::string(identifier) + "' display name " + std::string(issue));
+    if (!display.empty()) {
+        if (auto issue = port_display_name_error(display); !issue.empty())
+            error("port '" + std::string(identifier) + "' display name " + std::string(issue));
+    }
     if (!short_display.empty()) {
         if (auto issue = port_display_name_error(short_display); !issue.empty())
             error("port '" + std::string(identifier) + "' short name " + std::string(issue));
@@ -115,15 +118,23 @@ constexpr void validate_port_config_names(Config const& config)
 } // namespace details
 
 struct PortNames {
-    constexpr PortNames(std::string_view identifier, std::string_view display,
-        std::string_view short_display = {})
-        : identifier(identifier), display(display), short_display(short_display)
+    template<std::convertible_to<std::string_view> Identifier>
+    constexpr PortNames(Identifier const& identifier)
+        : PortNames(std::string_view{identifier}, {}) {}
+
+    constexpr PortNames(std::string_view identifier, std::string_view short_name,
+        std::string_view long_name = {})
+        : identifier(identifier)
+        , display(long_name.empty() ? short_name : long_name)
+        , short_display(long_name.empty() ? std::string_view{} : short_name)
     {
         // Static port lookup also evaluates the declaration. The builder
         // validates at configuration time so it can report the actual label.
         if !consteval {
             details::validate_port_names(identifier, display, short_display);
         }
+        if (short_name.empty() && !long_name.empty())
+            details::error("a long port display name requires a short name");
     }
 
     // A generated port is identified by its position.

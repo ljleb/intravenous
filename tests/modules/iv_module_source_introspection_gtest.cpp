@@ -394,9 +394,10 @@ namespace {
     void child_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const in = g.input({"In"});
-        auto const azimuth = g.input({"Azimuth"}, 0, -180, 180);
-        g.outputs("main"_P.with_display_name("Main") = in + azimuth);
+        auto const in = g.input();
+        auto const azimuth = g.input("Azimuth", 0, -180, 180);
+        auto const elevation = g.input("Elev", "Elevation angle", 0, -180, 180);
+        g.outputs("main"_P = in + azimuth + elevation);
     }
     IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
 
@@ -441,6 +442,15 @@ namespace {
 
     EXPECT_TRUE(has_port_identifier("in", "in"));
     EXPECT_TRUE(has_port_identifier("azimuth", "azimuth"));
+    EXPECT_TRUE(has_port_identifier("elevation", "elevation"));
+    auto const child = std::ranges::find(definitions, "iv.test.source_provenance.child", &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(child, definitions.end());
+    auto const& ports = child->introspection.public_continuous_inputs;
+    ASSERT_EQ(ports.size(), 3u);
+    EXPECT_TRUE(ports[0].input_config.display_name.empty());
+    EXPECT_EQ(ports[1].input_config.display_name, "Azimuth");
+    EXPECT_EQ(ports[2].input_config.display_name, "Elevation angle");
+    EXPECT_EQ(ports[2].input_config.short_display_name, "Elev");
 }
 
 TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBindingStrings)

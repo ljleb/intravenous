@@ -65,9 +65,10 @@ namespace iv {
         std::string_view short_display_name {};
 
         constexpr ChannelPortName with_display_name(
-            std::string_view label, std::string_view abbreviated = {}) const
+            std::string_view short_name, std::string_view long_name = {}) const
         {
-            return {label, abbreviated};
+            auto const names = PortNames{Name.view(), short_name, long_name};
+            return {names.display, names.short_display};
         }
 
         template<class T>
@@ -80,9 +81,10 @@ namespace iv {
         std::string_view short_display_name {};
 
         constexpr PortName with_display_name(
-            std::string_view label, std::string_view abbreviated = {}) const
+            std::string_view short_name, std::string_view long_name = {}) const
         {
-            return {label, abbreviated};
+            auto const names = PortNames{Name.view(), short_name, long_name};
+            return {names.display, names.short_display};
         }
 
         template<class T>

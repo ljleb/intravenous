@@ -2593,6 +2593,97 @@ namespace iv {
     IV_DEFINE_EVENT_OUTPUT_HELPER(Coverage, CoverageEventOutputConfig)
 #undef IV_DEFINE_EVENT_OUTPUT_HELPER
 
+    // Keep the option types explicit so designated initializers work with
+    // either spelling of a port's names.
+#define IV_PORT_ARGUMENTS(...) __VA_ARGS__
+#define IV_PORT_NAME_OVERLOADS(Function, Template, Types, Parameters, Arguments, Requires) \
+    IV_PORT_ARGUMENTS Template                                                    \
+    [[nodiscard]] constexpr auto Function(                                       \
+        std::string_view identifier, std::convertible_to<std::string_view> auto const& short_name \
+        IV_PORT_ARGUMENTS Parameters) IV_PORT_ARGUMENTS Requires                 \
+    {                                                                            \
+        return Function IV_PORT_ARGUMENTS Types(                                 \
+            PortNames{identifier, short_name} IV_PORT_ARGUMENTS Arguments);       \
+    }                                                                            \
+    IV_PORT_ARGUMENTS Template                                                    \
+    [[nodiscard]] constexpr auto Function(                                       \
+        std::string_view identifier, std::convertible_to<std::string_view> auto const& short_name, \
+        std::convertible_to<std::string_view> auto const& long_name               \
+        IV_PORT_ARGUMENTS Parameters) IV_PORT_ARGUMENTS Requires                 \
+    {                                                                            \
+        return Function IV_PORT_ARGUMENTS Types(                                 \
+            PortNames{identifier, short_name, long_name} IV_PORT_ARGUMENTS Arguments); \
+    }
+
+#define IV_CONTINUOUS_PORT_NAMES(Function, Parameters, Arguments, Requires) \
+    IV_PORT_NAME_OVERLOADS(Function, (template<RegisteredContinuousValue... Types>), \
+        (<Types...>), Parameters, Arguments, Requires)
+#define IV_TYPED_PORT_OPTIONS(Options) \
+    typename ContinuousValueType<Types>::Options... options
+#define IV_SAMPLE_TYPES_PRESENT (requires(sizeof...(Types) != 0))
+
+#define IV_CONTINUOUS_INPUT_NAMES(Token, Options) \
+    IV_CONTINUOUS_PORT_NAMES(input, (, InputAccess::Token access), (, access), ()) \
+    IV_CONTINUOUS_PORT_NAMES(input, (, InputAccess::Token access, IV_TYPED_PORT_OPTIONS(Options)), \
+        (, access, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTINUOUS_INPUT_NAMES(Sequential, SequentialInputOptions)
+    IV_CONTINUOUS_INPUT_NAMES(Region, RegionInputOptions)
+    IV_CONTINUOUS_INPUT_NAMES(Coverage, CoverageInputOptions)
+#undef IV_CONTINUOUS_INPUT_NAMES
+    IV_CONTINUOUS_PORT_NAMES(input, (), (), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTINUOUS_PORT_NAMES(input, (, IV_TYPED_PORT_OPTIONS(SequentialInputOptions)),
+        (, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+#define IV_CONTENT_INPUT_NAMES(Token, Options) \
+    IV_CONTINUOUS_PORT_NAMES(input, (, InputAccess::Token access, InputContentAccess content), \
+        (, access, content), ()) \
+    IV_CONTINUOUS_PORT_NAMES(input, (, InputAccess::Token access, InputContentAccess content, IV_TYPED_PORT_OPTIONS(Options)), \
+        (, access, content, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTENT_INPUT_NAMES(Region, RegionInputOptions)
+    IV_CONTENT_INPUT_NAMES(Coverage, CoverageInputOptions)
+#undef IV_CONTENT_INPUT_NAMES
+
+#define IV_CONTINUOUS_OUTPUT_NAMES(Token, Options) \
+    IV_CONTINUOUS_PORT_NAMES(output, (, OutputProduction::Token production, OutputRealization realization = OutputRealization::computed), \
+        (, production, realization), ()) \
+    IV_CONTINUOUS_PORT_NAMES(output, (, OutputProduction::Token production, IV_TYPED_PORT_OPTIONS(Options)), \
+        (, production, std::move(options)...), IV_SAMPLE_TYPES_PRESENT) \
+    IV_CONTINUOUS_PORT_NAMES(output, (, OutputProduction::Token production, OutputRealization realization, IV_TYPED_PORT_OPTIONS(Options)), \
+        (, production, realization, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTINUOUS_OUTPUT_NAMES(Sequential, SequentialOutputOptions)
+    IV_CONTINUOUS_OUTPUT_NAMES(Region, RegionOutputOptions)
+    IV_CONTINUOUS_OUTPUT_NAMES(Coverage, CoverageOutputOptions)
+#undef IV_CONTINUOUS_OUTPUT_NAMES
+    IV_CONTINUOUS_PORT_NAMES(output, (, OutputRealization realization = OutputRealization::computed),
+        (, realization), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTINUOUS_PORT_NAMES(output, (, IV_TYPED_PORT_OPTIONS(SequentialOutputOptions)),
+        (, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+    IV_CONTINUOUS_PORT_NAMES(output, (, OutputRealization realization, IV_TYPED_PORT_OPTIONS(SequentialOutputOptions)),
+        (, realization, std::move(options)...), IV_SAMPLE_TYPES_PRESENT)
+#undef IV_SAMPLE_TYPES_PRESENT
+#undef IV_TYPED_PORT_OPTIONS
+#undef IV_CONTINUOUS_PORT_NAMES
+
+    IV_PORT_NAME_OVERLOADS(event_input, (), (), (, EventTypeId type, InputAccess::Sequential access), (, type, access), ())
+#define IV_CONTENT_EVENT_INPUT_NAMES(Token) \
+    IV_PORT_NAME_OVERLOADS(event_input, (), (), (, EventTypeId type, InputAccess::Token access, \
+        InputContentAccess content = InputContentAccess::windowed), (, type, access, content), ())
+    IV_CONTENT_EVENT_INPUT_NAMES(Region)
+    IV_CONTENT_EVENT_INPUT_NAMES(Coverage)
+#undef IV_CONTENT_EVENT_INPUT_NAMES
+    IV_PORT_NAME_OVERLOADS(event_timestamp_input, (), (), (, InputContentAccess content = InputContentAccess::windowed), (, content), ())
+#define IV_EVENT_OUTPUT_NAMES(Token) \
+    IV_PORT_NAME_OVERLOADS(event_output, (), (), (, EventTypeId type, OutputProduction::Token production, \
+        EventOutputOptions options), (, type, production, options), ()) \
+    IV_PORT_NAME_OVERLOADS(event_output, (), (), (, EventTypeId type, OutputProduction::Token production, \
+        OutputRealization realization = OutputRealization::computed, EventOutputOptions options = {}), \
+        (, type, production, realization, options), ())
+    IV_EVENT_OUTPUT_NAMES(Sequential)
+    IV_EVENT_OUTPUT_NAMES(Region)
+    IV_EVENT_OUTPUT_NAMES(Coverage)
+#undef IV_EVENT_OUTPUT_NAMES
+#undef IV_PORT_NAME_OVERLOADS
+#undef IV_PORT_ARGUMENTS
+
     template<class Tuple>
     concept PortConfigTuple = requires {
         typename std::tuple_size<std::remove_cvref_t<Tuple>>::type;

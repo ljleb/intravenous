@@ -13,11 +13,14 @@
 namespace iv {
 
 struct PortDisplayName {
-    constexpr PortDisplayName(std::string_view label, std::string_view abbreviated = {})
-        : value(label), short_name(abbreviated) {}
+    constexpr PortDisplayName() = default;
+    template<std::convertible_to<std::string_view> Label>
+    constexpr PortDisplayName(Label const& short_name) : short_name(short_name) {}
+    constexpr PortDisplayName(std::string_view short_name, std::string_view long_name)
+        : short_name(short_name), long_name(long_name) {}
 
-    std::string_view value;
-    std::string_view short_name;
+    std::string_view short_name{};
+    std::string_view long_name{};
 };
 
 namespace details {
@@ -136,58 +139,49 @@ template<ModuleInputAccess Access>
 
 class ModuleInputDeclarations {
 public:
-    template<class ChannelType = mono>
-        requires requires { ChannelTypeTraits<ChannelType>::id; }
-    TypedPublicSampleInputRef<ChannelType> input(PortDisplayName) {
-        uninstrumented_module_input();
-    }
+    // The Clang plugin lowers each spelling to a PortDisplayName and uses
+    // the receiving variable as the port identifier.
+#define IV_MODULE_INPUT_EXPAND(...) __VA_ARGS__
+#define IV_MODULE_INPUT_COMMA(...) __VA_OPT__(,) __VA_ARGS__
+#define IV_MODULE_INPUT_NAMES(Function, Result, Template, Constraint, ...)         \
+    IV_MODULE_INPUT_EXPAND Template                                               \
+    Result Function(__VA_ARGS__) IV_MODULE_INPUT_EXPAND Constraint               \
+    { uninstrumented_module_input(); }                                           \
+    IV_MODULE_INPUT_EXPAND Template                                               \
+    Result Function([[maybe_unused]] PortDisplayName label IV_MODULE_INPUT_COMMA(__VA_ARGS__)) \
+        IV_MODULE_INPUT_EXPAND Constraint                                         \
+    { uninstrumented_module_input(); }                                           \
+    IV_MODULE_INPUT_EXPAND Template                                               \
+    Result Function([[maybe_unused]] std::string_view short_name,                  \
+        [[maybe_unused]] std::convertible_to<std::string_view> auto const& long_name \
+        IV_MODULE_INPUT_COMMA(__VA_ARGS__)) IV_MODULE_INPUT_EXPAND Constraint     \
+    { uninstrumented_module_input(); }
+#define IV_MODULE_INPUT_CHANNEL (requires requires { ChannelTypeTraits<ChannelType>::id; })
+#define IV_MODULE_INPUT_TYPES (requires(sizeof...(Types) != 0))
 
-    template<class ChannelType = mono>
-        requires requires { ChannelTypeTraits<ChannelType>::id; }
-    TypedPublicSampleInputRef<ChannelType> input(
-        PortDisplayName, Sample, std::optional<Sample> = {}, std::optional<Sample> = {}) {
-        uninstrumented_module_input();
-    }
+    IV_MODULE_INPUT_NAMES(input, TypedPublicSampleInputRef<ChannelType>,
+        (template<class ChannelType = mono>), IV_MODULE_INPUT_CHANNEL)
+    IV_MODULE_INPUT_NAMES(input, TypedPublicSampleInputRef<ChannelType>,
+        (template<class ChannelType = mono>), IV_MODULE_INPUT_CHANNEL,
+        Sample, std::optional<Sample> = {}, std::optional<Sample> = {})
+    IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef, (template<RegisteredContinuousValue... Types>), IV_MODULE_INPUT_TYPES)
+    IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef, (template<RegisteredContinuousValue... Types>),
+        IV_MODULE_INPUT_TYPES, typename ContinuousValueType<Types>::BoundaryInputOptions...)
+    IV_MODULE_INPUT_NAMES(input, TypedPublicSampleInputRef<ChannelType>,
+        (template<class ChannelType = mono, ModuleInputAccess Access>), IV_MODULE_INPUT_CHANNEL, Access)
+    IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef,
+        (template<RegisteredContinuousValue... Types, ModuleInputAccess Access>), IV_MODULE_INPUT_TYPES, Access)
+    IV_MODULE_INPUT_NAMES(input, PublicSampleInputRef,
+        (template<RegisteredContinuousValue... Types, ModuleInputAccess Access>), IV_MODULE_INPUT_TYPES,
+        Access, module_input_options_t<Types, Access>...)
+    IV_MODULE_INPUT_NAMES(event_input, PublicEventInputRef, (), (), EventTypeId)
+    IV_MODULE_INPUT_NAMES(event_input, PublicEventInputRef, (template<ModuleInputAccess Access>), (), EventTypeId, Access)
 
-    template<RegisteredContinuousValue... Types>
-        requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(PortDisplayName) {
-        uninstrumented_module_input();
-    }
-
-    template<RegisteredContinuousValue... Types>
-        requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(
-        PortDisplayName, typename ContinuousValueType<Types>::BoundaryInputOptions...) {
-        uninstrumented_module_input();
-    }
-
-    template<class ChannelType = mono, ModuleInputAccess Access>
-        requires requires { ChannelTypeTraits<ChannelType>::id; }
-    TypedPublicSampleInputRef<ChannelType> input(PortDisplayName, Access) {
-        uninstrumented_module_input();
-    }
-
-    template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
-        requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(PortDisplayName, Access) {
-        uninstrumented_module_input();
-    }
-
-    template<RegisteredContinuousValue... Types, ModuleInputAccess Access>
-        requires(sizeof...(Types) != 0)
-    PublicSampleInputRef input(PortDisplayName, Access, module_input_options_t<Types, Access>...) {
-        uninstrumented_module_input();
-    }
-
-    PublicEventInputRef event_input(PortDisplayName, EventTypeId) {
-        uninstrumented_module_input();
-    }
-
-    template<ModuleInputAccess Access>
-    PublicEventInputRef event_input(PortDisplayName, EventTypeId, Access) {
-        uninstrumented_module_input();
-    }
+#undef IV_MODULE_INPUT_TYPES
+#undef IV_MODULE_INPUT_CHANNEL
+#undef IV_MODULE_INPUT_NAMES
+#undef IV_MODULE_INPUT_COMMA
+#undef IV_MODULE_INPUT_EXPAND
 };
 
 struct ProgrammaticInputAccess;

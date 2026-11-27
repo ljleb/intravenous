@@ -29,15 +29,35 @@
 
 namespace {
 
-TEST(PortNames, RequiresAnIdentifierAndDisplayName)
+TEST(PortNames, RequiresAnIdentifierAndAllowsOptionalDisplayNames)
 {
     EXPECT_THROW((iv::PortNames{"", "Signal"}), std::logic_error);
-    EXPECT_THROW((iv::PortNames{"phase_offset", ""}), std::logic_error);
+    EXPECT_THROW((iv::PortNames{"phase_offset", "", "Phase offset"}), std::logic_error);
     EXPECT_THROW((iv::PortNames{"Phase", "Phase"}), std::logic_error);
     EXPECT_THROW((iv::PortNames{"phase__offset", "Phase offset"}), std::logic_error);
     EXPECT_THROW((iv::PortNames{"out_", "Out"}), std::logic_error);
-    EXPECT_NO_THROW((iv::PortNames{"out_2", "Signal output 2", "Out 2"}));
+    EXPECT_NO_THROW((iv::PortNames{"out_2", "Out 2", "Signal output 2"}));
     EXPECT_TRUE(iv::PortNames::generated().identifier.empty());
+}
+
+TEST(PortNames, LeafOverloadsKeepShortAndLongNamesWithTypedOptions)
+{
+    auto const identifier = iv::input<iv::Sample>("signal");
+    EXPECT_EQ(identifier.name, "signal");
+    EXPECT_TRUE(identifier.display_name.empty());
+    EXPECT_TRUE(identifier.short_display_name.empty());
+
+    auto const short_only = iv::input<iv::Sample>("signal", "Sig", iv::InputAccess::sequential, {.min = -1});
+    EXPECT_EQ(short_only.display_name, "Sig");
+    EXPECT_TRUE(short_only.short_display_name.empty());
+    EXPECT_EQ(std::get<0>(short_only.options).min, iv::Sample{-1});
+
+    auto const both = iv::output<iv::Sample>(
+        "signal", "Sig", "Signal output", iv::OutputProduction::sequential, iv::OutputRealization::buffered);
+    EXPECT_EQ(both.name, "signal");
+    EXPECT_EQ(both.display_name, "Signal output");
+    EXPECT_EQ(both.short_display_name, "Sig");
+    EXPECT_EQ(both.realization, iv::OutputRealization::buffered);
 }
 
 TEST(PortNames, DistinguishesSeparatorsFromPunctuationInUnicodeLabels)

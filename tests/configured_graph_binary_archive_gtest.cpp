@@ -42,7 +42,7 @@ struct ConstrainedArchiveNode {
     {
         return std::tuple{
             iv::input<iv::Sample, iv::FractionalGlobalIndex>(
-                {"input", "Fréquence audio", "Fréq"}, iv::InputAccess::sequential),
+                "input", "Fréq", "Fréquence audio", iv::InputAccess::sequential),
             iv::event_input({"event_input", "Event input"}, iv::EventTypeId::trigger, iv::InputAccess::sequential),
         };
     }
@@ -52,7 +52,7 @@ struct ConstrainedArchiveNode {
         return std::tuple{
             iv::output<iv::Sample, iv::FractionalGlobalIndex>(
                 {"output", "Output"}, iv::OutputProduction::sequential),
-            iv::event_output({"event_output", "Trigger events", "Events"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential),
+            iv::event_output("event_output", "Events", "Trigger events", iv::EventTypeId::trigger, iv::OutputProduction::sequential),
         };
     }
 
