@@ -61,8 +61,9 @@ executing node graphs:
   successful foreground execution even when paused. Explicit relocation can
   change its next global coordinate.
 
-While running, both trajectories are aligned. While paused, they are
-independent. A third, compiler-owned **physical Sequential cursor** orders
+While project playback runs, both trajectories are aligned. During a pause,
+load or reset can link the two positions. A manual foreground hold fixes its
+position until it resumes or the graph resets. A third, compiler-owned **physical Sequential cursor** orders
 actually executed values and addresses retained rings/history. It is not a
 node-visible time, and it continues contiguously across global-coordinate
 jumps. The physical audio-device clock is likewise not another project
@@ -84,9 +85,12 @@ a Tick boundary, possibly after preparation):
 | Running Tick block | Advances with executed block | Advances with executed block, aligned |
 | Pause with Space | Returns to the last selected start and holds there | Continues advancing on executed blocks |
 | Seek during a project-only pause | Changes to the destination | Unchanged by the seek |
-| Hold with Shift+Space | Returns to the last selected start and holds there | Returns to the same position and stops executing |
-| Seek while both playheads are held | Changes to the destination | Moves to the destination and stays held |
-| Release the foreground with Shift+Space | Holds destination | Resumes Tick from the held position |
+| Hold with Shift+Space | Returns to the last selected start if running. A paused playhead stays in place. | Stops at its current position |
+| Seek during a manual foreground hold | Changes to the destination | Stays at its held position |
+| Seek while paused after load or reset | Changes to the destination | Follows the background playhead and stays paused |
+| Resume the foreground with Shift+Space | Stays paused | Resumes Tick from its current position |
+| Reset Graph State while background is paused | Stays at its current position | Moves to the background position and stays linked until execution resumes |
+| Reset Graph State while background is running | Continues playing | Continues playing in alignment with fresh graph state |
 | Resume/start | Advances from held position | Relocates to held position, then advances |
 | Seek while running | Relocates to destination, continues | Relocates to destination, continues in alignment |
 | Explicit foreground relocation while paused | Unchanged | Relocates the one shared foreground coordinate |
@@ -117,6 +121,7 @@ Similarly, smoothing is an explicit signal/input interpretation rather than a
 mandatory approximation for every parameter change; the compiled graph should
 preserve sample-exact authored behavior.
 [Earlier pause contract](./historical/foreground_playback_before_foreground_hold_2026-11-26.md)
+[Earlier foreground hold rule](./historical/playback_before_foreground_hold_in_place_2026-11-27.md)
 
 ### Reset graph state
 

@@ -94,6 +94,7 @@ public:
     struct Block {
         ProjectPlaybackSnapshot state;
         bool audition = false;
+        bool foreground_held_in_place = false;
 
         [[nodiscard]] TickPlaybackSelection selection() const noexcept
         {
@@ -118,6 +119,7 @@ public:
             next.state.foreground_running = true;
             next.state.running = true;
             next.audition = false;
+            next.foreground_held_in_place = false;
             return next;
         }
     };
@@ -139,6 +141,9 @@ private:
     ProjectPlaybackSnapshot pending_{};
     std::optional<GlobalIndex> pending_position_{};
     std::optional<GlobalIndex> pending_foreground_position_{};
+    bool foreground_held_in_place_ = false;
+    // An explicit run or hold request can outlive a reset while its boundary is prepared.
+    std::optional<bool> pending_foreground_run_{};
     bool pending_audition_ = false;
     // Present while the audio side is processing a drag, even before its first position applies.
     std::optional<bool> drag_resume_running_{};
@@ -173,10 +178,22 @@ private:
     void select_position(GlobalIndex position) noexcept
     {
         pending_position_ = position;
-        if (!pending_.foreground_running) pending_foreground_position_ = position;
+        if (!pending_.foreground_running && !pending_foreground_held_in_place())
+            pending_foreground_position_ = position;
         pending_.start_position = position;
         pending_audition_ = !pending_.running && pending_.foreground_running;
         ++pending_.segment;
+    }
+
+    [[nodiscard]] bool pending_foreground_held_in_place() const noexcept
+    {
+        return pending_foreground_run_.has_value() ? !*pending_foreground_run_ : foreground_held_in_place_;
+    }
+
+    void request_foreground(bool running) noexcept
+    {
+        pending_.foreground_running = running;
+        pending_foreground_run_ = running;
     }
 
     void publish() noexcept
@@ -236,7 +253,7 @@ public:
         state.sample_rate = sample_rate;
         // Hold the last applied position while a drag destination is being prepared.
         if (drag_resume_running_) state.running = false;
-        return {state};
+        return {.state = state, .foreground_held_in_place = foreground_held_in_place_};
     }
 
     [[nodiscard]] Block begin_block(double sample_rate) noexcept
@@ -247,6 +264,7 @@ public:
             pending_ = state_;
             pending_position_.reset();
             pending_foreground_position_.reset();
+            pending_foreground_run_.reset();
             pending_audition_ = false;
         }
         while (consumed != written) {
@@ -262,7 +280,7 @@ public:
                 } else if (command.drag_phase == ProjectPlaybackDragPhase::end) {
                     pending_.running = *drag_resume_running_;
                     drag_resume_running_.reset();
-                    if (pending_.running) pending_.foreground_running = true;
+                    if (pending_.running) request_foreground(true);
                     // Releasing a paused drag at an already selected position preserves its audition.
                     if (!pending_.running && command.position == pending_.start_position) break;
                 }
@@ -275,7 +293,7 @@ public:
                 if (running == wanted) break;
                 running = wanted;
                 if (!drag_resume_running_) {
-                    if (wanted) pending_.foreground_running = true;
+                    if (wanted) request_foreground(true);
                     pending_position_ = pending_.start_position;
                     pending_audition_ = false;
                     ++pending_.segment;
@@ -283,12 +301,12 @@ public:
                 break;
             }
             case ProjectPlaybackOperation::toggle_foreground:
-                pending_.foreground_running = !pending_.foreground_running;
+                request_foreground(!pending_.foreground_running);
                 if (!pending_.foreground_running) {
+                    if (pending_.running || drag_resume_running_.value_or(false))
+                        pending_position_ = pending_.start_position;
                     pending_.running = false;
                     if (drag_resume_running_) *drag_resume_running_ = false;
-                    pending_position_ = pending_.start_position;
-                    pending_foreground_position_ = pending_.start_position;
                     pending_audition_ = false;
                 }
                 ++pending_.segment;
@@ -305,18 +323,26 @@ public:
         state.background_playhead = pending_position_.value_or(state_.background_playhead);
         state.foreground_playhead = state.running ? state.background_playhead
             : pending_foreground_position_.value_or(state_.foreground_playhead);
-        return {state, pending_audition_};
+        return {state, pending_audition_, pending_foreground_held_in_place()};
     }
 
     void end_block(Block const& executed, std::size_t frames) noexcept
     {
         state_ = executed.after_frames(frames).state;
+        foreground_held_in_place_ = executed.foreground_held_in_place;
         publish();
     }
 
-    void align_foreground_after_reset() noexcept
+    void apply_graph_reset() noexcept
     {
         state_.foreground_playhead = state_.background_playhead;
+        if (!state_.running) {
+            state_.foreground_running = false;
+            foreground_held_in_place_ = false;
+            pending_.foreground_running = pending_foreground_run_.value_or(false);
+            pending_foreground_position_ = pending_foreground_run_.has_value() ? std::nullopt : pending_position_;
+            pending_audition_ = false;
+        }
         ++state_.segment;
         ++pending_.segment;
         publish();

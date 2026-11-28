@@ -336,6 +336,9 @@ Preserved before the owner separated configuration commitment from DSP readiness
 
 ## Superseded project playback and recording semantics (2026-11-17)
 
+- [Playback before holding the foreground in place](./playback_before_foreground_hold_in_place_2026-11-27.md)
+  preserves the prior Shift+Space behavior and seek rule for a foreground hold.
+
 - [Playback before the Two-Coordinate Clarification](./playback_before_two_coordinate_clarification_2026-11-17.md)
   preserves the staged-index documentation's paused neutral/empty delivery,
   seek relocation, single-range capture and underrun wording. The current

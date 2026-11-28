@@ -1832,7 +1832,7 @@ bool GraphExecutor::activate_pending_at(PlaybackDemand const& applied, PlaybackD
         if (activated_root) *activated_root = initial.get();
         if (applied_candidate) *applied_candidate = candidate && selected_boundary == candidate;
         if (reset_playhead) *reset_playhead = generation.graph->reset_state;
-        if (generation.graph->reset_state) playback_.align_foreground_after_reset();
+        if (generation.graph->reset_state) playback_.apply_graph_reset();
         realtime_persisted_state_.activate_generation(std::move(initial));
     };
     auto activate_realtime_code = [&](ExecutionGeneration& generation) {

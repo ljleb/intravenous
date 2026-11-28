@@ -85,7 +85,7 @@ TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResu
     executor.render_block(32, 48000);
     frame = executor.collect_observations();
     ASSERT_TRUE(frame && frame->count == 1);
-    EXPECT_EQ(frame->sample_index, index(0));
+    EXPECT_EQ(frame->sample_index, index(32));
     EXPECT_EQ(frame->block_size, 0u);
     EXPECT_FALSE(frame->values[0].value.captured);
     executor.render_block(32, 48000);
@@ -93,16 +93,15 @@ TEST_F(GraphJitRuntimeFixture, ForegroundHoldClearsLiveObservationsUntilTickResu
 
     (void)executor.seek_playback(index(20));
     executor.render_block(32, 48000);
-    frame = executor.collect_observations();
-    ASSERT_TRUE(frame && frame->count == 1);
-    EXPECT_EQ(frame->sample_index, index(20));
-    EXPECT_FALSE(frame->values[0].value.captured);
+    EXPECT_EQ(executor.collect_observations(), nullptr);
+    EXPECT_EQ(executor.playback_snapshot().background_playhead, index(20));
+    EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(32));
 
     executor.handle_playback(toggle);
     executor.render_block(32, 48000);
     frame = executor.collect_observations();
     ASSERT_TRUE(frame && frame->count == 1 && frame->values[0].value.captured);
-    EXPECT_EQ(frame->sample_index, index(20));
+    EXPECT_EQ(frame->sample_index, index(32));
     EXPECT_EQ(frame->block_size, 32u);
     EXPECT_EQ(executor.playback_underrun_blocks(), 0u);
 }
@@ -571,7 +570,6 @@ TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePl
                 ASSERT_LT(std::chrono::steady_clock::now(), deadline);
                 std::this_thread::yield();
             } while (true);
-            ASSERT_TRUE(slice.rendered);
         };
         auto input_level = [&] {
             auto const* frame = executor.collect_observations();
@@ -583,6 +581,7 @@ TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePl
 
         PlaybackRenderSlice first;
         ASSERT_NO_FATAL_FAILURE(render_first(initial.compiled_graph, first));
+        ASSERT_TRUE(first.rendered);
         auto const fresh_level = input_level();
         for (int block = 0; block < 5; ++block) executor.render_block(7, 48000);
         EXPECT_NE(input_level().peak, fresh_level.peak);
@@ -590,8 +589,13 @@ TEST_F(GraphJitRuntimeFixture, ResetRestoresFreshSequentialHistoryAndAlignsThePl
 
         PlaybackRenderSlice restarted;
         ASSERT_NO_FATAL_FAILURE(render_first(reset.compiled_graph, restarted));
+        EXPECT_FALSE(restarted.rendered);
         EXPECT_EQ(restarted.foreground_sample, index(0));
         EXPECT_GT(restarted.segment, first.segment);
+        executor.handle_playback(resume);
+        executor.render_block(7, 48000, &restarted);
+        ASSERT_TRUE(restarted.rendered);
+        EXPECT_EQ(restarted.foreground_sample, index(0));
         auto const reset_level = input_level();
         EXPECT_EQ(reset_level.samples, 7u);
         EXPECT_DOUBLE_EQ(reset_level.peak, fresh_level.peak);

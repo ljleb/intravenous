@@ -38,12 +38,12 @@ onBeforeUnmount(() => control.hover(false));
         @pointerdown.stop @click.stop @contextmenu="knob?.entry($event)"
         @iv-hoverenter="control.hover(true)" @iv-hoverleave="control.hover(false)">
         <PortLabel v-if="showName" class="manual-name" :name="label" :short-name="control.port.value?.shortDisplayName" />
-        <button v-if="control.canToggleEnabled.value" type="button" tabindex="-1" class="knob-side-toggle knob-enable-toggle manual-input-toggle"
+        <button v-if="control.canToggleEnabled.value" type="button" tabindex="-1" class="knob-side-toggle manual-input-toggle"
             :aria-pressed="!!descriptor?.enabled" :disabled="!descriptor?.available || descriptor.live || control.dragging.value"
             :aria-label="`${label} manual value`"
             :data-status-hint="`${label} · ${descriptor?.enabled ? 'Disable knob' : 'Enable knob'}`"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.toggleEnabled" @contextmenu.stop.prevent>
-            <span aria-hidden="true" />
+            <span aria-hidden="true"><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="3" /></svg></span>
         </button>
         <Knob ref="knob" class="manual-knob" :identity="control.key.value" :label="label" :value="value" :limits="limits"
             :disabled="!available" :port-cutout="portCutout" :direction="direction" :activity="activity"
@@ -57,7 +57,11 @@ onBeforeUnmount(() => control.hover(false));
             aria-description="Changes the sign and keeps the magnitude"
             @pointerdown.stop @mousedown.left.prevent @click.stop="control.invert" @contextmenu.stop.prevent
             @focus="control.hover(true)" @blur="control.hover(false)">
-            <span aria-hidden="true" />
+            <span aria-hidden="true">
+                <svg viewBox="0 0 12 12">
+                    <path :d="control.inverted.value ? 'M3 5.25h6v1.5H3z' : 'M3 5.25h2.25V3h1.5v2.25H9v1.5H6.75V9h-1.5V6.75H3z'" />
+                </svg>
+            </span>
         </button>
         <span v-if="state?.error" class="manual-error" :data-status-hint="state.error"
             role="img" :aria-label="`Manual control error. ${state.error}`">!</span>

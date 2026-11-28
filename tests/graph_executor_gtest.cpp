@@ -1422,7 +1422,7 @@ TEST(ProjectPlayback, PauseReturnsToTheSelectedStartWithoutAudition)
     EXPECT_EQ(playback.begin_block(48000).state.foreground_playhead, index(50));
 }
 
-TEST(ProjectPlayback, ForegroundToggleParksBothPlayheadsAndResumesOnlyTick)
+TEST(ProjectPlayback, ForegroundHoldKeepsItsPositionAcrossBackgroundSeeks)
 {
     iv::ProjectPlayback playback;
     (void)playback.seek(index(100));
@@ -1433,18 +1433,19 @@ TEST(ProjectPlayback, ForegroundToggleParksBothPlayheadsAndResumesOnlyTick)
     auto parked = playback.begin_block(48000);
     EXPECT_EQ(parked.state.applied_command, hold);
     EXPECT_EQ(parked.state.background_playhead, index(100));
-    EXPECT_EQ(parked.state.foreground_playhead, index(100));
+    EXPECT_EQ(parked.state.foreground_playhead, index(116));
     EXPECT_FALSE(parked.state.running);
     EXPECT_FALSE(parked.state.foreground_running);
     EXPECT_FALSE(parked.audition);
     playback.end_block(parked, 16);
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(100));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(116));
 
     (void)playback.seek(index(-20));
     parked = playback.begin_block(48000);
     EXPECT_FALSE(parked.audition);
     playback.end_block(parked, 0);
-    EXPECT_EQ(playback.snapshot().foreground_playhead, index(-20));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(-20));
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(116));
 
     (void)playback.toggle_foreground();
     playback.end_block(playback.begin_block(48000), 16);
@@ -1452,7 +1453,7 @@ TEST(ProjectPlayback, ForegroundToggleParksBothPlayheadsAndResumesOnlyTick)
     EXPECT_TRUE(resumed.foreground_running);
     EXPECT_FALSE(resumed.running);
     EXPECT_EQ(resumed.background_playhead, index(-20));
-    EXPECT_EQ(resumed.foreground_playhead, index(-4));
+    EXPECT_EQ(resumed.foreground_playhead, index(132));
 
     (void)playback.toggle_foreground();
     (void)playback.toggle();
@@ -1461,6 +1462,48 @@ TEST(ProjectPlayback, ForegroundToggleParksBothPlayheadsAndResumesOnlyTick)
     EXPECT_TRUE(playback.snapshot().running);
     EXPECT_EQ(playback.snapshot().foreground_playhead, index(-4));
     EXPECT_EQ(playback.snapshot().background_playhead, index(-4));
+}
+
+TEST(ProjectPlayback, ResetRelinksPausedPlayheadsAndPreservesPendingSeeks)
+{
+    iv::ProjectPlayback playback;
+    (void)playback.seek(index(100));
+    (void)playback.toggle_foreground();
+    playback.end_block(playback.begin_block(48000), 16);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(116));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(100));
+
+    (void)playback.seek(index(200));
+    (void)playback.begin_block(48000);
+    playback.apply_graph_reset();
+    EXPECT_FALSE(playback.snapshot().foreground_running);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(100));
+    playback.end_block(playback.begin_block(48000), 16);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(200));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(200));
+
+    (void)playback.seek(index(300));
+    playback.end_block(playback.begin_block(48000), 16);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(300));
+    (void)playback.toggle();
+    playback.end_block(playback.begin_block(48000), 16);
+    playback.apply_graph_reset();
+    EXPECT_TRUE(playback.snapshot().foreground_running);
+    EXPECT_TRUE(playback.snapshot().running);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(316));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(316));
+
+    (void)playback.toggle_foreground();
+    playback.end_block(playback.begin_block(48000), 0);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(316));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(300));
+    playback.apply_graph_reset();
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(300));
+    (void)playback.seek(index(400));
+    playback.end_block(playback.begin_block(48000), 0);
+    EXPECT_FALSE(playback.snapshot().foreground_running);
+    EXPECT_EQ(playback.snapshot().foreground_playhead, index(400));
+    EXPECT_EQ(playback.snapshot().background_playhead, index(400));
 }
 
 TEST(ProjectPlayback, FullCommandQueueRejectsNewCommandsWithoutReplacingAcceptedCommands)

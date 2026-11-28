@@ -717,21 +717,18 @@ TEST_F(GraphJitRuntimeFixture, ResetPreparesBackgroundPlaybackBeforeActivatingAt
             ASSERT_LT(std::chrono::steady_clock::now(), deadline);
             std::this_thread::yield();
         } while (true);
-        EXPECT_TRUE(slice.rendered);
     };
     iv::PlaybackRenderSlice slice;
     ASSERT_NO_FATAL_FAILURE(render_until_activated(initial.compiled_graph, slice));
+    EXPECT_TRUE(slice.rendered);
     ASSERT_EQ(executor.playback_snapshot().background_playhead, index(10));
     executor.render_block(6, 48000);
     EXPECT_GT(executor.playback_snapshot().foreground_playhead.signed_value(), 10);
 
     ASSERT_NO_FATAL_FAILURE(render_until_activated(reset.compiled_graph, slice));
+    EXPECT_FALSE(slice.rendered);
     EXPECT_EQ(slice.foreground_sample, index(10));
     EXPECT_EQ(executor.playback_snapshot().background_playhead, index(10));
-
-    executor.handle_playback(toggle_foreground);
-    executor.render_block(6, 48000, &slice);
-    EXPECT_FALSE(slice.rendered);
     EXPECT_FALSE(executor.playback_snapshot().foreground_running);
     EXPECT_EQ(executor.playback_snapshot().foreground_playhead, index(10));
     executor.render_block(6, 48000, &slice);

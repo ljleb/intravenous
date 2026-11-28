@@ -79,7 +79,7 @@ function queueMiddleViewport(next: TimelineViewport) {
     // Apply the scroll bound to each input before composing the next one.
     // Reversing direction at the last lane can then move immediately.
     if (root.value && (next.scrollTop !== current.scrollTop || next.laneHeight !== current.laneHeight)) {
-        const bottom = headerHeight.value + children.value.length * next.laneHeight;
+        const bottom = headerHeight.value + children.value.length * next.laneHeight + endPadding.value;
         const maxScroll = Math.max(0, bottom - root.value.clientHeight);
         if (next.scrollTop > maxScroll) next = { ...next, scrollTop: maxScroll };
     }
@@ -145,7 +145,7 @@ const timelineRuns = computed(() => {
 });
 const scrollbarStyle = computed(() => {
     const height = headerHeight.value;
-    const contentHeight = height + children.value.length * laneHeight.value;
+    const contentHeight = height + children.value.length * laneHeight.value + endPadding.value;
     const accent = "var(--vscode-editorOverviewRuler-selectionHighlightForeground, var(--vscode-focusBorder))";
     const marks = laneRuns(laneOrder.value, selectedLanes.value).flatMap((run) => {
         const start = 100 * (height + run.begin * laneHeight.value) / contentHeight;
@@ -161,6 +161,8 @@ const nodeColumn = ref<HTMLElement | null>(null);
 const snapPortColumn = ref<HTMLElement | null>(null);
 const playbackReadout = ref<HTMLElement | null>(null);
 const timelineSize = usePresentationSize(root);
+const endPadding = computed(() => children.value.length
+    ? Math.min(360, Math.max(0, (timelineSize.value?.height ?? 0) - headerHeight.value) / 2) : 0);
 const timeRegionSize = usePresentationSize(timeRegion);
 const nodeColumnSize = usePresentationSize(nodeColumn);
 const snapPortColumnSize = usePresentationSize(snapPortColumn);
@@ -911,6 +913,7 @@ onBeforeUnmount(() => {
             </svg>
             <div v-if="!children.length" class="empty">No project instances.</div>
         </div>
+        <div v-if="endPadding" class="timeline-end-padding" :style="{ flexBasis: `${endPadding}px` }" aria-hidden="true" />
     </section>
     <Teleport to="body">
         <svg v-if="wrappedCursor" class="wrapped-cursor" :style="{ left: `${wrappedCursor.x}px`, top: `${wrappedCursor.y}px` }"
@@ -994,6 +997,7 @@ onBeforeUnmount(() => {
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .lanes { flex: 0 0 auto; min-height: 0; position: relative; isolation: isolate; }
+.timeline-end-padding { flex: 0 0 auto; }
 /* Inner groups paint over outer groups and use the same left edge. */
 .nested-lane-area {
     position: absolute; inset-inline: 0; z-index: -3; pointer-events: none;
