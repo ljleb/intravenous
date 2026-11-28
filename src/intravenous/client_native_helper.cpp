@@ -10,11 +10,16 @@
 #include <cstdlib>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <string_view>
 #include <sys/prctl.h>
 #include <unistd.h>
 #include <utility>
 
+#if defined(IV_CLIENT_HELPER_GIO)
+#include <gio/gio.h>
+#endif
 #if defined(IV_CLIENT_HELPER_X11)
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -24,15 +29,15 @@
 #endif
 
 namespace {
+using Json = nlohmann::json;
+
 bool parse_int(std::string_view text, int& result)
 {
     auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
     return error == std::errc{} && end == text.data() + text.size();
 }
 
-#if defined(IV_CLIENT_HELPER_X11)
-using Json = nlohmann::json;
-
+#if defined(IV_CLIENT_HELPER_GIO) || defined(IV_CLIENT_HELPER_X11)
 std::int64_t now_ms()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -44,6 +49,140 @@ bool skip_cursor_return(const char* reason)
     std::fprintf(stderr, "Cursor return skipped. %s\n", reason);
     return false;
 }
+#endif
+
+class RpcOutput {
+public:
+    explicit RpcOutput(int fd) : fd_(fd) {}
+
+    bool write(Json const& message)
+    {
+        const auto encoded = message.dump();
+        const std::lock_guard lock(mutex_);
+        return dprintf(fd_, "%s\n", encoded.c_str()) >= 0;
+    }
+
+    void notify(std::string_view method, Json params)
+    {
+        write({{"jsonrpc", "2.0"}, {"method", method}, {"params", std::move(params)}});
+    }
+
+private:
+    int fd_;
+    std::mutex mutex_;
+};
+
+#if defined(IV_CLIENT_HELPER_GIO)
+class WaylandCursor {
+public:
+    WaylandCursor(bool wayland, RpcOutput& output)
+        : output_(output),
+          bus_(wayland ? g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr) : nullptr, &g_object_unref) {}
+
+    void start()
+    {
+        if (!bus_) return;
+        context_ = g_main_context_new();
+        loop_ = g_main_loop_new(context_, false);
+        g_main_context_push_thread_default(context_);
+        subscription_ = g_dbus_connection_signal_subscribe(bus_.get(), service, service, "Update", path,
+            nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
+            +[](GDBusConnection*, const gchar* sender, const gchar*, const gchar*, const gchar*, GVariant* value, gpointer data) {
+                auto& self = *static_cast<WaylandCursor*>(data);
+                if (self.shell_owner_ != sender || !g_variant_is_of_type(value, G_VARIANT_TYPE("(s)"))) return;
+                const char* encoded = nullptr;
+                g_variant_get(value, "(&s)", &encoded);
+                auto update = Json::parse(encoded, nullptr, false);
+                if (update.is_object())
+                    self.output_.notify("native.waylandPointerUpdate", std::move(update));
+            }, this, nullptr);
+        watcher_ = g_bus_watch_name_on_connection(bus_.get(), service, G_BUS_NAME_WATCHER_FLAGS_NONE,
+            +[](GDBusConnection*, const gchar*, const gchar* owner, gpointer data) {
+                static_cast<WaylandCursor*>(data)->verify_owner(owner);
+            },
+            +[](GDBusConnection*, const gchar*, gpointer data) {
+                auto& self = *static_cast<WaylandCursor*>(data);
+                self.shell_owner_.clear();
+                self.availability(false);
+            }, this, nullptr);
+        g_main_context_pop_thread_default(context_);
+        thread_ = g_thread_new("wayland-input", +[](gpointer loop) -> gpointer {
+            g_main_loop_run(static_cast<GMainLoop*>(loop));
+            return nullptr;
+        }, loop_);
+    }
+
+    ~WaylandCursor()
+    {
+        if (!thread_) return;
+        g_bus_unwatch_name(watcher_);
+        g_dbus_connection_signal_unsubscribe(bus_.get(), subscription_);
+        auto* stop = g_idle_source_new();
+        g_source_set_callback(stop, +[](gpointer loop) -> gboolean {
+            g_main_loop_quit(static_cast<GMainLoop*>(loop));
+            return G_SOURCE_REMOVE;
+        }, loop_, nullptr);
+        g_source_attach(stop, context_);
+        g_source_unref(stop);
+        g_thread_join(thread_);
+        g_main_loop_unref(loop_);
+        g_main_context_unref(context_);
+    }
+
+    void send(std::string_view operation, int editor_pid, Json params)
+    {
+        if (!bus_ || editor_pid <= 1 || !params.is_object()) return;
+        const auto gesture = operation == "begin" ? params.at("gesture").get<std::string>() : std::string{};
+        if (operation == "begin") params["beginExpiresAt"] = now_ms() + 100;
+        const auto encoded = Json{{"operation", operation}, {"editorPid", editor_pid}, {"params", std::move(params)}}.dump();
+        GError* error = nullptr;
+        const std::unique_ptr<GVariant, decltype(&g_variant_unref)> reply(
+            g_dbus_connection_call_sync(bus_.get(), service, path, service, "Exchange",
+                g_variant_new("(s)", encoded.c_str()), G_VARIANT_TYPE("(s)"),
+                G_DBUS_CALL_FLAGS_NO_AUTO_START, 100, nullptr, &error), &g_variant_unref);
+        const std::unique_ptr<GError, decltype(&g_error_free)> failure(error, &g_error_free);
+        const char* reason = failure ? failure->message : nullptr;
+        if (reply) g_variant_get(reply.get(), "(&s)", &reason);
+        if (!reason || !*reason) return;
+        if (operation == "begin") {
+            if (!reply) send("cancel", editor_pid, {{"gesture", gesture}});
+            output_.notify("native.waylandPointerUpdate", {{"gesture", gesture},
+                {"end", {{"kind", "denied"}, {"reason", reason}}}});
+        } else if (operation == "warp") skip_cursor_return(reason);
+    }
+
+private:
+    static constexpr auto service = "org.intravenous.PointerCapture";
+    static constexpr auto path = "/org/intravenous/PointerCapture";
+
+    void verify_owner(const char* owner)
+    {
+        const std::unique_ptr<GVariant, decltype(&g_variant_unref)> reply(
+            g_dbus_connection_call_sync(bus_.get(), "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                "org.freedesktop.DBus", "GetNameOwner", g_variant_new("(s)", "org.gnome.Shell"),
+                G_VARIANT_TYPE("(s)"), G_DBUS_CALL_FLAGS_NO_AUTO_START, 100, nullptr, nullptr), &g_variant_unref);
+        const char* shell = nullptr;
+        if (reply) g_variant_get(reply.get(), "(&s)", &shell);
+        shell_owner_ = shell && std::string_view(shell) == owner ? owner : "";
+        availability(!shell_owner_.empty());
+    }
+
+    void availability(bool available)
+    {
+        output_.notify("native.waylandPointerAvailable", {{"available", available}});
+    }
+
+    RpcOutput& output_;
+    std::unique_ptr<GDBusConnection, decltype(&g_object_unref)> bus_;
+    GMainContext* context_ = nullptr;
+    GMainLoop* loop_ = nullptr;
+    GThread* thread_ = nullptr;
+    std::string shell_owner_;
+    guint subscription_ = 0, watcher_ = 0;
+};
+#endif
+
+#if defined(IV_CLIENT_HELPER_X11)
 
 struct CursorWarpRange {
     std::int64_t begin, end;
@@ -320,40 +459,64 @@ int main(int argc, char** argv)
     std::unique_ptr<FILE, decltype(&std::fclose)> input(fdopen(fd, "r"), std::fclose);
     if (!input) return 1;
 
+    [[maybe_unused]] const auto* wayland_display = std::getenv("WAYLAND_DISPLAY");
+    [[maybe_unused]] int editor_pid = 0;
+    if (const auto* value = std::getenv("VSCODE_PID"); value && !parse_int(value, editor_pid)) editor_pid = 0;
+    RpcOutput output(fd);
+#if defined(IV_CLIENT_HELPER_GIO)
+    WaylandCursor wayland_cursor(wayland_display && *wayland_display && editor_pid > 1, output);
+#endif
+    bool cursor_warp = false;
+    const char* unavailable_reason = "The native helper was built without X11 support.";
 #if defined(IV_CLIENT_HELPER_X11)
     std::unique_ptr<Display, decltype(&XCloseDisplay)> display(XOpenDisplay(nullptr), XCloseDisplay);
     XSetErrorHandler(+[](Display*, XErrorEvent*) { return 0; });
-    const auto cursor_warp = static_cast<bool>(display);
     const bool cursor_hiding_supported = supports_cursor_hiding(display.get());
-    int editor_pid = 0;
-    if (const auto* value = std::getenv("VSCODE_PID"); value && !parse_int(value, editor_pid)) editor_pid = 0;
-    const char* unavailable_reason = "The native helper could not open the X11 display.";
-#else
-    const auto cursor_warp = false;
-    const char* unavailable_reason = "The native helper was built without X11 support.";
+    cursor_warp = static_cast<bool>(display);
+    unavailable_reason = "The native helper could not open the X11 display.";
 #endif
-    nlohmann::json params{{"cursorWarp", cursor_warp}};
-    if (cursor_warp) params["cursorWarpResult"] = true;
+    Json params{{"cursorWarp", cursor_warp}, {"cursorWarpResult", cursor_warp}};
+#if defined(IV_CLIENT_HELPER_GIO)
+    params["waylandCandidate"] = wayland_display && *wayland_display && editor_pid > 1;
+#endif
     if (!cursor_warp) params["cursorWarpUnavailableReason"] = unavailable_reason;
-    const auto ready = nlohmann::json{{"jsonrpc", "2.0"}, {"method", "native.ready"}, {"params", std::move(params)}}.dump();
-    if (dprintf(fd, "%s\n", ready.c_str()) < 0) return 0;
+    output.notify("native.ready", std::move(params));
+#if defined(IV_CLIENT_HELPER_GIO)
+    wayland_cursor.start();
+#endif
 
     char* line = nullptr;
     std::size_t capacity = 0;
     while (getline(&line, &capacity, input.get()) >= 0) {
-#if defined(IV_CLIENT_HELPER_X11)
-        if (!display) continue;
         const auto message = Json::parse(line, nullptr, false);
         const auto method = message.find("method");
-        if (method == message.end() || *method != "native.warpCursor") continue;
+        const auto input_params = message.find("params");
+        if (method == message.end() || input_params == message.end() || !input_params->is_object()) continue;
         const auto id = message.find("id");
         if (id != message.end() && !id->is_number_integer()) continue;
-        const auto moved = warp_cursor(display.get(), cursor_hiding_supported, editor_pid, message);
-        if (id != message.end()) {
-            const auto reply = Json{{"jsonrpc", "2.0"}, {"id", *id}, {"result", {{"moved", moved}}}}.dump();
-            if (dprintf(fd, "%s\n", reply.c_str()) < 0) break;
-        }
+        bool moved = false;
+        if (*method == "native.beginWaylandPointer" || *method == "native.cancelWaylandCursor") {
+#if defined(IV_CLIENT_HELPER_GIO)
+            if (input_params->contains("gesture") && (*input_params)["gesture"].is_string())
+                wayland_cursor.send(*method == "native.beginWaylandPointer" ? "begin" : "cancel", editor_pid, *input_params);
 #endif
+        } else if (*method == "native.warpCursor") {
+            if (input_params->contains("waylandGesture")) {
+#if defined(IV_CLIENT_HELPER_GIO)
+                const auto expiration = input_params->find("expiresAt");
+                if (expiration != input_params->end() && expiration->is_number_integer()) {
+                    const auto timeout = expiration->get<std::int64_t>();
+                    const auto now = now_ms();
+                    if (timeout > now && timeout <= now + 100) wayland_cursor.send("warp", editor_pid, *input_params);
+                }
+#endif
+            } else {
+#if defined(IV_CLIENT_HELPER_X11)
+                if (display) moved = warp_cursor(display.get(), cursor_hiding_supported, editor_pid, message);
+#endif
+            }
+        } else continue;
+        if (id != message.end() && !output.write({{"jsonrpc", "2.0"}, {"id", *id}, {"result", {{"moved", moved}}}})) break;
     }
     std::free(line);
     return std::ferror(input.get()) ? 1 : 0;

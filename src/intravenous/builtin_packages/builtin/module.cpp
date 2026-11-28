@@ -75,8 +75,8 @@ IV_NODE("builtin.transport_position", iv::TransportPosition, "Transport Position
 namespace {
 void linear_resampler(iv::GraphBuilder& graph)
 {
-    auto const position = graph.input<iv::FractionalGlobalIndex>({"position", "Position"});
-    auto const source = graph.input<iv::Sample>({"source", "Source"}, iv::InputAccess::coverage);
+    auto const position = graph.input<iv::FractionalGlobalIndex>("position", "Position");
+    auto const source = graph.input<iv::Sample>("source", "Source", iv::InputAccess::coverage);
     auto const resampler = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
     resampler.connect_input("position", position);
     resampler.connect_input("source", source);
@@ -85,8 +85,8 @@ void linear_resampler(iv::GraphBuilder& graph)
 
 void stereo_linear_resampler(iv::GraphBuilder& graph)
 {
-    auto const position = graph.input<iv::FractionalGlobalIndex>({"position", "Position"});
-    auto const source = graph.input<iv::stereo>({"source", "Source"}, iv::InputAccess::coverage);
+    auto const position = graph.input<iv::FractionalGlobalIndex>("position", "Position");
+    auto const source = graph.input<iv::stereo>("source", "Source", iv::InputAccess::coverage);
     auto const left = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
     auto const right = iv::details::configure_concrete_node<iv::LinearResampler>(graph);
     left.connect_input("position", position);

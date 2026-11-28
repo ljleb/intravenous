@@ -24,12 +24,13 @@ test("a presentation cursor reply follows an exact sample across the signed seam
         { ...time, beginSample: String(-(1n << 63n)), spanSamples: 6 }), { x: 100, y: 80 });
 });
 
-function harness() {
-    let locked = true;
+function harness(wayland = false) {
+    let locked = !wayland;
     const guard = new PointerLockExitGuard();
     const render: (() => void)[] = [];
     const messages: CursorReturnMessage[] = [];
     const cursor = new PointerLockCursorReturn(guard, () => locked, (run) => render.push(run), (message) => messages.push(message));
+    cursor.available = wayland;
     return { guard, render, messages, cursor, unlock() { locked = false; cursor.unlocked(); } };
 }
 
@@ -68,6 +69,82 @@ test("a point return uses the release event's window mapping and the final CSS p
         destination: { windowSizeDip: { width: 1920, height: 1080 }, windowPointDip: { x: 1068, y: 407 },
             offsetPixels: { x: 72, y: 36 } }, expiresAt: 1100,
     } }]);
+});
+
+const waylandPress = { pointerType: "mouse", isTrusted: true, screenX: 443, screenY: 313, clientX: 10, clientY: 20,
+    button: 0, timeStamp: 25 };
+const waylandWindow = () => ({ screenX: 400, screenY: 250, outerWidth: 1000, outerHeight: 500, devicePixelRatio: 1.5 });
+const modifiers = { shiftKey: false, altKey: false, ctrlKey: false, metaKey: false };
+const ignore = () => {};
+
+test("Wayland returns through the trusted press mapping after Mutter releases", (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+    const { cursor, guard, render, messages } = harness(true);
+    const input = { sample: ignore, cancel: ignore, denied: ignore,
+        release: () => cursor.finish(origin, origin, { ...anchor, destination, policy: "wrapped" }) };
+    assert.equal(cursor.beginWayland({ ...waylandPress, isTrusted: false }, waylandWindow(), 975, input), false);
+    assert.deepEqual(messages, []);
+    assert.equal(cursor.beginWayland(waylandPress, waylandWindow(), 975, input), true);
+    const begin = messages[0];
+    assert.ok(begin.type === "beginWaylandPointer");
+    assert.equal(begin.press.time, 1000);
+    assert.equal(cursor.nativeGranted, false);
+    cursor.receiveWayland({ gesture: begin.press.gesture, granted: true });
+    assert.equal(cursor.nativeGranted, true);
+    cursor.receiveWayland({ gesture: begin.press.gesture, end: { kind: "release", modifiers } });
+    assert.equal(cursor.nativeDragging, false);
+    assert.equal(guard.origin(), null);
+    assert.equal(messages.length, 1);
+    render.shift()!();
+    assert.deepEqual(messages[1], { type: "returnCursor", requestId: 1, policy: "wrapped", warp: {
+        destination: { windowSizeDip: { width: 1000, height: 500 }, windowPointDip: { x: 43, y: 63 },
+            offsetPixels: { x: 45, y: -6 } },
+        expiresAt: 1100, waylandGesture: begin.press.gesture,
+    } });
+});
+
+test("a trusted regrab waits for the old release and cancels the old destination", () => {
+    const { cursor, render, messages } = harness(true);
+    const order: string[] = [];
+    const input = { sample: () => { order.push("move"); }, cancel: ignore, denied: ignore,
+        release: () => {
+            order.push("old release");
+            cursor.finish(origin, origin, { ...anchor, destination });
+        } };
+    cursor.beginWayland(waylandPress, waylandWindow(), 0, input);
+    const begin = messages[0];
+    assert.ok(begin.type === "beginWaylandPointer");
+    const next = { ...waylandPress, target: null, pointerId: 1, preventDefault: ignore, stopPropagation: ignore } as unknown as PointerEvent;
+    assert.equal(cursor.deferPress(next, () => {
+        order.push("new press");
+        assert.equal(cursor.releasedBeforeStart, next);
+        assert.equal(cursor.beginWayland(waylandPress, waylandWindow(), 0, input), false);
+    }), true);
+    assert.equal(cursor.notePointerUp(next), true);
+    assert.deepEqual(order, []);
+    cursor.receiveWayland({ gesture: begin.press.gesture, granted: true,
+        samples: [{ kind: "motion", x: 5, y: -1, modifiers }], end: { kind: "release", modifiers } });
+    assert.deepEqual(order, ["move", "old release", "new press"]);
+    assert.equal(render.length, 0);
+    assert.ok(messages.some((message) => message.type === "cancelWaylandCursor" && message.gesture === begin.press.gesture));
+    assert.equal(messages.some(({ type }) => type === "returnCursor"), false);
+});
+
+test("Wayland disarms a return when the browser window scale changes", () => {
+    const { cursor, render, messages } = harness(true);
+    const view = waylandWindow();
+    cursor.beginWayland(waylandPress, view, 0, { sample: ignore, cancel: ignore, denied: ignore,
+        release: () => cursor.finish(origin, origin, { ...anchor, destination }) });
+    const begin = messages[0];
+    assert.ok(begin.type === "beginWaylandPointer");
+    cursor.receiveWayland({ gesture: begin.press.gesture, granted: true, end: { kind: "release", modifiers } });
+    view.devicePixelRatio = 2;
+    render.shift()!();
+    assert.deepEqual(messages.slice(-2), [
+        { type: "cancelWaylandCursor", gesture: begin.press.gesture },
+        { type: "cursorReturnSkipped", detail: "The window geometry changed during the drag." },
+    ]);
+    assert.equal(messages.some(({ type }) => type === "returnCursor"), false);
 });
 
 test("a new press or an expired unlock cannot move the native cursor", (t) => {

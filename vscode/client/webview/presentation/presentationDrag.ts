@@ -3,7 +3,7 @@ import type { StatusHint } from "../../src/statusBarText";
 import type { ObjectDrag } from "../graph/context";
 import type { CursorFollowTarget, CursorTrace } from "../graph/cursorReturn";
 
-function modifiers(event: MouseEvent | KeyboardEvent): PresentationModifiers {
+function modifiers(event: Pick<MouseEvent, "shiftKey" | "altKey" | "ctrlKey" | "metaKey">): PresentationModifiers {
     return { shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, meta: event.metaKey };
 }
 

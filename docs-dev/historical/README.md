@@ -6,6 +6,7 @@ These documents are retained because they record deleted architectures, supersed
 
 ## Superseded local installation workflows
 
+- [Wayland Cursor Return With Patched Chromium](./wayland_cursor_return_with_patched_chromium_2026-11-27.md)
 - [Isolated Development Launch Before Shared VSCodium](./isolated_dev_launch_before_shared_codium_2026-11-19.md)
 - [Managed Installer Before The Nix Development Run](./managed_install_before_nix_dev_run_2026-11-19.md)
 - [Separate Server And Client Installation](./separate_server_and_client_installation_2026-11-19.md)
@@ -254,6 +255,9 @@ These documents are retained because they record deleted architectures, supersed
   preserves the editor investigation, temporary patch and installation procedures,
   and superseded implementation status after the owner installed the fixed release
   and removed editor tooling from the repository.
+
+- [Retired XWayland Editor Restart](./editor_xwayland_restart_removed_2026-11-27.md)
+  preserves the former restart preference, launcher option, and diagnostics.
 
 - [Removed Knob Pointer-Lock Recorder](./knob_pointer_recorder_removed_2026-11-14.md)
   preserves the debugging command's instructions and previous implementation

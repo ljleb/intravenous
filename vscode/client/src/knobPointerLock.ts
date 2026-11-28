@@ -81,6 +81,17 @@ export class KnobPointerLock<Delta = number> {
         else this.moved(this.session.pointerId, delta);
         return true;
     }
+    moveNative(pointerId: number, delta: Delta): void {
+        if (this.session?.pointerId === pointerId) this.moved(pointerId, delta);
+    }
+
+    releaseNative(pointerId: number): void {
+        const session = this.session;
+        if (!session || session.pointerId !== pointerId) return;
+        this.session = null;
+        this.finished(pointerId, session.origin, session.origin);
+    }
+
     status() {
         return { locked: this.host.locked(), pending: this.session?.pending ?? false,
             granted: this.session?.granted ?? false, exiting: this.exiting,

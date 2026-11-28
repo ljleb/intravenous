@@ -261,8 +261,34 @@ watch(beats.version, () => {
 function capturePointerControl(event: PointerEvent, element: HTMLElement, origin: Point, lock: boolean) {
     event.preventDefault(); event.stopPropagation();
     pointerLockError = "";
-    element.setPointerCapture(event.pointerId);
-    pointerLock.start(event.pointerId, origin, lock && event.pointerType === "mouse");
+    const released = cursorReturn.releasedBeforeStart;
+    if (!released) element.setPointerCapture(event.pointerId);
+    startPointerInput(event, element, origin, lock);
+    if (released) releaseCapturedControl(released);
+}
+function startPointerInput(event: PointerEvent, element: HTMLElement, origin: Point, lock: boolean) {
+    const id = event.pointerId;
+    const native = lock && cursorReturn.beginWayland(event, window, performance.timeOrigin, {
+        sample: (sample) => {
+            objectDrag?.modifiers?.(sample.modifiers);
+            if (sample.kind === "motion") pointerLock.moveNative(id, sample);
+            else if (sample.kind === "wheel") adjustDragSensitivity(sample.delta);
+        },
+        release: (modifiers) => {
+            objectDrag?.modifiers?.(modifiers);
+            if (knobDrag?.pointerId === id) knobClicks.release(performance.now());
+            pointerLock.releaseNative(id);
+        },
+        cancel: (reason) => pointerLock.cancel(reason),
+        denied: (reason) => {
+            pointerLockError = reason;
+            if (!element.hasPointerCapture(id)) pointerLock.cancel(reason);
+            publishInteractionHint();
+        },
+    });
+    if (native && objectDrag?.cursorReturnPolicy === "presentationPoint")
+        objectDrag.windowReference = cursorWindowReference(event, window);
+    pointerLock.start(id, origin, !native && !cursorReturn.releasedBeforeStart && lock && event.pointerType === "mouse");
 }
 function canStartObjectDrag(element: HTMLElement | null): element is HTMLElement {
     return !!element && !objectDrag && !knobDrag && !connectionDrag.value
@@ -291,10 +317,11 @@ function startObjectDrag(event: PointerEvent, drag: ObjectDrag) {
 provideManualControls({ gestures: manualGestures, version: manualVersion, toggleEnabled: (control) => {
     webviewApi.postMessage({ type: "toggleManualInput", control });
 } });
-function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void) {
+function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | undefined, reset?: () => void,
+    control = event.currentTarget as HTMLElement) {
+    if (cursorReturn.deferPress(event, () => startKnob(event, key, begin, reset, control))) return;
     const element = surface.value;
-    if (!element || knobDrag || objectDrag) return;
-    const control = event.currentTarget as HTMLElement;
+    if (!element || knobDrag || objectDrag || !control?.isConnected) return;
     if (!control.closest(":popover-open, [role=dialog]")) element.focus({ preventScroll: true });
     else control.focus({ preventScroll: true });
     const origin = { x: event.clientX, y: event.clientY };
@@ -306,15 +333,18 @@ function startKnob(event: PointerEvent, key: string, begin: () => KnobDrag | und
     if (!drag) { knobClicks.cancel(); return; }
     knobDrag = { ...drag, pointerId: event.pointerId };
     activeKnob.value = key;
-    element.setPointerCapture(event.pointerId);
+    const released = cursorReturn.releasedBeforeStart;
+    if (!released) element.setPointerCapture(event.pointerId);
     pointerLockError = "";
-    pointerLock.start(event.pointerId, origin, event.pointerType === "mouse");
+    startPointerInput(event, element, origin, true);
+    if (released) releaseCapturedControl(released);
     publishInteractionHint();
 }
 function publishInteractionHint() {
-    const manual = document.hasFocus() ? manualGestures.hint() : null;
+    const focused = cursorReturn.nativeDragging || document.hasFocus();
+    const manual = focused ? manualGestures.hint() : null;
     const adjustingKnob = manualGestures.pointerControl();
-    const edit = document.hasFocus() ? objectDrag?.hint?.() : undefined;
+    const edit = focused ? objectDrag?.hint?.() : undefined;
     const drag = playback.dragPosition.value;
     const hint: StatusHint | null = (manual && (adjustingKnob || manualGestures.valueEditing.view())
         ? { ...manual, text: manual.text + (adjustingKnob && pointerLockError ? ` · Pointer lock unavailable. ${pointerLockError}` : "") } : null)
@@ -336,7 +366,7 @@ function focusPointerHint() {
 function moveCapturedControl(event: PointerEvent) {
     if (objectDrag?.pointerId === event.pointerId) {
         event.preventDefault(); event.stopImmediatePropagation();
-        if (document.pointerLockElement === surface.value) return;
+        if (cursorReturn.nativeDragging || document.pointerLockElement === surface.value) return;
         objectDrag.modifiers?.(event);
         if (!(event.buttons & objectDrag.buttonMask)) { releaseCapturedControl(event); return; }
         const origin = pointerLock.status().origin;
@@ -350,13 +380,15 @@ function moveCapturedControl(event: PointerEvent) {
     }
     if (knobDrag?.pointerId !== event.pointerId) return;
     event.stopImmediatePropagation();
-    if (document.pointerLockElement === surface.value) return;
+    if (cursorReturn.nativeDragging || document.pointerLockElement === surface.value) return;
     if (!(event.buttons & 1)) { releaseCapturedControl(event); return; }
     knobClicks.move(event.movementX, event.movementY);
     knobDrag.move({ x: event.clientX, y: event.clientY });
     publishInteractionHint();
 }
 function releaseCapturedControl(event: PointerEvent) {
+    if (event.type === "pointerup" && cursorReturn.notePointerUp(event)) return;
+    if (cursorReturn.nativeGranted) return;
     const drag = objectDrag?.pointerId === event.pointerId ? objectDrag : null;
     if (event.type === "pointerup" && event.button !== (drag?.button ?? 0)) return;
     if (drag) {
@@ -388,6 +420,7 @@ function lockedControlMove(event: MouseEvent) {
     pointerLock.move(delta, held);
 }
 function releaseMouseControl(event: MouseEvent) {
+    if (cursorReturn.nativeDragging) return;
     if (event.button !== (objectDrag?.button ?? 0)) return;
     // Mouseup can arrive after the browser clears pointerLockElement, before
     // the corresponding pointerlockchange. It still belongs to this drag.
@@ -418,14 +451,18 @@ function controlLockChanged() {
     }
 }
 function controlLockFailed() { pointerLock.error(); }
-function wheelControl(event: WheelEvent) {
-    const delta = event.deltaY || event.deltaX;
+function adjustDragSensitivity(delta: number): boolean {
     if (knobDrag) knobDrag.changeSensitivity(delta);
-    else if (!objectDrag?.wheel?.(delta)) return;
-    event.preventDefault(); event.stopImmediatePropagation();
+    else if (!objectDrag?.wheel?.(delta)) return false;
     publishInteractionHint();
+    return true;
+}
+function wheelControl(event: WheelEvent) {
+    if (cursorReturn.nativeDragging || !adjustDragSensitivity(event.deltaY || event.deltaX)) return;
+    event.preventDefault(); event.stopImmediatePropagation();
 }
 function clickOutsideManual(event: PointerEvent) {
+    if (cursorReturn.nativeDragging) return;
     if (!objectDrag) suppressDragContextMenu = false;
     cursorReturn.cancel("A new pointer press arrived.");
     const target = event.target instanceof Element ? event.target : null;
@@ -449,8 +486,8 @@ function blurPointerControls() {
     trustedHover.reset();
 }
 
-// Until the first real movement after a pointer lock ends, the host
-// reports a displaced position while the cursor is visibly at the lock origin.
+// In the legacy path the host can report a displaced position after pointer
+// lock ends while the cursor is visibly at the lock origin.
 // Moves and boundary events at that position are dropped, and presses, releases
 // and clicks are delivered at the origin. Hover never follows the displaced
 // position because it comes only from TrustedHover, registered after this guard.
@@ -801,6 +838,7 @@ provideGraphEditor({ layout, save, profileGraphUi, historyPending: computed(() =
     presentationStateChanged: (key, state) => changedPresentationStates.set(key, state),
     reportPresentationError: (details) => webviewApi.postMessage({ type: "presentationError", details }),
     finishPointerLock: (release, lockOrigin, follow, error) => cursorReturn.finish(release, lockOrigin, follow, error),
+    pointerInput: cursorReturn,
     startObjectDrag, takeCursorReturnTrace,
     refreshPointerHint: publishInteractionHint,
     registerPresentationInterrupt(interrupt) {
@@ -1188,7 +1226,7 @@ function cancelConnection() {
 function pointerCancelled(event: PointerEvent) {
     if (event.type === "lostpointercapture"
         && (event.target !== surface.value || surface.value?.hasPointerCapture(event.pointerId))) return;
-    if (pointerLock.suppressPointerCancellation()) return;
+    if (cursorReturn.nativeDragging || pointerLock.suppressPointerCancellation()) return;
     releaseCapturedControl(event);
     if (connectionDrag.value?.pointerId === event.pointerId) cancelConnection();
 }
@@ -1393,7 +1431,7 @@ function keyUp(event: KeyboardEvent) {
 }
 function windowBlurred() {
     if (document.hasFocus()) return;
-    if (!knobDrag && !objectDrag && !document.pointerLockElement && !cursorReturn.waitingForUnlock) {
+    if (!cursorReturn.nativeDragging && !knobDrag && !objectDrag && !document.pointerLockElement && !cursorReturn.waitingForUnlock) {
         blurPointerControls();
         if (state.value.scope) {
             save();
@@ -1405,6 +1443,7 @@ function windowBlurred() {
     // immediately after a successful pointerdown; the host reports real exits.
 }
 function nativeWindowFocusChanged(focused: boolean) {
+    if (!focused && cursorReturn.nativeDragging) return;
     if (!focused) {
         pendingKnobPastes.clear();
         cancelConnection();
@@ -1415,7 +1454,7 @@ function nativeWindowFocusChanged(focused: boolean) {
 }
 function cancelHiddenObjectDrag() {
     if (!document.hidden) return;
-    if (objectDrag) pointerLock.cancel("The graph editor was hidden.");
+    if (knobDrag || objectDrag) pointerLock.cancel("The graph editor was hidden.");
     cursorReturn.cancel("The graph editor was hidden.");
 }
 function createPackage() {
@@ -1469,6 +1508,14 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         }
         return;
     }
+    if (event.data?.type === "waylandPointerAvailable") {
+        cursorReturn.available = event.data.available;
+        return;
+    }
+    if (event.data?.type === "waylandPointerUpdate") {
+        cursorReturn.receiveWayland(event.data.update);
+        return;
+    }
     if (event.data?.type === "cursorReturnCompleted") {
         cursorReturn.complete(event.data.requestId);
         return;
@@ -1481,6 +1528,7 @@ function applyMessage(event: MessageEvent<GraphEditorHostMessage>) {
         graphVisible = event.data.visible;
         // A suspended webview may have missed replies for these reads.
         if (graphVisible) laneViewReads.retryUnread();
+        else if (cursorReturn.nativeDragging) blurPointerControls();
         graphUiRecording?.setVisible(graphVisible);
         observations.setVisible(event.data.visible);
         return;

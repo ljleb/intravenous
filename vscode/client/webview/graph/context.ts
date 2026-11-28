@@ -10,7 +10,7 @@ import type { PortConnectionDrag } from "../../src/portConnectionGesture";
 import type { KnobLimits } from "../../src/knobScrub";
 import type { StatusHint } from "../../src/statusBarText";
 import type { CursorReturnPolicy } from "../../src/graphEditorProtocol";
-import type { CursorFollow, CursorFollowTarget, CursorTrace } from "./cursorReturn";
+import type { PointerLockCursorReturn, CursorFollow, CursorFollowTarget, CursorTrace } from "./cursorReturn";
 
 export type ObjectDrag = {
     trace?: CursorTrace;
@@ -22,7 +22,7 @@ export type ObjectDrag = {
     hint?: () => StatusHint | undefined;
     move: (point: Point) => void;
     moveBy: (delta: Point) => void;
-    modifiers?: (event: MouseEvent | KeyboardEvent) => void;
+    modifiers?: (event: Pick<MouseEvent, "shiftKey" | "altKey" | "ctrlKey" | "metaKey">) => void;
     finish: (point: Point | null, lockOrigin: Point | null) => CursorFollowTarget | undefined;
 };
 export type KnobDrag = {
@@ -62,6 +62,7 @@ type GraphEditorContext = {
     historyPending: Readonly<Ref<boolean>>;
     registerPresentationInterrupt: (interrupt: (reason: "history" | "disconnected") => void) => () => void;
     finishPointerLock: (release: Point | null, lockOrigin: Point | null, follow?: CursorFollow, lockError?: string) => void;
+    pointerInput: PointerLockCursorReturn;
     setTimelineZoomHint: (hint: string | null) => void;
     connectionDrag: Ref<PortConnectionDrag | null>;
     hoveredPortGroup: Ref<{ nodeKey: string; rowKey?: string; direction: "input" | "output" } | null>;

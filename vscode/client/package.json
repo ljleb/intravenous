@@ -50,21 +50,13 @@
                     "type": "boolean",
                     "default": true,
                     "scope": "application",
-                    "description": "Move the system cursor to the automation point after a locked drag when the local X11 display supports it."
+                    "description": "Return the pointer to the automation point after a drag when the display supports native pointer control."
                 },
                 "intravenous.hideStatusBarShortcuts": {
                     "type": "boolean",
                     "default": false,
                     "scope": "application",
                     "description": "Hide keyboard and mouse shortcut hints in the Intravenous status bar while showing values, states, and errors."
-                },
-                "intravenous.autoRelaunchWithXWayland": {
-                    "type": ["boolean", "null"],
-                    "enum": [null, true, false],
-                    "enumItemLabels": ["Ask on Project Open", "Enabled", "Disabled"],
-                    "default": null,
-                    "scope": "application",
-                    "description": "Use XWayland for better cursor wrapping and cursor return after dragging. On local Linux Wayland sessions without an explicit --ozone-platform flag, enabling this restarts all open VS Code windows."
                 }
             }
         },

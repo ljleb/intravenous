@@ -18,7 +18,7 @@ import { answerNodeEventRequest, isNodeEventRequest, isNodeEventGestureRequest, 
 import { isPendingPlaybackSeek, playbackSeekPosition, type PlaybackDrag, type PlaybackDragPhase, type PlaybackOutputProfileResult,
     type PlaybackSeek, type PlaybackSnapshot } from "./playback";
 import { PlaybackProfile } from "./playbackProfile";
-import type { NativeClientHelper } from "./nativeClientHelper";
+import { validWaylandGesture, type NativeClientHelper } from "./nativeClientHelper";
 import { PresentationArtifactReader } from "./presentationArtifacts";
 import type { PresentationArtifact } from "./presentationPlugin";
 import { GraphEditorHistory } from "./graphEditorHistory";
@@ -196,9 +196,10 @@ export class GraphEditorProvider implements vscode.Disposable {
         });
         this.windowFocusChanged = vscode.window.onDidChangeWindowState(({ focused }) => {
             if (!focused) {
-                this.interactionHints.clear();
+                for (const panel of this.interactionHints.keys())
+                    if (!this.waylandPointerPanels.has(panel)) this.interactionHints.delete(panel);
                 this.inspectionHint = null;
-                this.finishPlaybackDrag();
+                if (!this.playbackDrag || !this.waylandPointerPanels.has(this.playbackDrag.panel)) this.finishPlaybackDrag();
             }
             this.updateInteractionStatus();
             for (const panel of this.ready) void panel.webview.postMessage({ type: "graphWindowFocus", focused });
@@ -227,11 +228,11 @@ export class GraphEditorProvider implements vscode.Disposable {
     }
 
     private updateInteractionStatus(): void {
-        if (!vscode.window.state.focused) {
+        const panel = [...this.panels].find((candidate) => candidate.active);
+        if (!vscode.window.state.focused && (!panel || !this.waylandPointerPanels.has(panel))) {
             this.interactionStatus.hide();
             return;
         }
-        const panel = [...this.panels].find((candidate) => candidate.active);
         const hint = (panel ? this.interactionHints.get(panel) : undefined) ?? this.inspectionHint;
         const hideShortcuts = vscode.workspace.getConfiguration("intravenous").get("hideStatusBarShortcuts", false);
         const text = hint ? formatStatusHint(hint, hideShortcuts) : "";
@@ -588,12 +589,31 @@ export class GraphEditorProvider implements vscode.Disposable {
     // VS Code restores each tab independently after a window reload.
     revive(panel: vscode.WebviewPanel): void { this.attach(panel); }
 
+    private readonly waylandPointerPanels = new Set<vscode.WebviewPanel>();
+
     private attach(panel: vscode.WebviewPanel): void {
         this.panels.add(panel);
         this.controlOwners.set(panel, crypto.randomUUID());
         if (panel.active) this.lastActivePanel = panel;
+        let armedWaylandCursor: string | undefined;
+        const cancelWaylandCursor = (reason?: string) => {
+            if (reason && armedWaylandCursor !== undefined && this.waylandPointerPanels.has(panel)) {
+                void panel.webview.postMessage({ type: "waylandPointerUpdate", update: {
+                    gesture: armedWaylandCursor, end: { kind: "cancel", reason },
+                } });
+            }
+            if (armedWaylandCursor !== undefined) this.nativeHelper?.cancelWaylandCursor(armedWaylandCursor);
+            armedWaylandCursor = undefined;
+            this.waylandPointerPanels.delete(panel);
+        };
+        const pointerAvailability = this.nativeHelper?.onWaylandPointerAvailable((available) => {
+            if (this.ready.has(panel)) void panel.webview.postMessage({ type: "waylandPointerAvailable", available });
+        });
         let wasVisible = panel.visible;
         const viewState = panel.onDidChangeViewState(() => {
+            if (!panel.visible || (!panel.active && vscode.window.state.focused)) {
+                cancelWaylandCursor("The graph editor lost its pointer controls.");
+            }
             const becameVisible = panel.visible && !wasVisible;
             wasVisible = panel.visible;
             this.recordClientView(panel, { type: "view", visible: panel.visible, active: panel.active });
@@ -657,6 +677,33 @@ export class GraphEditorProvider implements vscode.Disposable {
                 this.notifyProfileFinished("observation profile");
             } else if (isNodeEventRequest(message) || isNodeEventGestureRequest(message)) {
                 await this.handleNodeEvent(panel, message);
+            } else if (message?.type === "beginWaylandPointer") {
+                const press = message.press;
+                if (!validWaylandGesture(press?.gesture)) return;
+                if (panel.visible && panel.active) {
+                    cancelWaylandCursor();
+                    armedWaylandCursor = press.gesture;
+                    this.waylandPointerPanels.add(panel);
+                    if (this.nativeHelper?.beginWaylandPointer(press, (update) => {
+                        if (armedWaylandCursor !== update.gesture) return;
+                        if (update.end) {
+                            this.waylandPointerPanels.delete(panel);
+                            this.updateInteractionStatus();
+                        }
+                        if (update.end && update.end.kind !== "release") armedWaylandCursor = undefined;
+                        void panel.webview.postMessage({ type: "waylandPointerUpdate", update }).then((posted) => {
+                            if (!posted && armedWaylandCursor === update.gesture) cancelWaylandCursor();
+                        }, () => {
+                            if (armedWaylandCursor === update.gesture) cancelWaylandCursor();
+                        });
+                    })) return;
+                    cancelWaylandCursor();
+                }
+                void panel.webview.postMessage({ type: "waylandPointerUpdate", update: {
+                    gesture: press.gesture, end: { kind: "denied", reason: "The native drag connection is unavailable." },
+                } });
+            } else if (message?.type === "cancelWaylandCursor") {
+                if (message.gesture === armedWaylandCursor) cancelWaylandCursor();
             } else if (message?.type === "cursorReturnSkipped" && typeof message.detail === "string") {
                 this.outputChannel.appendLine(`Cursor return skipped. ${message.detail}`);
             } else if (message?.type === "returnCursor") {
@@ -664,11 +711,14 @@ export class GraphEditorProvider implements vscode.Disposable {
                 const trace = traceId ? (step: string, details?: TraceDetails) => this.logCursorReturnTrace(traceId, step, details) : undefined;
                 trace?.("Extension received cursor return", { requestId: message.requestId, panelActive: panel.active,
                     windowFocused: vscode.window.state.focused, helperAvailable: !!this.nativeHelper, policy: message.policy });
-                const skipped = !panel.active || !vscode.window.state.focused ? "graph editor lost focus"
-                    : message.policy === "presentationPoint"
+                const nativeGesture = message.warp && "destination" in message.warp ? message.warp.waylandGesture : undefined;
+                const skipped = !panel.visible || (!nativeGesture && (!panel.active || !vscode.window.state.focused))
+                    ? "graph editor lost focus" : message.policy === "presentationPoint"
                         && !vscode.workspace.getConfiguration("intravenous").get("warpCursorAfterPointDrag", true) ? "cursor return is disabled"
-                    : !this.nativeHelper ? "no local native helper" : null;
+                    : !this.nativeHelper ? "no local native helper"
+                    : nativeGesture && nativeGesture !== armedWaylandCursor ? "the Wayland gesture is no longer active" : null;
                 if (skipped) {
+                    if (nativeGesture && nativeGesture === armedWaylandCursor) cancelWaylandCursor();
                     trace?.("Extension skipped cursor return", { reason: skipped });
                     if (skipped === "graph editor lost focus") this.outputChannel.appendLine(`Cursor return skipped. ${skipped}.`);
                 } else this.nativeHelper?.warpCursor(message.warp, {
@@ -707,6 +757,8 @@ export class GraphEditorProvider implements vscode.Disposable {
                 void panel.webview.postMessage({ type: "graphVisibility", visible: panel.visible });
                 this.postControls(panel);
                 void panel.webview.postMessage({ type: "graphWindowFocus", focused: vscode.window.state.focused });
+                void panel.webview.postMessage({ type: "waylandPointerAvailable",
+                    available: this.nativeHelper?.waylandPointerAvailable === true });
                 this.post(panel);
                 this.postObservationSnapshot(panel);
                 await this.refresh();
@@ -717,7 +769,7 @@ export class GraphEditorProvider implements vscode.Disposable {
                     catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
                 }
             } else if (message?.type === "graphInteractionHint") {
-                if (isStatusHint(message.hint) && panel.active && vscode.window.state.focused) {
+                if (isStatusHint(message.hint) && panel.active && (vscode.window.state.focused || this.waylandPointerPanels.has(panel))) {
                     this.interactionHints.set(panel, message.hint);
                 } else this.interactionHints.delete(panel);
                 this.updateInteractionStatus();
@@ -854,6 +906,8 @@ export class GraphEditorProvider implements vscode.Disposable {
             }
         });
         panel.onDidDispose(() => {
+            pointerAvailability?.dispose();
+            cancelWaylandCursor();
             this.history.panelClosed(panel);
             this.finishPlaybackDrag(panel);
             const owner = this.controlOwners.get(panel);

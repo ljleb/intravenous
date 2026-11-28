@@ -20,7 +20,19 @@ export type CursorWindowDestination = {
     windowPointDip: { x: number; y: number };
     offsetPixels: { x: number; y: number };
 };
-export type CursorWarp = { expiresAt: number } & ({ destination: CursorWindowDestination } | {
+export type DragModifiers = { shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean };
+export type WaylandPointerPress = Pick<CursorWindowDestination, "windowSizeDip" | "windowPointDip"> & {
+    gesture: string; button: number; time: number; devicePixelRatio: number;
+};
+export type WaylandPointerSample = { modifiers: DragModifiers } & (
+    { kind: "motion"; x: number; y: number } | { kind: "wheel"; delta: number } | { kind: "modifiers" });
+export type WaylandPointerUpdate = {
+    gesture: string;
+    granted?: true;
+    samples?: WaylandPointerSample[];
+    end?: { kind: "release"; modifiers: DragModifiers } | { kind: "cancel" | "denied"; reason: string };
+};
+export type CursorWarp = { expiresAt: number } & ({ destination: CursorWindowDestination; waylandGesture?: string } | {
     originX: number; originY: number;
     screenOrigin?: { x: number; y: number };
     deltaX: number; deltaY: number;
@@ -29,6 +41,8 @@ export type CursorReturnPolicy = "presentationPoint" | "playhead" | "wrapped";
 export type TraceDetails = Record<string, unknown>;
 export type TraceLog = (step: string, details?: TraceDetails) => void;
 export type CursorReturnMessage =
+    | { type: "beginWaylandPointer"; press: WaylandPointerPress }
+    | { type: "cancelWaylandCursor"; gesture: string }
     | { type: "returnCursor"; warp: CursorWarp; requestId: number; policy?: CursorReturnPolicy; traceId?: string }
     | { type: "cursorReturnSkipped"; detail: string };
 
@@ -62,6 +76,8 @@ export type GraphEditorHostMessage = { type: "graphState"; state: GraphEditorSta
     | NodeEventResponse
     | { type: "manualControlState"; interactions: ManualControlInteractionState[]; live: ManualControlLiveValue[] }
     | { type: "graphWindowFocus"; focused: boolean }
+    | { type: "waylandPointerAvailable"; available: boolean }
+    | { type: "waylandPointerUpdate"; update: WaylandPointerUpdate }
     | { type: "cursorReturnCompleted"; requestId: number }
     | { type: "knobClipboardResult"; requestId: number; text?: string; error?: string }
     | { type: "graphLanesInserted"; lanes: GraphLaneInsertion[]; duplicateRequestId?: string }

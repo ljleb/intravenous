@@ -1,0 +1,159 @@
+--- a/ui/ozone/platform/wayland/host/wayland_event_source.h
++++ b/ui/ozone/platform/wayland/host/wayland_event_source.h
+@@ -240,6 +240,11 @@
+   void OnPointerButtonEventInternal(base::WeakPtr<WaylandWindow> window,
+                                     EventType type);
+ 
++  void DispatchPointerMotionEvent(const gfx::PointF& location,
++                                  base::TimeTicks timestamp,
++                                  wl::EventDispatchPolicy dispatch_policy,
++                                  bool is_synthesized);
++
+   // Wrap up method to support async touch release processing.
+   void OnTouchReleaseInternal(PointerId id);
+ 
+@@ -268,9 +273,12 @@
+   // See ui/events/event_constants.h for examples and details.
+   int keyboard_modifiers_ = 0;
+ 
+-  // Last known pointer location.
++  // Last dispatched position, which may include relative motion under lock.
+   gfx::PointF pointer_location_;
+ 
++  // Last absolute position reported by the compositor for the focused surface.
++  gfx::PointF absolute_pointer_location_;
++
+   // Last known relative pointer location (used for pointer lock).
+   std::optional<gfx::PointF> relative_pointer_location_;
+ 
+--- a/ui/ozone/platform/wayland/host/wayland_event_source.cc
++++ b/ui/ozone/platform/wayland/host/wayland_event_source.cc
+@@ -335,7 +335,7 @@
+     wl::EventDispatchPolicy dispatch_policy) {
+   bool focused = !!window;
+   if (focused) {
+-    // Save new pointer location.
++    absolute_pointer_location_ = location;
+     pointer_location_ = location;
+     window_manager_->SetPointerFocusedWindow(window);
+     pending_focus_loss_release_ = false;
+@@ -446,6 +446,16 @@
+     base::TimeTicks timestamp,
+     wl::EventDispatchPolicy dispatch_policy,
+     bool is_synthesized) {
++  absolute_pointer_location_ = location;
++  DispatchPointerMotionEvent(location, timestamp, dispatch_policy,
++                             is_synthesized);
++}
++
++void WaylandEventSource::DispatchPointerMotionEvent(
++    const gfx::PointF& location,
++    base::TimeTicks timestamp,
++    wl::EventDispatchPolicy dispatch_policy,
++    bool is_synthesized) {
+   pointer_location_ = location;
+ 
+   int flags = pointer_flags_ | keyboard_modifiers_ | tablet_tool_buttons_;
+@@ -938,7 +948,10 @@
+ void WaylandEventSource::SetRelativePointerMotionEnabled(bool enabled) {
+   if (enabled) {
+     relative_pointer_location_ = pointer_location_;
+-  } else {
++  } else if (relative_pointer_location_) {
++    // Button events carry no coordinates. The compositor can leave the
++    // physical pointer stationary on unlock and send no absolute motion.
++    pointer_location_ = absolute_pointer_location_;
+     relative_pointer_location_.reset();
+   }
+ }
+@@ -947,9 +960,9 @@
+                                                  base::TimeTicks timestamp) {
+   DCHECK(relative_pointer_location_.has_value());
+   relative_pointer_location_ = *relative_pointer_location_ + delta;
+-  OnPointerMotionEvent(*relative_pointer_location_, timestamp,
+-                       wl::EventDispatchPolicy::kImmediate,
+-                       /*is_sythesized=*/false);
++  DispatchPointerMotionEvent(*relative_pointer_location_, timestamp,
++                             wl::EventDispatchPolicy::kImmediate,
++                             /*is_synthesized=*/false);
+ }
+ 
+ bool WaylandEventSource::IsPointerButtonPressed(EventFlags button) const {
+--- a/ui/ozone/platform/wayland/host/wayland_event_source_unittest.cc
++++ b/ui/ozone/platform/wayland/host/wayland_event_source_unittest.cc
+@@ -160,6 +160,75 @@
+       pointer_delegate_->IsPointerButtonPressed(EF_RIGHT_MOUSE_BUTTON));
+ }
+ 
++TEST_P(WaylandEventSourceTest, PointerButtonUsesAbsoluteLocationAfterUnlock) {
++  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
++    wl_seat_send_capabilities(server->seat()->resource(),
++                             WL_SEAT_CAPABILITY_POINTER);
++  });
++  ASSERT_TRUE(connection_->seat()->pointer());
++
++  EXPECT_CALL(delegate_, DispatchEvent(_)).Times(1);
++  PostToServerAndWait([surface_id = window_->root_surface()->get_surface_id()](
++                          wl::TestWaylandServerThread* server) {
++    auto* surface = server->GetObject<wl::MockSurface>(surface_id)->resource();
++    auto* pointer = server->seat()->pointer()->resource();
++    wl_pointer_send_enter(pointer, server->GetNextSerial(), surface,
++                          wl_fixed_from_int(8), wl_fixed_from_int(16));
++    wl_pointer_send_frame(pointer);
++  });
++
++  auto* source = connection_->event_source();
++  const auto send_motion = [&](int x, int y) {
++    EXPECT_CALL(delegate_, DispatchEvent(_)).Times(1);
++    PostToServerAndWait([=](wl::TestWaylandServerThread* server) {
++      auto* pointer = server->seat()->pointer()->resource();
++      wl_pointer_send_motion(pointer, server->GetNextTime(),
++                             wl_fixed_from_int(x), wl_fixed_from_int(y));
++      wl_pointer_send_frame(pointer);
++    });
++  };
++  const auto send_click = [&](const gfx::PointF& expected) {
++    EXPECT_CALL(delegate_, DispatchEvent(_))
++        .Times(2)
++        .WillRepeatedly([&](Event* event) {
++          ASSERT_TRUE(event->IsMouseEvent());
++          EXPECT_EQ(event->AsMouseEvent()->location_f(), expected);
++        });
++    PostToServerAndWait([](wl::TestWaylandServerThread* server) {
++      auto* pointer = server->seat()->pointer()->resource();
++      for (auto state :
++           {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED}) {
++        wl_pointer_send_button(pointer, server->GetNextSerial(),
++                               server->GetNextTime(), BTN_LEFT, state);
++        wl_pointer_send_frame(pointer);
++      }
++    });
++    testing::Mock::VerifyAndClearExpectations(&delegate_);
++  };
++  const auto move_relative = [&] {
++    EXPECT_CALL(delegate_, DispatchEvent(_)).Times(1);
++    source->OnRelativePointerMotion(gfx::Vector2dF(31, -5),
++                                    base::TimeTicks::Now());
++  };
++
++  source->SetRelativePointerMotionEnabled(true);
++  move_relative();
++  EXPECT_EQ(source->GetPointerLocation(), gfx::PointF(39, 11));
++  source->SetRelativePointerMotionEnabled(false);
++  send_click(gfx::PointF(8, 16));
++
++  source->SetRelativePointerMotionEnabled(true);
++  send_motion(27, 38);
++  move_relative();
++  source->SetRelativePointerMotionEnabled(false);
++  send_click(gfx::PointF(27, 38));
++
++  // The compositor can move the pointer after unlock. Such motion supersedes
++  // the saved location before the next click.
++  send_motion(42, 72);
++  send_click(gfx::PointF(42, 72));
++}
++
+ // Verify WaylandEventSource properly manages its internal state as pointer
+ // button events are sent. More specifically - pointer flags.
+ TEST_P(WaylandEventSourceTest, DeleteBeforeTouchFrame) {

@@ -267,7 +267,9 @@ function hover(event: PointerEvent) {
     hovered.value = targetAt(localPoint(event, surface.value.getBoundingClientRect()), (item) => !!item.hint || !!item.cursor)?.id;
 }
 function pointerDown(event: PointerEvent) {
-    if ((event.button !== 0 && event.button !== 2) || cancelDrag || !surface.value || !editor || error.value) return;
+    if (event.button !== 0 && event.button !== 2) return;
+    if (editor?.pointerInput.deferPress(event, () => pointerDown(event))) return;
+    if (cancelDrag || !surface.value || !editor || error.value) return;
     const box = surface.value.getBoundingClientRect();
     const at = localPoint(event, box);
     const button = event.button === 2 ? "secondary" : "primary";

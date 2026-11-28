@@ -91,10 +91,6 @@ bundle="$(nix-build "$repo_root/scripts/lib/dev_bundle.nix" --no-out-link \
   --argstr projectDir "$project_dir")"
 exec {bundle_pin}<"$bundle/extension/.iv-dev-bundle"
 
-editor_args=()
-if [[ ${INTRAVENOUS_DEV_XWAYLAND:-0} == 1 ]]; then
-  editor_args+=(--ozone-platform=x11)
-fi
 printf 'Opening %s with %s\n' "$project_dir" "$bundle"
 # The editor takes over the Nix bundle pin. It needs no lease on the writable
 # build or scratch trees after the snapshot is in the store.
@@ -103,4 +99,4 @@ for fd in "${cache_fds[@]}"; do exec {fd}>&-; done
 unset IV_BUILD_CACHE_LEASE_FDS IV_BUILD_SCRATCH_DIR
 # Use the normal desktop CLI so VSCodium can handle the development launch.
 env -u VSCODE_IPC_HOOK_CLI -u ELECTRON_RUN_AS_NODE "$codium" --new-window \
-  --extensionDevelopmentPath="$bundle/extension" "${editor_args[@]}" "$project_dir"
+  --extensionDevelopmentPath="$bundle/extension" "$project_dir"

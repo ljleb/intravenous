@@ -385,8 +385,8 @@ constexpr char const* feedback_voice_source = R"(#include <intravenous/dsl.h>
 
 void feedback_voice(iv::GraphBuilder& g)
 {
-    auto frequency = g.input({"Frequency"}, {.default_value = 110.0f});
-    auto cutoff = g.input({"Cutoff"}, {.default_value = 0.5f});
+    auto frequency = g.input("Frequency", {.default_value = 110.0f});
+    auto cutoff = g.input("Cutoff", {.default_value = 0.5f});
     auto oscillator = g.node<"builtin.saw">();
     oscillator.connect_input("frequency", frequency);
     auto filter = g.node<"builtin.simple_iir_low_pass">();
@@ -568,7 +568,7 @@ struct StorageEventConsumer {
 
 void storage_voice(iv::GraphBuilder& graph)
 {
-    auto drive = graph.input({"Drive"}, {.default_value = 0.25f});
+    auto drive = graph.input("Drive", {.default_value = 0.25f});
     auto samples = graph.node<StorageSampleSource>(
         std::size_t{512});
     auto converted_samples = graph.node<StorageSampleSource>(

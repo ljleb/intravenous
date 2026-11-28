@@ -345,9 +345,9 @@ struct ModuleBoundaryCoverageObserver {
 
 void multi_region_boundary_child_module(iv::GraphBuilder& graph)
 {
-    auto samples = graph.input<iv::Sample>({"Samples"}, iv::InputAccess::coverage);
+    auto samples = graph.input<iv::Sample>("Samples", iv::InputAccess::coverage);
     auto events = graph.event_input(
-        {"Events"}, iv::EventTypeId::trigger, iv::InputAccess::coverage);
+        "Events", iv::EventTypeId::trigger, iv::InputAccess::coverage);
     auto sample = graph.node<
         "iv.test.graph_jit.state_context.multi_region_coverage_consumer">();
     auto event_consumer = graph.node<

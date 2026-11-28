@@ -490,7 +490,7 @@ namespace {
     void token_provenance_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto frequency = g.input({"Frequency"}, {.default_value = 440.0});
+        auto frequency = g.input("Frequency", {.default_value = 440.0});
         auto saw = details::configure_concrete_node<SawOscillator>(g);
         saw("frequency"_P = frequency);
         auto out = saw * 0.5f;

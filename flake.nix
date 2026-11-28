@@ -60,9 +60,19 @@
             libxinerama.dev
             libxext.dev
             libxcursor.dev
+            glib.dev
+            # CMake also checks the private dependencies in GIO's pkg-config metadata.
+            libsysprof-capture
+            pcre2.dev
+            libffi.dev
+            zlib.dev
+            util-linuxMinimal.dev
+            libselinux.dev
+            libsepol.dev
           ];
           devOnlyPackages = with pkgs; [
             c-docc.packages.${system}.default
+            gobject-introspection.dev
             vscode-extensions.vadimcn.vscode-lldb
             nodejs
             python3

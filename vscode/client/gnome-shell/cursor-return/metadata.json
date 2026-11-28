@@ -1,0 +1,6 @@
+{
+  "uuid": "pointer-capture@intravenous",
+  "name": "Intravenous Pointer Capture",
+  "description": "Captures relative drags and returns the pointer in a focused Intravenous editor.",
+  "shell-version": ["50"]
+}

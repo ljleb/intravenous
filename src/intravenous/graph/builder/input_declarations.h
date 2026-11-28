@@ -127,11 +127,11 @@ public:
     Result Function(__VA_ARGS__) IV_MODULE_INPUT_EXPAND Constraint               \
     { uninstrumented_module_input(); }                                           \
     IV_MODULE_INPUT_EXPAND Template                                               \
-    Result Function([[maybe_unused]] PortDisplayName label IV_MODULE_INPUT_COMMA(__VA_ARGS__)) \
-        IV_MODULE_INPUT_EXPAND Constraint                                         \
+    Result Function([[maybe_unused]] std::convertible_to<std::string_view> auto const& short_name \
+        IV_MODULE_INPUT_COMMA(__VA_ARGS__)) IV_MODULE_INPUT_EXPAND Constraint     \
     { uninstrumented_module_input(); }                                           \
     IV_MODULE_INPUT_EXPAND Template                                               \
-    Result Function([[maybe_unused]] std::string_view short_name,                  \
+    Result Function([[maybe_unused]] std::convertible_to<std::string_view> auto const& short_name, \
         [[maybe_unused]] std::convertible_to<std::string_view> auto const& long_name \
         IV_MODULE_INPUT_COMMA(__VA_ARGS__)) IV_MODULE_INPUT_EXPAND Constraint     \
     { uninstrumented_module_input(); }

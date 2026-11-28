@@ -4046,29 +4046,82 @@ cursor on release.
 [Earlier diagnostics](./historical/vue_cursor_return_before_release_diagnostics_2026-11-18.md).
 [Retired trace commands](./historical/vue_cursor_return_trace_commands_before_removal_2026-11-19.md).
 
-On local Linux Wayland, Intravenous can offer automatic restart when a project
-opens and VS Code has no explicit `--ozone-platform` flag. The notification
-explains how XWayland improves cursor wrapping and cursor return after a drag.
-It warns that enabling automatic restart restarts all open VS Code windows.
-
-**Enable Auto-Restart** saves the enabled preference in User Settings and
-requests a restart. **Keep Disabled** saves the disabled preference. Closing
-the notification leaves the preference unset so it can appear the next time a
-project opens. Use User Settings under Intravenous to change
-`intravenous.autoRelaunchWithXWayland`.
-
-When automatic restart is enabled, a short-lived launcher waits for the normal
-VS Code quit action to finish. It starts the same editor with
-`--ozone-platform=x11`. An explicit graphics backend takes precedence.
-[Earlier Command Palette action](./historical/vue_xwayland_restart_before_notification_2026-11-18.md).
-
-The Intravenous output channel records each restart check and why it stops.
-It also gives the path to `xwayland-restart.log`. The launcher uses that file
-to record whether the editor exits and whether the replacement starts.
-
 Knob hover hints use port metadata from the project graph scope. An input
 shows its Sequential, Region, or Coverage access. An output shows its
 production shape and its computed or buffered realization.
+
+### Native Wayland cursor return status, 2026-11-27
+
+The goal is exact cursor return on native Wayland and a correctly routed first
+mouse press after unlock. The launcher uses the installed VSCodium executable.
+Its Intravenous development bundle contains the extension and server.
+
+In Chromium 150, `WaylandEventSource::OnRelativePointerMotion()` updates
+`pointer_location_` with accumulated locked movement.
+`SetRelativePointerMotionEnabled(false)` clears the relative accumulator, then
+`OnPointerButtonEvent()` reads the stale `pointer_location_`. A button event
+carries button state and time. Mutter can leave the pointer stationary at
+unlock without sending a new absolute motion event. The graph's
+`PointerLockExitGuard` can also redirect a correct native click before the
+independent cursor return acknowledgment reaches the webview.
+
+In the isolated prototype, a Wayland relay supplied the last absolute
+position before the first button after unlock when no newer position had
+arrived. The seven stationary cases and ten second-drag cases passed. The
+68-case matrix covered native moves, rapid release, focus, resize, and mixed
+monitor scales. The relay served as a test and changes the Wayland peer
+identity seen by Mutter.
+
+The [Chromium 150 patch](./upstream/chromium-150-wayland-pointer-position.patch)
+records the absolute position from pointer focus and motion events and restores
+it when relative motion is disabled. A later absolute event can then supply
+the position of a native move. The patch applies to the Chromium
+`150.0.7871.250` sources pinned by Electron `43.7.7`. An isolated C++ check of
+the affected state transitions reproduces the stale position on the original
+code and passes with the patch. The patch includes a regression for Chromium's
+`WaylandEventSourceTest`.
+
+The extension and dev launcher now use the editor's selected display backend.
+The owner removed automatic XWayland restart independently of cursor return.
+[Previous restart behavior](./historical/editor_xwayland_restart_removed_2026-11-27.md)
+
+`PointerLockCursorReturn` records the window-local coordinates of a trusted
+mouse press and arms a gesture. After pointer lock ends and the destination is
+ready, it sends the final position through `NativeClientHelper`. The GNOME
+companion owns the compositor move. It verifies the D-Bus caller belongs to the
+focused Wayland editor, checks the gesture and window geometry, and consumes the
+request once. A newer input may supersede the request. On a patched editor,
+the graph uses trusted clicks directly after unlock.
+
+The production helper and GNOME extension returned the pointer in a disposable
+headless GNOME session at 100% and 125% display scale, including a window
+straddling both displays. The next click landed within one CSS pixel at every
+tested scale and zoom level. The GNOME extension rejected a return after resize
+and an arm request from a process outside the editor. These tests exercised
+native moves with stock Chromium. Stationary release and regrab in the live
+graph editor still need a VSCodium build with the Chromium correction. See the
+[development setup](./development_run.md).
+
+### Mutter-owned graph drags, 2026-11-27
+
+The patched Chromium experiment above preceded this implementation. On GNOME
+Shell 50, the native helper watches the companion on the session bus.
+`PointerLockCursorReturn` starts an authenticated Mutter grab for a trusted
+press. The companion sends ordered motion, modifiers, wheel changes, and the
+terminal event. It holds the pointer with opposing sticky barriers. Knobs,
+presentation point and tension handles, playheads, and timeline pan and zoom
+reuse their existing drag handlers. Chromium receives ordinary clicks after
+Mutter releases the grab.
+
+The graph distinguishes temporary blur during the grab from a native
+cancellation. A new trusted press waits for the old drag's final movement and
+release if it arrives first. Cursor return uses the final graph layout and
+the companion checks the focused window, input ownership, and geometry before
+moving the pointer.
+
+The isolated precursor passed 68 comparison cases and 59 extended cases.
+The live graph editor still needs verification with physical devices.
+See the [development setup](./development_run.md#native-wayland-cursor-control).
 
 ### Timestamp projection for graph-authored snapping, 2026-11-18
 

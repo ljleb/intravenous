@@ -17,8 +17,6 @@ add_custom_command(
     BYPRODUCTS
         "${iv_client_dist}/extension.js"
         "${iv_client_dist}/extension.js.map"
-        "${iv_client_dist}/vscodeRelaunchWorker.js"
-        "${iv_client_dist}/vscodeRelaunchWorker.js.map"
         "${iv_client_dist}/headlessClient.js"
         "${iv_client_dist}/headlessClient.js.map"
         "${iv_client_dist}/wasmPresentationNodeEntry.js"

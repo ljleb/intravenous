@@ -37,18 +37,34 @@ VSCodium loads the extension in development mode and uses your regular editor
 profile. It can open the dev window in the running editor. Shared lane state
 stays in `iv_project.jsonl`.
 
-For cursor wrapping and cursor return on Wayland, start VSCodium with XWayland
-if your desktop provides an X11 display. An existing VSCodium process keeps its
-current display backend. Development windows honor the
-`intravenous.autoRelaunchWithXWayland` user setting. If you enable it,
-Intravenous can restart all open VSCodium windows with XWayland.
-VSCodium restores windows according to its restore settings and original launch
-arguments. If you added the development window to a running VSCodium instance,
-you may need to open it again after the restart.
+## Native Wayland cursor control
+
+Intravenous uses the display backend selected by VSCodium. The native helper
+can discover the Intravenous Pointer Capture companion on GNOME Shell 50
+through the session bus. You can open the development window in your
+running VSCodium with your existing profile.
+
+Run these commands from the repository root to pack and install the companion.
 
 ```sh
-INTRAVENOUS_DEV_XWAYLAND=1 nix develop --command ./scripts/run_dev.sh projects/simple_sine
+nix develop --command ./scripts/pack_wayland_pointer_companion.sh /tmp
+gnome-extensions install /tmp/pointer-capture@intravenous.shell-extension.zip
+gnome-extensions enable pointer-capture@intravenous
 ```
+
+If the running GNOME Shell has yet to discover the newly installed companion,
+press **Alt+F2**, enter `lg`, and run this expression in the Looking Glass
+evaluator. Then run the enable command again. This registers the local
+companion in the current session.
+
+```js
+await Main.extensionManager.loadExtension(Main.extensionManager.createExtensionObject("pointer-capture@intravenous", Gio.File.new_for_path(global.userdatadir + "/extensions/pointer-capture@intravenous"), (await import("resource:///org/gnome/shell/misc/extensionUtils.js")).ExtensionType.PER_USER))
+```
+
+The native helper still supports X11 cursor return. The
+[retired XWayland launch options](./historical/editor_xwayland_restart_removed_2026-11-27.md)
+and [earlier patched Chromium setup](./historical/wayland_cursor_return_with_patched_chromium_2026-11-27.md)
+record the previous approaches.
 
 The extension keeps its Nix store bundle alive while the dev window uses it.
 After the session ends, `nix-collect-garbage` can remove the bundle and any

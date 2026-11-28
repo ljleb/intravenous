@@ -25,6 +25,7 @@ export function usePlayheadSeek(surface: Ref<HTMLElement | null>, timeWindow: ()
     onBeforeUnmount(() => { cancel?.(); closeReader?.(); });
 
     return function beginSeek(event: PointerEvent) {
+        if (event.button === 0 && editor?.pointerInput.deferPress(event, () => beginSeek(event))) return;
         const element = surface.value, time = timeWindow();
         if (event.button !== 0 || !editor || !element || !time || cancel) return;
         const trace = editor.takeCursorReturnTrace();

@@ -46,7 +46,7 @@ const playback = usePlayback();
 const backgroundPlayheadSeconds = computed(() => playback.backgroundPlayhead.value === null ? null
     : Number(playback.backgroundPlayhead.value) / (playback.state.value?.sampleRate ?? 48000));
 const scope = computed(() => node.value.scope!);
-const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedLanes, implicitOutputModules, finishPointerLock, setTimelineZoomHint,
+const { layout, lanes, save, copyNodeDebugDetails, selectedLanes, expandedLanes, implicitOutputModules, finishPointerLock, pointerInput, setTimelineZoomHint,
     profileGraphUi, portsChanged, startObjectDrag } = useGraphEditor();
 function renameLane(instanceId: string, displayName: string, previousDisplayName: string) {
     webviewApi.postMessage({ type: "renameGraphLane", instanceId, displayName, previousDisplayName });
@@ -521,13 +521,14 @@ function preventMiddleDragDefault(event: MouseEvent) {
     if (middleDrag.value) preventMiddleDefault(event);
 }
 function beginMiddleDrag(event: PointerEvent) {
+    if (event.button === 1 && pointerInput.deferPress(event, () => beginMiddleDrag(event))) return;
     const surface = root.value;
     if (event.button !== 1 || !surface || middleDrag.value) return;
     const targetTimeline = event.target instanceof Element ? event.target.closest(".timeline-scope") : null;
     if (targetTimeline && targetTimeline !== surface) return;
     if (document.pointerLockElement && document.pointerLockElement !== surface) return;
     try {
-        surface.setPointerCapture(event.pointerId);
+        if (!pointerInput.releasedBeforeStart) surface.setPointerCapture(event.pointerId);
     } catch (error) {
         if (error instanceof DOMException && error.name === "NotFoundError") return;
         throw error;
@@ -554,12 +555,29 @@ function beginMiddleDrag(event: PointerEvent) {
     middlePointerLockError = "";
     const cursorAnchor = cursorWarpAnchor(event, window.devicePixelRatio);
     middleCursorAnchor = cursorAnchor ? { ...cursorAnchor, moved: false } : null;
-    showMiddleZoomHint(action, { x: 0, y: 0 });
-    middlePointerLock.start(event.pointerId, { x: event.clientX, y: event.clientY }, event.pointerType === "mouse");
+    const id = event.pointerId;
+    const native = pointerInput.beginWayland(event, window, performance.timeOrigin, {
+        sample: (sample) => { if (sample.kind === "motion") middlePointerLock.moveNative(id, sample); },
+        release: () => {
+            commitMiddleViewport();
+            completeMiddleClick();
+            middlePointerLock.releaseNative(id);
+        },
+        cancel: () => endMiddleDrag(),
+        denied: (reason) => {
+            middlePointerLockError = reason;
+            if (!surface.hasPointerCapture(id)) endMiddleDrag();
+        },
+    });
+    lockedTravel = { x: 0, y: 0 };
+    showMiddleZoomHint(action, lockedTravel);
+    middlePointerLock.start(id, { x: event.clientX, y: event.clientY },
+        !native && !pointerInput.releasedBeforeStart && event.pointerType === "mouse");
+    if (pointerInput.releasedBeforeStart) releaseMiddleDrag(pointerInput.releasedBeforeStart);
 }
 function updateMiddleDrag(event: PointerEvent) {
     const drag = middleDrag.value;
-    if (!drag || event.pointerId !== drag.pointerId || middlePointerLock.status().locked) return;
+    if (!drag || event.pointerId !== drag.pointerId || pointerInput.nativeDragging || middlePointerLock.status().locked) return;
     if (!(event.buttons & 4)) { endMiddleDrag(); return; }
     const delta = { x: event.clientX - drag.x, y: event.clientY - drag.y };
     if (!delta.x && !delta.y) return;
@@ -699,10 +717,10 @@ function endMiddleDrag(event?: PointerEvent) {
     middlePointerLock.cancel();
 }
 function middleCaptureLost(event: PointerEvent) {
-    if (event.target === root.value && !middlePointerLock.suppressPointerCancellation()) endMiddleDrag(event);
+    if (event.target === root.value && !pointerInput.nativeDragging && !middlePointerLock.suppressPointerCancellation()) endMiddleDrag(event);
 }
 function middlePointerCancelled(event: PointerEvent) {
-    if (event.target === root.value) endMiddleDrag(event);
+    if (event.target === root.value && !pointerInput.nativeDragging) endMiddleDrag(event);
 }
 function finishMiddleDrag(pointerId: number) {
     const drag = middleDrag.value;
@@ -748,6 +766,8 @@ function lockedMiddleMove(event: MouseEvent) {
     } else if (middlePointerLock.move(delta)) event.stopImmediatePropagation();
 }
 function releaseMiddleDrag(event: MouseEvent) {
+    if (event instanceof PointerEvent && pointerInput.notePointerUp(event)) return;
+    if (pointerInput.nativeGranted || (!(event instanceof PointerEvent) && pointerInput.nativeDragging)) return;
     const drag = middleDrag.value;
     if (!drag || event.button !== 1) return;
     if ("pointerId" in event && event.pointerId !== drag.pointerId) return;
@@ -759,7 +779,7 @@ function releaseMiddleDrag(event: MouseEvent) {
     }
 }
 function nativeFocusChanged(focused: boolean) {
-    if (!focused) {
+    if (!focused && !pointerInput.nativeDragging) {
         cancelMiddleClick();
         endMiddleDrag();
     }

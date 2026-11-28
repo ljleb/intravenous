@@ -1,6 +1,5 @@
 import "reflect-metadata";
 
-import type { ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
@@ -15,114 +14,6 @@ import type { GraphEditorAction } from "./graphEditorProtocol";
 import { knobPointerLockVersionWarning } from "./editorCompatibility";
 import { NativeClientHelper } from "./nativeClientHelper";
 import { resolveIntravenousBinary } from "./serverBinaryPaths";
-import { prepareVSCodeRelaunch, readVSCodeXWaylandRelaunch, requestVSCodeApplicationQuit } from "./vscodeRelaunch";
-
-async function configureXWaylandRelaunch(context: vscode.ExtensionContext, folder: vscode.WorkspaceFolder | undefined,
-    localDesktop: boolean, log: (message: string) => void): Promise<void> {
-    if (!folder || !localDesktop || process.platform !== "linux") return;
-    try {
-        const project = await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, "iv_project.jsonl"));
-        if (!(project.type & vscode.FileType.File)) return;
-    } catch {
-        return;
-    }
-
-    const key = "autoRelaunchWithXWayland";
-    const configuration = () => vscode.workspace.getConfiguration("intravenous");
-    const preference = () => configuration().get<boolean | null>(key, null);
-    const wayland = process.env.XDG_SESSION_TYPE === "wayland"
-        || (!process.env.XDG_SESSION_TYPE && !!process.env.WAYLAND_DISPLAY);
-    let pending: ChildProcess | null = null;
-    let attempted = false;
-    let preparing = false;
-    const cancel = () => {
-        const worker = pending;
-        pending = null;
-        worker?.kill();
-    };
-    type Trigger = "activation" | "settings change" | "notification";
-    function restartPlan(trigger: Trigger) {
-        const sessionType = process.env.XDG_SESSION_TYPE || "unset";
-        log(`Checking XWayland restart on ${trigger}. `
-            + `XDG_SESSION_TYPE: ${JSON.stringify(sessionType)}. WAYLAND_DISPLAY: ${process.env.WAYLAND_DISPLAY ? "set" : "unset"}.`);
-        const plan = readVSCodeXWaylandRelaunch(undefined, log, wayland);
-        if (plan && process.env.INTRAVENOUS_XWAYLAND_RELAUNCH === "1") {
-            log("Automatic XWayland restart stopped. The relaunched desktop process has no --ozone-platform flag.");
-            return null;
-        }
-        return plan;
-    }
-    async function relaunchIfEnabled(trigger: Trigger) {
-        if (preference() !== true || preparing || pending || attempted) return;
-        attempted = true;
-        preparing = true;
-        try {
-            const plan = restartPlan(trigger);
-            if (!plan) return;
-            const logFile = join(context.logUri.fsPath, "xwayland-restart.log");
-            const worker = await prepareVSCodeRelaunch(context.asAbsolutePath("dist/vscodeRelaunchWorker.js"), plan, { logFile, report: log });
-            if (preference() !== true) {
-                worker?.kill();
-                log("XWayland restart cancelled because the setting was turned off.");
-                return;
-            }
-            if (!worker) {
-                log(`An XWayland restart launcher from another window is already waiting for editor PID ${plan.pid}.`);
-                return;
-            }
-            pending = worker;
-            worker.once("exit", (code, signal) => {
-                if (pending !== worker) return;
-                pending = null;
-                log(`XWayland restart launcher exited while the extension host was still running (code ${code}, signal ${signal}).`);
-            });
-            if (context.extensionMode === vscode.ExtensionMode.Development) {
-                // The workbench Quit command can close just the development window.
-                log(`XWayland restart launcher ${worker.pid} is ready. Requesting an application quit for editor PID ${plan.pid}.`);
-                requestVSCodeApplicationQuit(plan);
-            } else {
-                log(`XWayland restart launcher ${worker.pid} is ready. Requesting a normal VS Code quit for editor PID ${plan.pid}.`);
-                await vscode.commands.executeCommand("workbench.action.quit");
-            }
-            log("The launcher is waiting for the editor process to exit.");
-        } catch (error) {
-            cancel();
-            log(`Could not arrange an XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
-        } finally {
-            preparing = false;
-        }
-    }
-    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
-        if (!event.affectsConfiguration(`intravenous.${key}`)) return;
-        if (preference() !== true) {
-            if (pending) log("XWayland restart cancelled because the setting was turned off.");
-            attempted = false;
-            cancel();
-        } else void relaunchIfEnabled("settings change");
-    }));
-
-    if (preference() === true) {
-        await relaunchIfEnabled("activation");
-        return;
-    }
-    if (preference() === false || !wayland) return;
-    try {
-        if (!restartPlan("activation")) return;
-        const enable = "Enable Auto-Restart";
-        const decline = "Keep Disabled";
-        const selected = await vscode.window.showWarningMessage(
-            "Restart VS Code with XWayland to improve cursor wrapping and cursor return after dragging. "
-            + "This is optional. Enabling automatic restart restarts all open VS Code windows now.",
-            enable, decline);
-        // A closed notification leaves the decision unset. A setting changed
-        // while it was visible takes precedence over the old notification.
-        if (selected === undefined || preference() !== null) return;
-        await configuration().update(key, selected === enable, vscode.ConfigurationTarget.Global);
-        if (selected === enable) await relaunchIfEnabled("notification");
-    } catch (error) {
-        log(`Could not offer automatic XWayland restart. ${error instanceof Error ? error.message : String(error)}`);
-    }
-}
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const bundleMarker = context.asAbsolutePath(".iv-dev-bundle");
@@ -149,7 +40,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     const localDesktop = vscode.env.uiKind === vscode.UIKind.Desktop
         && (!vscode.env.remoteName || context.extension.extensionKind === vscode.ExtensionKind.UI);
-    void configureXWaylandRelaunch(context, workspaceFolder, localDesktop, (message) => outputChannel.appendLine(message));
     let nativeHelper: NativeClientHelper | undefined;
     if (process.platform === "linux" && localDesktop) {
         const name = "intravenous-client-helper";
@@ -161,7 +51,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context.subscriptions.push(nativeHelper);
         nativeHelper.start();
     } else {
-        outputChannel.appendLine("Native cursor return is unavailable. It requires a local Linux desktop extension host with X11 support.");
+        outputChannel.appendLine("Native cursor return is unavailable. It requires a local Linux desktop extension host.");
     }
     if (!workspaceFolder) {
         return;

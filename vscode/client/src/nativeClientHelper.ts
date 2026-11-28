@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Duplex } from "node:stream";
 import { JsonRpcSocketClient } from "./rpcClient";
-import type { CursorWarp, CursorWindowDestination, TraceLog } from "./graphEditorProtocol";
+import type { CursorWarp, CursorWindowDestination, TraceLog, WaylandPointerPress, WaylandPointerUpdate } from "./graphEditorProtocol";
 
 const initialRestartDelayMs = 1000;
 const maximumRestartDelayMs = 30000;
@@ -9,7 +9,8 @@ const stableRunMs = 30000;
 const readyTimeoutMs = 10000;
 
 type RunningHelper = { child: ChildProcess; socket: Duplex | null; rpc: JsonRpcSocketClient | null;
-    readyTimer?: NodeJS.Timeout; readyAt?: number; cursorWarp: boolean; cursorWarpResult: boolean };
+    readyTimer?: NodeJS.Timeout; readyAt?: number; cursorWarp: boolean; cursorWarpResult: boolean; waylandPointer: boolean;
+    gestures: Map<string, (update: WaylandPointerUpdate) => void> };
 
 function validWindowDestination(destination: CursorWindowDestination | undefined): boolean {
     const size = destination?.windowSizeDip;
@@ -21,14 +22,21 @@ function validWindowDestination(destination: CursorWindowDestination | undefined
 }
 
 function warpCoordinates(request: CursorWarp) {
-    if ("destination" in request)
-        return validWindowDestination(request.destination) ? { destination: request.destination } : undefined;
+    if ("destination" in request) {
+        if (!validWindowDestination(request.destination)
+            || (request.waylandGesture !== undefined && !validWaylandGesture(request.waylandGesture))) return;
+        return { destination: request.destination, waylandGesture: request.waylandGesture };
+    }
     const { originX, originY, screenOrigin, deltaX, deltaY } = request;
     if (![originX, originY, deltaX, deltaY].every(Number.isSafeInteger)
         || (screenOrigin !== undefined && (!Number.isSafeInteger(screenOrigin?.x) || !Number.isSafeInteger(screenOrigin?.y)))
         || Math.abs(deltaX) > 32767 || Math.abs(deltaY) > 32767) return;
     return { originX, originY, deltaX, deltaY,
         ...(screenOrigin && { screenOrigin: { x: screenOrigin.x, y: screenOrigin.y } }) };
+}
+
+export function validWaylandGesture(gesture: unknown): gesture is string {
+    return typeof gesture === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(gesture);
 }
 
 // The local extension host owns this process. Each launch has its own
@@ -38,6 +46,25 @@ export class NativeClientHelper {
     private restartTimer: NodeJS.Timeout | null = null;
     private restartDelayMs = initialRestartDelayMs;
     private disposed = false;
+    private readonly pointerListeners = new Set<(available: boolean) => void>();
+
+    get waylandPointerAvailable(): boolean { return this.running?.waylandPointer ?? false; }
+
+    onWaylandPointerAvailable(listener: (available: boolean) => void): { dispose(): void } {
+        this.pointerListeners.add(listener);
+        return { dispose: () => { this.pointerListeners.delete(listener); } };
+    }
+
+    private setWaylandPointerAvailable(run: RunningHelper, available: boolean): void {
+        if (run.waylandPointer === available) return;
+        run.waylandPointer = available;
+        if (!available) {
+            for (const [gesture, update] of run.gestures)
+                update({ gesture, end: { kind: "cancel", reason: "The native drag connection closed." } });
+            run.gestures.clear();
+        }
+        for (const listener of this.pointerListeners) listener(available);
+    }
 
     constructor(private readonly launch: () => ChildProcess, private readonly log: (message: string) => void) {}
 
@@ -55,7 +82,8 @@ export class NativeClientHelper {
             return;
         }
         const socket = child.stdio[3] instanceof Duplex ? child.stdio[3] : null;
-        const run: RunningHelper = { child, socket, rpc: null, cursorWarp: false, cursorWarpResult: false };
+        const run: RunningHelper = { child, socket, rpc: null, cursorWarp: false, cursorWarpResult: false, waylandPointer: false,
+            gestures: new Map() };
         this.running = run;
         let failure = "";
         child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
@@ -80,12 +108,24 @@ export class NativeClientHelper {
             return;
         }
         run.rpc = new JsonRpcSocketClient(socket, (method, params) => {
-            if (this.running !== run || !run.rpc || method !== "native.ready" || run.readyAt !== undefined) return;
+            if (this.running !== run || !run.rpc) return;
+            if (method === "native.waylandPointerAvailable") {
+                this.setWaylandPointerAvailable(run, params.available === true);
+                return;
+            }
+            if (method === "native.waylandPointerUpdate" && validWaylandGesture(params.gesture)) {
+                const update = params as WaylandPointerUpdate;
+                const receive = run.gestures.get(update.gesture);
+                if (update.end) run.gestures.delete(update.gesture);
+                receive?.(update);
+                return;
+            }
+            if (method !== "native.ready" || run.readyAt !== undefined) return;
             clearTimeout(run.readyTimer);
             run.readyAt = Date.now();
             run.cursorWarp = params.cursorWarp === true;
             run.cursorWarpResult = params.cursorWarpResult === true;
-            if (!run.cursorWarp) {
+            if (!run.cursorWarp && params.waylandCandidate !== true) {
                 const reason = typeof params.cursorWarpUnavailableReason === "string" ? params.cursorWarpUnavailableReason
                     : "The native helper reported no cursor warp support for the current display.";
                 this.log(`Native cursor return is unavailable. ${reason}`);
@@ -93,6 +133,21 @@ export class NativeClientHelper {
         }, (error) => { if (run.rpc) stop(error.message); });
         run.readyTimer = setTimeout(() => stop("timed out waiting for readiness"), readyTimeoutMs);
         void run.rpc.connect().catch((error: Error) => stop(error.message));
+    }
+
+    beginWaylandPointer(press: WaylandPointerPress, receive: (update: WaylandPointerUpdate) => void): boolean {
+        const run = this.running;
+        if (!run?.waylandPointer || !run.rpc || !run.socket?.writable || run.socket.writableNeedDrain
+            || !validWaylandGesture(press.gesture)) return false;
+        run.gestures.set(press.gesture, receive);
+        run.rpc.notify("native.beginWaylandPointer", press);
+        return true;
+    }
+
+    cancelWaylandCursor(gesture: string): void {
+        const run = this.running;
+        run?.gestures.delete(gesture);
+        if (run?.waylandPointer && validWaylandGesture(gesture)) run.rpc?.notify("native.cancelWaylandCursor", { gesture });
     }
 
     warpCursor(request: CursorWarp, { hideCursor = false, followPointer = false, completed, trace }: {
@@ -105,7 +160,9 @@ export class NativeClientHelper {
             trace?.("Native cursor return skipped", { reason: detail });
             this.log(`Cursor return skipped. ${detail}`);
         };
-        if (!run?.cursorWarp || !run.rpc || !run.socket?.writable || run.socket.writableNeedDrain) {
+        const wayland = "destination" in request && !!request.waylandGesture;
+        const available = wayland ? run?.waylandPointer : run?.cursorWarp;
+        if (!available || !run?.rpc || !run.socket?.writable || run.socket.writableNeedDrain) {
             trace?.("Native helper unavailable", { launched: !!run, ready: run?.readyAt !== undefined,
                 cursorWarp: run?.cursorWarp, writable: run?.socket?.writable, backpressure: run?.socket?.writableNeedDrain });
             if (run?.readyAt === undefined || run.cursorWarp)
@@ -122,7 +179,7 @@ export class NativeClientHelper {
             ...(hideCursor && { hideCursor: true }),
             ...(followPointer && { followPointer: true }),
             ...(trace && { trace: true }) };
-        const expectsReply = !!completed && run.cursorWarpResult;
+        const expectsReply = !wayland && !!completed && run.cursorWarpResult;
         trace?.("Native warp dispatched", { hideCursor, followPointer, expectsReply, expiresInMs: expiresAt - now });
         if (!expectsReply) { run.rpc.notify("native.warpCursor", params); return; }
         void run.rpc.request<{ moved: boolean }>("native.warpCursor", params).then((result) => {
@@ -138,6 +195,7 @@ export class NativeClientHelper {
         const rpc = run.rpc;
         run.rpc = null;
         run.cursorWarp = false;
+        this.setWaylandPointerAvailable(run, false);
         rpc?.dispose();
     }
 

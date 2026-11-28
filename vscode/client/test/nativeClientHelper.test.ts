@@ -32,6 +32,45 @@ function fakeChild() {
 const cursorWarp = () => ({ originX: 100, originY: 100, deltaX: 20, deltaY: -20, expiresAt: Date.now() + 100 });
 const warpMessages = (run: ReturnType<typeof fakeChild>) => run.messages.filter(({ method }) => method === "native.warpCursor");
 
+test("the Wayland helper routes an owned gesture and keeps the compositor warp independent of the X11 helper", () => {
+    const run = fakeChild();
+    const helper = new NativeClientHelper(() => run.child, () => {});
+    const gesture = "38b9ff27-a847-48e3-b4b1-de4bcc73ead4";
+    const destination = { windowSizeDip: { width: 1000, height: 500 },
+        windowPointDip: { x: 200, y: 150 }, offsetPixels: { x: 15, y: -5 } };
+    const press = { gesture, button: 0, time: 0, devicePixelRatio: 1.5,
+        windowSizeDip: destination.windowSizeDip, windowPointDip: destination.windowPointDip };
+    const updates: unknown[] = [];
+    const receive = (update: unknown) => updates.push(update);
+    const setAvailable = (available: boolean) => run.receive({ method: "native.waylandPointerAvailable", params: { available } });
+    const update = (params: object) => run.receive({ method: "native.waylandPointerUpdate", params });
+    helper.start();
+    assert.equal(helper.beginWaylandPointer(press, receive), false);
+    run.ready(false);
+    setAvailable(true);
+    assert.equal(helper.beginWaylandPointer({ ...press, gesture: "invalid" }, receive), false);
+    assert.equal(helper.beginWaylandPointer(press, receive), true);
+    update({gesture, granted: true});
+    update({gesture, end: {kind: "release"}});
+    update({gesture, granted: true});
+    assert.deepEqual(updates, [{gesture, granted: true}, {gesture, end: {kind: "release"}}]);
+
+    const expiresAt = Date.now() + 100;
+    helper.warpCursor({ destination, expiresAt, waylandGesture: gesture }, {
+        completed: () => assert.fail("The Wayland helper cannot acknowledge input delivery"),
+    });
+    helper.cancelWaylandCursor(gesture);
+    assert.deepEqual(run.messages.map(({ method, params, id }) => ({ method, params, id })), [
+        { method: "native.beginWaylandPointer", params: press, id: undefined },
+        { method: "native.warpCursor", params: { destination, expiresAt, waylandGesture: gesture }, id: undefined },
+        { method: "native.cancelWaylandCursor", params: { gesture }, id: undefined },
+    ]);
+    assert.equal(helper.beginWaylandPointer(press, receive), true);
+    setAvailable(false);
+    assert.deepEqual(updates.at(-1), { gesture, end: { kind: "cancel", reason: "The native drag connection closed." } });
+    helper.dispose();
+});
+
 test("the helper starts eagerly and drops cursor warps across a crash and restart", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
     const children: Array<ReturnType<typeof fakeChild>> = [];

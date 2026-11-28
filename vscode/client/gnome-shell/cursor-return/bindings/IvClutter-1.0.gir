@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<repository version="1.2" xmlns="http://www.gtk.org/introspection/core/1.0"
+            xmlns:c="http://www.gtk.org/introspection/c/1.0">
+  <include name="Clutter" version="18"/>
+  <namespace name="IvClutter" version="1.0" shared-library="libmutter-clutter-18.so.0"
+             c:identifier-prefixes="Clutter" c:symbol-prefixes="clutter">
+    <function name="relative_motion" c:identifier="clutter_event_get_relative_motion">
+      <return-value transfer-ownership="none"><type name="gboolean" c:type="gboolean"/></return-value>
+      <parameters>
+        <parameter name="event" transfer-ownership="none"><type name="Clutter.Event" c:type="const ClutterEvent*"/></parameter>
+        <parameter name="dx" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+        <parameter name="dy" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+        <parameter name="dx_unaccel" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+        <parameter name="dy_unaccel" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+        <parameter name="dx_constrained" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+        <parameter name="dy_constrained" direction="out" caller-allocates="0" transfer-ownership="full">
+          <type name="gdouble" c:type="double*"/>
+        </parameter>
+      </parameters>
+    </function>
+  </namespace>
+</repository>
