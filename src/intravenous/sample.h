@@ -20,6 +20,8 @@ namespace iv {
             return value;
         }
 
+        constexpr bool operator==(Sample const&) const noexcept = default;
+
         constexpr Sample& operator+=(Sample other) noexcept { value += other.value; return *this; }
         constexpr Sample& operator-=(Sample other) noexcept { value -= other.value; return *this; }
         constexpr Sample& operator*=(Sample other) noexcept { value *= other.value; return *this; }

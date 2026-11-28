@@ -11,10 +11,12 @@
 #include <intravenous/module/configuration_argument.h>
 #include <intravenous/node/code_key.h>
 #include <intravenous/node/traits.h>
+#include <intravenous/node/tags.h>
 
 #include <array>
 #include <concepts>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -39,6 +41,7 @@ enum class PackageDefinitionKind {
 // GraphBuilder& of an IV_MODULE is deliberately not represented here.
 struct RegisteredSignature {
     ConfigurationTypeIdentity const* const* parameter_types = nullptr;
+    ConfigurationValueOperations const* const* parameter_operations = nullptr;
     std::size_t required_argument_count = 0;
     std::size_t argument_count = 0;
 };
@@ -50,6 +53,24 @@ using IvModuleConfigureFunction = void (*)(
 using NodeTypeConfigureFunction = NodeRef (*)(
     GraphBuilder&, std::span<ConfigurationArgument>, ChannelLayout const*);
 using RegisteredSignatureFunction = RegisteredSignature const* (*)();
+using VisitDefinitionPort = void (*)(void*, char const*, std::size_t, bool event, bool output);
+using DescribeDefinitionPorts = void (*)(void*, VisitDefinitionPort);
+
+consteval auto registration_tags() { return iv::tags(); }
+template<std::size_t Count>
+consteval auto registration_tags(std::array<Tag const*, Count> values) { return values; }
+
+template<class Node>
+void describe_leaf_definition_ports(void* context, VisitDefinitionPort visit)
+{
+    auto describe = [&](auto const& configs, bool output) {
+        for_each_port_config(configs, [&](auto const& config) {
+            visit(context, config.name.data(), config.name.size(), !is_continuous(config), output);
+        });
+    };
+    if constexpr (has_inputs<Node>) describe(Node::inputs(), false);
+    if constexpr (has_outputs<Node>) describe(Node::outputs(), true);
+}
 
 struct PackageDefinition {
     PackageDefinitionKind kind{};
@@ -63,6 +84,11 @@ struct PackageDefinition {
     NodeTypeConfigureFunction node_build = nullptr;
     void const* node_compiler_record = nullptr;
     RegisteredSignatureFunction signature = nullptr;
+    char const* display_name = nullptr;
+    std::size_t display_name_size = 0;
+    Tag const* const* tags = nullptr;
+    std::size_t tag_count = 0;
+    DescribeDefinitionPorts describe_ports = nullptr;
 };
 
 static_assert(std::is_standard_layout_v<PackageDefinition>);
@@ -88,10 +114,11 @@ NodeRef configure_package_definition(
 NodeRef configure_tiled_package_definition(
     GraphBuilder&, std::string_view id, ChannelLayout,
     std::span<ConfigurationArgument> arguments);
+void register_builder_module_class_message_handlers(
+    GraphBuilder&, std::shared_ptr<void const> receiver);
 
-// This is the private concrete-node construction primitive. Registered node
-// adapters use it after validating their erased arguments; source-facing code
-// uses only GraphBuilder::node<"stable.id">(...).
+// Shared concrete-node construction used by type-based calls and registered
+// leaf adapters after they validate the public arguments.
 template<class Node, class... Args>
 node_ref_for_t<Node> configure_concrete_node(GraphBuilder&, Args&&...);
 template<class Node, class... Args>
@@ -140,7 +167,8 @@ inline void validate_registered_signature_shape(
     RegisteredSignature const& signature)
 {
     if (signature.required_argument_count > signature.argument_count
-        || (signature.argument_count != 0 && !signature.parameter_types)) {
+        || (signature.argument_count != 0
+            && (!signature.parameter_types || !signature.parameter_operations))) {
         throw std::logic_error(
             "registered definition '" + std::string(id)
             + "' published an invalid construction signature");
@@ -172,8 +200,11 @@ struct RegisteredSignatureStorage {
 
     inline static constexpr std::array<ConfigurationTypeIdentity const*, sizeof...(Args)>
         parameter_types{configuration_type_identity<std::remove_cvref_t<Args>>()...};
+    inline static constexpr std::array<ConfigurationValueOperations const*, sizeof...(Args)>
+        parameter_operations{configuration_value_operations<std::remove_cvref_t<Args>>()...};
     inline static constexpr RegisteredSignature value{
         .parameter_types = parameter_types.data(),
+        .parameter_operations = parameter_operations.data(),
         .required_argument_count = Required,
         .argument_count = sizeof...(Args),
     };
@@ -347,6 +378,97 @@ struct IvModuleConfigureAdapter<Function, DirectInvoker> {
     }
 };
 
+template<class Module, class... Args>
+struct ModuleClassConfigureAdapter {
+    struct DirectInvoker {
+        template<class... ConstructorArgs>
+        requires std::constructible_from<Module, ConstructorArgs...>
+            && requires(Module const& module, GraphBuilder& builder) {
+                { module.build_graph(builder) } -> std::same_as<void>;
+            }
+        static void invoke(
+            GraphBuilder& builder,
+            ConstructorArgs&&... arguments)
+        {
+            auto receiver = std::make_shared<Module>(
+                std::forward<ConstructorArgs>(arguments)...);
+            receiver->build_graph(builder);
+            register_builder_module_class_message_handlers(
+                builder, std::move(receiver));
+        }
+    };
+
+    using Erased = ErasedConfigurationArguments<Args...>;
+    static constexpr auto required_argument_count =
+        Erased::template first_accepted_prefix<DirectInvoker>();
+    static_assert(required_argument_count <= sizeof...(Args),
+        "IV_MODULE_CLASS constructor has no valid provider-side configuration call");
+
+    static RegisteredSignature const* signature()
+    {
+        return std::addressof(
+            RegisteredSignatureStorage<required_argument_count, Args...>::value);
+    }
+
+    template<std::size_t Count = 0>
+    static void dispatch(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments)
+    {
+        if (arguments.size() == Count) {
+            if constexpr (Erased::template accepts_prefix_count<DirectInvoker, Count>()) {
+                Erased::template invoke_prefix<DirectInvoker>(
+                    builder, arguments, std::make_index_sequence<Count>{});
+                return;
+            } else {
+                throw_configuration_argument_count_mismatch(
+                    "<provider adapter>", *signature(), arguments.size());
+            }
+        }
+        if constexpr (Count < sizeof...(Args)) {
+            dispatch<Count + 1>(builder, arguments);
+        } else {
+            throw_configuration_argument_count_mismatch(
+                "<provider adapter>", *signature(), arguments.size());
+        }
+    }
+
+    static void configure(
+        GraphBuilder& builder,
+        std::span<ConfigurationArgument> arguments)
+    {
+        dispatch(builder, arguments);
+    }
+};
+
+template<class Module, class... Args>
+void configure_module_class_constructor(
+    GraphBuilder& builder,
+    std::span<ConfigurationArgument> arguments)
+{
+    ModuleClassConfigureAdapter<Module, Args...>::configure(builder, arguments);
+}
+
+template<class Module, class... Args>
+RegisteredSignature const* module_class_constructor_signature()
+{
+    return ModuleClassConfigureAdapter<Module, Args...>::signature();
+}
+
+template<class Module>
+void iv_package_module_class_configuration_pending(
+    GraphBuilder&, std::span<ConfigurationArgument>)
+{
+    throw std::logic_error(
+        "IV_MODULE_CLASS was not processed by the IV Clang registration plugin");
+}
+
+template<class Module>
+RegisteredSignature const* iv_package_module_class_signature_pending()
+{
+    return nullptr;
+}
+
 template<class Node, class... Args>
 struct NodeTypeConfigureAdapter {
     struct DirectInvoker {
@@ -474,16 +596,24 @@ RegisteredSignature const* node_constructor_signature()
 #define IV_PACKAGE_CONCAT_INNER(a, b) a##b
 #define IV_PACKAGE_CONCAT(a, b) IV_PACKAGE_CONCAT_INNER(a, b)
 
-#define IV_MODULE(Id, Function) \
-    IV_MODULE_IMPL(Id, Function, __COUNTER__)
-#define IV_MODULE_IMPL(Id, Function, Unique) \
+#define IV_PACKAGE_TAGS(Unique, ...) \
+    constexpr auto IV_PACKAGE_CONCAT(iv_package_tags_, Unique) = \
+        ::iv::details::registration_tags(__VA_ARGS__);
+#define IV_PACKAGE_TAG_FIELDS(Unique) \
+    IV_PACKAGE_CONCAT(iv_package_tags_, Unique).data(), \
+    IV_PACKAGE_CONCAT(iv_package_tags_, Unique).size()
+
+#define IV_MODULE(Id, Function, DisplayName, ...) \
+    IV_MODULE_IMPL(Id, Function, DisplayName, __COUNTER__, __VA_ARGS__)
+#define IV_MODULE_IMPL(Id, Function, DisplayName, Unique, ...) \
     namespace { \
+    IV_PACKAGE_TAGS(Unique, __VA_ARGS__) \
     struct IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique) { \
         template<class... Args> \
         requires requires(::iv::GraphBuilder& builder, Args&&... arguments) { \
             Function(builder, std::forward<Args>(arguments)...); \
         } \
-        static void invoke(::iv::GraphBuilder& builder, Args&&... arguments) { \
+        [[maybe_unused]] static void invoke(::iv::GraphBuilder& builder, Args&&... arguments) { \
             Function(builder, std::forward<Args>(arguments)...); \
         } \
     }; \
@@ -498,29 +628,81 @@ RegisteredSignature const* node_constructor_signature()
                 Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::configure, \
             nullptr, nullptr, \
             &::iv::details::IvModuleConfigureAdapter< \
-                Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::signature}; \
+                Function, IV_PACKAGE_CONCAT(iv_package_module_invoker_, Unique)>::signature, \
+            DisplayName, sizeof(DisplayName) - 1, IV_PACKAGE_TAG_FIELDS(Unique), nullptr}; \
     }
 
-#define IV_NODE(Id, Node) \
-    IV_NODE_IMPL(Id, Node, __COUNTER__)
+#define IV_MODULE_CLASS(Id, Module, DisplayName, ...) \
+    IV_MODULE_CLASS_IMPL(Id, Module, DisplayName, __COUNTER__, __VA_ARGS__)
+#define IV_MODULE_CLASS_IMPL(Id, Module, DisplayName, Unique, ...) \
+    static_assert(requires(Module const& module, ::iv::GraphBuilder& builder) { \
+        { module.build_graph(builder) } -> std::same_as<void>; \
+    }, "IV_MODULE_CLASS requires a public const void build_graph(GraphBuilder&) member"); \
+    namespace { \
+    IV_PACKAGE_TAGS(Unique, __VA_ARGS__) \
+    IV_PACKAGE_DEFINITION_RECORD constinit const \
+        ::iv::details::PackageDefinition \
+        IV_PACKAGE_CONCAT(iv_package_module_class_definition_, Unique){ \
+            ::iv::details::PackageDefinitionKind::module, \
+            Id, sizeof(Id) - 1, \
+            __FILE__, sizeof(__FILE__) - 1, \
+            "", 0, \
+            &::iv::details::iv_package_module_class_configuration_pending<Module>, \
+            nullptr, nullptr, \
+            &::iv::details::iv_package_module_class_signature_pending<Module>, \
+            DisplayName, sizeof(DisplayName) - 1, IV_PACKAGE_TAG_FIELDS(Unique), nullptr}; \
+    }
+
+#define IV_NODE(Id, Node, DisplayName, ...) \
+    IV_NODE_IMPL(Id, Node, DisplayName, __COUNTER__, __VA_ARGS__)
 
 #define IV_NODE_VALIDATE_DECLARATION(Node) \
     static_assert(::iv::details::has_constexpr_port_configs<Node>, \
-        "IV_NODE requires inputs() and outputs() to return static constexpr arrays of InputConfig and OutputConfig. " \
+        "IV_NODE requires inputs() and outputs() to return static constexpr tuples of authored port configs. " \
         "Each array carries both sample and event ports through its config variant. " \
         "Dynamic-arity or configuration-dependent nodes must remain internal lowering nodes."); \
-    static_assert(::iv::details::access_block_callback_kind_v<Node> \
-            != ::iv::CompiledPortCallbackKind::conflicting, \
-        "IV_NODE node type must define only one compiled-access callback: access_block(...) or access_block_batch(...)."); \
-    static_assert(!::iv::details::declares_compiled_sample_ports_v<Node> \
-            || ::iv::details::has_valid_access_block_callback_v<Node>, \
-        "IV_NODE node type declares a compiled sample port; define exactly one of access_block(...) or access_block_batch(...)."); \
-    static_assert(::iv::details::propagate_block_access_callback_kind_v<Node> \
-            != ::iv::CompiledPortCallbackKind::conflicting, \
-        "IV_NODE node type may define at most one compiled block-access propagation callback: propagate_block_access(...) or propagate_block_access_batch(...).")
+    static_assert(::iv::details::primary_callback_declaration_is_valid_v<Node>, \
+        "IV_NODE requires exactly one primary callback: one scalar or batch Tick/Tock form. " \
+        "Tick primitives declare only Sequential outputs; Tock primitives declare only Region or Coverage outputs. " \
+        "Use a module node to group both domains."); \
+    static_assert(::iv::details::tick_input_content_is_valid<Node>(), \
+        "IV_NODE Tick Region/Coverage event inputs require complete-buffer access."); \
+    static_assert(::iv::details::replay_declaration_is_valid_v<Node>, \
+        "IV_NODE intrinsically replayable nodes must author a Tick callback, " \
+        "use complete buffers for Region/Coverage event inputs, have no State or authored reverse coverage callbacks, " \
+        "and declare only computed Sequential outputs; resolved timing is validated by " \
+        "the whole-graph planner."); \
+    static_assert(::iv::details::background_state_type_is_valid_v<Node>, \
+        "IV_NODE authors one State type (not TockState); Tock State must be mutable, non-volatile and default constructible."); \
+    static_assert(!::iv::details::declares_tock_outputs_v<Node> \
+            || ::iv::details::has_tock_family_v<Node>, \
+        "IV_NODE node type declares a Tock output port; define tock_coverage() or tock_coverage_batch()."); \
+    static_assert(!(::iv::details::has_tock_coverage<Node> \
+                || ::iv::details::has_tock_coverage_batch<Node>) \
+            || ::iv::details::declares_tock_outputs_v<Node>, \
+        "IV_NODE node type defines tock_coverage but declares no Tock output port."); \
+    static_assert(!::iv::details::declares_tock_outputs_v<Node> \
+            || ::iv::details::has_propagate_forward_coverage<Node> \
+            || ::iv::details::has_propagate_forward_coverage_batch<Node>, \
+        "IV_NODE node type declares a Tock output port; define exact propagate_forward_coverage() or propagate_forward_coverage_batch()."); \
+    static_assert(!(::iv::details::has_propagate_forward_coverage<Node> \
+                || ::iv::details::has_propagate_forward_coverage_batch<Node>) \
+            || ::iv::details::has_coverage_propagation_domain_v<Node> \
+            || (::iv::details::has_tick_family_v<Node> \
+                && !::iv::details::has_propagate_forward_coverage_batch<Node>), \
+        "IV_NODE forward propagation requires Tock execution or a scalar Tick coverage rule."); \
+    static_assert(!::iv::details::has_tick_family_v<Node> \
+            || !::iv::details::has_suspendable_forward_coverage<Node>, \
+        "IV_NODE Tick forward coverage must declare its rule without suspending."); \
+    static_assert(!(::iv::details::has_propagate_reverse_coverage<Node> \
+                || ::iv::details::has_propagate_reverse_coverage_batch<Node>) \
+            || (::iv::details::has_coverage_propagation_domain_v<Node> \
+                && ::iv::details::declares_random_access_inputs_v<Node>), \
+        "IV_NODE node type defines propagate_reverse_coverage but requires Tock execution and Random Access inputs.")
 
-#define IV_NODE_IMPL(Id, Node, Unique) \
+#define IV_NODE_IMPL(Id, Node, DisplayName, Unique, ...) \
     namespace { \
+    IV_PACKAGE_TAGS(Unique, __VA_ARGS__) \
     IV_NODE_VALIDATE_DECLARATION(Node); \
     ::iv::NodeRef IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique)( \
         ::iv::GraphBuilder&, std::span<::iv::details::ConfigurationArgument>, \
@@ -540,5 +722,7 @@ RegisteredSignature const* node_constructor_signature()
             "", 0, \
             nullptr, &IV_PACKAGE_CONCAT(iv_package_node_configuration_pending_, Unique), \
             &::iv::details::node_compiler_record<Node>, \
-            &IV_PACKAGE_CONCAT(iv_package_node_signature_pending_, Unique)}; \
+            &IV_PACKAGE_CONCAT(iv_package_node_signature_pending_, Unique), \
+            DisplayName, sizeof(DisplayName) - 1, IV_PACKAGE_TAG_FIELDS(Unique), \
+            &::iv::details::describe_leaf_definition_ports<Node>}; \
     }

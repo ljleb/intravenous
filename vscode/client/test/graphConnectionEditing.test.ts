@@ -1,0 +1,388 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { canContinuePortConnection, canMoveConnectionEnd, ConnectionDelayEdits, connectionEndMutation, connectionEndsAtPort, connectionFromPorts, fixedConnectionPorts,
+    type GraphConnectionEnd, type GraphPortEndpoint } from "../src/graphConnectionEditing";
+import { graphScopeWithChildren, resolveScopePorts, type GraphPortMatcher, type GraphScope, type GraphScopeConnection, type GraphScopeNode } from "../src/graphScope";
+import { beginPortConnection, canDropPortConnection, finishPortConnection, movePortConnection } from "../src/portConnectionGesture";
+
+function scope(): GraphScope {
+    const node = (id: string): GraphScopeNode => ({
+        address: { instanceId: id }, instance: { instanceId: id, definitionId: "test.node", realized: true },
+        loadState: "ready", hasChildren: false,
+        sampleInputs: [{ name: "in", index: 0, channelType: "mono" }],
+        sampleOutputs: [{ name: "out", index: 0, channelType: "stereo" }],
+        eventInputs: [{ name: "gate", index: 0, eventType: "trigger" }],
+        eventOutputs: [{ name: "notes", index: 0, eventType: "midi" }],
+    });
+    return { generation: 1, editable: true, nodes: [node("a"), node("b")], connections: [] };
+}
+const output: GraphPortEndpoint = { address: { instanceId: "a" }, kind: "sample", direction: "output", index: 0, name: "out" };
+const input: GraphPortEndpoint = { address: { instanceId: "b" }, kind: "sample", direction: "input", index: 0, name: "in" };
+
+test("connection drag works in either direction and preserves channel conversion", () => {
+    const connection = connectionFromPorts(scope(), "wire", output, input);
+    assert.deepEqual(connectionFromPorts(scope(), "wire", input, output), connection);
+    assert.deepEqual(connection, { connectionId: "wire", kind: "sample", sourceType: "stereo", targetType: "mono",
+        outputs: [{ instanceId: "a", path: [], port: { name: "out", index: 0 } }],
+        inputs: [{ instanceId: "b", path: [], port: { name: "in", index: 0 } }] });
+});
+
+test("an unnamed port connects by index and keeps its presentation label separate", () => {
+    const graph = scope();
+    graph.nodes[0].sampleOutputs[0] = { name: "", displayName: "Value", index: 0, channelType: "stereo" };
+    const connection = connectionFromPorts(graph, "wire", { ...output, name: "" }, input);
+    assert.deepEqual(connection.outputs, [{ ...output.address, path: [], port: { index: 0 } }]);
+});
+
+test("connection drag validates the current port identity and editable scope", () => {
+    assert.throws(() => connectionFromPorts({ ...scope(), editable: false }, "wire", output, input), /read-only/);
+    assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, name: "renamed" }), /port changed/);
+    assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, index: 4 }), /port changed/);
+    assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, address: { instanceId: "gone" } }), /no longer/);
+    assert.throws(() => connectionFromPorts(scope(), "wire", output, output), /input and an output/);
+});
+
+test("event connection drag retains distinct registered event types for backend conversion", () => {
+    const connection = connectionFromPorts(scope(), "events",
+        { ...output, kind: "event", name: "notes" }, { ...input, kind: "event", name: "gate" });
+    assert.equal(connection.kind, "event");
+    assert.equal(connection.sourceType, "midi");
+    assert.equal(connection.targetType, "trigger");
+    assert.throws(() => connectionFromPorts(scope(), "wire", output, { ...input, kind: "event", name: "gate" }), /same port kind/);
+});
+
+const matcher = (port: GraphPortEndpoint): GraphPortMatcher => ({ ...port.address, path: port.address.path ?? [],
+    ...(port.moduleBoundary ? { moduleBoundary: true } : {}),
+    port: { name: port.name, index: port.index } });
+const cInput = { ...input, address: { instanceId: "c" } };
+const cOutput = { ...output, address: { instanceId: "c" } };
+function connectedScope(): GraphScope {
+    const graph = scope();
+    const node = structuredClone(graph.nodes[1]);
+    node.address = { instanceId: "c" }; node.instance.instanceId = "c";
+    graph.nodes.push(node);
+    graph.connections = [{ id: "wire", applied: true, connection: {
+        connectionId: "wire", kind: "sample", sourceType: "stereo", targetType: "mono",
+        outputs: [matcher(output)], inputs: [matcher(input)],
+    } }];
+    return graph;
+}
+function selectedEnd(graph: GraphScope, port = input): GraphConnectionEnd {
+    return connectionEndsAtPort(graph, port)[0];
+}
+function replacement(graph: GraphScope, end: GraphConnectionEnd, target: GraphPortEndpoint | null) {
+    const mutation = connectionEndMutation(graph, { end, target });
+    assert.ok(mutation?.type === "upsert");
+    return mutation.connection as GraphScopeConnection["connection"];
+}
+
+test("Alt on release detaches a new or rewired cable and an Alt click selects the port action", () => {
+    const graph = connectedScope();
+    const start = { x: 0, y: 0 }, finish = { x: 40, y: 30 };
+    const fresh = beginPortConnection(cOutput, 1, 0, start)!;
+    const created = finishPortConnection(graph, fresh, 1, finish, input, false, true);
+    assert.ok(created?.type === "create" && created.detach);
+    assert.equal(connectionFromPorts(graph, "new", created.first, created.second, created.detach).loopExtraLatency, 1);
+    assert.deepEqual(finishPortConnection(graph, fresh, 1, start, null, false, true), { type: "altClick" });
+    assert.equal(finishPortConnection(graph, fresh, 1, start, null), null);
+    assert.equal(finishPortConnection(graph, fresh, 2, start, null, false, true), null);
+
+    const moving = beginPortConnection(input, 1, 0, start, selectedEnd(graph))!;
+    const rewired = finishPortConnection(graph, moving, 1, finish, cInput, false, true);
+    assert.ok(rewired?.type === "edit");
+    const mutation = connectionEndMutation(graph, rewired.edit);
+    assert.ok(mutation?.type === "upsert");
+    assert.deepEqual(mutation.connection, { ...graph.connections[0].connection, inputs: [matcher(cInput)], loopExtraLatency: 1 });
+});
+
+test("toggle from either endpoint affects only the chosen connection and protects newer edits", () => {
+    const graph = connectedScope();
+    const regular = graph.connections[0].connection;
+    const parallel = { ...graph.connections[0], id: "other", connection: { ...regular, connectionId: "other" } };
+    graph.connections.push(parallel);
+    const before = selectedEnd(graph, output);
+    const mutation = connectionEndMutation(graph, { end: before, toggleDetach: true });
+    assert.deepEqual(mutation, { type: "upsert", connection: { ...regular, loopExtraLatency: 1 } });
+    graph.connections[0] = { ...graph.connections[0], connection: { ...regular, loopExtraLatency: 6 } };
+    assert.throws(() => connectionEndMutation(graph, { end: before, toggleDetach: true }), /changed/);
+    assert.deepEqual(connectionEndMutation(graph, { end: selectedEnd(graph, input), toggleDetach: true }),
+        { type: "upsert", connection: regular });
+    assert.equal(graph.connections[1], parallel);
+    assert.equal(replacement(graph, selectedEnd(graph), cInput).loopExtraLatency, 6);
+});
+
+test("the feedback delay edit changes only a detached connection's whole-sample delay", () => {
+    const graph = connectedScope();
+    assert.throws(() => connectionEndMutation(graph, { end: selectedEnd(graph), loopExtraLatency: 80 }), /Detach the connection/);
+    graph.connections[0].connection.loopExtraLatency = 1;
+    const end = selectedEnd(graph, output);
+    for (const value of [0, -1, 1.25, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.throws(() => connectionEndMutation(graph, { end, loopExtraLatency: value }), /positive whole number/);
+    }
+    assert.equal(connectionEndMutation(graph, { end, loopExtraLatency: 1 }), null);
+    assert.deepEqual(connectionEndMutation(graph, { end, loopExtraLatency: 4800 }), { type: "upsert",
+        connection: { ...graph.connections[0].connection, loopExtraLatency: 4800 } });
+    graph.connections[0] = { ...graph.connections[0], connection: { ...graph.connections[0].connection, loopExtraLatency: 17 } };
+    assert.throws(() => connectionEndMutation(graph, { end, loopExtraLatency: 4800 }), /changed/);
+});
+
+test("a live delay scrub sends the latest value after the accepted write and discards values on rejection", async () => {
+    const graph = connectedScope();
+    graph.connections[0].connection.loopExtraLatency = 1;
+    const writes: Array<{ before: number | undefined; samples: number; reply: (accepted: boolean) => void }> = [];
+    const pending: boolean[] = [];
+    let rejections = 0;
+    const edits = new ConnectionDelayEdits((end, samples) => new Promise((reply) => {
+        writes.push({ before: end.connection.connection.loopExtraLatency, samples, reply });
+    }), (sending) => pending.push(sending), () => { ++rejections; });
+    assert.equal(edits.begin(selectedEnd(graph)), true);
+    edits.update(2);
+    edits.update(3);
+    edits.update(4);
+    assert.deepEqual(writes.map(({ before, samples }) => [before, samples]), [[1, 2]]);
+    writes[0].reply(true);
+    await Promise.resolve();
+    assert.deepEqual(writes.map(({ before, samples }) => [before, samples]), [[1, 2], [2, 4]]);
+    edits.update(5);
+    writes[1].reply(false);
+    await Promise.resolve();
+    assert.equal(writes.length, 2);
+    assert.equal(rejections, 1);
+    assert.deepEqual(pending, [true, false]);
+
+    assert.equal(edits.begin(selectedEnd(graph)), true);
+    edits.update(6);
+    edits.update(7);
+    edits.discard();
+    writes[2].reply(true);
+    await Promise.resolve();
+    assert.deepEqual(writes.map(({ samples }) => samples), [2, 4, 6]);
+    assert.equal(edits.pending, false);
+});
+
+test("module boundary ports can be connected and rewired with their inward directions", () => {
+    const graph = connectedScope();
+    const innerSource = { ...output, name: "in", moduleBoundary: true };
+    const innerTarget = { ...input, name: "out", moduleBoundary: true };
+    const created = connectionFromPorts(graph, "inside", innerTarget, innerSource);
+    assert.equal(created.sourceType, "mono");
+    assert.equal(created.targetType, "stereo");
+    assert.deepEqual(created.outputs, [matcher(innerSource)]);
+    assert.deepEqual(created.inputs, [matcher(innerTarget)]);
+    graph.connections.push({ id: "inside", applied: true, connection: created });
+
+    assert.deepEqual(connectionEndsAtPort(graph, output).map(({ connection }) => connection.id), ["wire"]);
+    const end = selectedEnd(graph, innerTarget);
+    assert.deepEqual(fixedConnectionPorts(graph, end), [innerSource]);
+    const moved = replacement(graph, end, cInput);
+    assert.deepEqual(moved.outputs, [matcher(innerSource)]);
+    assert.deepEqual(moved.inputs, [matcher(cInput)]);
+});
+
+test("expanded child ports can be wired while module-source cables remain read-only", () => {
+    const graph = connectedScope();
+    const address = { ...output.address, path: [{ kind: "tiledChild", name: "right" }] };
+    const childOutput = { ...output, address };
+    const childInput = { ...input, address };
+    graph.childScopes = [{ subject: output.address, nodes: [{ ...graph.nodes[0], address }] }];
+    const expanded = graphScopeWithChildren(graph);
+    const sourceWire: GraphScopeConnection = { id: "source", applied: true, sourceOwned: true,
+        connection: connectionFromPorts(expanded, "source", childOutput, childInput) };
+    expanded.connections = [...expanded.connections, sourceWire];
+    assert.deepEqual(resolveScopePorts(expanded, matcher(childOutput), "sample", "output")
+        .map(({ node }) => node.address), [address]);
+    assert.deepEqual(connectionEndsAtPort(expanded, childOutput), []);
+    assert.throws(() => connectionEndMutation(expanded, {
+        end: { connection: sourceWire, port: childOutput }, target: null,
+    }), /module source/);
+    const projectWire = replacement(expanded, selectedEnd(expanded, output), childOutput);
+    assert.deepEqual(projectWire.outputs, [matcher(childOutput)]);
+    assert.throws(() => connectionFromPorts(graph, "hidden", childOutput, input), /no longer/);
+});
+
+test("hover feedback permits either drag direction without changing the graph", () => {
+    const graph = scope();
+    const before = structuredClone(graph);
+    for (const [first, second] of [[output, input], [input, output]]) {
+        const drag = movePortConnection(beginPortConnection(first, 1, 0, { x: 0, y: 0 })!, 1, 1, { x: 100, y: 50 })!;
+        assert.equal(canDropPortConnection(graph, drag, second), true);
+        assert.ok(finishPortConnection(graph, drag, 1, drag.end, second));
+        assert.equal(canDropPortConnection(graph, drag, first), false);
+        assert.equal(canDropPortConnection(graph, drag, { ...second, kind: "event" }), false);
+        assert.equal(canDropPortConnection(graph, drag, null), false);
+        assert.equal(canDropPortConnection({ ...graph, editable: false }, drag, second), false);
+    }
+    assert.deepEqual(graph, before);
+});
+
+test("reattachment feedback rejects the original port, stale records and shared type changes", () => {
+    const graph = connectedScope();
+    const end = selectedEnd(graph);
+    const drag = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, end)!;
+    assert.equal(canDropPortConnection(graph, drag, cInput), true);
+    assert.equal(canDropPortConnection(graph, drag, input), false);
+    assert.equal(canDropPortConnection(graph, drag, cOutput), false);
+    assert.equal(canDropPortConnection(graph, drag, { ...cInput, name: "renamed" }), false);
+    graph.nodes[2].sampleInputs[0].channelType = "stereo";
+    assert.equal(canDropPortConnection(graph, drag, cInput), true); // Whole-end conversion remains possible.
+    // Give the current connection another input. Its shared target type can
+    // no longer change for just the moved end. Capture that new record anew.
+    graph.connections[0].connection.inputs.push(matcher(cInput));
+    const shared = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(graph))!;
+    assert.equal(canDropPortConnection(graph, shared, cInput), false);
+    const disconnected = finishPortConnection(graph, shared, 1, { x: 100, y: 50 }, cInput);
+    assert.ok(disconnected?.type === "edit");
+    assert.equal(disconnected.edit.target, null);
+    assert.deepEqual(replacement(graph, disconnected.edit.end, disconnected.edit.target).inputs, [matcher(cInput)]);
+    const originalGraph = connectedScope();
+    const originalDrag = beginPortConnection(input, 1, 0, { x: 0, y: 0 }, selectedEnd(originalGraph))!;
+    const staleGraph = structuredClone(originalGraph);
+    staleGraph.connections[0].connection.sourceType = "mono";
+    assert.equal(canDropPortConnection(staleGraph, originalDrag, cInput), false);
+    assert.equal(finishPortConnection(staleGraph, originalDrag, 1, { x: 100, y: 50 }, cInput), null);
+});
+
+test("in-progress connection gestures survive unrelated scope updates and reject stale endpoints", () => {
+    const graph = connectedScope();
+    const end = selectedEnd(graph);
+    const rewire = movePortConnection(beginPortConnection(input, 1, 0, { x: 0, y: 0 }, end)!, 1, 1, { x: 100, y: 50 })!;
+    const updated = structuredClone(graph);
+    ++updated.generation;
+    updated.connections[0].applied = false;
+    updated.connections.push({ ...updated.connections[0], id: "unrelated", connection: {
+        ...updated.connections[0].connection, connectionId: "unrelated", inputs: [matcher(cInput)],
+    } });
+    assert.equal(canContinuePortConnection(updated, rewire.port, rewire.edit), true);
+    assert.ok(finishPortConnection(updated, rewire, 1, rewire.end, cInput));
+    assert.equal(canContinuePortConnection(updated, output), true);
+    assert.equal(canContinuePortConnection({ ...updated, editable: false }, rewire.port, rewire.edit), false);
+    assert.equal(canContinuePortConnection({ ...updated, connections: [] }, rewire.port, rewire.edit), false);
+
+    updated.connections[0].connection.inputs.push(matcher(cInput));
+    assert.equal(canContinuePortConnection(updated, rewire.port, rewire.edit), false);
+    updated.nodes[0].sampleOutputs[0].name = "renamed";
+    assert.equal(canContinuePortConnection(updated, output), false);
+});
+
+test("pickup returns all connection choices for the clicked port without selecting one", () => {
+    const graph = connectedScope();
+    assert.deepEqual(connectionEndsAtPort(graph, cInput), []);
+    assert.equal(connectionEndsAtPort(graph, input).length, 1);
+    graph.connections.push({ ...graph.connections[0], id: "second", connection: {
+        ...graph.connections[0].connection, connectionId: "second", outputs: [matcher(cOutput)],
+    } });
+    assert.deepEqual(connectionEndsAtPort(graph, input).map((end) => end.connection.id), ["wire", "second"]);
+    assert.equal(connectionEndsAtPort(graph, { ...input, kind: "event" }).length, 0);
+    assert.equal(connectionEndsAtPort(graph, { ...input, name: "renamed" }).length, 0);
+    assert.equal(connectionEndsAtPort(graph, { ...input, address: { ...input.address, path: [{ name: "inner" }] } }).length, 0);
+});
+
+test("reattachment replaces one end with one upsert and retains connection identity", () => {
+    const graph = connectedScope();
+    const before = structuredClone(graph);
+    const changed = replacement(graph, selectedEnd(graph), cInput);
+    assert.equal(changed.connectionId, "wire");
+    assert.equal(changed.sourceType, "stereo"); assert.equal(changed.targetType, "mono");
+    assert.deepEqual(changed.outputs, [matcher(output)]);
+    assert.deepEqual(changed.inputs, [matcher(cInput)]);
+    const sourceChanged = replacement(graph, selectedEnd(graph, output), cOutput);
+    assert.deepEqual(sourceChanged.outputs, [matcher(cOutput)]);
+    assert.deepEqual(sourceChanged.inputs, [matcher(input)]);
+    assert.deepEqual(graph, before);
+});
+
+test("disconnect deletes only a connection that has no ends left on the selected side", () => {
+    const graph = connectedScope();
+    const unrelated = { ...graph.connections[0], id: "other" };
+    graph.connections.push(unrelated);
+    assert.deepEqual(connectionEndMutation(graph, { end: selectedEnd(graph), target: null }), { type: "delete", id: "wire" });
+    graph.connections[0].connection.inputs.push(matcher(cInput));
+    const retained = replacement(graph, selectedEnd(graph), null);
+    assert.deepEqual(retained.inputs, [matcher(cInput)]);
+    assert.deepEqual(retained.outputs, [matcher(output)]);
+    assert.equal(graph.connections[1], unrelated);
+});
+
+test("moving an end of a multi-input or multi-output record preserves its other ends and order", () => {
+    const graph = connectedScope();
+    graph.connections[0].connection.inputs.push(matcher(cInput));
+    graph.connections[0].connection.outputs.push(matcher(cOutput));
+    const aInput = { ...input, address: { instanceId: "a" } };
+    assert.deepEqual(replacement(graph, selectedEnd(graph), aInput).inputs, [matcher(aInput), matcher(cInput)]);
+    assert.deepEqual(replacement(graph, selectedEnd(graph), aInput).outputs, [matcher(output), matcher(cOutput)]);
+    const bOutput = { ...output, address: { instanceId: "b" } };
+    assert.deepEqual(replacement(graph, selectedEnd(graph, output), bOutput).outputs, [matcher(bOutput), matcher(cOutput)]);
+    assert.deepEqual(fixedConnectionPorts(graph, selectedEnd(graph)), [output, cOutput]);
+    assert.deepEqual(fixedConnectionPorts(graph, selectedEnd(graph, output)), [input, cInput]);
+});
+
+test("editing a wildcard preserves its other matched ports and channel selections", () => {
+    const graph = connectedScope();
+    graph.nodes[1].sampleInputs.push({ name: "aux", index: 1, channelType: "mono" });
+    graph.connections[0].connection.inputs = [{ instanceId: "b", path: [], port: { channel: 0 } }];
+    const changed = replacement(graph, selectedEnd(graph), cInput);
+    assert.deepEqual(changed.inputs, [
+        { ...matcher(cInput), port: { name: "in", index: 0, channel: 0 } },
+        { instanceId: "b", path: [], port: { name: "aux", index: 1, channel: 0 } },
+    ]);
+    const removed = replacement(graph, selectedEnd(graph), null);
+    assert.deepEqual(removed.inputs, [changed.inputs[1]]);
+});
+
+test("moving a channel-selected source retains the mono connection type on a stereo port", () => {
+    const graph = connectedScope();
+    graph.connections[0].connection.sourceType = "mono";
+    graph.connections[0].connection.outputs[0].port.channel = 1;
+    const changed = replacement(graph, selectedEnd(graph, output), cOutput);
+    assert.equal(changed.sourceType, "mono");
+    assert.deepEqual(changed.outputs, [{ ...matcher(cOutput), port: { name: "out", index: 0, channel: 1 } }]);
+    graph.nodes[2].sampleOutputs[0].channelType = "mono";
+    assert.equal(canMoveConnectionEnd(graph, selectedEnd(graph, output), cOutput), false);
+});
+
+test("a single whole-port end can change type; ends sharing a side cannot disagree on its type", () => {
+    const graph = connectedScope();
+    graph.nodes[2].sampleInputs[0].channelType = "stereo";
+    assert.equal(replacement(graph, selectedEnd(graph), cInput).targetType, "stereo");
+    graph.connections[0].connection.inputs.push(matcher({ ...input, address: { instanceId: "a" } }));
+    assert.equal(canMoveConnectionEnd(graph, selectedEnd(graph), cInput), false);
+    assert.throws(() => replacement(graph, selectedEnd(graph), cInput), /same type/);
+});
+
+test("event endpoints reconnect and disconnect with the same rules as sample endpoints", () => {
+    const graph = connectedScope();
+    const eventOutput = { ...output, kind: "event" as const, name: "notes" };
+    const eventInput = { ...input, kind: "event" as const, name: "gate" };
+    const nextInput = { ...eventInput, address: { instanceId: "c" } };
+    graph.connections[0].connection = { connectionId: "wire", kind: "event", sourceType: "midi", targetType: "trigger",
+        outputs: [matcher(eventOutput)], inputs: [matcher(eventInput)] };
+    const end = selectedEnd(graph, eventInput);
+    const changed = replacement(graph, end, nextInput);
+    assert.deepEqual(changed.inputs, [matcher(nextInput)]);
+    assert.equal(changed.sourceType, "midi"); assert.equal(changed.targetType, "trigger");
+    assert.deepEqual(connectionEndMutation(graph, { end, target: null }), { type: "delete", id: "wire" });
+    assert.equal(canMoveConnectionEnd(graph, end, cInput), false);
+});
+
+test("a gesture cannot overwrite a changed or missing connection, or use stale ports", () => {
+    const graph = connectedScope();
+    const end = structuredClone(selectedEnd(graph));
+    assert.equal(connectionEndMutation(graph, { end, target: { ...input, address: { ...input.address, path: [] } } }), null);
+    graph.connections[0].applied = false; // Application status is not a semantic edit.
+    assert.ok(replacement(graph, end, cInput));
+    assert.equal(canMoveConnectionEnd({ ...graph, editable: false }, end, cInput), false);
+    assert.equal(canMoveConnectionEnd(graph, end, { ...cInput, name: "stale" }), false);
+    assert.equal(canMoveConnectionEnd(graph, end, output), false);
+    assert.throws(() => connectionEndMutation({ ...graph, connections: [] }, { end, target: null }), /changed/);
+    graph.connections[0].connection.inputs.push(matcher(cInput));
+    assert.throws(() => connectionEndMutation(graph, { end, target: null }), /changed/);
+    assert.equal(canMoveConnectionEnd(graph, end, cInput), false);
+});
+
+test("unresolved interior matchers survive an edit to a separate root port", () => {
+    const graph = connectedScope();
+    const interior = { instanceId: "b", path: [{ name: "inside" }], port: { name: "audio" } };
+    graph.connections[0].connection.inputs.push(interior);
+    assert.deepEqual(replacement(graph, selectedEnd(graph), cInput).inputs, [matcher(cInput), interior]);
+    assert.deepEqual(replacement(graph, selectedEnd(graph), null).inputs, [interior]);
+});

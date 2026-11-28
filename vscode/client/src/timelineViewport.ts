@@ -1,0 +1,224 @@
+import type { Point } from "./graphScope";
+import { shiftSamplePosition, timelineSampleCount, type SamplePosition, type TimelineSamples } from "./timelineSamples";
+
+export type TimelineViewport = {
+    origin: SamplePosition;
+    secondsPerPixel: number;
+    laneHeight: number;
+    scrollTop: number;
+};
+export const minimumLaneHeight = 12;
+export const maximumLaneHeight = 1600;
+export const editableHeightPx = 48;
+export const timelineLaneBorderPx = 1;
+export const verticalWheelStepPixels = 100;
+const wheelZoomSensitivity = .001;
+const verticalWheelLogStep = verticalWheelStepPixels * wheelZoomSensitivity;
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const laneHeightAtWheelStep = (steps: number) => clamp(maximumLaneHeight * Math.exp(-steps * verticalWheelLogStep),
+    minimumLaneHeight, maximumLaneHeight);
+const laneWheelStepAtHeight = (height: number) => Math.log(maximumLaneHeight / height) / verticalWheelLogStep;
+export const initialTimelineViewport: TimelineViewport = {
+    origin: { index: 0n, fraction: 0 }, secondsPerPixel: 0.01, scrollTop: 0,
+    laneHeight: laneHeightAtWheelStep(Math.floor(laneWheelStepAtHeight(editableHeightPx + timelineLaneBorderPx))),
+};
+
+export function formatPlaybackSeconds(seconds: number, fits: (text: string) => boolean): string {
+    const full = seconds.toFixed(3);
+    if (fits(full)) return full;
+    const fraction = full.lastIndexOf(".");
+    if (fraction < 0) return full;
+    for (let places = 2; places > 0; --places) {
+        const shortened = full.slice(0, fraction + 1 + places);
+        if (fits(shortened)) return shortened;
+    }
+    const whole = full.slice(0, fraction);
+    return fits(whole) ? whole : seconds.toExponential(0).replace("e+", "e");
+}
+
+export function readTimelineViewport(value: Partial<TimelineViewport> | undefined): TimelineViewport {
+    const finiteOr = (candidate: unknown, fallback: number) =>
+        typeof candidate === "number" && Number.isFinite(candidate) ? candidate : fallback;
+    const secondsPerPixel = finiteOr(value?.secondsPerPixel, initialTimelineViewport.secondsPerPixel);
+    return {
+        origin: value?.origin ?? initialTimelineViewport.origin,
+        secondsPerPixel: secondsPerPixel > 0 ? Math.max(secondsPerPixel, 1e-6) : initialTimelineViewport.secondsPerPixel,
+        laneHeight: clamp(finiteOr(value?.laneHeight, initialTimelineViewport.laneHeight), minimumLaneHeight, maximumLaneHeight),
+        scrollTop: Math.max(0, finiteOr(value?.scrollTop, 0)),
+    };
+}
+
+export type TimelineZoomAction = "verticalZoom" | "horizontalZoom";
+type CombinedTimelineZoom = TimelineZoomAction | "bothZoom";
+export type TimelineWheelAction = "verticalScroll" | "horizontalScroll" | "laneValueZoom" | CombinedTimelineZoom;
+type ZoomModifiers = { ctrlKey: boolean; altKey: boolean };
+function timelineZoomAction(modifiers: ZoomModifiers): CombinedTimelineZoom | null {
+    if (modifiers.ctrlKey && modifiers.altKey) return "bothZoom";
+    return modifiers.ctrlKey ? "horizontalZoom" : modifiers.altKey ? "verticalZoom" : null;
+}
+export function timelineWheelAction(modifiers: ZoomModifiers & { shiftKey: boolean }, laneValueNavigation = false): TimelineWheelAction {
+    const zoom = timelineZoomAction(modifiers);
+    if (zoom === "verticalZoom" && modifiers.shiftKey && laneValueNavigation) return "laneValueZoom";
+    return zoom ?? (modifiers.shiftKey ? "horizontalScroll" : "verticalScroll");
+}
+
+export function wheelPixels(delta: number, mode: number, pageSize: number): number {
+    return delta * (mode === 1 ? 16 : mode === 2 ? pageSize : 1);
+}
+
+export function zoomFactorForPixels(pixels: number): number {
+    return Math.exp(clamp(pixels * wheelZoomSensitivity, -20, 20));
+}
+
+type HorizontalAxis = { width: number; sampleRate: number };
+const maximumTimeScale = ({ width, sampleRate }: HorizontalAxis) =>
+    Number(timelineSampleCount) / Math.max(1, width) / sampleRate;
+const timeScale = (view: TimelineViewport, axis: HorizontalAxis) => Math.min(view.secondsPerPixel, maximumTimeScale(axis));
+const zoomedTimeScale = (view: TimelineViewport, delta: number, axis: HorizontalAxis) =>
+    clamp(timeScale(view, axis) * zoomFactorForPixels(delta), 1e-6, maximumTimeScale(axis));
+
+export function viewportTimelineSamples(view: TimelineViewport, axis: HorizontalAxis): TimelineSamples {
+    const scale = timeScale(view, axis);
+    return { origin: view.origin, span: scale === maximumTimeScale(axis) ? Number(timelineSampleCount)
+        : Math.min(Number(timelineSampleCount), scale * axis.sampleRate * Math.max(1, axis.width)) };
+}
+
+function sampleTravel(view: TimelineViewport, axis: HorizontalAxis, pixels: number): number {
+    return viewportTimelineSamples(view, axis).span * (pixels / Math.max(1, axis.width));
+}
+
+export function zoomTimelineHorizontally(view: TimelineViewport, pointerX: number, delta: number,
+    axis: HorizontalAxis): TimelineViewport {
+    const secondsPerPixel = zoomedTimeScale(view, delta, axis);
+    if (secondsPerPixel === view.secondsPerPixel) return view;
+    return scaleTimelineTime(view, axis, pointerX, secondsPerPixel);
+}
+
+function scaleTimelineTime(view: TimelineViewport, axis: HorizontalAxis, x: number, secondsPerPixel: number,
+    anchor = shiftSamplePosition(view.origin, sampleTravel(view, axis, x))): TimelineViewport {
+    const next = { ...view, secondsPerPixel };
+    return { ...next, origin: shiftSamplePosition(anchor, -sampleTravel(next, axis, x)) };
+}
+
+export function zoomTimelineVertically(view: TimelineViewport, pointerY: number, delta: number): TimelineViewport {
+    return scaleTimelineLanes(view, pointerY, zoomFactorForPixels(-delta));
+}
+
+export function stepTimelineVerticalZoom(view: TimelineViewport, pointerY: number, steps: number): TimelineViewport {
+    if (steps === 0) return view;
+    const from = laneWheelStepAtHeight(view.laneHeight);
+    const step = steps > 0 ? Math.floor(from + 1e-9) : Math.ceil(from - 1e-9);
+    return scaleTimelineLanes(view, pointerY, laneHeightAtWheelStep(step + steps) / view.laneHeight);
+}
+
+export function zoomTimelineAxes(view: TimelineViewport, anchor: Point, delta: number,
+    axes: { horizontal: boolean; vertical: boolean }, timeAxis: HorizontalAxis): TimelineViewport {
+    if (delta === 0) return view;
+    const horizontal = axes.horizontal ? zoomTimelineHorizontally(view, anchor.x, delta, timeAxis) : view;
+    return axes.vertical ? zoomTimelineVertically(horizontal, anchor.y, delta) : horizontal;
+}
+
+function scaleTimelineLanes(view: TimelineViewport, pointerY: number, factor: number): TimelineViewport {
+    const laneHeight = clamp(view.laneHeight * factor, minimumLaneHeight, maximumLaneHeight);
+    const lanePosition = (view.scrollTop + pointerY) / view.laneHeight;
+    return { ...view, laneHeight, scrollTop: Math.max(0, lanePosition * laneHeight - pointerY) };
+}
+
+export type MiddleZoomPickup = { point: Point; cursor: Point; time: SamplePosition; lanePosition: number };
+type MiddleDragPointer = Point & { pointerId: number };
+type SingleMiddleDrag = MiddleDragPointer & { action: "pan" | TimelineZoomAction };
+export type MiddleDrag = SingleMiddleDrag | (MiddleDragPointer & { action: "bothZoom"; zoomPickup: MiddleZoomPickup });
+export type MiddleClick = Point & { at: number; mode: TimelineZoomAction | "lane" | "view"; lane: Element | null };
+export function middleClickMode(modifiers: ZoomModifiers & { shiftKey: boolean }, laneValueNavigation = false): MiddleClick["mode"] {
+    if (modifiers.ctrlKey) return "verticalZoom";
+    if (modifiers.shiftKey && (!modifiers.altKey || laneValueNavigation)) return "lane";
+    if (modifiers.altKey) return "horizontalZoom";
+    return "view";
+}
+export function isMiddleDoubleClick(first: MiddleClick | null, second: MiddleClick): boolean {
+    return first !== null && first.mode === second.mode && first.lane === second.lane
+        && second.at - first.at <= 400 && Math.hypot(first.x - second.x, first.y - second.y) <= 6;
+}
+export function resetTimelineZoom(view: TimelineViewport, axis: TimelineZoomAction, anchor: number,
+    timeAxis: HorizontalAxis): TimelineViewport {
+    if (axis === "horizontalZoom") {
+        const secondsPerPixel = initialTimelineViewport.secondsPerPixel;
+        return scaleTimelineTime(view, timeAxis, anchor, secondsPerPixel);
+    }
+    const laneHeight = initialTimelineViewport.laneHeight;
+    return { ...view, laneHeight, scrollTop: Math.max(0, (view.scrollTop + anchor) * laneHeight / view.laneHeight - anchor) };
+}
+export function timelineMiddleDragAction(modifiers: ZoomModifiers): MiddleDrag["action"] {
+    return timelineZoomAction(modifiers) ?? "pan";
+}
+const middleDragZoomSensitivity = 3;
+export function middleZoomPickup(view: TimelineViewport, point: Point, cursor: Point, axis: HorizontalAxis): MiddleZoomPickup {
+    return { point, cursor, time: shiftSamplePosition(view.origin, sampleTravel(view, axis, point.x)),
+        lanePosition: (view.scrollTop + point.y) / view.laneHeight };
+}
+
+export function zoomMiddleDragAtPickup(view: TimelineViewport, delta: Point, pickup: MiddleZoomPickup,
+    axes: { horizontal: boolean; vertical: boolean }, axis: HorizontalAxis): TimelineViewport {
+    const { point, time, lanePosition } = pickup;
+    let next = view;
+    if (axes.horizontal && delta.x) {
+        const scale = zoomedTimeScale(view, delta.x * middleDragZoomSensitivity, axis);
+        if (scale !== view.secondsPerPixel) next = scaleTimelineTime(view, axis, point.x, scale, time);
+    }
+    if (axes.vertical && delta.y) {
+        next = zoomTimelineVertically(next, point.y, delta.y * middleDragZoomSensitivity);
+        next.scrollTop = Math.max(0, lanePosition * next.laneHeight - point.y);
+    }
+    return next;
+}
+
+export function middleDragZoomFactor(pixels: number): number {
+    return zoomFactorForPixels(-pixels * middleDragZoomSensitivity);
+}
+export function zoomMiddleDrag(view: TimelineViewport, action: TimelineZoomAction, delta: Point, anchor: number,
+    axis: HorizontalAxis): TimelineViewport {
+    return action === "verticalZoom"
+        ? delta.x ? scaleTimelineLanes(view, anchor, middleDragZoomFactor(delta.x)) : view
+        : delta.y ? zoomTimelineHorizontally(view, anchor, delta.y * middleDragZoomSensitivity, axis) : view;
+}
+
+export function wrapTimelineCursor(point: Point, travel: Point, bounds: { left: number; top: number; width: number; height: number }) {
+    const wrap = (position: number, start: number, size: number) => {
+        if (size <= 0) return start;
+        const offset = (position - start) % size;
+        return start + (offset < 0 ? offset + size : offset);
+    };
+    const virtual = { x: point.x + travel.x, y: point.y + travel.y };
+    const visible = { x: wrap(virtual.x, bounds.left, bounds.width), y: wrap(virtual.y, bounds.top, bounds.height) };
+    const screens = {
+        x: bounds.width > 0 ? Math.floor((virtual.x - bounds.left) / bounds.width) : 0,
+        y: bounds.height > 0 ? Math.floor((virtual.y - bounds.top) / bounds.height) : 0,
+    };
+    return { virtual, visible, screens };
+}
+
+export function zoomAnchorHint(action: TimelineZoomAction | "valueZoom", screens: Point): string {
+    const timeAxis = action === "horizontalZoom";
+    const name = timeAxis ? "Time anchor" : action === "valueZoom" ? "Value anchor" : "Lane anchor";
+    const offset = timeAxis ? screens.x : screens.y;
+    if (offset === 0) return `${name} · in view`;
+    const distance = Math.abs(offset);
+    const direction = timeAxis ? (offset < 0 ? "left" : "right") : (offset < 0 ? "above" : "below");
+    return `${name} · ${distance} ${distance === 1 ? "screen" : "screens"} ${direction}`;
+}
+
+export function moveMiddleDrag(view: TimelineViewport, drag: SingleMiddleDrag, buttons: number, x: number, y: number,
+    anchor: Point, axis: HorizontalAxis, lanePansVertically = false): TimelineViewport | null {
+    if (!(buttons & 4)) return null;
+    const delta = { x: x - drag.x, y: y - drag.y };
+    if (drag.action === "pan") return panTimeline(view, delta, lanePansVertically, axis);
+    return zoomMiddleDrag(view, drag.action, delta, drag.action === "horizontalZoom" ? anchor.x : anchor.y, axis);
+}
+
+export function panTimeline(view: TimelineViewport, delta: Point, lanePansVertically: boolean,
+    axis: HorizontalAxis): TimelineViewport {
+    const verticalTravel = lanePansVertically ? 0 : delta.y;
+    if (delta.x === 0 && verticalTravel === 0) return view;
+    return { ...view, origin: delta.x === 0 ? view.origin : shiftSamplePosition(view.origin, -sampleTravel(view, axis, delta.x)),
+        scrollTop: Math.max(0, view.scrollTop - verticalTravel) };
+}

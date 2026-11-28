@@ -5,4 +5,4 @@ void duplicate_two(iv::GraphBuilder& builder)
     builder.outputs();
 }
 
-IV_MODULE("iv.test.duplicate", duplicate_two);
+IV_MODULE("iv.test.duplicate", duplicate_two, "Duplicate");

@@ -5,15 +5,15 @@ using namespace iv;
 
 void local_cmake_module(iv::GraphBuilder& g)
 {
-    auto const tone = g.node<"saw_oscillator">();
+    auto const tone = g.node<"saw">();
     tone(
         "phase_offset"_P = 0.0,
         "frequency"_P = 440.0
     );
     g.outputs(
-        "main"_P[iv::stereo::left] = tone,
-        "main"_P[iv::stereo::right] = tone
+        "main"_P.with_display_name("Main")[iv::stereo::left] = tone,
+        "main"_P.with_display_name("Main")[iv::stereo::right] = tone
     );
 }
 
-IV_MODULE("iv.test.local_cmake", local_cmake_module);
+IV_MODULE("iv.test.local_cmake", local_cmake_module, "Local cmake");

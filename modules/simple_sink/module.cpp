@@ -8,7 +8,7 @@ void simple_sink(iv::GraphBuilder& g)
 
     auto make_channel = [&]<auto Ch>() {
         auto const phase = g.node<"phase_integrator">();
-        auto const osc = g.node<"saw_oscillator">();
+        auto const osc = g.node<"saw">();
         constexpr Sample channel_offset =
             std::same_as<decltype(Ch), decltype(stereo::left)> ? 0.0f : 1.0f;
 
@@ -30,4 +30,4 @@ void simple_sink(iv::GraphBuilder& g)
     g.outputs("main"_P = g.tile<stereo>(left, right));
 }
 
-IV_MODULE("iv.test.simple_sink", simple_sink);
+IV_MODULE("iv.test.simple_sink", simple_sink, "Simple Sink");

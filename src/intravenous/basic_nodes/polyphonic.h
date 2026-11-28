@@ -1,6 +1,7 @@
 #pragma once
 
 #include <intravenous/fast_bitset.h>
+#include <intravenous/graph/programmatic_inputs.h>
 #include <intravenous/graph/builder.h>
 #include <intravenous/node/lifecycle.h>
 #include <intravenous/note_number_lookup_table.h>
@@ -76,18 +77,17 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi) };
+            return std::array { event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("frequency") };
+            return std::array { output<Sample>({"frequency", "Frequency"}, OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiPitch> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.block, ctx.max_block_size());
+            ctx.local_array<&State::block>(ctx.max_block_size());
         }
 
         static void push_note(State& state, std::uint8_t note)
@@ -145,9 +145,10 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_frequency(state);
 
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -159,7 +160,7 @@ namespace iv {
             }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
-            ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
+            ctx.template output<0>().push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
         }
     };
 
@@ -173,18 +174,17 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array { event_input("midi", EventTypeId::midi) };
+            return std::array { event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential) };
         }
 
         static constexpr auto outputs()
         {
-            return std::array { sample_output("gate") };
+            return std::array { output<Sample>({"gate", "Gate"}, OutputProduction::sequential) };
         }
 
         void declare(DeclarationContext<MidiGate> const& ctx) const
         {
-            auto const& state = ctx.state();
-            ctx.local_array(state.block, ctx.max_block_size());
+            ctx.local_array<&State::block>(ctx.max_block_size());
         }
 
         static Sample current_gate(State const& state)
@@ -213,9 +213,10 @@ namespace iv {
             size_t cursor = 0;
             Sample value = current_gate(state);
 
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(next), value);
                 cursor = next;
@@ -227,7 +228,7 @@ namespace iv {
             }
 
             std::fill(state.block.begin() + static_cast<std::ptrdiff_t>(cursor), state.block.begin() + static_cast<std::ptrdiff_t>(ctx.block_size), value);
-            ctx.outputs[0].push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
+            ctx.template output<0>().push_block(std::span<Sample const>(state.block.data(), ctx.block_size));
         }
     };
 
@@ -288,35 +289,38 @@ namespace iv {
             pitch_bend_range_semitones(pitch_bend_range_semitones)
         {}
 
-        constexpr auto inputs() const
+        static constexpr auto inputs()
         {
             return std::array {
-                event_input("midi", EventTypeId::midi),
+                event_input({"midi", "MIDI"}, EventTypeId::midi, InputAccess::sequential),
             };
         }
 
-        constexpr auto outputs() const
+        static constexpr auto outputs()
         {
-            return std::array {
-                sample_output("amplitude"),
-                sample_output("frequency"),
-                event_output("trigger", EventTypeId::trigger),
+            return std::tuple {
+                output<Sample>({"amplitude", "Amplitude"}, OutputProduction::sequential),
+                output<Sample>({"frequency", "Frequency"}, OutputProduction::sequential),
+                event_output({"trigger", "Trigger"}, EventTypeId::trigger, OutputProduction::sequential),
             };
         }
 
         void tick_block(TickBlockContext<MidiVoiceAllocator> const& ctx) const
         {
             auto& state = ctx.state();
+            auto amplitude_output = ctx.template output<0>();
+            auto frequency_output = ctx.template output<1>();
 
             auto push_until = [&](size_t until, size_t& cursor) {
                 while (cursor < until) {
-                    ctx.outputs[0].push(state.amplitude);
-                    ctx.outputs[1].push(state.frequency);
+                    amplitude_output.push(state.amplitude);
+                    frequency_output.push(state.frequency);
                     ++cursor;
                 }
             };
 
-            auto assign_voice = [&](size_t voice, std::uint8_t note, Sample amplitude, size_t event_time) {
+            auto assign_voice = [&](size_t voice, std::uint8_t note,
+                                    Sample amplitude, size_t event_offset) {
                 bool const was_allocated = state.allocated.test(voice);
                 bool const assignment_changed = !was_allocated || state.notes[voice] != note;
                 state.allocated.set(voice);
@@ -327,7 +331,9 @@ namespace iv {
                         state.frequency = current_frequency(note, state.pitch_bend);
                         state.amplitude = amplitude;
                         if (assignment_changed) {
-                            ctx.event_outputs[0].push(TriggerEvent {}, event_time, ctx.index, ctx.block_size);
+                            ctx.template output<2>().push(
+                                TriggerEvent {},
+                                event_offset);
                         }
                     }
                 }
@@ -343,9 +349,10 @@ namespace iv {
             };
 
             size_t cursor = 0;
-            auto const events = ctx.event_inputs[0].get_block(ctx.index, ctx.block_size);
+            auto const events = ctx.template input<0>().events();
             for (TimedEvent const& event : events) {
-                size_t const event_offset = event.time - ctx.index;
+                size_t const event_offset = static_cast<size_t>(
+                    ctx.index.whole().forward_distance_to(event.time));
                 size_t const next = std::min(event_offset, ctx.block_size);
                 push_until(next, cursor);
 
@@ -392,10 +399,10 @@ namespace iv {
     {
         static_assert(voice_count > 0, "iv::polyphonic requires at least one voice");
 
-        auto const midi = g.event_input<"midi">(EventTypeId::midi);
-        auto process_lane = [&]<size_t VoiceIndex>() {
+        auto const midi = iv::programmatic::declare_event_input(g, "midi", {"MIDI"}, EventTypeId::midi);
+        auto process_voice = [&]<size_t VoiceIndex>() {
             auto voice = g.subgraph([&](auto& s){
-                auto const voice_midi = s.template event_input<"midi">(EventTypeId::midi);
+                auto const voice_midi = iv::programmatic::declare_event_input(s, "midi", {"MIDI"}, EventTypeId::midi);
                 auto midi_driver = details::configure_concrete_node<
                     MidiVoiceAllocator<VoiceIndex, voice_count>>(g);
                 midi_driver.connect_event_input("midi", voice_midi);
@@ -408,7 +415,7 @@ namespace iv {
         };
 
         [&]<size_t... VoiceIndices>(std::index_sequence<VoiceIndices...>) {
-            (process_lane.template operator()<VoiceIndices>(), ...);
+            (process_voice.template operator()<VoiceIndices>(), ...);
         }(std::make_index_sequence<voice_count>{});
     }
 }

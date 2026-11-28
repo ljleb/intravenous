@@ -1,0 +1,50 @@
+{
+  "definitions": [
+    {
+      "definitionId": "builtin.beats",
+      "supportedEventTypes": [
+        {
+          "definitionFingerprint": "b2a36c5cb2dc68f3",
+          "nominalId": "c:$@N@iv@S@SetBeatGrid"
+        }
+      ]
+    }
+  ],
+  "eventTypes": [
+    {
+      "definitionFingerprint": "b2a36c5cb2dc68f3",
+      "displayName": "iv::SetBeatGrid",
+      "nominalId": "c:$@N@iv@S@SetBeatGrid",
+      "payload": {
+        "fields": [
+          {
+            "name": "bpm",
+            "value": {
+              "bitWidth": 64,
+              "kind": "floatingPoint"
+            }
+          },
+          {
+            "name": "beats_per_bar",
+            "value": {
+              "bitWidth": 32,
+              "kind": "unsignedInteger"
+            }
+          },
+          {
+            "name": "subdivisions",
+            "value": {
+              "element": {
+                "bitWidth": 32,
+                "kind": "unsignedInteger"
+              },
+              "kind": "sequence"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    }
+  ],
+  "formatVersion": 0
+}

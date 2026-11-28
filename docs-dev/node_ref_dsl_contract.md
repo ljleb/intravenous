@@ -1,0 +1,229 @@
+# Node-Reference DSL Contract
+
+## Contexts and identities
+
+The DSL has two different node contexts.
+
+- A **symbolic node** is static/configured graph metadata. It is created when a
+  source-configured declaration is annotated. It owns source identity, source
+  spans, symbolic ports, and explicit membership of node bundles. It is not an
+  executable node and it is not a value returned by `GraphBuilder::node`.
+- A **node reference** is a copyable builder-time value. It refers to exactly
+  one node bundle in its `BuilderSession` and creates or inspects graph wiring.
+  Assignment can initialize an empty reference.
+
+A node bundle is exactly one concrete node, one tiled set of concrete nodes,
+or one subgraph node. Concrete nodes and individual tiles are execution
+implementation details. Symbolic-node-to-bundle membership is explicit and
+many-to-many; it must never be inferred from names, source spans, types, tile
+order, or adjacency.
+
+## Node-reference types
+
+```cpp
+NodeRef
+TypedNodeRef<Node>
+TiledNodeRef<Node, ChannelType>
+```
+
+`NodeRef` is the common base and contains an erased bundle handle.
+`TypedNodeRef<Node>` adds `Node`'s constexpr port shape for a concrete bundle.
+`TiledNodeRef<Node, C>` adds `Node`'s constexpr port shape, the promoted
+channel type `C`, and typed access to its concrete member bundles.
+
+`NodeRef` is the public source-facing result of `g.node<"stable.id">(...)`
+and `g.node<"stable.id", ChannelType>(...)`.
+Type-based construction can return a typed or tiled reference for a private
+leaf. The CRTP implementation helper is internal.
+Typed refs derive from `NodeRef`. `node_ref()` produces an erased handle for
+the same bundle. See the [earlier move-only contract](historical/node_ref_move_only_contract_2026-11-23.md).
+
+### Named occurrences and output forwarding
+
+The owner approved recording output forwarding through individual `NodeRef`
+occurrences on 2026-11-23. Copying a ref preserves its concrete bundle. Naming
+the copied value in package source records a new occurrence and its upstream
+occurrence on that bundle. A symbolic record can group several occurrences
+of the same declaration. Forwarding edges go from earlier to later
+occurrences, so revisiting a declaration can preserve distinct signal routes.
+Source references and C++ reference aliases can attach source spans to the
+symbolic record without creating a forwarding occurrence.
+
+### Lane visibility
+
+`IV_NO_LANE` before a declaration or block suppresses the dedicated graph
+lanes for declarations introduced in the marked statement. A declaration
+keeps its usual C++ scope. A reference to a declaration outside the marked
+statement keeps that declaration's lane visibility.
+
+```cpp
+IV_NO_LANE auto const helper = g.node<"sine">();
+
+IV_NO_LANE {
+    auto const another_helper = g.node<"sine">();
+}
+```
+
+The marker preserves symbolic identity, source navigation, and the behavior
+of authored connections and saved controls. The graph scope omits the lane
+when it lists the module's children. Remaining lanes keep their source order.
+
+## Common bundle API
+
+Every `NodeRef` operation is defined through `NodeBundle` operations. Callers
+must not inspect a bundle kind or call `single_concrete_node()`. The erased
+bundle API supplies counts, name lookup, layouts, lowering to concrete ports,
+topology/concrete-member traversal, import/remap, and annotation storage.
+
+All node refs support index and named sample/event input wiring, sample/event
+connection state, index and named output lookup, event-output access, TTL,
+source annotation, and diagnostics. A subgraph bundle supports the same common
+operations.
+
+## Typed additions
+
+`TypedNodeRef<Node>` provides static named output types, `static_output<I>()`,
+tuple `get<I>()`, and compile-time validation of calls.
+
+`TiledNodeRef<Node, C>` provides promoted typed outputs and
+`tiled[channel] -> TypedNodeRef<Node>` for an exactly matching member of `C`.
+That selects a concrete node bundle. In contrast,
+`tiled["out"_P][channel]` selects a channel of a promoted sample-port value.
+Normal graph wiring uses promoted ports and does not require tile selection.
+
+## Port values and lowering
+
+`SamplePortRef` is the common untyped reference to one sample output. It may
+refer to a concrete output, a bundle output, or a graph/subgraph boundary.
+Typed sample-port refs extend it. A promoted tiled port is one logical bundle
+output and additionally exposes channel selection.
+
+`EventPortRef` is one event stream. Tiled event inputs broadcast one stream to
+all tiles; tiled event outputs merge tile streams before producing one event
+ref.
+
+GraphBuilder lowers bundle ports to concrete ports only when creating concrete
+edges, detach nodes, public outputs, or execution metadata. Native/tiled
+boundaries are structural GraphJit routing: channel projection, permutation,
+duplication, composition, and representation conversion lower directly rather than
+through authored `ChannelPack`/`ChannelUnpack` nodes. Matching tiled ports may lower
+to matching mono edges only when their channel types, not merely their widths, match.
+
+Output-selection rules superseded on 2026-11-14 are preserved in
+[the historical snapshot](historical/node_ref_output_selection_before_mixed_outputs_2026-11-14.md).
+
+## Expression rules
+
+- `g.node<"stable.id">(args...)` is the normal source-facing node-construction
+  operation. It resolves a registered `IV_NODE` or `IV_MODULE` synchronously
+  and returns `NodeRef`; its public result does not disclose which provider
+  kind supplied the ID.
+- `g.node<"stable.id", ChannelType>(args...)` requests a tiled registered
+  `IV_NODE` bundle or a tiled `IV_MODULE` subgraph and still returns `NodeRef`.
+  Every sample input/output of a tiled IV module must be
+  mono so the enclosing bundle can promote matching ports consistently. If
+  that condition is not met, the entire node-construction call fails without
+  adding its attempted module children to the caller's graph.
+- `g.node<Type>(args...)` constructs a private leaf by C++ type, or creates a
+  subgraph from a class with `build_graph(GraphBuilder&) const`.
+  `g.node<Type, ChannelType>(args...)` tiles a private leaf.
+  See [Node Definitions and Instances](./node_definitions_and_instances_direction.md#future-package-identity-publication-and-type-construction-2026-11-15-clarification)
+  and the [earlier DSL](historical/node_construction_before_package_private_types_2026-11-19.md).
+- `g.subgraph(...)`, embedding, and module loading return `NodeRef` to one
+  subgraph bundle.
+- Tiled bundle construction requires a multichannel layout. Mono arithmetic
+  creates one concrete node. `g.tile<mono>(source)` reuses the existing mono
+  sample expression, including its connection settings.
+- `ref(...)`, `connect_input`, and `connect_event_input` connect positional or
+  named inputs. Named resolution is bundle-level for erased refs and static
+  where typed information is available.
+- `ref[i]` and `ref["name"_P]` select outputs. Typed refs preserve output
+  channel/layout information; erased refs return an erased bundle port.
+- In a sample context, a node ref selects its first sample output. An implicit
+  conversion to `SamplePortRef` fails if it has no sample output. The output
+  name is irrelevant. It does not need to be named `"main"`.
+- In an event context, `event_port()` selects the first event output and fails
+  if there is no event output. The event output name is irrelevant.
+- An unqualified node argument to a node call, chaining operation, or public
+  `outputs(...)` selects its first declared output across both kinds. An event
+  output declared before the sample outputs is therefore the default.
+- An unnamed Sample output in `outputs(...)` is named `value`. Unnamed
+  channel assignments also use `value` as their shared port name. To keep the
+  previous name for an existing project, declare the output as `"main"_P`
+  explicitly. Projects that adopt the new name must update stored connections
+  and output gains that refer to the old name.
+- Named bindings select a kind: `"audio"_P = node` selects the first sample
+  output, and `"points"_F = node` selects the first event output. Explicit
+  output selection chooses a different source port when needed.
+- `output_port_at(position)` returns the port kind and its index within that
+  kind for one position in the mixed output declaration list. Existing sample
+  and event indices remain separate.
+- `std::get<I>(ref)` is available only for typed concrete/tiled refs with a
+  constexpr output tuple; it is not available on erased `NodeRef`.
+- `tiled[channel]` selects a concrete typed node; `tiled[port][channel]`
+  selects a promoted-port channel.
+- Sample/event chaining operators require exactly one matching target input.
+  Bare node chaining returns the target node reference, so the next operation
+  can select its first declared output across both kinds. Chaining from an
+  explicit port returns the target's first output of the matching kind, or
+  passes through the source port if the target has no output of that kind.
+- Arithmetic creates ordinary builder nodes. Typed ports preserve channel type
+  and layout; incompatible channel representations fail rather than silently
+  flattening or selecting channels.
+- Binary Sample arithmetic (`+`, `-`, `*`, and `/`) is pointwise and
+  replayable. Outside a feedback component, the result has the union of its
+  operands' coverages. Each absent operand still resolves through its
+  Sequential input. For example, in `a | (a + b) | c`, the sum yields to
+  `c` where both operands have a known gap.
+- `a | b | c` creates a reusable Sample signal. At each value position it selects
+  the first source with coverage. A covered zero counts as a value. A known gap
+  advances to the next source, and unprepared data follows the ordinary Tick
+  delivery rules. The acyclic output has the union of the source coverages.
+  A scalar operand is a full-coverage constant. Use the result in named or
+  positional connections or publish it through `outputs(...)`.
+- `port.detach(loop_extra_latency)` detaches a sample or event stream with the declared extra feedback latency; `~port` uses the default latency of one sample. Sample detach also accepts an optional initial sample value. When omitted, lowering chooses the neutral value of one connected downstream sample input (if several differ, either is valid); when supplied, the override is the initial value for the detached sample storage. Bundle outputs are lowered first.
+- `GraphBuilder::outputs(...)` and `SubgraphBuilder::outputs(...)` accept sample
+  and event outputs in the same call. For example,
+  `g.outputs("value"_P = curve, "points"_F = points)` declares a sample output
+  followed by an event output. The public boundary retains this declaration
+  order through subgraph use and graph serialization. Multiple outputs require
+  names. Their symbolic/bundle identity never becomes a tile identity.
+
+## Non-negotiable constraints
+
+- Node refs are move-only.
+- A dynamic node ref always denotes one bundle, never a symbolic node or an
+  arbitrary collection of bundles.
+- A tiled bundle is one bundle, not a collection of unrelated refs.
+- Common DSL code has no concrete-node assumption.
+- Event ports are not channelized.
+- Internal conversion, pack, and unpack nodes are not configured symbolic nodes.
+- Runtime execution consumes lowered concrete graphs; it does not consume C++
+  node-ref types or symbolic-node metadata.
+
+## Planned post-runtime ownership migration
+
+> **Implementation status (2026-11-06):** implemented and verified (Front 12
+> closed). `NodeRef`, `SamplePortRef`, and `EventPortRef` carry their
+> `BuilderSession`; views of one session are compatible and refs from different
+> sessions are rejected.
+
+The contracts above describe the current implementation, where a live ref is tied
+to one `GraphBuilder` façade. After GraphJit and the realtime/background executors are complete and the
+planned optimization/profiling pass has established the builder-performance
+baseline, live-reference ownership is planned to move from `GraphBuilder*` to
+`BuilderSession*`. See
+[scoped_graph_builder_and_subgraph_closure_direction.md](./scoped_graph_builder_and_subgraph_closure_direction.md).
+
+That change preserves the source-facing DSL but changes the live compatibility
+rule: different `GraphBuilder`/`SubgraphBuilder` views over one session become
+compatible, while refs from different sessions remain invalid. `ConfiguredGraph`
+continues to contain no live refs.
+
+The planned backend-node event model adds one further requirement: a `NodeRef`
+captured while authoring a module must carry/read the stable symbolic/semantic
+identity of that authored node so a later module event handler can use the
+captured ref as a semantic dispatch target without dereferencing a stale
+builder/session pointer. Runtime event dispatch consumes that semantic identity,
+not the builder-time façade. See
+[Node Interaction And Presentation Communication Direction](./node_interaction_and_presentation_communication_direction.md).

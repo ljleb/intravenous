@@ -87,3 +87,49 @@ TEST(ModuleTestUtils, MutableFixturesAreIsolatedFromTheirSourceAndEachOther)
     EXPECT_NE(iv::test::read_text(second / "module.cpp"), marker);
     EXPECT_NE(iv::test::read_text(source), marker);
 }
+
+
+TEST(ModuleTestUtils, WorkspaceFollowsExecutableSuiteAndTestName)
+{
+    auto const root = iv::test::runtime_modules_root();
+    auto const* info = testing::UnitTest::GetInstance()->current_test_info();
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(root.filename(), iv::test::test_workspace_component(info->name()));
+    EXPECT_EQ(root.parent_path().filename(), iv::test::test_workspace_component(info->test_suite_name()));
+    EXPECT_EQ(root.parent_path().parent_path().filename(), iv::test::test_executable_name());
+    EXPECT_EQ(root.parent_path().parent_path().parent_path(),
+        iv::test::configured_build_root() / "test_runtime_modules");
+}
+
+TEST(ModuleTestUtils, WorkspaceStartsCleanAndPreservesFilesForTheCurrentRun)
+{
+    auto const root = iv::test::runtime_modules_root();
+    auto const marker = root / "previous-run.txt";
+    EXPECT_FALSE(std::filesystem::exists(marker));
+    std::filesystem::create_directories(root);
+    iv::test::write_text(marker, "current run");
+    EXPECT_EQ(iv::test::runtime_modules_root(), root);
+    EXPECT_EQ(iv::test::read_text(marker), "current run");
+    // Leave the marker behind: another process or --gtest_repeat iteration
+    // must reset this same test directory before entering the body again.
+}
+
+TEST(ModuleTestUtils, FixtureNamesStayStableAcrossCallSites)
+{
+    auto const first = iv::test::fresh_module_fixture_workspace("stable_fixture");
+    iv::test::write_text(first / "stale.txt", "old contents");
+    auto const second = iv::test::fresh_module_fixture_workspace("stable_fixture");
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(second, iv::test::runtime_modules_root() / "stable_fixture");
+    EXPECT_FALSE(std::filesystem::exists(second / "stale.txt"));
+}
+
+TEST(ModuleTestUtils, WorkspaceComponentsDoNotMergeNamesOrIntroduceDirectories)
+{
+    EXPECT_NE(iv::test::test_workspace_component("Suite/0"),
+        iv::test::test_workspace_component("Suite_0"));
+    EXPECT_NE(iv::test::test_workspace_component("name%2F0"),
+        iv::test::test_workspace_component("name/0"));
+    auto const escaped = iv::test::test_workspace_component("../sibling");
+    EXPECT_FALSE(std::filesystem::path(escaped).has_parent_path());
+}

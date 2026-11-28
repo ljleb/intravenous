@@ -1,6 +1,7 @@
 include_guard(GLOBAL)
 
 include(${IV_SOURCE_DIR}/module/template/JuceSupport.cmake)
+include(${IV_SOURCE_DIR}/module/template/PackageCompileFlags.cmake)
 include(${IV_SOURCE_DIR}/module/template/ModuleProjectInit.cmake)
 
 option(IV_PACKAGE_SOURCE_INTROSPECTION
@@ -250,6 +251,8 @@ function(_iv_package_define_finalizer target)
     list(REMOVE_DUPLICATES _iv_dependencies)
     list(REMOVE_DUPLICATES _iv_file_dependencies)
     set(_iv_dynamic_manifest "${_iv_output}.dynamic-libraries")
+    set(_iv_node_event_protocol "${_iv_output}.node-events.json")
+    set(_iv_node_code "${_iv_output}.node-code.o")
     get_filename_component(_iv_output_dir "${_iv_output}" DIRECTORY)
     get_filename_component(_iv_output_name "${_iv_output}" NAME)
     file(MAKE_DIRECTORY "${_iv_output_dir}")
@@ -263,6 +266,7 @@ function(_iv_package_define_finalizer target)
 
     add_custom_command(
         OUTPUT "${_iv_output}"
+        BYPRODUCTS "${_iv_node_event_protocol}" "${_iv_node_code}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${_iv_output_dir}"
         COMMAND "${_iv_finalizer}"
             "--metadata-dir=${_iv_metadata_dir}"
@@ -293,9 +297,9 @@ function(iv_add_package target)
     set(multiValueArgs SOURCES)
     cmake_parse_arguments(IVP "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 23)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR NOT CMAKE_CXX_COMPILER_VERSION MATCHES "^23\\.")
         message(FATAL_ERROR
-            "IV packages require Clang 23 or newer; configured compiler is "
+            "IV packages require Clang 23; configured compiler is "
             "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (${CMAKE_CXX_COMPILER})")
     endif()
     if(NOT DEFINED IV_PACKAGE_FINALIZER OR IV_PACKAGE_FINALIZER STREQUAL ""
@@ -320,8 +324,9 @@ function(iv_add_package target)
     list(REMOVE_DUPLICATES _iv_package_sources)
 
     # IV packages are LLVM inputs, not native shared libraries.  Compile each
-    # translation unit to full-LTO LLVM bitcode at O0, then combine/prune those
-    # objects into one .ivpkg.bc consumed directly by the host's shared ORC JIT.
+    # translation unit to full-LTO LLVM bitcode with the shared package flags
+    # (PackageCompileFlags.cmake), then combine/prune those objects into one
+    # .ivpkg.bc consumed directly by the host's shared ORC JIT.
     # The public package target is the LLVM object target itself. Custom package
     # CMake can use ordinary target_compile_*/target_link_* commands on it; no
     # native package library is linked.
@@ -332,7 +337,8 @@ function(iv_add_package target)
         CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
         CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN YES)
     target_compile_features(${_iv_objects_target} PRIVATE cxx_std_23)
-    target_compile_options(${_iv_objects_target} PRIVATE -O0 -flto=full)
+    target_compile_options(${_iv_objects_target} PRIVATE
+        ${IV_PACKAGE_COMPILE_FLAGS} "SHELL:-Xclang -disable-llvm-passes")
     if(IV_PACKAGE_CLANG_TIME_TRACE)
         target_compile_options(${_iv_objects_target} PRIVATE -ftime-trace)
     endif()

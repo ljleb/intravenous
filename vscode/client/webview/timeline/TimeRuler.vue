@@ -1,0 +1,73 @@
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import type { BeatRulerLabel } from "../../src/beatGrid";
+import { rulerMarkerPoints, timelineSampleFraction, timelineSeamX, timelineTicks } from "../../src/timelineGeometry";
+import RulerGraduations from "./RulerGraduations.vue";
+import GridGuides from "./GridGuides.vue";
+import { usePresentationSize } from "../presentation/presentationSize";
+import TimelinePlayhead from "./TimelinePlayhead.vue";
+import { timelineMarkKey, timelineMarkPosition, type PresentationTimeWindow, type TimelineMark } from "./timelineContext";
+import { usePlayback } from "./playbackContext";
+import { usePlayheadSeek, type SeekBeatReader } from "./usePlayheadSeek";
+
+// A presentation can use a time ruler without being a graph or a lane.
+// It makes no assumption about the node's number or kinds of output ports.
+const props = defineProps<{ window: PresentationTimeWindow; marks?: readonly TimelineMark[];
+    beatLabels?: readonly BeatRulerLabel[];
+    beatStrengths?: ReadonlyMap<number, number>; playback?: boolean; openBeatReader?: () => SeekBeatReader | undefined }>();
+const { state, backgroundPlayhead, requestedPosition, dragPreview } = usePlayback();
+const root = ref<HTMLElement | null>(null);
+const size = usePresentationSize(root);
+const width = computed(() => size.value?.width ?? 0);
+const showBeats = computed(() => props.window.gridMode === "beats" || props.window.gridMode === "custom");
+const snapTargets = computed(() => showBeats.value ? props.marks?.map(({ index }) => index) ?? [] : []);
+const beatLineStart = ({ depth }: TimelineMark) => depth === 0 ? "33%" : depth === 1 ? "56%" : depth === 2 ? "75%" : "83%";
+const ticks = computed(() => timelineTicks(props.window, width.value));
+const seamX = computed(() => timelineSeamX(props.window, width.value));
+const beginSeek = usePlayheadSeek(root, () => props.playback ? props.window : undefined,
+    () => snapTargets.value,
+    () => showBeats.value ? props.openBeatReader?.() : undefined);
+const markerPosition = (selected: bigint | null) => selected === null ? -1
+    : timelineSampleFraction(selected, props.window) * width.value;
+const displayedStart = computed(() => dragPreview.value?.toString() ?? state.value?.startPosition);
+const startPosition = computed(() => displayedStart.value === undefined ? null : BigInt(displayedStart.value));
+const startMarker = computed(() => markerPosition(startPosition.value));
+const startAtBackground = computed(() => startPosition.value !== null && startPosition.value === backgroundPlayhead.value);
+const startLabel = computed(() => `Selected start at sample ${displayedStart.value}`);
+const requestedMarker = computed(() => markerPosition(dragPreview.value === null ? requestedPosition.value : null));
+</script>
+
+<template>
+    <div ref="root" class="time-ruler" :class="{ seekable: playback }" :aria-label="showBeats ? 'Beat grid' : 'Time in seconds'"
+        @pointerdown="beginSeek"
+        :data-status-shortcuts="playback ? 'Click/drag seek · Space ▶/Ⅱ' : undefined">
+        <RulerGraduations v-if="!showBeats" :ticks="ticks" />
+        <RulerGraduations v-if="seamX !== undefined" :ticks="[{ key: 'wrap', x: seamX, label: 'Wrap', seam: true }]" />
+        <svg v-if="playback || marks?.length" class="ruler-playheads">
+            <GridGuides v-if="showBeats && marks" :marks="marks" :strengths="beatStrengths"
+                :mark-key="timelineMarkKey" :position="timelineMarkPosition" :start="beatLineStart" />
+            <text v-for="label in showBeats ? beatLabels : []" :key="label.key ?? label.text" class="beat-label"
+                :x="label.x + 4" y="11">{{ label.text }}</text>
+
+            <line v-if="requestedMarker >= 0 && requestedMarker <= width" class="requested-marker"
+                :x1="requestedMarker" :x2="requestedMarker" y1="0" y2="100%"
+                role="img" aria-label="Requested background playhead position" />
+            <polygon v-if="startMarker >= 0 && startMarker <= width" class="start-marker"
+                :class="{ 'joined-start': playback && startAtBackground }" :points="rulerMarkerPoints"
+                :style="{ transform: `translateX(${startMarker}px)` }" role="img" :aria-label="startLabel"
+                :data-status-hint="`Start ${displayedStart} smp`" />
+            <TimelinePlayhead v-if="playback" :window="window" :ruler-height="size?.height ?? 0" />
+        </svg>
+    </div>
+</template>
+
+<style scoped>
+.time-ruler { position: relative; min-width: 0; overflow: hidden; }
+.seekable { cursor: ew-resize; touch-action: none; user-select: none; }
+.ruler-playheads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ruler-playheads { --iv-grid-max-opacity: .84; }
+.beat-label { fill: var(--vscode-descriptionForeground); font: 10px monospace; }
+.requested-marker { stroke: var(--vscode-focusBorder, #569cd6); stroke-dasharray: 3 3; }
+.start-marker { fill: var(--iv-background-playhead); pointer-events: auto; }
+.start-marker.joined-start { fill: none; pointer-events: fill; }
+</style>

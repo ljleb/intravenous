@@ -1,0 +1,396 @@
+#pragma once
+
+#include <intravenous/channel_layout.h>
+#include <intravenous/coverage.h>
+#include <intravenous/graph_jit/background_evaluation_plan.h>
+#include <intravenous/node/coverage_port_context.h>
+#include <intravenous/ports.h>
+#include <intravenous/execution/storage/persisted_data_store.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <memory>
+#include <limits>
+#include <mutex>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace iv {
+
+// One immutable prepared content window. Its logical_region_index identifies
+// the unchanged logical Region in TickMaterializedSampleInput::logical_regions.
+// Successive snapshots can retain subwindows by sharing their storage owner.
+struct TickMaterializedSampleRegion {
+    GlobalIndexRange range{};
+    // Native-layout values with storage_frames frames. range.begin is frame
+    // first_frame of that storage when an owner is shared across snapshots.
+    std::shared_ptr<std::vector<Sample> const> values{};
+    std::shared_ptr<PersistedContinuousStorage const> continuous_values{};
+    std::size_t storage_frames = 0;
+    std::size_t first_frame = 0;
+    std::size_t logical_region_index = std::numeric_limits<std::size_t>::max();
+
+    [[nodiscard]] std::byte const* storage_data() const noexcept
+    {
+        return values
+            ? reinterpret_cast<std::byte const*>(values->data())
+            : continuous_values ? continuous_values->data() : nullptr;
+    }
+
+};
+
+struct TickMaterializedSampleInput {
+    graph_jit::BackgroundPortIndex port = 0;
+    ChannelLayout layout{};
+    ContinuousValueStorageGeometry geometry =
+        *continuous_value_storage_geometry(
+            continuous_value_type_id_v<Sample>, std::nullopt);
+    std::vector<std::size_t> channels{};
+    // Prepared positional windows. Region/Coverage windows identify their
+    // logical Region through logical_region_index; Sequential windows have no
+    // independent Region identity. coverage is their positional union.
+    std::vector<TickMaterializedSampleRegion> regions{};
+    // Node-facing descriptors preserve explicit logical_regions when present;
+    // otherwise each descriptor describes one complete stored window.
+    std::vector<ContinuousRegionStorageView> region_views{};
+    IndexCoverage coverage{};
+    std::vector<GlobalIndexRange> logical_regions{};
+    std::vector<std::vector<ContinuousRegionStorageView>> region_windows{};
+    IndexCoverage logical_coverage{};
+    // A positional selection may omit storage for parts of the logical
+    // source. Preserve the authoritative coverage from the transaction.
+    std::optional<IndexCoverage> semantic_coverage{};
+
+    void rebuild_region_views();
+
+    [[nodiscard]] bool has_channel(std::size_t channel) const noexcept;
+    [[nodiscard]] Sample at(
+        GlobalIndex index, std::size_t channel) const noexcept;
+    // Position of channel in channels, or channels.size().
+    [[nodiscard]] std::size_t channel_slot(std::size_t channel) const noexcept;
+
+    // Visits every record that intersects range with that intersection.
+    // Allocation-free, so realtime playback may use it.
+    template<typename Fn>
+    void for_each_region(GlobalIndexRange range, Fn&& fn) const
+    {
+        for (auto const& region : regions) {
+            for_each_range_intersection(
+                region.range, range,
+                [&](GlobalIndexRange part) { fn(region, part); });
+        }
+    }
+};
+
+// One immutable materialized event range over shared event storage. The
+// events of range are [begin, end) of the shared sequence.
+struct TickMaterializedEventChunk {
+    GlobalIndexRange range{};
+    // Absolute event times in nondecreasing semantic order.
+    std::shared_ptr<std::vector<TimedEvent> const> events{};
+    // Parallel semantic source positions for deterministic equal-time merging.
+    // max(size_t) means that the source has no multi-source identity.
+    std::shared_ptr<std::vector<std::size_t> const> semantic_source_indices{};
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    std::optional<IndexCoverage> prepared_coverage{};
+};
+
+struct TickMaterializedEventInput {
+    using VisitIndexedEvent = void (*)(
+        void*, TimedEvent const&, std::size_t);
+    graph_jit::BackgroundPortIndex port = 0;
+    EventTypeId type = EventTypeId::empty;
+    // Region/Coverage chunks retain logical producer order and independent
+    // overlapping sequences. Sequential chunks are prepared positional windows
+    // and can retain subwindows through the shared immutable owners.
+    std::vector<TickMaterializedEventChunk> chunks{};
+    std::vector<GlobalIndexRange> region_ranges{};
+    // Timeline-ordered view used by sequential consumers. Region/Coverage
+    // materialization builds this before publication, so Tick never merges
+    // Region payloads or allocates while it visits events.
+    std::shared_ptr<std::vector<TimedEvent> const> merged_events{};
+    std::shared_ptr<std::vector<std::size_t> const>
+        merged_semantic_source_indices{};
+    IndexCoverage coverage{};
+    IndexCoverage logical_coverage{};
+
+    void for_each(
+        GlobalIndexRange range,
+        void* visitor_data,
+        RandomAccessEventInputPort::VisitEvent visitor) const;
+    void for_each_indexed(
+        GlobalIndexRange range,
+        void* visitor_data,
+        VisitIndexedEvent visitor) const;
+    [[nodiscard]] EventNeighbors neighbors(std::size_t region, GlobalIndex position,
+        EventNeighborMode mode = EventNeighborMode::bounded) const;
+    void for_each_region(
+        std::size_t region,
+        GlobalIndexRange range,
+        void* visitor_data,
+        RandomAccessEventInputPort::VisitEvent visitor) const;
+};
+
+// Builds one input from Region-major native-layout values. Each Region owns
+// one independent contiguous payload even when logical ranges overlap.
+[[nodiscard]] TickMaterializedSampleInput make_tick_materialized_sample_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    std::vector<std::size_t> channels,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<Sample> values);
+
+[[nodiscard]] TickMaterializedSampleInput
+make_tick_materialized_continuous_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    ContinuousValueStorageGeometry geometry,
+    std::vector<std::size_t> channels,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<std::byte> values);
+
+// Positional helper for sources that have no overlapping or duplicate Region
+// decomposition.
+[[nodiscard]] TickMaterializedSampleInput make_tick_materialized_sample_input(
+    graph_jit::BackgroundPortIndex port,
+    ChannelLayout layout,
+    std::vector<std::size_t> channels,
+    IndexCoverage coverage,
+    std::vector<Sample> values);
+
+// Builds one input from events and their semantic source indices in coverage's
+// signed-canonical iteration order.
+[[nodiscard]] TickMaterializedEventInput make_tick_materialized_event_input(
+    graph_jit::BackgroundPortIndex port,
+    EventTypeId type,
+    IndexCoverage coverage,
+    std::vector<TimedEvent> events,
+    std::vector<std::size_t> semantic_source_indices);
+
+[[nodiscard]] TickMaterializedEventInput make_tick_materialized_event_input(
+    graph_jit::BackgroundPortIndex port,
+    EventTypeId type,
+    std::vector<GlobalIndexRange> regions,
+    std::vector<std::vector<TimedEvent>> events,
+    std::vector<std::vector<std::size_t>> semantic_source_indices);
+
+// The part of a previous snapshot's input that is still valid and still
+// demanded. Ports are BackgroundEvaluationPlan ports of one generation.
+struct TickMaterializationRetention {
+    graph_jit::BackgroundPortIndex port = 0;
+    IndexCoverage retained{};
+    // For Region/Coverage inputs, preserve the current logical record order.
+    // Sequential inputs retain positional windows and do not use this list.
+    std::vector<GlobalIndexRange> logical_regions{};
+    InputAccessKind input_access = InputAccessKind::sequential;
+};
+
+// One immutable set of transaction-produced Tick-visible storage. It is not a
+// canonical persisted-data version: generation identifies the compiled plan,
+// while data_version identifies the exact published root against which it was
+// built.
+class TickMaterializationSnapshot {
+    friend class TickMaterializationStore;
+    friend class RealtimePersistedState;
+
+    std::uint64_t generation_ = 0;
+    std::uint64_t semantic_version_ = 0;
+    std::uint64_t promotion_sequence_ = 0;
+    std::optional<std::uint64_t> deferred_input_ticket_{};
+    PersistedDataVersion data_version_{};
+    std::vector<TickMaterializedSampleInput> samples_{};
+    std::vector<TickMaterializedEventInput> events_{};
+    // Declared after payload owners so residency is released before storage.
+    std::shared_ptr<void const> resident_{};
+    // Semantic coverage selected with this snapshot's data version. Entries
+    // use BackgroundEvaluationPlan's output-change accumulator indices.
+    // An empty vector on an initial root means coverage is not yet known.
+    std::vector<IndexCoverage> output_coverages_{};
+    std::unique_ptr<TickMaterializationSnapshot> retired_next_{};
+
+    void validate() const;
+
+public:
+    TickMaterializationSnapshot() = default;
+    TickMaterializationSnapshot(
+        std::uint64_t generation,
+        std::uint64_t semantic_version,
+        PersistedDataVersion data_version,
+        std::vector<TickMaterializedSampleInput> samples,
+        std::vector<TickMaterializedEventInput> events);
+
+    [[nodiscard]] std::uint64_t generation() const noexcept
+    {
+        return generation_;
+    }
+    [[nodiscard]] std::uint64_t semantic_version() const noexcept
+    {
+        return semantic_version_;
+    }
+    [[nodiscard]] std::uint64_t promotion_sequence() const noexcept
+    {
+        return promotion_sequence_;
+    }
+    [[nodiscard]] std::optional<std::uint64_t> deferred_input_ticket() const noexcept
+    {
+        return deferred_input_ticket_;
+    }
+    void set_deferred_input_ticket(std::uint64_t ticket) noexcept
+    {
+        deferred_input_ticket_ = ticket;
+    }
+    [[nodiscard]] PersistedDataVersion data_version() const noexcept
+    {
+        return data_version_;
+    }
+    [[nodiscard]] std::size_t sample_count() const noexcept
+    {
+        return samples_.size();
+    }
+    [[nodiscard]] std::size_t event_count() const noexcept
+    {
+        return events_.size();
+    }
+
+    [[nodiscard]] std::span<IndexCoverage const> output_coverages() const noexcept
+    {
+        return output_coverages_;
+    }
+
+    // Transaction preparation only, before the snapshot is promoted. Replacing
+    // materialized Regions never changes these semantic coverage values.
+    void set_output_coverages(std::span<IndexCoverage const> coverage)
+    {
+        output_coverages_.assign(coverage.begin(), coverage.end());
+    }
+
+    // Validate the final view after both newly prepared and retained data
+    // have been selected. Known gaps do not require storage.
+    [[nodiscard]] std::expected<void, std::string> validate_positional_inputs(
+        std::span<IndexCoverage const> requests,
+        std::span<IndexCoverage const> input_coverages);
+
+    [[nodiscard]] TickMaterializedSampleInput const* find_sample(
+        graph_jit::BackgroundPortIndex port) const noexcept;
+    [[nodiscard]] TickMaterializedEventInput const* find_event(
+        graph_jit::BackgroundPortIndex port) const noexcept;
+
+    // Adds the retained parts of previous, which must belong to the same
+    // generation, to this newly produced snapshot. Retained records share
+    // previous's storage. This snapshot's own coverage of a port supersedes
+    // any overlapping retained range.
+    void carry_forward(
+        TickMaterializationSnapshot const& previous,
+        std::span<TickMaterializationRetention const> retention);
+    void prepare_resident(PersistedDataStore& data);
+};
+
+// Single-writer, pre-registered-reader publication for Tick materializations.
+// Promotion only relinks already-owned nodes and is noexcept. Retired owners
+// are destroyed solely by explicit non-audio reclamation or store destruction.
+class TickMaterializationStore {
+public:
+    class ReaderSlot;
+
+private:
+    struct ReaderSlotState {
+        std::atomic<bool> acquiring{false};
+        std::atomic<TickMaterializationSnapshot const*> pinned{nullptr};
+    };
+
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(
+        std::atomic<TickMaterializationSnapshot const*>::is_always_lock_free);
+
+public:
+    class ReaderPin {
+        friend class ReaderSlot;
+
+        ReaderSlotState* slot_ = nullptr;
+        TickMaterializationSnapshot const* snapshot_ = nullptr;
+
+        explicit ReaderPin(
+            ReaderSlotState& slot,
+            std::atomic<TickMaterializationSnapshot const*> const& published)
+            noexcept;
+        void reset() noexcept;
+
+    public:
+        ReaderPin() = default;
+        ~ReaderPin();
+        ReaderPin(ReaderPin const&) = delete;
+        ReaderPin& operator=(ReaderPin const&) = delete;
+        ReaderPin(ReaderPin&& other) noexcept;
+        ReaderPin& operator=(ReaderPin&& other) noexcept;
+
+        [[nodiscard]] TickMaterializationSnapshot const& snapshot()
+            const noexcept;
+        [[nodiscard]] TickMaterializationSnapshot const* operator->()
+            const noexcept
+        {
+            return snapshot_;
+        }
+    };
+
+    class ReaderSlot {
+        friend class TickMaterializationStore;
+
+        TickMaterializationStore* store_ = nullptr;
+        ReaderSlotState* state_ = nullptr;
+
+        ReaderSlot(
+            TickMaterializationStore& store,
+            ReaderSlotState& state) noexcept;
+        void reset() noexcept;
+
+    public:
+        ReaderSlot() = default;
+        ~ReaderSlot();
+        ReaderSlot(ReaderSlot const&) = delete;
+        ReaderSlot& operator=(ReaderSlot const&) = delete;
+        ReaderSlot(ReaderSlot&& other) noexcept;
+        ReaderSlot& operator=(ReaderSlot&& other) noexcept;
+
+        [[nodiscard]] ReaderPin pin() noexcept;
+    };
+
+private:
+    std::unique_ptr<TickMaterializationSnapshot> published_owner_{};
+    std::atomic<TickMaterializationSnapshot const*> published_{nullptr};
+    std::unique_ptr<TickMaterializationSnapshot> retired_{};
+    mutable std::mutex reader_slots_mutex_{};
+    std::vector<std::unique_ptr<ReaderSlotState>> reader_slots_{};
+    std::uint64_t promotion_sequence_ = 0;
+
+    void unregister_reader(ReaderSlotState& state) noexcept;
+
+public:
+    TickMaterializationStore();
+    ~TickMaterializationStore();
+
+    TickMaterializationStore(TickMaterializationStore const&) = delete;
+    TickMaterializationStore& operator=(
+        TickMaterializationStore const&) = delete;
+    TickMaterializationStore(TickMaterializationStore&&) = delete;
+    TickMaterializationStore& operator=(TickMaterializationStore&&) = delete;
+
+    [[nodiscard]] std::uint64_t promote(
+        std::unique_ptr<TickMaterializationSnapshot> snapshot) noexcept;
+    // The currently published snapshot, for the single writer that promotes
+    // snapshots. Readers must pin through a ReaderSlot instead.
+    [[nodiscard]] TickMaterializationSnapshot const* published_for_writer()
+        const noexcept
+    {
+        return published_owner_.get();
+    }
+    [[nodiscard]] ReaderSlot register_reader();
+    [[nodiscard]] std::size_t reclaim_retired();
+    [[nodiscard]] std::size_t retired_snapshot_count() const noexcept;
+};
+
+} // namespace iv

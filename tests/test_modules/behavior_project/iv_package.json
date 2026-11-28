@@ -1,1 +1,9 @@
-{"schema":2,"entry":"module.cpp"}
+{
+  "schema": 2,
+  "entry": "module.cpp",
+  "namespace": "iv.test.behavior_project",
+  "dependencies": [
+    "builtin",
+    "iv.test.behavior_voice"
+  ]
+}

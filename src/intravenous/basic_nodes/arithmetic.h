@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace iv {
@@ -24,12 +25,12 @@ namespace iv {
 
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, NumInputs>{};
+            return std::array<SequentialInputConfig<Sample>, NumInputs>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         static constexpr size_t num_inputs()
@@ -39,74 +40,92 @@ namespace iv {
 
         void tick(auto const& ctx) const
         {
-            auto& out = ctx.outputs[0];
             Sample result = binary_op_default_v<BinaryOp>;
-            for (auto& input : ctx.inputs) {
-                result = BinaryOp{}(result, input.get());
-            }
-            out.push(result);
+            [&]<size_t... Index>(std::index_sequence<Index...>) {
+                ((result = BinaryOp{}(
+                    result, ctx.template input<Index>().get())), ...);
+            }(std::make_index_sequence<NumInputs>{});
+            ctx.template output<0>().push(result);
         }
     };
 
     template<typename BinaryOp>
     class BinaryOpNode {
     public:
+        // Binary expressions apply a pure pointwise operation. An input's
+        // neutral value lets the operation run in a gap without covering it.
+        static constexpr auto replay_mode = TickReplayMode::enabled;
+
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 2>{};
+            return std::array {
+                input<Sample>({"a", "A"}),
+                input<Sample>({"b", "B"})
+            };
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array {
+                output<Sample>({"out", "Out"})
+            };
         }
 
-        void tick(auto const& ctx) const
+        void propagate_forward_coverage(PropagateForwardCoverageContext<BinaryOpNode>& ctx) const
         {
-            auto& out = ctx.outputs[0];
-            auto& in0 = ctx.inputs[0];
-            auto& in1 = ctx.inputs[1];
-            out.push(BinaryOp{}(in0.get(), in1.get()));
+            ctx.template output<"out">().publish(
+                ctx.template input<"a">().coverage() | ctx.template input<"b">().coverage());
+        }
+
+        void tick(TickSampleContext<BinaryOpNode<BinaryOp>> const& ctx) const
+        {
+            auto out = ctx.template output<"out">();
+            auto left = ctx.template input<"a">();
+            auto right = ctx.template input<"b">();
+            out.push(BinaryOp{}(left.get(), right.get()));
         }
     };
 
     template<class ChannelType, SampleStreamLayout Layout, size_t NumInputs>
-    class Sum {
+    class SumN {
     public:
-        static_assert(NumInputs >= 1, "Sum requires at least one input");
+        static_assert(NumInputs >= 1, "SumN requires at least one input");
 
         static constexpr auto inputs()
         {
-            auto configs = std::array<InputConfig, NumInputs>{};
+            auto configs = std::array<SequentialInputConfig<Sample>, NumInputs>{};
             for (auto& config : configs) {
-                config.kind = SampleInputProperties{
-                    .channel_layout = ChannelLayout{
+                config = input<Sample>(iv::PortNames::generated(), InputAccess::sequential, {
+                    .channel_layout = {
                     .channel_type = ChannelTypeTraits<ChannelType>::id,
                     .sample_layout = Layout,
                     },
-                };
+                });
             }
             return configs;
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{sample_output("out", {
-                .channel_layout = ChannelLayout{
-                    .channel_type = ChannelTypeTraits<ChannelType>::id,
-                    .sample_layout = Layout,
-                },
-            })};
+            return std::array {
+                output<Sample>({"out", "Out"}, OutputProduction::sequential, {
+                    .channel_layout = ChannelLayout {
+                        .channel_type = ChannelTypeTraits<ChannelType>::id,
+                        .sample_layout = Layout,
+                    },
+                }),
+            };
         }
 
-        void tick(TickSampleContext<Sum> const& ctx) const
+        void tick(TickSampleContext<SumN> const& ctx) const
         {
             for (size_t channel = 0; channel < ChannelType::channel_count; ++channel) {
                 Sample result = 0.0f;
-                for (auto const& input : ctx.inputs) {
-                    result = result + input.get(0, channel);
-                }
-                ctx.outputs[0].write_frame(0, channel, result);
+                [&]<size_t... Index>(std::index_sequence<Index...>) {
+                    ((result += ctx.template input<Index>().get(
+                        0, channel)), ...);
+                }(std::make_index_sequence<NumInputs>{});
+                ctx.template output<0>()(channel) = result;
             }
         }
     };
@@ -114,44 +133,45 @@ namespace iv {
     // A registered IV_NODE may name a fully instantiated node template. The
     // registry binds its stable ID to this one specialization, not to the
     // BinaryOpNode template family as a whole.
-    using Subtract = BinaryOpNode<std::minus<Sample>>;
+    using Sum = BinaryOpNode<std::plus<Sample>>;
+    using Subtraction = BinaryOpNode<std::minus<Sample>>;
+    using Product = BinaryOpNode<std::multiplies<Sample>>;
+    using Quotient = BinaryOpNode<std::divides<Sample>>;
 
     template<size_t NumInputs>
-    using Product = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
-
-    using Quotient = BinaryOpNode<std::divides<Sample>>;
+    using ProductN = FixedBinaryOpNode<std::multiplies<Sample>, NumInputs>;
 
     struct Invert {
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 1>{};
+            return std::array<SequentialInputConfig<Sample>, 1>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(auto const& state) const
         {
-            state.outputs[0].push(-state.inputs[0].get());
+            state.template output<0>().push(-state.template input<0>().get());
         }
     };
 
     struct Power {
         static constexpr auto inputs()
         {
-            return std::array<InputConfig, 2>{};
+            return std::array<SequentialInputConfig<Sample>, 2>{};
         }
 
         static constexpr auto outputs()
         {
-            return std::array<OutputConfig, 1>{};
+            return std::array<SequentialOutputConfig<Sample>, 1>{};
         }
 
         void tick(auto const& ctx) const
         {
-            ctx.outputs[0].push(std::pow(ctx.inputs[0].get(), ctx.inputs[1].get()));
+            ctx.template output<0>().push(std::pow(ctx.template input<0>().get(), ctx.template input<1>().get()));
         }
     };
 }

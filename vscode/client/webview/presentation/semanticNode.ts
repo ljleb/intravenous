@@ -1,0 +1,200 @@
+import type { ManualControlDescriptor } from "../../src/manualControls";
+import type {
+    ContinuousValueAlternative,
+    SourceSpan,
+    SymbolicContinuousPort,
+    SymbolicEventPort,
+    SymbolicNode,
+    SymbolicNodeMember,
+    SymbolicPortBinding,
+    SymbolicPortConnectivity,
+} from "../../src/graphModel";
+import type { GraphScope, GraphScopeNode, GraphScopePort, NodeAddress } from "../../src/graphScope";
+import { addressKey, isProjectInstance, resolveScopePorts } from "../../src/graphScope";
+
+export type SemanticPortDirection = "input" | "output";
+
+type SemanticPortFields = Pick<GraphScopePort, "access" | "production" | "realization" | "displayName" | "shortDisplayName"> & {
+    direction: SemanticPortDirection;
+    index: number;
+    name: string;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
+};
+
+export type SemanticContinuousPort = SemanticPortFields & {
+    kind: "continuous";
+    valueTypes: ContinuousValueAlternative[];
+    channelType: string | null;
+    manualControl?: ManualControlDescriptor;
+};
+
+export type SemanticEventPort = SemanticPortFields & {
+    kind: "event";
+    eventType: string;
+};
+
+export type SemanticPort = SemanticContinuousPort | SemanticEventPort;
+
+export type SemanticNodeMember = {
+    index: number;
+    kind: string;
+    definitionId: string;
+    ports: SemanticPort[];
+};
+
+// The node object a presentation reads through useNode(). Source inspection
+// supplies SymbolicNode metadata; the graph editor supplies a stable address
+// and the desired instance's ports from GraphScope.
+export type SemanticNode = {
+    loadState?: GraphScopeNode["loadState"];
+    displayName?: string;
+    defaultDisplayName?: string;
+    sourceLabel?: string;
+    realized?: boolean;
+    hasChildren?: boolean;
+    membershipAddress?: NodeAddress;
+    symbolicNode?: boolean;
+    errorMessage?: string;
+    address?: NodeAddress;
+    construction?: GraphScopeNode["construction"];
+    constructionError?: string;
+    configurationSource?: string;
+    // Present only when this presentation hosts an opened graph scope.
+    scope?: GraphScope;
+    // Source-introspection symbolic-node ID or project instance ID.
+    id: string;
+    instanceId: string;
+    definitionId: string;
+    kind: string;
+    sourceIdentity: string;
+    memberCount: number;
+    // Inputs before outputs; continuous before event ports in each direction.
+    ports: SemanticPort[];
+    members: SemanticNodeMember[];
+    sourceSpans: SourceSpan[];
+};
+
+export function semanticNodeFromScopeChild(child: GraphScopeNode, scope: GraphScope): SemanticNode {
+    const port = (entry: GraphScopePort, kind: "continuous" | "event", direction: SemanticPortDirection): SemanticPort => {
+        const connected = scope.connections.some(({ connection }) => {
+            if (connection.kind !== (kind === "continuous" ? "sample" : "event")) return false;
+            const matchers = direction === "input" ? connection.inputs : connection.outputs;
+            return matchers.some((matcher) => {
+                if (matcher.moduleBoundary) return false;
+                return resolveScopePorts(scope, matcher, connection.kind, direction)
+                    .some((resolved) => addressKey(resolved.node.address) === addressKey(child.address)
+                        && resolved.port.index === entry.index);
+            });
+        });
+        const base: SemanticPortFields = {
+            index: entry.index, name: entry.name, displayName: entry.displayName, direction,
+            shortDisplayName: entry.shortDisplayName,
+            access: entry.access, production: entry.production, realization: entry.realization,
+            connectivity: connected ? "connected" : "disconnected", binding: "interface",
+        };
+        return kind === "continuous"
+            ? { ...base, kind, valueTypes: entry.valueTypes ?? [], channelType: entry.channelType ?? null, manualControl: entry.manualControl }
+            : { ...base, kind, eventType: entry.eventType ?? "" };
+    };
+    const definitionId = child.definitionId ?? child.instance.definitionId;
+    return {
+        address: child.address,
+        membershipAddress: child.membershipAddress,
+        id: isProjectInstance(child.address) ? child.instance.instanceId : addressKey(child.address),
+        construction: child.construction,
+        constructionError: child.constructionError,
+        configurationSource: isProjectInstance(child.address) ? child.instance.configurationSource : undefined,
+        displayName: child.childDisplayName ?? child.instance.displayName,
+        defaultDisplayName: child.childDisplayName ?? child.instance.defaultDisplayName,
+        sourceLabel: child.childSourceLabel,
+        hasChildren: child.hasChildren,
+        symbolicNode: child.symbolicNode,
+        realized: child.instance.realized,
+        loadState: child.loadState,
+        errorMessage: child.errorMessage,
+        instanceId: child.instance.instanceId, definitionId: child.symbolicNode ? "" : definitionId,
+        kind: definitionId, sourceIdentity: "", memberCount: child.symbolicMemberCount ?? 1,
+        members: [], sourceSpans: [],
+        ports: [
+            ...child.sampleInputs.map((entry) => port(entry, "continuous", "input")),
+            ...child.eventInputs.map((entry) => port(entry, "event", "input")),
+            ...child.sampleOutputs.map((entry) => port(entry, "continuous", "output")),
+            ...child.eventOutputs.map((entry) => port(entry, "event", "output")),
+        ],
+    };
+}
+
+type PortRecord = {
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
+};
+
+function continuousPorts(
+    ports: SymbolicContinuousPort[] | undefined,
+    direction: SemanticPortDirection,
+): SemanticContinuousPort[] {
+    return (ports ?? []).map((port) => ({
+        kind: "continuous",
+        direction,
+        index: port.index,
+        name: port.name,
+        displayName: port.displayName,
+        shortDisplayName: port.shortDisplayName,
+        connectivity: port.connectivity,
+        binding: port.binding,
+        valueTypes: port.valueTypes,
+        channelType: port.channelType ?? null,
+    }));
+}
+
+function eventPorts(
+    ports: SymbolicEventPort[] | undefined,
+    direction: SemanticPortDirection,
+): SemanticEventPort[] {
+    return (ports ?? []).map((port) => ({
+        kind: "event",
+        direction,
+        index: port.index,
+        name: port.name,
+        displayName: port.displayName,
+        shortDisplayName: port.shortDisplayName,
+        connectivity: port.connectivity,
+        binding: port.binding,
+        eventType: port.eventType,
+    }));
+}
+
+function semanticPorts(record: PortRecord): SemanticPort[] {
+    return [
+        ...continuousPorts(record.continuousInputs, "input"),
+        ...eventPorts(record.eventInputs, "input"),
+        ...continuousPorts(record.continuousOutputs, "output"),
+        ...eventPorts(record.eventOutputs, "output"),
+    ];
+}
+
+function semanticMember(member: SymbolicNodeMember, node: SymbolicNode): SemanticNodeMember {
+    return {
+        index: member.index ?? 0,
+        kind: member.kind || node.kind || "",
+        definitionId: member.definitionId ?? "",
+        ports: semanticPorts(member),
+    };
+}
+
+export function semanticNodeFromSymbolicNode(node: SymbolicNode): SemanticNode {
+    return {
+        id: node.id ?? "",
+        instanceId: node.instanceId ?? "",
+        definitionId: node.definitionId ?? "",
+        kind: node.kind || node.id || "",
+        sourceIdentity: node.sourceIdentity ?? "",
+        memberCount: node.memberCount ?? 0,
+        ports: semanticPorts(node),
+        members: (node.members ?? []).map((member) => semanticMember(member, node)),
+        sourceSpans: node.sourceSpans ?? [],
+    };
+}

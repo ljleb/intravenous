@@ -23,7 +23,7 @@ void noisy_saw_project(iv::GraphBuilder& g)
     SamplePortRef left;
     SamplePortRef right;
     auto make_channel = [&]<auto Ch>() {
-        auto const saw = g.node<"saw_oscillator">();
+        auto const saw = g.node<"saw">();
         auto const phi = g.node<"phase_integrator">();
         auto const generator = g.node<"deterministic_uniform_aes_noise">(
             std::optional<std::uint64_t>{static_cast<std::uint64_t>(seed++)});
@@ -55,4 +55,4 @@ void noisy_saw_project(iv::GraphBuilder& g)
     g.outputs("main"_P = g.tile<stereo>(left, right));
 }
 
-IV_MODULE("iv.test.noisy_saw", noisy_saw_project);
+IV_MODULE("iv.test.noisy_saw", noisy_saw_project, "Noisy Saw");

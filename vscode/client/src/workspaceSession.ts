@@ -1,77 +1,76 @@
+import type { ObservationInterest } from "./observations";
+import type { ObservationDelivery } from "./observationDelivery";
+import { ManualControlInteractions, type ManualControlId } from "./manualControls";
+import { ControlCompilationProgress, type ControlCompileStatus } from "./controlCompilation";
+import { addressFromKey, addressKey, graphScopeWithChildren, laneParentFallbacks, laneViewFromKey, type GraphLaneCopy, type GraphScope, type NodeAddress, type ProjectEditReceipt } from "./graphScope";
+import type { GraphPresentationPatch } from "./graphEditorProtocol";
+import { insertLanes, mergeLaneOrder, orderLanes } from "./laneSelection";
+import type { PlaybackDrag, PlaybackOutputProfileRequest, PlaybackSnapshot } from "./playback";
+import type { NodeDefinitionCatalog, NodeDefinitionSearch } from "./nodeDefinitionSearch";
 import * as vscode from "vscode";
 import * as childProcess from "child_process";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Duplex } from "stream";
 
 import { collectPrimarySourceSpans, QueryShape, sortNodesByRelevance } from "./graphQueryModel";
-import { VirtualNode, VirtualNodeMember, VirtualPort, SourcePosition, SourceRange, SourceSpan } from "./graphModel";
-import { LiveGraphControlMessage } from "./liveGraphProtocol";
+import {
+    ContinuousValueAlternative,
+    FractionalGlobalIndexValue,
+    ScalarPresentationNumber,
+    SourcePosition,
+    SourceRange,
+    SourceSpan,
+    SymbolicContinuousPort,
+    SymbolicEventPort,
+    SymbolicNode,
+    SymbolicNodeMember,
+    SymbolicPortBinding,
+    SymbolicPortConnectivity,
+} from "./graphModel";
+import { LiveGraphControlMessage, LiveGraphSessionStatus } from "./liveGraphProtocol";
+import { Duplex } from "stream";
+
 import { JsonRpcSocketClient } from "./rpcClient";
+import type { JsonRpcSend } from "./clientInteractionTrace";
+import { spawnWorkspaceServer } from "./workspaceServerProcess";
+import { connectionFromPorts, type GraphConnectionChange, type GraphPortEndpoint } from "./graphConnectionEditing";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
-import { autoDetectedServerDirectoriesForWorkspaceRoot } from "./serverBinaryPaths";
+import { resolveIntravenousBinary } from "./serverBinaryPaths";
 import { WorkspaceNotificationRouter } from "./workspaceNotifications";
-import { WorkspaceRpc } from "./workspaceRpc";
-import { IvModuleInfo, ModuleInstanceInfo, ModulesControlMessage } from "./modulesViewProvider";
+import { WorkspaceRpc, workspaceNodeEvents } from "./workspaceRpc";
+import { audioOutputDiagnostic } from "./audioOutputDiagnostic";
+import { statusBarText, statusDiagnostic } from "./statusBarText";
+import { isGeneratedSnapConnection, isTimelineSnapInstance, isTimelineSnapNode, planTimelineSnapMode, readTimelineSnapMemory,
+    type ProjectEditOperation, type TimelineGridMode } from "./timelineSnap";
 
-declare const __INTRAVENOUS_DEFAULT_DIR__: string;
+function laneOrderOperation(order: readonly string[]): ProjectEditOperation {
+    return { method: "projectPresentation.setLaneOrder", params: { order: order.map(addressFromKey) } };
+}
 
-const packagedDefaultServerDir = typeof __INTRAVENOUS_DEFAULT_DIR__ === "string"
-    ? __INTRAVENOUS_DEFAULT_DIR__ : "";
+function laneParentsOperation(parents: NonNullable<GraphScope["presentation"]>["laneParents"]): ProjectEditOperation {
+    return { method: "projectPresentation.setLaneParents", params: { parents } };
+}
+
+function orderWithInsertedLanes(scope: GraphScope, insertions: readonly { instanceId: string; afterInstanceId?: string }[]) {
+    const saved = scope.presentation?.laneOrder.map(addressKey) ?? [];
+    const visible = orderLanes(scope.nodes.filter((node) => !isTimelineSnapNode(node)), saved);
+    const order = mergeLaneOrder(saved, visible.map(({ address }) => addressKey(address)));
+    return laneOrderOperation(insertLanes(order,
+        insertions.map(({ instanceId, afterInstanceId }) => ({
+            key: addressKey({ instanceId }),
+            after: afterInstanceId === undefined ? undefined : addressKey({ instanceId: afterInstanceId }),
+        }))));
+}
 
 type LiveGraphProviderLike = {
+    setSessionStatus(status: LiveGraphSessionStatus): void;
     setInstances(instances: IvModuleInstanceInfo[]): void;
-    setNodes(nodes: VirtualNode[]): void;
-    upsertNodes(nodes: VirtualNode[], replaceInstanceIds?: string[]): void;
+    setNodes(nodes: SymbolicNode[]): void;
+    upsertNodes(nodes: SymbolicNode[], replaceInstanceIds?: string[]): void;
     setSelectedInstanceId(instanceId: string | null): void;
     setPackageRoot(packageRoot: string | null): void;
-};
-
-type LaneProviderLike = {
-    viewportState(): {
-        startIndex: number;
-        visibleLaneCount: number;
-        firstSampleIndex: number;
-        lastSampleIndex: number;
-        displaySampleCount: number;
-        laneQuery?: string;
-    };
-    clear(): void;
-    setLanes(result: Record<string, unknown>, preserveViewport?: boolean): void;
-    setLaneContent(result: Record<string, unknown>): void;
-    setModuleInstances(instances: unknown[]): void;
-    setLaneViewId(viewId: string): void;
-    setLaneQuerySchema(schema: LaneQuerySchemaSnapshot | null): void;
-    setLaneQueryCompletionHandler(handler: (
-        source: string,
-        cursorOffset: number,
-        schemaRevision: number,
-    ) => Promise<Record<string, unknown> | null>): void;
-};
-
-type LaneQuerySchemaValueType = "unit" | "int" | "float";
-
-type LaneQuerySchemaEntry = {
-    key: string;
-    type: LaneQuerySchemaValueType;
-};
-
-type LaneQuerySchemaSnapshot = {
-    revision: number;
-    entries: LaneQuerySchemaEntry[];
-};
-
-type LaneQuerySchemaChangeNotification = {
-    oldRevision?: number;
-    revision?: number;
-    added?: Array<{ key?: string; type?: string }>;
-    removed?: Array<{ key?: string; type?: string }>;
-    retyped?: Array<{ key?: string; oldType?: string; newType?: string }>;
-};
-
-type ModulesProviderLike = {
-    setState(modules: IvModuleInfo[], instances: ModuleInstanceInfo[], selectedInstanceId: string | null): void;
 };
 
 type IvPackageInfo = {
@@ -82,7 +81,7 @@ type IvPackageInfo = {
     buildMessage: string;
     publicationMessage: string;
     packageRoot: string;
-    projectLocal: boolean;
+    provenance: "builtIn" | "common" | "projectLocal";
 };
 
 type ServerStatusNotification = {
@@ -93,34 +92,23 @@ type ServerStatusNotification = {
     deletedNodeIds?: string[];
 };
 
-type LaneViewContentNotification = Record<string, unknown> & {
-    viewId?: string;
-    lanes?: Array<Record<string, unknown>>;
-    uiStates?: Array<Record<string, unknown>>;
-};
-
 type ServerMessageNotification = {
     level?: string;
     message?: string;
 };
 
-type ServerReadyNotification = Record<string, never>;
-
-type LaneViewUpdatedNotification = Record<string, unknown> & {
-    viewId?: string;
+type ServerReadyNotification = {
+    sessionRevision?: number;
 };
 
 type IvModuleInstanceInfo = {
     instanceId?: string;
     definitionId?: string;
     displayName?: string;
+    configurationSource?: string;
     moduleId?: string;
     packageRoot?: string;
     realized?: boolean;
-};
-
-type IvModuleInstancesUpdatedNotification = {
-    instances?: IvModuleInstanceInfo[];
 };
 
 type GraphNodesUpdatedNotification = {
@@ -129,19 +117,270 @@ type GraphNodesUpdatedNotification = {
 };
 
 export class WorkspaceSession {
+    async readPlayback(diagnostics = false, outputProfile?: PlaybackOutputProfileRequest): Promise<PlaybackSnapshot | null> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") return null;
+        const state = await rpc.getPlayback(diagnostics, outputProfile);
+        return this.rpc === rpc && this.graphSessionStatus === "running" ? state : null;
+    }
+    async playbackCommand({ position, drag, foreground = false }:
+        { position?: string; drag?: PlaybackDrag; foreground?: boolean } = {}): Promise<PlaybackSnapshot | null> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+        const snapshot = await (position === undefined ? rpc.togglePlayback(foreground)
+            : drag ? rpc.dragPlayback(position, drag) : rpc.seekPlayback(position));
+        return this.rpc === rpc && this.graphSessionStatus === "running" ? snapshot : null;
+    }
+    async resetGraphState(): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+        await rpc.resetGraphState();
+    }
+    private readonly observationChanges = new vscode.EventEmitter<ObservationDelivery>();
+    readonly onDidChangeObservations = this.observationChanges.event;
+    observeRpcSends(observe: (send: JsonRpcSend) => void): (() => void) | undefined {
+        return this.client?.observeSends(observe);
+    }
+    private readonly graphChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangeGraph = this.graphChanges.event;
+    private readonly presentationCatalogChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangePresentations = this.presentationCatalogChanges.event;
+    presentationArtifactRpc(): WorkspaceRpc | undefined {
+        return this.graphSessionStatus === "running" ? this.rpc ?? undefined : undefined;
+    }
+    graphSessionStatus: LiveGraphSessionStatus = "starting";
+    private connectionNumber = 0;
+    get graphConnectionNumber(): number { return this.connectionNumber; }
+    get graphRevision(): number { return this.lastSessionRevision; }
+    graphDefinitionCatalogVersion = 0;
+    private readonly manualChanges = new vscode.EventEmitter<void>();
+    readonly onDidChangeManualControls = this.manualChanges.event;
+    readonly manualControls = new ManualControlInteractions(() => this.rpc, () => this.manualChanges.fire());
+    readonly nodeEvents = workspaceNodeEvents(() => this.graphSessionStatus === "running" ? this.rpc : null,
+        () => this.lastSessionRevision,
+        (error) => this.outputChannel.appendLine(`Node gesture cleanup failed: ${String(error)}`));
+
+    get projectFolder(): vscode.Uri { return this.workspaceFolder.uri; }
+
+    async describeObservations(nodes: NodeAddress[]) {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        return this.rpc.describeObservations(nodes);
+    }
+    async reconcileObservations(scopeId: string, interests: ObservationInterest[], predictedInterests?: ObservationInterest[]) {
+        if (!this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+        return this.rpc.reconcileObservations(scopeId, interests, predictedInterests);
+    }
+
+    async readGraphScope(expanded: NodeAddress[] = []) {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        return this.rpc.getGraphScope(expanded);
+    }
+
+    async readLaneViews(versions: string[]): Promise<Array<string | null>> {
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") return versions.map(() => null);
+        const states = await Promise.allSettled(versions.map((version) => rpc.getLaneView(version)));
+        if (this.rpc !== rpc) return versions.map(() => null);
+        const failure = states.find((state) => state.status === "rejected");
+        if (failure) this.outputChannel.appendLine(`Cannot read lane views: ${String(failure.reason)}`);
+        return states.map((state) => state.status === "fulfilled" ? state.value : null);
+    }
+
+    private timelineSnapChange: Promise<void> = Promise.resolve();
+    private presentationChanges: Promise<unknown> = Promise.resolve();
+
+    saveGraphPresentation(patch: GraphPresentationPatch): Promise<ProjectEditReceipt> {
+        const rpc = this.rpc;
+        const change = this.presentationChanges.catch(() => {}).then(async () => {
+            if (!rpc || rpc !== this.rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+            const operations: ProjectEditOperation[] = Object.entries(patch.presentationStates)
+                .map(([key, state]) => ({ method: "projectPresentation.setLaneView", params: laneViewFromKey(key, state) }));
+            if (patch.laneOrder) operations.push(laneOrderOperation(patch.laneOrder));
+            if (patch.laneParents) operations.push(laneParentsOperation(Object.entries(patch.laneParents).map(([child, parent]) =>
+                ({ instanceId: addressFromKey(child).instanceId, parent: addressFromKey(parent) }))));
+            return rpc.applyProjectEdit(operations, patch.laneOrder || patch.laneParents ? undefined : null);
+        });
+        this.presentationChanges = change;
+        return change;
+    }
+
+    setTimelineSnapMode(mode: TimelineGridMode): Promise<void> {
+        const change = this.timelineSnapChange.catch(() => {}).then(async () => {
+            await this.presentationChanges.catch(() => {});
+            if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+            const rpc = this.rpc;
+            const revision = this.lastSessionRevision;
+            const scope = await rpc.getGraphScope();
+            const memory = readTimelineSnapMemory(scope.presentation?.timelineSnapMemory);
+            const { operations, memory: nextMemory } = planTimelineSnapMode(scope, mode, memory, crypto.randomUUID);
+            if (rpc !== this.rpc) throw new Error("The session changed before editing the snap mode");
+            if (operations.length) await rpc.applyProjectEdit([...operations,
+                { method: "projectPresentation.setTimelineSnapMemory", params: { memory: nextMemory } },
+            ], scope.sessionRevision ?? revision);
+        });
+        this.timelineSnapChange = change;
+        return change;
+    }
+
+    async toggleManualInput(control: ManualControlId): Promise<void> {
+        if (control.inputName === undefined) throw new Error("Only input knobs have an enable setting");
+        const rpc = this.rpc;
+        if (!rpc || this.graphSessionStatus !== "running") throw new Error("The server is unavailable");
+        await rpc.toggleManualInput(control);
+    }
+
+    async connectGraphPorts(id: string, first: GraphPortEndpoint, second: GraphPortEndpoint, expanded: NodeAddress[], detach = false): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const revision = this.lastSessionRevision;
+        const scope = graphScopeWithChildren(await rpc.getGraphScope(expanded));
+        const connection = connectionFromPorts(scope, id, first, second, detach);
+        await rpc.upsertGraphConnection(connection, scope.sessionRevision ?? revision);
+    }
+
+    async deleteGraphConnection(id: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        if (!scope.editable || !scope.connections.some((entry) => entry.id === id && !isGeneratedSnapConnection(entry))) {
+            throw new Error("The selected connection is no longer available");
+        }
+        await this.rpc!.deleteGraphConnection(id);
+    }
+
+    async editGraphConnectionEnd(edit: GraphConnectionChange, expanded: NodeAddress[]): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        await this.rpc.editGraphConnectionEnd(edit, expanded);
+    }
+
+    private definitionCatalog?: { rpc: WorkspaceRpc; pending: Promise<NodeDefinitionCatalog> };
+
+    async graphDefinitions(): Promise<NodeDefinitionCatalog> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        if (this.definitionCatalog?.rpc === this.rpc) return this.definitionCatalog.pending;
+        const catalog = { rpc: this.rpc, pending: this.rpc.nodeDefinitionCatalog() };
+        this.definitionCatalog = catalog;
+        try { return await catalog.pending; }
+        catch (error) {
+            if (this.definitionCatalog === catalog) this.definitionCatalog = undefined;
+            throw error;
+        }
+    }
+
+    async searchNodeDefinitions(source: string, cursor: number): Promise<NodeDefinitionSearch> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        return this.rpc.searchNodeDefinitions(source, cursor);
+    }
+
+    async createGraphNode(definitionId: string, displayName: string, configurationSource: string, afterInstanceId?: string): Promise<string> {
+        await this.presentationChanges.catch(() => {});
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before creating the lane");
+        const instanceId = crypto.randomUUID();
+        await rpc.applyProjectEdit([
+            { method: "nodeInstances.create", params: { instanceId, definitionId, displayName: displayName.trim() || null, configurationSource } },
+            orderWithInsertedLanes(scope, [{ instanceId, afterInstanceId }]),
+        ], scope.sessionRevision);
+        return instanceId;
+    }
+
+    async updateGraphNode(instanceId: string, displayName: string, previousDisplayName: string,
+        configuration?: { source: string; previous: string }): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before saving the node");
+        const node = scope.nodes.find((entry) => entry.instance.instanceId === instanceId);
+        if (!scope.editable || !node || isTimelineSnapNode(node)) throw new Error("The selected node is no longer available");
+        if ((node.instance.displayName ?? "") !== previousDisplayName) {
+            throw new Error("The node name changed. Start the edit again to use the current name.");
+        }
+        if (configuration && (node.instance.configurationSource ?? "") !== configuration.previous) {
+            throw new Error("The node configuration changed. Reopen the editor before saving.");
+        }
+        const nameChanged = displayName !== previousDisplayName;
+        const configurationChanged = configuration && configuration.source !== configuration.previous;
+        if (!nameChanged && !configurationChanged) return;
+        await rpc.updateNodeInstances([{ instanceId,
+            ...(nameChanged ? { displayName: displayName.trim() } : {}),
+            ...(configurationChanged ? { configurationSource: configuration.source } : {}),
+        }], scope.sessionRevision);
+    }
+
+    async deleteGraphNodes(instanceIds: string[]): Promise<void> {
+        await this.presentationChanges.catch(() => {});
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        const revision = this.lastSessionRevision;
+        const scope = await rpc.getGraphScope();
+        if (!scope.editable || instanceIds.some((id) => !scope.nodes.some((node) => node.instance.instanceId === id && !isTimelineSnapNode(node)))) {
+            throw new Error("A selected node is no longer available");
+        }
+        if (!instanceIds.length) return;
+        await rpc.applyProjectEdit(instanceIds.map((instanceId) => ({ method: "nodeInstances.delete", params: { instanceId } })), revision);
+    }
+
+    async duplicateGraphNodes(copies: readonly GraphLaneCopy[]): Promise<void> {
+        if (!copies.length) return;
+        await this.presentationChanges.catch(() => {});
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const rpc = this.rpc;
+        await this.manualControls.settled();
+        const revision = this.lastSessionRevision;
+        const scope = await rpc.getGraphScope();
+        if (rpc !== this.rpc) throw new Error("The session changed before duplicating the lanes");
+        const visible = new Set(scope.nodes.filter((node) => !isTimelineSnapNode(node)).map(({ instance }) => instance.instanceId));
+        if (!scope.editable || copies.some(({ sourceInstanceId }) => !visible.has(sourceInstanceId))) {
+            throw new Error("A selected node is no longer available");
+        }
+        const parents = scope.presentation?.laneParents ?? [];
+        const fallbacks = laneParentFallbacks(scope);
+        const parentsByChild = new Map(parents.map(({ instanceId, parent }) => [instanceId, parent]));
+        const duplicateParents = copies.flatMap(({ sourceInstanceId, instanceId }) => {
+            const parent = parentsByChild.get(sourceInstanceId);
+            if (!parent) return [];
+            const fallback = fallbacks.get(addressKey(parent));
+            return fallback === null ? [] : [{ instanceId, parent: fallback === undefined ? parent : addressFromKey(fallback) }];
+        });
+        const operations = [
+            { method: "nodeInstances.duplicate", params: { copies } },
+            orderWithInsertedLanes(scope, copies.map(({ sourceInstanceId, instanceId }) => ({ instanceId, afterInstanceId: sourceInstanceId }))),
+        ];
+        if (duplicateParents.length) operations.push(laneParentsOperation([...parents, ...duplicateParents]));
+        await rpc.applyProjectEdit(operations, scope.sessionRevision ?? revision);
+    }
+
+    async projectHistory(direction: "undo" | "redo"): Promise<void> {
+        await this.presentationChanges.catch(() => {});
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        await this.manualControls.settled();
+        await this.rpc.projectHistory(direction);
+    }
+
+    async openGraphNodeSource(instanceId: string): Promise<void> {
+        const scope = await this.readGraphScope();
+        const instance = scope.nodes.find((entry) => entry.instance.instanceId === instanceId)?.instance;
+        if (!instance?.packageRoot) throw new Error("The node's package source is unavailable");
+        this.selectedInstanceId = instanceId;
+        this.syncSelectedInstanceViews();
+        await this.revealPackageSource(instance.packageRoot);
+    }
+
+    async createGraphPackage(name: string): Promise<void> {
+        if (!(await this.ensureReady()) || !this.rpc) throw new Error("The server is unavailable");
+        const result = await this.rpc.createIvPackage(name);
+        const info = this.parseIvPackage(result.package);
+        if (info) await this.revealPackageSource(info.packageRoot);
+    }
     private readonly workspaceFolder: vscode.WorkspaceFolder;
     private readonly outputChannel: vscode.OutputChannel;
-    private readonly laneTopologyDiagnostics: vscode.OutputChannel;
     readonly provider: LiveGraphProviderLike;
-    private readonly laneViews = new Map<string, {
-        provider: LaneProviderLike;
-        open: boolean;
-        requestRevision: number;
-        failedLaneQuery: string | null;
-    }>();
-    private readonly modulesProvider: ModulesProviderLike;
     private readonly highlighter: NodeSpanHighlighter;
     private readonly rebuildStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    private readonly controlCompilationProgress = new ControlCompilationProgress();
+    private readonly controlCompilationStatus = vscode.window.createStatusBarItem(
+        "intravenous.controlCompilation", vscode.StatusBarAlignment.Left, 99);
+    private controlCompilationTimer: ReturnType<typeof setTimeout> | undefined;
     private readonly clangdDatabaseWatcher: vscode.FileSystemWatcher;
     private readonly notifications = new WorkspaceNotificationRouter();
     private process: childProcess.ChildProcess | null = null;
@@ -149,14 +388,29 @@ export class WorkspaceSession {
     private rpc: WorkspaceRpc | null = null;
     lastQueryError = "";
     private lastQuery: QueryShape | null = null;
+    private sourceQueryRequest = 0;
     private startInFlight: Promise<boolean> | null = null;
     private lastTerminalStatusMessage = "";
-    private playbackPaused = true;
-    private lastScrubbedSampleIndex = 0;
-    private serverStdoutLines: string[] = [];
-    private serverStderrLines: string[] = [];
-    private readonly maxCapturedServerLogLines = 20;
+    private serverDiagnosticLogOffset = 0;
+    private readonly serverDiagnosticLogPath = process.env.IV_LOG_FILE
+        || path.join(
+            fs.mkdtempSync(path.join(os.tmpdir(), "intravenous-server-")),
+            "diagnostics.log",
+        );
     private serverReadyReceived = false;
+    // Covers package/project loading before the server starts serving.
+    private readonly serverReadyTimeoutMs = 20000;
+    private lastSessionRevision = 0;
+    // Restart backoff for a server that keeps failing soon after it starts.
+    private readonly initialRestartDelayMs = 1000;
+    private readonly stableServerRunMs = 30000;
+    private readonly maximumRestartAttempts = 3;
+    private restartDelayMs = 1000;
+    private restartAttempts = 0;
+    private restartInFlight = false;
+    private selectedServerBinary: string | null = null;
+    private connectedAtMs: number | null = null;
+    private shuttingDown = false;
     private serverReadyWaiters: Array<{
         resolve: () => void;
         reject: (error: Error) => void;
@@ -164,28 +418,25 @@ export class WorkspaceSession {
     }> = [];
     private ivModuleInstances: IvModuleInstanceInfo[] = [];
     private projectModuleInstances: IvModuleInstanceInfo[] = [];
+    private instanceListRead?: { rpc: WorkspaceRpc; revision: number; done: Promise<void> };
     private ivPackages: IvPackageInfo[] = [];
     private selectedInstanceId: string | null = null;
     private activeSourceFilePath: string | null = null;
+    private sourceInstanceRead?: { rpc: WorkspaceRpc; filePath: string; done: Promise<void> };
     private activePackageRoot: string | null = null;
     private readonly selectedInstanceIdBySourceFile = new Map<string, string>();
     private clangdRestartTimer: NodeJS.Timeout | null = null;
-    private laneQuerySchema: LaneQuerySchemaSnapshot | null = null;
-    private laneQuerySchemaRefresh: Promise<void> | null = null;
 
     constructor(
         workspaceFolder: vscode.WorkspaceFolder,
         outputChannel: vscode.OutputChannel,
-        laneTopologyDiagnostics: vscode.OutputChannel,
         provider: LiveGraphProviderLike,
-        modulesProvider: ModulesProviderLike,
         highlighter: NodeSpanHighlighter,
+        private readonly bundledRuntime?: string,
     ) {
         this.workspaceFolder = workspaceFolder;
         this.outputChannel = outputChannel;
-        this.laneTopologyDiagnostics = laneTopologyDiagnostics;
         this.provider = provider;
-        this.modulesProvider = modulesProvider;
         this.highlighter = highlighter;
         this.clangdDatabaseWatcher = vscode.workspace.createFileSystemWatcher(
             new vscode.RelativePattern(this.workspaceFolder, "compile_commands.json"),
@@ -195,31 +446,40 @@ export class WorkspaceSession {
         this.registerNotificationHandlers();
     }
 
-    registerLaneView(provider: LaneProviderLike, restoredViewId: string | null = null): string {
-        const viewId = restoredViewId && restoredViewId.startsWith("lanes-")
-            ? restoredViewId
-            : `lanes-${crypto.randomBytes(8).toString("hex")}`;
-        provider.setLaneViewId(viewId);
-        provider.setModuleInstances(this.projectModuleInstances);
-        provider.setLaneQuerySchema(this.laneQuerySchema);
-        provider.setLaneQueryCompletionHandler((source, cursorOffset, schemaRevision) =>
-            this.completeLaneQuery(source, cursorOffset, schemaRevision));
-        this.laneViews.set(viewId, { provider, open: false, requestRevision: 0, failedLaneQuery: null });
-        return viewId;
-    }
-
     private registerNotificationHandlers(): void {
+        this.notifications.subscribe<ControlCompileStatus>("graph.controlCompilation", (status) => {
+            const progress = this.controlCompilationProgress.receive(status);
+            this.outputChannel.appendLine(progress.text);
+            if (this.controlCompilationTimer) clearTimeout(this.controlCompilationTimer);
+            this.controlCompilationStatus.text = progress.failed ? "$(error) IV compile failed · See Output"
+                : progress.queued || progress.compiling
+                    ? `$(sync~spin) IV ${progress.compiling} compiling · ${progress.queued} queued`
+                    : `$(check) IV ${progress.summary}`;
+            this.controlCompilationStatus.show();
+            if (!progress.queued && !progress.compiling && !progress.failed) {
+                this.controlCompilationTimer = setTimeout(() => this.controlCompilationStatus.hide(), 3000);
+            }
+        });
+        this.notifications.subscribe<ObservationDelivery>("observations.updated", (update) => this.observationChanges.fire(update));
+        this.notifications.subscribe("graph.changed", () => this.graphChanges.fire());
+        // A committed revision without a graph publication, such as a settled
+        // manual value or an audio selection.
+        this.notifications.subscribe("session.revisionChanged", () => this.graphChanges.fire());
+        // Another client's open gesture: unreliable, display only.
+        this.notifications.subscribe<{ node?: NodeAddress; inputName?: string; outputName?: string; value?: number }>(
+            "manualControls.liveValue", (params) => {
+                if (!params.node || typeof params.value !== "number") return;
+                if (typeof params.outputName === "string" && params.inputName === undefined)
+                    this.manualControls.receiveLive({ control: { node: params.node, outputName: params.outputName }, value: params.value });
+                else if (typeof params.inputName === "string" && params.outputName === undefined)
+                    this.manualControls.receiveLive({ control: { node: params.node, inputName: params.inputName }, value: params.value });
+            });
         this.notifications.subscribe<ServerMessageNotification>("server.message", (params) => {
             if (!params.message) {
                 return;
             }
             const lines = String(params.message).split(/\r?\n/);
             for (const line of lines) {
-                // These are normal high-frequency reconciliation traces, not
-                // useful alongside an interactive pointer diagnostic.
-                if (/^(graph public ports reconciled|graph input lanes |iv module execution tasks changed:|iv instances realized:|graph input timeline batch|timeline execution tasks changed:)/.test(line)) {
-                    continue;
-                }
                 if (line.length > 0) {
                     this.outputChannel.appendLine(params.level === "debug"
                         ? `[debug]: ${line}` : line);
@@ -227,157 +487,84 @@ export class WorkspaceSession {
             }
         });
 
-        this.notifications.subscribe<ServerReadyNotification>("server.ready", () => {
+        this.notifications.subscribe<ServerReadyNotification>("server.ready", (params) => {
+            if (typeof params.sessionRevision === "number") {
+                this.lastSessionRevision = params.sessionRevision;
+            }
             this.serverReadyReceived = true;
-            this.outputChannel.appendLine("Intravenous server ready");
+            this.outputChannel.appendLine("Server ready");
             this.resolveServerReadyWaiters();
         });
 
-        this.notifications.subscribe<LaneQuerySchemaChangeNotification>("timeline.laneQuerySchemaChanged", (params) => {
-            this.handleLaneQuerySchemaChanged(params);
-        });
-
-        this.notifications.subscribe<LaneViewUpdatedNotification>("timeline.laneViewUpdated", (params) => {
-            const view = this.laneViews.get(params.viewId);
-            if (view) {
-                // The browser owns its scroll position. Notifications refresh
-                // lane data, but must not rewind a scroll already in progress.
-                view.provider.setLanes(params, true);
-            }
-        });
-
-        this.notifications.subscribe<LaneViewContentNotification>("timeline.laneViewContentUpdated", (params) => {
-            const view = this.laneViews.get(params.viewId);
-            if (view) {
-                view.provider.setLaneContent(params);
-            }
-        });
-
-        this.notifications.subscribe<IvModuleInstancesUpdatedNotification>("ivModuleInstances.updated", (params) => {
-            this.projectModuleInstances = Array.isArray(params.instances) ? params.instances : [];
-            this.refreshLaneInstanceNames();
-            if (this.activeSourceFilePath && this.rpc) {
-                void this.rpc.getIvModuleInstances(this.activeSourceFilePath).then((result) => {
-                    this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-                    this.refreshVisibleInstances();
-                    this.refreshModulesPanelState();
-                });
-                return;
-            }
-            this.ivModuleInstances = this.projectModuleInstances;
-            this.refreshVisibleInstances();
-            this.refreshModulesPanelState();
-        });
+        this.notifications.subscribe("nodeInstances.updated", () => this.refreshInstanceList());
 
         this.notifications.subscribe<GraphNodesUpdatedNotification>("graph.nodesUpdated", async (params) => {
-            const nodes = this.parseVirtualNodes(params.nodes);
+            const nodes = this.parseSymbolicNodes(params.nodes);
             const replaceInstanceIds = Array.isArray(params.replaceInstanceIds)
                 ? params.replaceInstanceIds.filter((value): value is string => typeof value === "string")
                 : [];
-            // `lastQuery` is the side panel's selected source-span
-            // projection, not merely a property of whichever editor happens
-            // to be focused. A lanes webview can take focus while the graph
-            // side panel remains visible. Applying this full-instance delta
-            // directly in that case replaced the projection with every port
-            // from the instance.
+            // `lastQuery` is the side panel's selected source-span projection.
+            // Applying a full-instance delta directly would replace that
+            // projection with every port from the instance.
             if (this.lastQuery && this.rpc) {
-                const refreshed = await this.refreshLastQuery();
-                this.updatePrimaryHighlight(refreshed);
+                await this.refreshLastQuery();
                 return;
             }
             this.provider.upsertNodes(nodes, replaceInstanceIds);
         });
 
         this.notifications.subscribe<ServerStatusNotification>("server.status", async (params) => {
+            if (params.code === "presentationsUpdated") {
+                this.presentationCatalogChanges.fire();
+                return;
+            }
             if (params.code === "startupFailed") {
-                this.lastTerminalStatusMessage = params.message || "Intravenous startup failed";
-                this.logServerState("Intravenous startup failed", params);
+                this.lastTerminalStatusMessage = params.message || "Startup failed";
+                this.logServerState("Startup failed", params);
                 return;
             }
 
             if (params.code === "rebuildStarted") {
                 this.resetCapturedServerLogs();
-                this.logServerState("Intravenous rebuild started", params);
+                this.logServerState("Rebuild started", params);
                 this.showRebuildStatus(params);
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
                 return;
             }
 
             if (params.code === "rebuildFinished") {
-                this.logServerState("Intravenous rebuild finished", params);
+                this.logServerState("Rebuild finished", params);
                 this.rebuildStatusBar.hide();
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
+                return;
+            }
+
+            if (params.code === "graphCompilationFailed" || params.code === "graphRebaseFailed") {
+                this.logCapturedServerFailureContext();
+                this.logServerState("Graph execution", params);
                 return;
             }
 
             if (params.code === "rebuildFailed") {
-                this.logServerState("Intravenous rebuild failed", params);
                 this.logCapturedServerFailureContext();
+                // Keep the actionable failure below compiler output and traces.
+                this.logServerState("Rebuild failed", params);
                 this.showRebuildFailure(params);
-                await this.refreshModulesPanel();
+                await this.refreshProjectCatalog();
                 return;
             }
 
-            this.logServerState("Intravenous status", params);
+            this.logServerState("Status", params);
         });
 
         this.notifications.subscribe<Record<string, never>>("ivPackages.updated", async () => {
-            await this.refreshModulesPanel();
+            // A failed build can change node availability without producing a
+            // graph generation or graph.changed notification.
+            this.definitionCatalog = undefined;
+            ++this.graphDefinitionCatalogVersion;
+            this.graphChanges.fire();
+            await this.refreshProjectCatalog();
         });
-    }
-
-    private resolveServerBinary(): { source: string; path: string } {
-        const envDir = process.env.INTRAVENOUS_DIR;
-        if (envDir && envDir.length > 0) {
-            if (!path.isAbsolute(envDir)) {
-                throw new Error(`INTRAVENOUS_DIR must be absolute: ${envDir}`);
-            }
-            return {
-                source: "INTRAVENOUS_DIR",
-                path: path.join(envDir, "intravenous"),
-            };
-        }
-
-        // A build-and-install script packages the matching server path into
-        // the extension. It must win over an old workspace setting left by a
-        // previous Debug installation.
-        if (packagedDefaultServerDir) {
-            return {
-                source: "client build default",
-                path: path.join(packagedDefaultServerDir, "intravenous"),
-            };
-        }
-
-        const configured = vscode.workspace
-            .getConfiguration("intravenous", this.workspaceFolder.uri)
-            .get<string>("intravenousDir");
-        if (configured) {
-            if (!path.isAbsolute(configured)) {
-                throw new Error(`intravenous.intravenousDir must be absolute: ${configured}`);
-            }
-            return {
-                source: "intravenous.intravenousDir",
-                path: path.join(configured, "intravenous"),
-            };
-        }
-
-        for (const candidate of this.autoDetectedServerDirectories()) {
-            if (this.binaryExists(candidate)) {
-                return {
-                    source: candidate.source,
-                    path: path.join(candidate.directory, "intravenous"),
-                };
-            }
-        }
-
-        throw new Error(
-            "Intravenous executable directory is not configured. " +
-            "Set INTRAVENOUS_DIR or intravenous.intravenousDir, " +
-            "or build the repo so the client can auto-detect build/src/intravenous.");
-    }
-
-    private autoDetectedServerDirectories(): Array<{ source: string; directory: string }> {
-        return autoDetectedServerDirectoriesForWorkspaceRoot(this.workspaceRoot());
     }
 
     private parseIvModuleInstances(payload: unknown): IvModuleInstanceInfo[] {
@@ -411,175 +598,17 @@ export class WorkspaceSession {
                 ? packageInfo.publicationMessage
                 : "",
             packageRoot: packageInfo.packageRoot,
-            projectLocal: packageInfo.projectLocal === true,
+            provenance: packageInfo.provenance === "builtIn"
+                || packageInfo.provenance === "common"
+                ? packageInfo.provenance
+                : "projectLocal",
         };
     }
 
-    private parseIvPackages(payload: unknown): IvPackageInfo[] {
+    private parseIvPackageDefinitions(payload: unknown): IvPackageInfo[] {
         if (!Array.isArray(payload)) return [];
         return payload.map((packageInfo) => this.parseIvPackage(packageInfo))
             .filter((packageInfo): packageInfo is IvPackageInfo => packageInfo !== null);
-    }
-
-    private modulePanelInstances(): ModuleInstanceInfo[] {
-        return this.projectModuleInstances.flatMap((instance) => {
-            if (typeof instance.instanceId !== "string" || typeof instance.definitionId !== "string" || typeof instance.packageRoot !== "string") return [];
-            return [{
-                instanceId: instance.instanceId,
-                definitionId: instance.definitionId,
-                displayName: typeof instance.displayName === "string" && instance.displayName.length > 0
-                    ? instance.displayName
-                    : instance.definitionId,
-                moduleId: instance.moduleId,
-                packageRoot: instance.packageRoot,
-                realized: instance.realized === true,
-            }];
-        });
-    }
-
-    private modulePanelModules(): IvModuleInfo[] {
-        return this.ivPackages.flatMap((packageInfo) => packageInfo.moduleIds.map((moduleId) => ({
-            moduleId,
-            packageRoot: packageInfo.packageRoot,
-            projectLocal: packageInfo.projectLocal,
-        })));
-    }
-
-    private refreshModulesPanelState(): void {
-        this.modulesProvider.setState(this.modulePanelModules(), this.modulePanelInstances(), this.selectedInstanceId);
-    }
-
-    private refreshLaneInstanceNames(): void {
-        for (const view of this.laneViews.values()) {
-            view.provider.setModuleInstances(this.projectModuleInstances);
-        }
-    }
-
-    private parseLaneQuerySchemaType(value: unknown): LaneQuerySchemaValueType | null {
-        return value === "unit" || value === "int" || value === "float" ? value : null;
-    }
-
-    private parseLaneQuerySchemaEntry(value: unknown): LaneQuerySchemaEntry | null {
-        if (!value || typeof value !== "object") return null;
-        const entry = value as { key?: unknown; type?: unknown };
-        const type = this.parseLaneQuerySchemaType(entry.type);
-        if (typeof entry.key !== "string" || entry.key.length === 0 || !type) return null;
-        return { key: entry.key, type };
-    }
-
-    private parseLaneQuerySchemaSnapshot(value: unknown): LaneQuerySchemaSnapshot | null {
-        if (!value || typeof value !== "object") return null;
-        const snapshot = value as { revision?: unknown; entries?: unknown };
-        if (!Number.isSafeInteger(snapshot.revision) || (snapshot.revision as number) < 0
-            || !Array.isArray(snapshot.entries)) return null;
-        const entries = snapshot.entries.map((entry) => this.parseLaneQuerySchemaEntry(entry));
-        if (entries.some((entry) => entry === null)) return null;
-        const byKey = new Map<string, LaneQuerySchemaEntry>();
-        for (const entry of entries as LaneQuerySchemaEntry[]) {
-            if (byKey.has(entry.key)) return null;
-            byKey.set(entry.key, entry);
-        }
-        return {
-            revision: snapshot.revision as number,
-            entries: [...byKey.values()].sort((lhs, rhs) => lhs.key.localeCompare(rhs.key)),
-        };
-    }
-
-    private setLaneQuerySchema(snapshot: LaneQuerySchemaSnapshot | null): void {
-        if (snapshot && this.laneQuerySchema && snapshot.revision < this.laneQuerySchema.revision) {
-            return;
-        }
-        this.laneQuerySchema = snapshot;
-        for (const view of this.laneViews.values()) {
-            view.provider.setLaneQuerySchema(snapshot);
-        }
-    }
-
-    private async refreshLaneQuerySchema(): Promise<void> {
-        if (!this.rpc) return;
-        if (this.laneQuerySchemaRefresh) {
-            return await this.laneQuerySchemaRefresh;
-        }
-        this.laneQuerySchemaRefresh = (async () => {
-            const snapshot = this.parseLaneQuerySchemaSnapshot(await this.rpc!.getLaneQuerySchema());
-            if (!snapshot) {
-                throw new Error("server returned an invalid lane query schema snapshot");
-            }
-            this.setLaneQuerySchema(snapshot);
-        })().finally(() => {
-            this.laneQuerySchemaRefresh = null;
-        });
-        return await this.laneQuerySchemaRefresh;
-    }
-
-    private requestLaneQuerySchemaRefresh(): void {
-        void this.refreshLaneQuerySchema().catch((error) => {
-            this.outputChannel.appendLine(`Intravenous lane query schema refresh failed: ${error.message}`);
-        });
-    }
-
-    private async completeLaneQuery(
-        source: string,
-        cursorOffset: number,
-        schemaRevision: number,
-    ): Promise<Record<string, unknown> | null> {
-        if (!this.rpc || !this.laneQuerySchema || this.laneQuerySchema.revision !== schemaRevision) {
-            return null;
-        }
-        const result = await this.rpc.completeLaneQuery(source, cursorOffset, schemaRevision);
-        if (result.schemaRevision !== this.laneQuerySchema.revision) {
-            this.requestLaneQuerySchemaRefresh();
-            return null;
-        }
-        return result;
-    }
-
-    private handleLaneQuerySchemaChanged(change: LaneQuerySchemaChangeNotification): void {
-        const oldRevision = change.oldRevision;
-        const revision = change.revision;
-        if (typeof oldRevision !== "number" || typeof revision !== "number"
-            || !Number.isSafeInteger(oldRevision) || !Number.isSafeInteger(revision)
-            || oldRevision < 0 || revision < 0 || revision <= oldRevision
-            || !this.laneQuerySchema || oldRevision !== this.laneQuerySchema.revision) {
-            this.requestLaneQuerySchemaRefresh();
-            return;
-        }
-
-        const entries = new Map(this.laneQuerySchema.entries.map((entry) => [entry.key, entry]));
-        for (const added of Array.isArray(change.added) ? change.added : []) {
-            const entry = this.parseLaneQuerySchemaEntry(added);
-            if (!entry || entries.has(entry.key)) {
-                this.requestLaneQuerySchemaRefresh();
-                return;
-            }
-            entries.set(entry.key, entry);
-        }
-        for (const removed of Array.isArray(change.removed) ? change.removed : []) {
-            const entry = this.parseLaneQuerySchemaEntry(removed);
-            if (!entry || !entries.delete(entry.key)) {
-                this.requestLaneQuerySchemaRefresh();
-                return;
-            }
-        }
-        for (const retyped of Array.isArray(change.retyped) ? change.retyped : []) {
-            if (!retyped || typeof retyped !== "object") {
-                this.requestLaneQuerySchemaRefresh();
-                return;
-            }
-            const item = retyped as { key?: unknown; oldType?: unknown; newType?: unknown };
-            const oldType = this.parseLaneQuerySchemaType(item.oldType);
-            const newType = this.parseLaneQuerySchemaType(item.newType);
-            const existing = typeof item.key === "string" ? entries.get(item.key) : undefined;
-            if (!existing || !oldType || !newType || existing.type !== oldType) {
-                this.requestLaneQuerySchemaRefresh();
-                return;
-            }
-            entries.set(item.key as string, { key: item.key as string, type: newType });
-        }
-        this.setLaneQuerySchema({
-            revision,
-            entries: [...entries.values()].sort((lhs, rhs) => lhs.key.localeCompare(rhs.key)),
-        });
     }
 
     private parseSourcePosition(payload: unknown): SourcePosition | null {
@@ -632,39 +661,177 @@ export class WorkspaceSession {
         };
     }
 
-    private parseVirtualPort(payload: unknown): VirtualPort | null {
-        if (!payload || typeof payload !== "object") {
-            return null;
-        }
-        return payload as VirtualPort;
+    private parseSymbolicPortConnectivity(
+        payload: unknown,
+    ): SymbolicPortConnectivity | null {
+        return payload === "disconnected" || payload === "connected"
+            || payload === "mixed" ? payload : null;
     }
 
-    private parseVirtualNodeMember(payload: unknown): VirtualNodeMember | null {
+    private parseSymbolicPortBinding(payload: unknown): SymbolicPortBinding | null {
+        return payload === "interface" || payload === "none"
+            || payload === "symbolicInput" || payload === "symbolicOutput"
+            || payload === "mixed"
+            ? payload : null;
+    }
+
+    private parseFractionalGlobalIndexValue(
+        payload: unknown,
+    ): FractionalGlobalIndexValue | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        if (typeof candidate.wholeBits !== "string"
+            || typeof candidate.fractionBits !== "string"
+            || !/^\d+$/.test(candidate.wholeBits)
+            || !/^\d+$/.test(candidate.fractionBits)) {
+            return null;
+        }
+        const maxUint64 = (1n << 64n) - 1n;
+        if (BigInt(candidate.wholeBits) > maxUint64
+            || BigInt(candidate.fractionBits) > maxUint64) {
+            return null;
+        }
+        return {
+            wholeBits: candidate.wholeBits,
+            fractionBits: candidate.fractionBits,
+        };
+    }
+
+    private parseContinuousValueAlternative(
+        payload: unknown,
+    ): ContinuousValueAlternative | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        if (typeof candidate.type !== "string"
+            || typeof candidate.rank !== "number"
+            || !Number.isSafeInteger(candidate.rank)
+            || candidate.rank < 0
+            || (candidate.channelCapability !== "scalar"
+                && candidate.channelCapability !== "audio")) {
+            return null;
+        }
+
+        const parseScalarPresentationNumber = (
+            value: unknown,
+        ): ScalarPresentationNumber | undefined => {
+            if (typeof value === "number" && Number.isFinite(value)) return value;
+            return value === "nan" || value === "positiveInfinity"
+                || value === "negativeInfinity" ? value : undefined;
+        };
+
+        let defaultValue:
+            ScalarPresentationNumber | FractionalGlobalIndexValue | undefined;
+        const scalarDefault = parseScalarPresentationNumber(
+            candidate.defaultValue);
+        if (scalarDefault !== undefined) {
+            defaultValue = scalarDefault;
+        } else if (candidate.defaultValue !== undefined) {
+            defaultValue = this.parseFractionalGlobalIndexValue(
+                candidate.defaultValue) ?? undefined;
+        }
+        const minValue = parseScalarPresentationNumber(candidate.minValue);
+        const maxValue = parseScalarPresentationNumber(candidate.maxValue);
+        const scrubSpeed = parseScalarPresentationNumber(candidate.scrubSpeed);
+
+        return {
+            type: candidate.type,
+            rank: candidate.rank,
+            channelCapability: candidate.channelCapability,
+            ...(defaultValue === undefined ? {} : { defaultValue }),
+            ...(minValue === undefined ? {} : { minValue }),
+            ...(maxValue === undefined ? {} : { maxValue }),
+            ...(scrubSpeed === undefined ? {} : { scrubSpeed }),
+            ...(candidate.geometry === "circle" || candidate.geometry === "linear" ? { geometry: candidate.geometry } : {}),
+        };
+    }
+
+    private parseSymbolicContinuousPort(
+        payload: unknown,
+    ): SymbolicContinuousPort | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        const connectivity = this.parseSymbolicPortConnectivity(
+            candidate.connectivity);
+        const binding = this.parseSymbolicPortBinding(candidate.binding);
+        if (typeof candidate.index !== "number"
+            || !Number.isSafeInteger(candidate.index)
+            || candidate.index < 0
+            || typeof candidate.name !== "string"
+            || !connectivity
+            || !binding
+            || !Array.isArray(candidate.valueTypes)
+            || candidate.valueTypes.length === 0) {
+            return null;
+        }
+        const valueTypes = candidate.valueTypes.map((value) =>
+            this.parseContinuousValueAlternative(value));
+        if (valueTypes.some((value) => value === null)) return null;
+        if (candidate.channelType !== undefined
+            && typeof candidate.channelType !== "string") {
+            return null;
+        }
+        return {
+            index: candidate.index,
+            name: candidate.name,
+            connectivity,
+            binding,
+            valueTypes: valueTypes as ContinuousValueAlternative[],
+            ...(typeof candidate.channelType === "string"
+                ? { channelType: candidate.channelType } : {}),
+        };
+    }
+
+    private parseSymbolicEventPort(payload: unknown): SymbolicEventPort | null {
+        if (!payload || typeof payload !== "object") return null;
+        const candidate = payload as Record<string, unknown>;
+        const connectivity = this.parseSymbolicPortConnectivity(
+            candidate.connectivity);
+        const binding = this.parseSymbolicPortBinding(candidate.binding);
+        if (typeof candidate.index !== "number"
+            || !Number.isSafeInteger(candidate.index)
+            || candidate.index < 0
+            || typeof candidate.name !== "string"
+            || typeof candidate.eventType !== "string"
+            || !connectivity
+            || !binding) {
+            return null;
+        }
+        return {
+            index: candidate.index,
+            name: candidate.name,
+            connectivity,
+            binding,
+            eventType: candidate.eventType,
+        };
+    }
+
+    private parseSymbolicNodeMember(payload: unknown): SymbolicNodeMember | null {
         if (!payload || typeof payload !== "object") {
             return null;
         }
         const candidate = payload as Record<string, unknown>;
         return {
-            ordinal: typeof candidate.ordinal === "number" ? candidate.ordinal : undefined,
+            index: typeof candidate.index === "number" ? candidate.index : undefined,
             backingNodeId: typeof candidate.backingNodeId === "string" ? candidate.backingNodeId : undefined,
             kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
             typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
-            sampleInputs: Array.isArray(candidate.sampleInputs)
-                ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+            definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
+            continuousInputs: Array.isArray(candidate.continuousInputs)
+                ? candidate.continuousInputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                 : undefined,
-            sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+            continuousOutputs: Array.isArray(candidate.continuousOutputs)
+                ? candidate.continuousOutputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                 : undefined,
             eventInputs: Array.isArray(candidate.eventInputs)
-                ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                ? candidate.eventInputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                 : undefined,
             eventOutputs: Array.isArray(candidate.eventOutputs)
-                ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                ? candidate.eventOutputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                 : undefined,
         };
     }
 
-    private parseVirtualNodes(payload: unknown): VirtualNode[] {
+    private parseSymbolicNodes(payload: unknown): SymbolicNode[] {
         if (!Array.isArray(payload)) {
             return [];
         }
@@ -677,26 +844,27 @@ export class WorkspaceSession {
                 ? candidate.sourceSpans.map((span) => this.parseSourceSpan(span)).filter((span): span is SourceSpan => span !== null)
                 : undefined;
             const members = Array.isArray(candidate.members)
-                ? candidate.members.map((member) => this.parseVirtualNodeMember(member)).filter((member): member is VirtualNodeMember => member !== null)
+                ? candidate.members.map((member) => this.parseSymbolicNodeMember(member)).filter((member): member is SymbolicNodeMember => member !== null)
                 : undefined;
             return [{
                 id: typeof candidate.id === "string" ? candidate.id : undefined,
                 instanceId: typeof candidate.instanceId === "string" ? candidate.instanceId : undefined,
                 kind: typeof candidate.kind === "string" ? candidate.kind : undefined,
-                packageIdentity: typeof candidate.packageIdentity === "string" ? candidate.packageIdentity : undefined,
+                sourceIdentity: typeof candidate.sourceIdentity === "string" ? candidate.sourceIdentity : undefined,
                 typeIdentity: typeof candidate.typeIdentity === "string" ? candidate.typeIdentity : undefined,
+                definitionId: typeof candidate.definitionId === "string" ? candidate.definitionId : undefined,
                 sourceSpans,
-                sampleInputs: Array.isArray(candidate.sampleInputs)
-                    ? candidate.sampleInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                continuousInputs: Array.isArray(candidate.continuousInputs)
+                    ? candidate.continuousInputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                     : undefined,
-                sampleOutputs: Array.isArray(candidate.sampleOutputs)
-                    ? candidate.sampleOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                continuousOutputs: Array.isArray(candidate.continuousOutputs)
+                    ? candidate.continuousOutputs.map((port) => this.parseSymbolicContinuousPort(port)).filter((port): port is SymbolicContinuousPort => port !== null)
                     : undefined,
                 eventInputs: Array.isArray(candidate.eventInputs)
-                    ? candidate.eventInputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                    ? candidate.eventInputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                     : undefined,
                 eventOutputs: Array.isArray(candidate.eventOutputs)
-                    ? candidate.eventOutputs.map((port) => this.parseVirtualPort(port)).filter((port): port is VirtualPort => port !== null)
+                    ? candidate.eventOutputs.map((port) => this.parseSymbolicEventPort(port)).filter((port): port is SymbolicEventPort => port !== null)
                     : undefined,
                 memberCount: typeof candidate.memberCount === "number" ? candidate.memberCount : undefined,
                 members,
@@ -709,15 +877,6 @@ export class WorkspaceSession {
             return [];
         }
         return payload.map((span) => this.parseSourceSpan(span)).filter((span): span is SourceSpan => span !== null);
-    }
-
-    private binaryExists(candidate: { directory: string }): boolean {
-        try {
-            const stat = fs.statSync(path.join(candidate.directory, "intravenous"));
-            return stat.isFile();
-        } catch {
-            return false;
-        }
     }
 
     workspaceRoot(): string {
@@ -733,36 +892,39 @@ export class WorkspaceSession {
     }
 
     private serverBinaryPath(): string {
-        const resolved = this.resolveServerBinary();
-        let stat: fs.Stats;
+        if (this.selectedServerBinary) return this.selectedServerBinary;
+        const configuredDir = vscode.workspace.getConfiguration("intravenous", this.workspaceFolder.uri).get<string>("intravenousDir");
+        const resolved = resolveIntravenousBinary("intravenous", configuredDir, this.bundledRuntime);
         try {
-            stat = fs.statSync(resolved.path);
-        } catch {
-            throw new Error(`resolved server binary from ${resolved.source} does not exist: ${resolved.path}`);
+            if (!fs.statSync(resolved.path).isFile()) throw new Error("server executable is not a file");
+            fs.accessSync(resolved.path, fs.constants.X_OK);
+        } catch (error) {
+            throw new Error(`Cannot use the server from ${resolved.source} at ${resolved.path}: ${error.message}`);
         }
-
-        if (!stat.isFile()) {
-            throw new Error(`resolved server binary from ${resolved.source} is not a file: ${resolved.path}`);
-        }
-
-        fs.accessSync(resolved.path, fs.constants.X_OK);
-        this.outputChannel.appendLine(`resolved Intravenous server from ${resolved.source}: ${resolved.path}`);
+        this.selectedServerBinary = resolved.path;
+        this.outputChannel.appendLine(`Resolved server from ${resolved.source}: ${resolved.path}`);
         return resolved.path;
     }
 
     async start(): Promise<boolean> {
+        if (this.startInFlight) return this.startInFlight;
         if (this.rpc) {
             return true;
         }
-        if (this.startInFlight) {
-            return await this.startInFlight;
-        }
-        this.startInFlight = this.startImpl().finally(() => {
+        if (this.shuttingDown) return false;
+        this.startInFlight = this.startImpl().catch((error) => {
+            if (!this.restartInFlight && !this.shuttingDown && this.graphSessionStatus !== "restarting")
+                this.stopRestarting(error.message);
+            throw error;
+        }).finally(() => {
             this.startInFlight = null;
         });
         return await this.startInFlight;
     }
 
+    // The window owns its server. The server is spawned with one inherited
+    // socket on fd 3 (--rpc-fd) and stops when that socket closes, which also
+    // happens when the extension host exits on a window reload or a crash.
     private async startImpl(): Promise<boolean> {
         if (!this.isIntravenousProject()) {
             return false;
@@ -771,74 +933,229 @@ export class WorkspaceSession {
         this.resetServerReadyState();
 
         const binary = this.serverBinaryPath();
-        const serverDir = path.dirname(binary);
-        const args = [
-            "--server",
-            "--workspace-root",
-            this.workspaceRoot(),
-            "--rpc-fd",
-            "3",
-        ];
-        const childEnv = {
+        if (this.shuttingDown) return false;
+        const childEnv: NodeJS.ProcessEnv = {
             ...process.env,
-            INTRAVENOUS_DIR: process.env.INTRAVENOUS_DIR || serverDir,
+            IV_LOG_FILE: this.serverDiagnosticLogPath,
         };
 
         this.resetCapturedServerLogs();
-        this.outputChannel.appendLine(`starting Intravenous server: ${binary}`);
-        this.outputChannel.appendLine(`Intravenous server cwd: ${this.workspaceRoot()}`);
-        this.process = childProcess.spawn(binary, args, {
-            cwd: this.workspaceRoot(),
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe", "pipe"],
-        });
-        this.attachServerOutputCapture(this.process);
-        this.outputChannel.appendLine("Intravenous startup: server process spawned");
-
-        const rpcStream = this.process.stdio[3];
-        if (!this.isDuplexStream(rpcStream)) {
-            throw new Error("Intravenous startup failed: child rpc fd 3 was not exposed as a duplex stream");
-        }
-
-        this.client = new JsonRpcSocketClient(rpcStream, (method, params) => {
-            void this.notifications.dispatch(method, params);
-        });
-        this.outputChannel.appendLine("Intravenous startup: attaching client RPC socket");
-        await this.client.connect();
-        this.outputChannel.appendLine("Intravenous startup: client RPC socket attached");
-        this.rpc = new WorkspaceRpc(this.client);
-
-        this.process.on("error", (error) => {
-            this.rejectServerReadyWaiters(new Error(`Intravenous server spawn failed: ${error.message}`));
-            this.outputChannel.appendLine(`Intravenous server spawn failed: ${error.message}`);
-        });
-        this.process.on("exit", (code, signal) => {
-            this.process = null;
-            this.rebuildStatusBar.hide();
-            this.outputChannel.appendLine(`Intravenous server exited: code=${code} signal=${signal}`);
-            this.logCapturedServerFailureContext();
-            if (!this.serverReadyReceived) {
-                this.rejectServerReadyWaiters(
-                    new Error(`Intravenous server exited before reporting ready: code=${code} signal=${signal}`),
-                );
+        if (process.platform === "linux" && (!childEnv.HOME || !childEnv.XDG_RUNTIME_DIR)) {
+            try {
+                const { uid, homedir } = os.userInfo();
+                childEnv.HOME ||= homedir;
+                if (!childEnv.XDG_RUNTIME_DIR) {
+                    const runtimeDir = `/run/user/${uid}`;
+                    const stat = fs.statSync(runtimeDir, { throwIfNoEntry: false });
+                    if (stat?.isDirectory() && stat.uid === uid) {
+                        childEnv.XDG_RUNTIME_DIR = runtimeDir;
+                        this.outputChannel.appendLine(`Server restored XDG_RUNTIME_DIR: ${runtimeDir}`);
+                    }
+                }
+            } catch (error) {
+                this.outputChannel.appendLine(`Server could not restore missing session settings: ${error}`);
             }
+        }
+        this.outputChannel.appendLine(`Starting server: ${binary}`);
+        this.outputChannel.appendLine(`Server cwd: ${this.workspaceRoot()}`);
+        this.outputChannel.appendLine(
+            `Server diagnostic log: ${this.serverDiagnosticLogPath}`,
+        );
+        const processLog = fs.openSync(this.serverDiagnosticLogPath, "a");
+        let spawnedProcess: childProcess.ChildProcess;
+        try {
+            spawnedProcess = spawnWorkspaceServer(binary, this.workspaceRoot(), processLog, childEnv);
+        } finally {
+            fs.closeSync(processLog);
+        }
+        this.process = spawnedProcess;
+        this.outputChannel.appendLine(`Startup: server process spawned (PID ${spawnedProcess.pid ?? "unavailable"})`);
+
+        spawnedProcess.on("error", (error) => {
+            this.outputChannel.appendLine(`Server spawn failed: ${error.message}`);
+        });
+        spawnedProcess.on("exit", (code, signal) => {
+            if (this.process === spawnedProcess) this.process = null;
+            this.rebuildStatusBar.hide();
+            this.outputChannel.appendLine(`Server exited: code=${code} signal=${signal}`);
         });
 
-        this.outputChannel.appendLine("Intravenous startup: waiting for server.ready");
-        await this.waitForServerReady(10000);
-        if (this.rpc) {
-            await this.refreshLaneQuerySchema();
-            const result = await this.rpc.getIvModuleInstances();
-            this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
-            this.projectModuleInstances = this.ivModuleInstances;
-            this.refreshLaneInstanceNames();
-            this.refreshVisibleInstances();
-            const realizedCount = this.ivModuleInstances.filter((instance) => instance.realized).length;
-            this.outputChannel.appendLine(
-                `Intravenous instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
-            );
+        const socket = spawnedProcess.stdio[3];
+        if (!(socket instanceof Duplex)) {
+            spawnedProcess.kill();
+            throw new Error("Server was spawned without its RPC socket");
+        }
+        try {
+            await this.connectToServer(socket);
+            await this.loadInitialSessionState();
+        } catch (error) {
+            this.logCapturedServerFailureContext();
+            if (this.process === spawnedProcess) this.process = null;
+            const client = this.client;
+            this.client = null;
+            this.rpc = null;
+            this.connectedAtMs = null;
+            client?.dispose();
+            spawnedProcess.kill();
+            throw error;
         }
         return true;
+    }
+
+    private async connectToServer(socket: Duplex): Promise<void> {
+        const client = new JsonRpcSocketClient(
+            socket,
+            (method, params) => {
+                if (typeof params.revision === "number") {
+                    this.lastSessionRevision = Math.max(
+                        this.lastSessionRevision, params.revision);
+                }
+                void this.notifications.dispatch(method, params).catch((error) => {
+                    if (this.client === client) this.outputChannel.appendLine(`Cannot process ${method}: ${String(error)}`);
+                });
+            },
+            (error) => this.handleServerConnectionLost(client, error),
+            (revision) => {
+                this.lastSessionRevision = Math.max(this.lastSessionRevision, revision);
+            },
+        );
+        this.client = client;
+        await client.connect();
+        if (this.client !== client) throw new Error("Server disconnected before startup completed");
+        this.rpc = new WorkspaceRpc(client, () => this.lastSessionRevision);
+        ++this.connectionNumber;
+        // The inherited client is trusted and subscribed to every notification
+        // from the moment it is attached, so nothing needs replaying.
+        await this.waitForServerReady(this.serverReadyTimeoutMs);
+        await this.rpc.hello(`vscode-${process.pid}-${crypto.randomUUID()}`, "");
+        this.connectedAtMs = Date.now();
+        this.outputChannel.appendLine(
+            `Startup: connected at session revision ${this.lastSessionRevision}`,
+        );
+        // Do not delay graph discovery on hardware enumeration. Report the
+        // selected device explicitly because the fallback clock keeps Tick
+        // running even when hardware output could not be opened.
+        void this.rpc.getAudioDevices().then((snapshot) => {
+            if (this.client === client) this.outputChannel.appendLine(audioOutputDiagnostic(snapshot.selectedOutput));
+        }, (error) => {
+            if (this.client === client) this.outputChannel.appendLine(`Audio output query failed: ${error.message ?? error}`);
+        });
+    }
+
+    // The server stops with its socket, so a lost connection means this
+    // window's server is gone. Unless the window is shutting down, start a new
+    // one within the retry budget for this release.
+    private handleServerConnectionLost(
+        client: JsonRpcSocketClient,
+        error: Error,
+    ): void {
+        if (this.client !== client) return;
+        this.manualControls.disconnect();
+        this.nodeEvents.disconnected();
+        this.resetControlCompilationStatus();
+        this.client = null;
+        this.rpc = null;
+        this.serverReadyReceived = false;
+        this.rejectServerReadyWaiters(error);
+        this.rebuildStatusBar.hide();
+        const lostProcess = this.process;
+        this.process = null;
+        lostProcess?.kill("SIGTERM");
+        if (this.shuttingDown) return;
+
+        const connectedAt = this.connectedAtMs;
+        this.connectedAtMs = null;
+        // An attempt that never completed its handshake rejects its startup
+        // promise. Its caller accounts for that failure.
+        if (connectedAt === null) return;
+        if (Date.now() - connectedAt >= this.stableServerRunMs) {
+            this.restartAttempts = 0;
+            this.restartDelayMs = this.initialRestartDelayMs;
+        }
+        this.setServerStatus("restarting");
+        this.outputChannel.appendLine(`Server connection lost: ${error.message}`);
+        void this.restartServer();
+    }
+
+    private async restartServer(): Promise<void> {
+        if (this.restartInFlight) return;
+        this.restartInFlight = true;
+        try {
+            while (!this.shuttingDown && !this.rpc) {
+                if (this.restartAttempts >= this.maximumRestartAttempts) {
+                    this.stopRestarting("Automatic server retries are exhausted");
+                    break;
+                }
+                await new Promise<void>((resolve) => setTimeout(resolve, this.restartDelayMs));
+                if (this.shuttingDown || this.rpc) break;
+                ++this.restartAttempts;
+                this.restartDelayMs *= 2;
+                this.outputChannel.appendLine(`Restarting server (${this.restartAttempts}/${this.maximumRestartAttempts})`);
+                try {
+                    if (!await this.start()) {
+                        if (!this.shuttingDown) this.stopRestarting("The project is no longer available");
+                        break;
+                    }
+                } catch (error) {
+                    this.outputChannel.appendLine(
+                        `Server restart failed: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                }
+            }
+        } finally {
+            this.restartInFlight = false;
+        }
+        try {
+            if (this.rpc && this.lastQuery) {
+                await this.refreshLastQuery();
+            }
+        } catch (error) {
+            this.outputChannel.appendLine(
+                `Query after restart failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        }
+    }
+
+    private setServerStatus(status: LiveGraphSessionStatus): void {
+        this.provider.setSessionStatus(status);
+        this.graphSessionStatus = status;
+        this.presentationCatalogChanges.fire();
+        this.graphChanges.fire();
+    }
+
+    private stopRestarting(reason: string): void {
+        this.outputChannel.appendLine(`${reason}. Run Intravenous: Retry Server or reload the window.`);
+        this.setServerStatus("stopped");
+    }
+
+    async retryServer(): Promise<void> {
+        if (this.restartInFlight || this.rpc) return;
+        this.restartAttempts = 0;
+        this.restartDelayMs = this.initialRestartDelayMs;
+        this.setServerStatus("starting");
+        if (!await this.start() && !this.shuttingDown) this.stopRestarting("The project is no longer available");
+    }
+
+    private async loadInitialSessionState(): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc) throw new Error("Server disconnected before loading the session");
+        const result = await rpc.getNodeInstances();
+        if (this.rpc !== rpc) throw new Error("Server disconnected before loading the session");
+        this.projectModuleInstances = this.parseIvModuleInstances(result.instances);
+        if (this.activeSourceFilePath) {
+            await this.readSourceInstances(rpc, this.activeSourceFilePath);
+            if (this.rpc !== rpc) throw new Error("Server disconnected before loading the session");
+        } else {
+            this.ivModuleInstances = this.projectModuleInstances;
+            this.refreshVisibleInstances();
+        }
+        const realizedCount = this.ivModuleInstances.filter(
+            (instance) => instance.realized,
+        ).length;
+        this.outputChannel.appendLine(
+            `Instances after ready: total=${this.ivModuleInstances.length} realized=${realizedCount} selected=${this.selectedInstanceId ?? "[none]"}`,
+        );
+        this.setServerStatus("running");
     }
 
     private async waitForServerReady(timeoutMs: number): Promise<void> {
@@ -850,7 +1167,7 @@ export class WorkspaceSession {
             const timeout = setTimeout(() => {
                 this.serverReadyWaiters = this.serverReadyWaiters.filter((waiter) => waiter.timeout !== timeout);
                 this.logCapturedServerFailureContext();
-                reject(new Error("Intravenous server did not report ready before timeout"));
+                reject(new Error("Server did not report ready before timeout"));
             }, timeoutMs);
             this.serverReadyWaiters.push({ resolve, reject, timeout });
         });
@@ -873,7 +1190,7 @@ export class WorkspaceSession {
                 return;
             }
             {
-                const created = await this.rpc.createIvModuleInstance(
+                const created = await this.rpc.createNodeInstance(
                     await this.moduleIdForPackageRoot(this.activePackageRoot),
                 );
                 this.selectedInstanceId = created.instanceId;
@@ -883,167 +1200,79 @@ export class WorkspaceSession {
             }
             return;
 
-        case "setSampleInputValue":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleInputValue(
-                message.nodeId,
-                message.inputOrdinal,
-                message.value,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setSampleInputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleInputState(
-                message.nodeId,
-                message.inputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setEventInputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setEventInputState(
-                message.nodeId,
-                message.inputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setSampleOutputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setSampleOutputState(
-                message.nodeId,
-                message.outputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
-
-        case "setEventOutputState":
-            if (!(await this.ensureReady()) || !this.rpc) {
-                return;
-            }
-            await this.rpc.setEventOutputState(
-                message.nodeId,
-                message.outputOrdinal,
-                message.state,
-                message.memberOrdinal ?? null,
-            );
-            return;
         }
     }
 
-    async refreshModulesPanel(): Promise<void> {
+    async refreshProjectCatalog(): Promise<void> {
         if (!(await this.ensureReady()) || !this.rpc) return;
-        const [packages, instances] = await Promise.all([
-            this.rpc.getIvPackages(),
-            this.rpc.getIvModuleInstances(),
-        ]);
-        this.ivPackages = this.parseIvPackages(packages.packages);
-        this.projectModuleInstances = this.parseIvModuleInstances(instances.instances);
-        this.refreshLaneInstanceNames();
-        this.refreshModulesPanelState();
+        const rpc = this.rpc;
+        const [packages] = await Promise.all([rpc.getIvPackageDefinitions(), this.refreshInstanceList()]);
+        if (this.rpc === rpc) this.ivPackages = this.parseIvPackageDefinitions(packages.packages);
     }
 
-    async dispatchModulesControl(message: ModulesControlMessage): Promise<void> {
-        // Instance selection is client-side presentation state.  In
-        // particular, do not put rapid row clicks behind server readiness or
-        // any RPC work.
-        if (message.type === "select") {
-            const selectedInstanceId = this.resolveSelectedInstanceId(
-                this.visibleInstances(),
-                message.instanceId,
-            );
-            if (selectedInstanceId === this.selectedInstanceId) {
-                return;
+    private refreshInstanceList(): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc) return Promise.resolve();
+        const revision = this.lastSessionRevision;
+        const existing = this.instanceListRead;
+        if (existing?.rpc === rpc && existing.revision >= revision) return existing.done;
+        const done = rpc.getNodeInstances().then(async (result) => {
+            const read = this.instanceListRead;
+            if (this.rpc !== rpc || read?.done !== done) return;
+            read.revision = Math.max(read.revision, result.sessionRevision ?? revision);
+            this.projectModuleInstances = this.parseIvModuleInstances(result.instances);
+            if (this.activeSourceFilePath) {
+                await this.readSourceInstances(rpc, this.activeSourceFilePath, true);
+            } else {
+                this.ivModuleInstances = this.projectModuleInstances;
+                this.refreshVisibleInstances();
             }
-            this.selectedInstanceId = selectedInstanceId;
-            this.rememberSelectedInstance();
-            this.syncSelectedInstanceViews();
-            return;
-        }
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        switch (message.type) {
-        case "createPackage": {
-            const result = await this.rpc.createIvPackage(message.name);
-            const packageInfo = this.parseIvPackage(result.package);
-            await this.refreshModulesPanel();
-            if (packageInfo) await this.revealPackageSource(packageInfo.packageRoot);
-            return;
-        }
-        case "instantiate":
-        case "duplicate": {
-            const created = await this.rpc.createIvModuleInstance(
-                message.moduleId,
-            );
-            this.selectedInstanceId = created.instanceId;
-            await this.refreshModulesPanel();
-            return;
-        }
-        case "open":
-            this.selectedInstanceId = message.instanceId;
-            this.syncSelectedInstanceViews();
-            await this.revealPackageSource(message.packageRoot);
-            await this.refreshModulesPanel();
-            return;
-        case "rename":
-            await this.rpc.updateIvModuleInstances([{
-                instanceId: message.instanceId,
-                displayName: message.displayName,
-            }]);
-            await this.refreshModulesPanel();
-            return;
-        case "delete":
-            await this.rpc.deleteIvModuleInstance(message.instanceId);
-            if (this.selectedInstanceId === message.instanceId) this.selectedInstanceId = null;
-            await this.refreshModulesPanel();
-            return;
-        case "reveal":
-            await this.revealPackageSource(message.packageRoot);
-            return;
-        }
+        }).catch((error) => {
+            if (this.instanceListRead?.done !== done || this.rpc !== rpc) return;
+            this.instanceListRead = undefined;
+            throw error;
+        });
+        this.instanceListRead = { rpc, revision, done };
+        return done;
     }
 
     private async revealPackageSource(packageRoot: string): Promise<void> {
-        const uri = vscode.Uri.file(path.join(packageRoot, "module.cpp"));
+        await this.revealSourceFile(path.join(packageRoot, "module.cpp"));
+    }
+
+    async revealSourceFile(filePath: string, source?: { line: number; byteOffset: number }): Promise<void> {
+        const uri = vscode.Uri.file(filePath);
+        const key = uri.toString();
         const existing = vscode.window.visibleTextEditors.find(
-            (editor) => editor.document.uri.toString() === uri.toString(),
+            (editor) => editor.document.uri.toString() === key,
         );
-        if (existing) {
-            await vscode.window.showTextDocument(existing.document, existing.viewColumn, false);
-            return;
-        }
-        const existingGroup = vscode.window.tabGroups.all.find((group) =>
+        const viewColumn = existing?.viewColumn ?? vscode.window.tabGroups.all.find((group) =>
             group.tabs.some((tab) => {
                 const input = tab.input as { uri?: vscode.Uri };
-                return input.uri?.toString() === uri.toString();
+                return input.uri?.toString() === key;
             }),
-        );
-        const document = await vscode.workspace.openTextDocument(uri);
-        if (existingGroup) {
-            await vscode.window.showTextDocument(document, existingGroup.viewColumn, false);
-            return;
+        )?.viewColumn;
+        const document = existing?.document ?? await vscode.workspace.openTextDocument(uri);
+        let selection: vscode.Range | undefined;
+        if (source) {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const prefix = bytes.subarray(0, source.byteOffset);
+            const lineStart = 1 + Math.max(prefix.lastIndexOf(0x0a), prefix.lastIndexOf(0x0d));
+            // Clang offsets count UTF-8 bytes. VS Code columns count UTF-16 code units.
+            const column = new TextDecoder("utf-8", { ignoreBOM: lineStart !== 0 })
+                .decode(prefix.subarray(lineStart)).length;
+            const position = document.validatePosition(new vscode.Position(source.line - 1, column));
+            selection = new vscode.Range(position, position);
         }
-        await vscode.window.showTextDocument(document, { preview: false });
+        const editor = await vscode.window.showTextDocument(document, { viewColumn, preview: false, selection });
+        if (selection) editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     }
 
     private async moduleIdForPackageRoot(packageRoot: string): Promise<string> {
         let packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
         if (!packageInfo && this.rpc) {
-            const result = await this.rpc.getIvPackages();
-            this.ivPackages = this.parseIvPackages(result.packages);
+            const result = await this.rpc.getIvPackageDefinitions();
+            this.ivPackages = this.parseIvPackageDefinitions(result.packages);
             packageInfo = this.ivPackages.find((candidate) => candidate.packageRoot === packageRoot);
         }
         if (!packageInfo) {
@@ -1071,8 +1300,7 @@ export class WorkspaceSession {
         if (!editor) {
             return;
         }
-        const nodes = await this.updateFromEditor(editor);
-        this.updatePrimaryHighlight(nodes);
+        await this.updateFromEditor(editor);
     }
 
     private resolveSelectedInstanceId(
@@ -1096,10 +1324,7 @@ export class WorkspaceSession {
     }
 
     private visibleInstances(): IvModuleInstanceInfo[] {
-        if (!this.activeSourceFilePath) {
-            return this.ivModuleInstances;
-        }
-        return this.ivModuleInstances;
+        return this.ivModuleInstances.filter((instance) => !isTimelineSnapInstance(instance.instanceId, instance.definitionId));
     }
 
     private refreshVisibleInstances(): void {
@@ -1122,104 +1347,17 @@ export class WorkspaceSession {
 
     private syncSelectedInstanceViews(): void {
         this.provider.setSelectedInstanceId(this.selectedInstanceId);
-        this.refreshModulesPanelState();
     }
 
-    async pausePlayback(): Promise<void> {
+    async saveProject(autosaveOnly = false): Promise<void> {
+        if (autosaveOnly && this.graphSessionStatus !== "running") return;
         if (!(await this.ensureReady()) || !this.rpc) {
             return;
         }
-        await this.rpc.pausePlayback();
-        this.playbackPaused = true;
-    }
-
-    async resumePlayback(startIndex = 0): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) {
-            return;
-        }
-        await this.rpc.resumePlayback(startIndex);
-        this.playbackPaused = false;
-    }
-
-    async togglePlayback(): Promise<void> {
-        if (this.playbackPaused) {
-            await this.resumePlayback(this.lastScrubbedSampleIndex);
-        } else {
-            await this.pausePlayback();
-        }
-    }
-
-    async seekPlayback(sampleIndex: number): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.seekPlayback(sampleIndex);
-        this.lastScrubbedSampleIndex = sampleIndex;
-    }
-
-    async setTimelineLaneUiState(laneId: string, serializedState: string, expectedRevision?: number): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        try {
-            await this.rpc.setTimelineLaneUiState(laneId, serializedState, expectedRevision);
-        } catch (error) {
-            this.outputChannel.appendLine(`Intravenous lane UI debug: state update failed for ${laneId}: ${String(error)}`);
-            throw error;
-        }
-    }
-
-    async setTimelineLaneName(laneId: string, name: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.setTimelineLaneName(laneId, name);
-    }
-
-    async getTimelineLaneTypes(): Promise<Array<{
-        typeId: string; category: string; label: string; description: string;
-    }>> {
-        return (await this.rpc.getTimelineLaneTypes()).laneTypes ?? [];
-    }
-
-    async createTimelineLane(typeId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.createTimelineLane(typeId);
-    }
-
-    async deleteTimelineLane(laneId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.deleteTimelineLane(laneId);
-    }
-
-    async duplicateTimelineLane(laneId: string): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.duplicateTimelineLane(laneId);
-    }
-
-    async connectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.connectTimelineLanes(
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
-    }
-
-    async disconnectTimelineLanes(
-        sourceLaneId: string,
-        targetLaneId: string,
-        portDomain: "realtime" | "compiled",
-        portKind: "sample" | "event",
-        portOrdinal: number,
-    ): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) return;
-        await this.rpc.disconnectTimelineLanes(
-            sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal);
-    }
-
-    async saveProject(): Promise<void> {
-        if (!(await this.ensureReady()) || !this.rpc) {
-            return;
-        }
-        await this.rpc.saveProject();
+        const rpc = this.rpc;
+        await this.presentationChanges.catch(() => {});
+        await this.manualControls.settled();
+        if (rpc === this.rpc) await rpc.saveProject(autosaveOnly);
     }
 
     async enableProjectAutosave(): Promise<void> {
@@ -1236,84 +1374,7 @@ export class WorkspaceSession {
         await this.rpc.disableProjectAutosave();
     }
 
-    private laneViewRequestParams(viewId: string, provider: LaneProviderLike): {
-        viewId: string;
-        filter: { query: string };
-        startIndex: number;
-        visibleLaneCount: number;
-        firstSampleIndex: number;
-        lastSampleIndex: number;
-        displaySampleCount: number;
-    } {
-        const viewport = provider.viewportState();
-        return {
-            viewId,
-            filter: { query: typeof viewport.laneQuery === "string" ? viewport.laneQuery : "" },
-            startIndex: viewport.startIndex,
-            visibleLaneCount: viewport.visibleLaneCount,
-            firstSampleIndex: viewport.firstSampleIndex,
-            lastSampleIndex: viewport.lastSampleIndex,
-            displaySampleCount: viewport.displaySampleCount,
-        };
-    }
-
-    async openLaneView(viewId: string): Promise<void> {
-        const view = this.laneViews.get(viewId);
-        if (!view) return;
-        if (!(await this.ensureReady()) || !this.rpc) {
-            view.provider.clear();
-            return;
-        }
-        const result = await this.rpc.openLaneView(this.laneViewRequestParams(viewId, view.provider));
-        view.open = true;
-        view.provider.setLanes(result);
-        await this.updateLaneViewVisibleLanes(viewId);
-    }
-
-    async updateLaneViewVisibleLanes(viewId: string): Promise<void> {
-        const view = this.laneViews.get(viewId);
-        if (!view || !view.open || !(await this.ensureReady()) || !this.rpc) {
-            return;
-        }
-        const params = this.laneViewRequestParams(viewId, view.provider);
-        if (view.failedLaneQuery === params.filter.query) {
-            return;
-        }
-        const requestRevision = ++view.requestRevision;
-        let result: Record<string, unknown>;
-        try {
-            result = await this.rpc.updateLaneView(params);
-        } catch (error) {
-            // A malformed expression should report once, not on every scroll
-            // or timeline-content refresh. Editing the query (including
-            // clearing it) changes the source and enables a fresh request.
-            view.failedLaneQuery = params.filter.query;
-            throw error;
-        }
-        view.failedLaneQuery = null;
-        if (requestRevision !== view.requestRevision) {
-            return;
-        }
-        view.provider.setLanes(result, true);
-    }
-
-    async closeLaneView(viewId: string): Promise<void> {
-        const view = this.laneViews.get(viewId);
-        if (!view) {
-            return;
-        }
-        this.laneViews.delete(viewId);
-        if (!view.open || !this.rpc) {
-            return;
-        }
-        view.open = false;
-        try {
-            await this.rpc.closeLaneView(viewId);
-        } catch {
-        }
-    }
-
-    updatePrimaryHighlight(nodes: VirtualNode[]): void {
+    updatePrimaryHighlight(nodes: SymbolicNode[]): void {
         if (!Array.isArray(nodes) || nodes.length === 0) {
             this.highlighter.clearPrimary();
             return;
@@ -1335,68 +1396,71 @@ export class WorkspaceSession {
         }));
     }
 
-    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<VirtualNode[]> {
-        if (!this.rpc || !editor) {
-            return [];
-        }
-        if (editor.document.uri.scheme !== "file") {
-            return [];
-        }
-
-        const nextSourceFilePath = editor.document.uri.fsPath;
-        if (nextSourceFilePath !== this.activeSourceFilePath) {
-            this.activeSourceFilePath = nextSourceFilePath;
-            const packageDirectory = path.dirname(nextSourceFilePath);
-            const hasPackageManifest = fs.existsSync(path.join(packageDirectory, "iv_package.json"));
-            this.activePackageRoot = path.basename(nextSourceFilePath) === "module.cpp"
-                && hasPackageManifest
-                ? packageDirectory
-                : null;
-            const result = await this.rpc.getIvModuleInstances(nextSourceFilePath);
+    private readSourceInstances(rpc: WorkspaceRpc, filePath: string, force = false): Promise<void> {
+        const current = this.sourceInstanceRead;
+        if (!force && current?.rpc === rpc && current.filePath === filePath) return current.done;
+        const done = rpc.getNodeInstances(filePath).then((result) => {
+            if (this.rpc !== rpc || this.activeSourceFilePath !== filePath) return;
+            if (this.sourceInstanceRead?.done !== done) return this.sourceInstanceRead?.done;
             this.ivModuleInstances = this.parseIvModuleInstances(result.instances);
             this.provider.setPackageRoot(this.activePackageRoot);
             this.refreshVisibleInstances();
+        }, (error) => {
+            if (this.sourceInstanceRead?.done !== done || this.rpc !== rpc || this.activeSourceFilePath !== filePath) return;
+            this.sourceInstanceRead = undefined;
+            throw error;
+        });
+        this.sourceInstanceRead = { rpc, filePath, done };
+        return done;
+    }
+
+    async updateFromEditor(editor: vscode.TextEditor | undefined): Promise<void> {
+        const rpc = this.rpc;
+        if (!rpc || editor?.document.uri.scheme !== "file") return;
+        const filePath = editor.document.uri.fsPath;
+        const query = { filePath, ranges: this.selectionRanges(editor) };
+        this.lastQuery = query;
+        if (filePath !== this.activeSourceFilePath) {
+            this.activeSourceFilePath = filePath;
+            const packageDirectory = path.dirname(filePath);
+            const hasPackageManifest = fs.existsSync(path.join(packageDirectory, "iv_package.json"));
+            this.activePackageRoot = path.basename(filePath) === "module.cpp"
+                && hasPackageManifest
+                ? packageDirectory
+                : null;
         }
-
-        const ranges = this.selectionRanges(editor);
-        if (ranges.length === 0) {
-            return [];
-        }
-
-        this.lastQuery = {
-            filePath: editor.document.uri.fsPath,
-            ranges,
-        };
-
-        return this.refreshLastQuery();
+        await this.refreshLastQuery();
     }
 
     // Keep the side panel scoped to the most recently selected source spans
     // even when focus moves to a webview. Backend node-change notifications
     // carry instance-wide deltas, so they must be reprojected through this
     // query before updating the panel.
-    private async refreshLastQuery(): Promise<VirtualNode[]> {
-        if (!this.rpc || !this.lastQuery) {
-            return [];
-        }
+    private async refreshLastQuery(): Promise<void> {
+        const rpc = this.rpc;
         const query = this.lastQuery;
-        const result = await this.rpc.queryNodesBySpans(
+        if (!rpc || !query) return;
+        const request = ++this.sourceQueryRequest;
+        const current = () => this.lastQuery === query && this.rpc === rpc && request === this.sourceQueryRequest;
+        await this.readSourceInstances(rpc, query.filePath);
+        if (!current()) return;
+        if (!query.ranges.length) {
+            this.highlighter.clearPrimary();
+            return;
+        }
+        const [result, activeRegionsResult] = await Promise.all([rpc.queryNodesBySpans(
             query.filePath,
             query.ranges,
             query.ranges.length > 1 ? "union" : "intersection",
             this.selectedInstanceId,
-        );
-        const activeRegionsResult = await this.rpc.queryActiveRegions(query.filePath);
-        // A newer code selection won while this RPC was in flight.
-        if (this.lastQuery !== query) {
-            return [];
-        }
+        ), rpc.queryActiveRegions(query.filePath)]);
+        if (!current()) return;
         this.lastQueryError = "";
-        const nodes = sortNodesByRelevance(this.parseVirtualNodes(result.nodes), query);
+        const nodes = sortNodesByRelevance(this.parseSymbolicNodes(result.nodes), query);
         const activeRegions = this.parseSourceSpans(activeRegionsResult.sourceSpans);
         this.provider.setNodes(nodes);
         this.highlighter.setActiveRegions(activeRegions);
-        return nodes;
+        this.updatePrimaryHighlight(nodes);
     }
 
     async hasNodesAtPosition(document: vscode.TextDocument, position: vscode.Position): Promise<boolean> {
@@ -1417,10 +1481,19 @@ export class WorkspaceSession {
             this.outputChannel.appendLine(`workspace is not an Intravenous project: missing ${this.projectMarkerPath()}`);
             return false;
         }
-        if (!this.rpc) {
+        if (this.shuttingDown || this.graphSessionStatus === "stopped" || this.graphSessionStatus === "restarting")
+            return false;
+        if (!this.rpc || this.startInFlight) {
             await this.start();
         }
-        return true;
+        return this.rpc !== null;
+    }
+
+    private resetControlCompilationStatus(): void {
+        this.controlCompilationProgress.clear();
+        if (this.controlCompilationTimer) clearTimeout(this.controlCompilationTimer);
+        this.controlCompilationTimer = undefined;
+        this.controlCompilationStatus.hide();
     }
 
     private logServerState(prefix: string, params: ServerStatusNotification): void {
@@ -1437,14 +1510,16 @@ export class WorkspaceSession {
     }
 
     private showRebuildStatus(params: ServerStatusNotification): void {
-        this.rebuildStatusBar.text = "$(sync~spin) Intravenous: Building module";
-        this.rebuildStatusBar.tooltip = params.message || "Building updated Intravenous module definitions";
+        const name = params.packageRoot ? statusBarText(path.basename(params.packageRoot)) : "module";
+        this.rebuildStatusBar.text = `$(sync~spin) IV building ${name}`;
+        this.rebuildStatusBar.tooltip = undefined;
         this.rebuildStatusBar.show();
     }
 
     private showRebuildFailure(params: ServerStatusNotification): void {
-        this.rebuildStatusBar.text = "$(error) Intravenous: Module build failed";
-        this.rebuildStatusBar.tooltip = params.message || "An Intravenous module build failed";
+        this.rebuildStatusBar.text = "$(error) IV build failed · See Output";
+        this.rebuildStatusBar.tooltip = new vscode.MarkdownString().appendText(
+            statusDiagnostic(params.message || "An Intravenous package could not build."));
         this.rebuildStatusBar.show();
     }
 
@@ -1459,62 +1534,40 @@ export class WorkspaceSession {
     }
 
     private resetCapturedServerLogs(): void {
-        this.serverStdoutLines = [];
-        this.serverStderrLines = [];
-    }
-
-    private attachServerOutputCapture(process: childProcess.ChildProcess): void {
-        process.stdout?.setEncoding("utf8");
-        process.stderr?.setEncoding("utf8");
-        process.stdout?.on("data", (chunk: string | Buffer) => {
-            this.captureServerOutput(this.serverStdoutLines, chunk.toString());
-        });
-        process.stderr?.on("data", (chunk: string | Buffer) => {
-            this.captureServerOutput(this.serverStderrLines, chunk.toString());
-        });
-    }
-
-    private captureServerOutput(target: string[], text: string): void {
-        for (const line of text.split(/\r?\n/)) {
-            const normalized = line.trim();
-            if (normalized.length === 0) {
-                continue;
-            }
-            target.push(normalized);
-        }
-        if (target.length > this.maxCapturedServerLogLines) {
-            target.splice(0, target.length - this.maxCapturedServerLogLines);
+        try {
+            this.serverDiagnosticLogOffset = fs.statSync(
+                this.serverDiagnosticLogPath).size;
+        } catch {
+            this.serverDiagnosticLogOffset = 0;
         }
     }
 
     private logCapturedServerFailureContext(): void {
-        if (this.serverStderrLines.length > 0) {
-            this.outputChannel.appendLine("Intravenous server failure details:");
-            for (const line of this.serverStderrLines) {
-                this.outputChannel.appendLine(`  stderr: ${line}`);
-            }
-        } else if (this.serverStdoutLines.length > 0) {
-            this.outputChannel.appendLine("Intravenous server recent stdout:");
-            for (const line of this.serverStdoutLines) {
-                this.outputChannel.appendLine(`  stdout: ${line}`);
-            }
+        let text = "";
+        try {
+            // The offset is a byte size (fs.statSync), so cut before decoding.
+            text = fs.readFileSync(this.serverDiagnosticLogPath)
+                .subarray(this.serverDiagnosticLogOffset)
+                .toString("utf8");
+        } catch {
+            return;
+        }
+        // Everything the server logged since the last report, unabridged and
+        // with its indentation: a compiler error or a configuration failure's
+        // message precedes its long stack trace.
+        const lines = text.split(/\r?\n/).map((line) => line.trimEnd());
+        while (lines.length > 0 && lines[0].length === 0) lines.shift();
+        while (lines.length > 0 && lines[lines.length - 1].length === 0) lines.pop();
+        if (lines.length > 0) {
+            this.outputChannel.appendLine("Server failure details:");
+            for (const line of lines) this.outputChannel.appendLine(`  ${line}`);
         }
         this.resetCapturedServerLogs();
     }
 
-    private isDuplexStream(value: unknown): value is Duplex {
-        return !!value
-            && typeof value === "object"
-            && "on" in value
-            && typeof (value as { on?: unknown }).on === "function"
-            && "write" in value
-            && typeof (value as { write?: unknown }).write === "function";
-    }
-
     private resetServerReadyState(): void {
         this.serverReadyReceived = false;
-        this.setLaneQuerySchema(null);
-        this.rejectServerReadyWaiters(new Error("Intravenous server startup was restarted"));
+        this.rejectServerReadyWaiters(new Error("Server startup was restarted"));
     }
 
     private resolveServerReadyWaiters(): void {
@@ -1536,27 +1589,31 @@ export class WorkspaceSession {
     }
 
     async shutdown(): Promise<void> {
+        this.manualControls.disconnect();
+        this.nodeEvents.disconnected();
+        this.resetControlCompilationStatus();
+        this.controlCompilationStatus.dispose();
+        this.manualChanges.dispose();
+        this.graphChanges.dispose();
+        this.presentationCatalogChanges.dispose();
+        this.observationChanges.dispose();
+        this.shuttingDown = true;
         this.rebuildStatusBar.dispose();
         this.clangdDatabaseWatcher.dispose();
         if (this.clangdRestartTimer) {
             clearTimeout(this.clangdRestartTimer);
             this.clangdRestartTimer = null;
         }
-        if (this.rpc) {
-            try {
-                await this.rpc.shutdown();
-            } catch {
-            }
-        }
+        // Closing the inherited socket stops the server; the signal covers a
+        // server that is not reading its socket.
         if (this.client) {
             this.client.dispose();
             this.client = null;
         }
         this.rpc = null;
         if (this.process) {
-            this.process.kill();
+            this.process.kill("SIGTERM");
             this.process = null;
         }
     }
 }
-import * as crypto from "crypto";

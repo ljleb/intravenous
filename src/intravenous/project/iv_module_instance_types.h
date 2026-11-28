@@ -1,0 +1,18 @@
+#pragma once
+
+#include <filesystem>
+#include <optional>
+#include <string>
+
+namespace iv {
+struct IvModuleInstanceInfo {
+    std::string instance_id{};
+    std::string definition_id{};
+    std::string display_name{};
+    std::filesystem::path package_root{};
+    std::string configuration_source{};
+    bool realized = false;
+    std::string module_id{};
+    std::string default_display_name{};
+};
+} // namespace iv

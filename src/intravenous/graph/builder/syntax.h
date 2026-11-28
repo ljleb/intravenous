@@ -41,28 +41,52 @@ namespace iv {
         static constexpr auto kind = Kind;
 
         T value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
     // A public-port argument whose name and channel are separate pieces of
     // identity. It intentionally is not a NamedArg: node calls remain mono.
-    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal, class T>
+    template<fixed_string Name, class ChannelType, size_t ChannelIndex, class T>
     struct ChannelNamedArg {
         using value_type = T;
         static constexpr auto name = Name;
         using channel_type = ChannelType;
-        static constexpr size_t channel_ordinal = ChannelOrdinal;
+        static constexpr size_t channel_index = ChannelIndex;
 
         T value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
-    template<fixed_string Name, class ChannelType, size_t ChannelOrdinal>
+    template<fixed_string Name, class ChannelType, size_t ChannelIndex>
     struct ChannelPortName {
+        std::string_view display_name {};
+        std::string_view short_display_name {};
+
+        constexpr ChannelPortName with_display_name(
+            std::string_view short_name, std::string_view long_name = {}) const
+        {
+            auto const names = PortNames{Name.view(), short_name, long_name};
+            return {names.display, names.short_display};
+        }
+
         template<class T>
         constexpr auto operator=(T&& value) const;
     };
 
     template<fixed_string Name, NamedPortKind Kind = NamedPortKind::sample>
     struct PortName {
+        std::string_view display_name {};
+        std::string_view short_display_name {};
+
+        constexpr PortName with_display_name(
+            std::string_view short_name, std::string_view long_name = {}) const
+        {
+            auto const names = PortNames{Name.view(), short_name, long_name};
+            return {names.display, names.short_display};
+        }
+
         template<class T>
         constexpr auto operator=(T&& value) const;
 
@@ -70,15 +94,15 @@ namespace iv {
         constexpr auto operator[](Channel) const
         {
             using ChannelT = std::remove_cvref_t<Channel>;
-            return ChannelPortName<Name, typename ChannelT::channel_type, ChannelT::channel_ordinal>{};
+            return ChannelPortName<Name, typename ChannelT::channel_type, ChannelT::channel_index>{display_name, short_display_name};
         }
     };
 
-    template<class ChannelType, size_t ChannelOrdinal, class T>
+    template<class ChannelType, size_t ChannelIndex, class T>
     struct DefaultChannelNamedArg {
         using value_type = T;
         using channel_type = ChannelType;
-        static constexpr size_t channel_ordinal = ChannelOrdinal;
+        static constexpr size_t channel_index = ChannelIndex;
         T value;
     };
 }

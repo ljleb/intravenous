@@ -1,0 +1,301 @@
+#include <intravenous/basic_nodes/arithmetic.h>
+#include <intravenous/dsl.h>
+#include <intravenous/graph/builder.h>
+#include <intravenous/graph/configured_graph.hpp>
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <optional>
+#include <vector>
+
+namespace {
+using Pass = iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>;
+
+iv::ConfiguredGraph make_nested_annotated_graph()
+{
+    using namespace iv;
+    GraphBuilder graph;
+    auto const input = iv::programmatic::declare_input(graph, "in", {"In"});
+    auto nested = graph.subgraph([&](SubgraphBuilder& boundary) {
+        auto pass = details::configure_concrete_node<Pass>(graph);
+        pass(input);
+        pass._annotate_source_info(
+            "shared-child-node", "/tmp/configured-child.cpp", 10, 20);
+        boundary.outputs("out"_P.with_display_name("Out") = pass);
+    }, "nested-child");
+    graph.outputs("out"_P.with_display_name("Out") = nested);
+    return std::move(graph).finish();
+}
+
+std::optional<iv::NodeBundleHandle> first_subgraph_handle(
+    iv::ConfiguredGraph const& graph)
+{
+    std::optional<iv::NodeBundleHandle> result;
+    iv::NodeBundleHandle handle = 0;
+    graph.node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+            if (!result && bundle.kind == iv::ConfiguredNodeBundleKind::subgraph) {
+                result = handle;
+            }
+            ++handle;
+        });
+    return result;
+}
+
+iv::SampleOutputChannelId translate(
+    iv::ConfiguredGraphEmbedding const& embedding,
+    iv::SampleOutputChannelId value)
+{
+    value.bundle = embedding.node_bundle(value.bundle);
+    return value;
+}
+
+iv::SampleInputChannelId translate(
+    iv::ConfiguredGraphEmbedding const& embedding,
+    iv::SampleInputChannelId value)
+{
+    value.bundle = embedding.node_bundle(value.bundle);
+    return value;
+}
+
+iv::ConfiguredSampleConnectionSource translate(
+    iv::ConfiguredGraphEmbedding const& embedding,
+    iv::ConfiguredSampleConnectionSource value)
+{
+    value.channel = translate(embedding, value.channel);
+    return value;
+}
+
+void expect_connection_is_translation(
+    iv::ConfiguredSampleConnection const& child,
+    iv::ConfiguredSampleConnection const& parent,
+    iv::ConfiguredGraphEmbedding const& embedding)
+{
+    EXPECT_EQ(parent.source_type, child.source_type);
+    EXPECT_EQ(parent.target_type, child.target_type);
+    ASSERT_EQ(parent.source_channels.size(), child.source_channels.size());
+    ASSERT_EQ(parent.target_channels.size(), child.target_channels.size());
+    for (std::size_t i = 0; i < child.source_channels.size(); ++i) {
+        EXPECT_EQ(parent.source_channels[i], translate(embedding, child.source_channels[i]));
+    }
+    for (std::size_t i = 0; i < child.target_channels.size(); ++i) {
+        EXPECT_EQ(parent.target_channels[i], translate(embedding, child.target_channels[i]));
+    }
+}
+
+TEST(ConfiguredGraphEmbedding, RepeatedEmbeddingKeepsFrozenHandlesLocalAndReturnsIndependentTranslations)
+{
+    auto child = make_nested_annotated_graph();
+    ASSERT_EQ(child.symbolic_nodes.records().size(), 1u);
+    auto const child_symbolic_bundle =
+        child.symbolic_nodes.records().front().node_bundle_handles.front();
+    auto const child_connections = child.connections.configured_sample_connections();
+    ASSERT_FALSE(child_connections.empty());
+    auto const child_first_source_bundle =
+        child_connections.front().source_channels.front().channel.bundle;
+
+    iv::GraphBuilder parent;
+    auto const first = parent.embed(child, "instance-a");
+    auto const second = parent.embed(child, "instance-b");
+    parent.outputs();
+    auto configured = std::move(parent).finish();
+
+    EXPECT_EQ(first.node_bundles.size(), child.node_bundles.size());
+    EXPECT_EQ(second.node_bundles.size(), child.node_bundles.size());
+    ASSERT_EQ(first.symbolic_nodes.size(), 1u);
+    ASSERT_EQ(second.symbolic_nodes.size(), 1u);
+    EXPECT_NE(first.root_scope, second.root_scope);
+    EXPECT_NE(first.node_bundle(0), second.node_bundle(0));
+    EXPECT_NE(first.symbolic_node(0), second.symbolic_node(0));
+
+    // Embedding is a pure import of the child: local identities in the frozen
+    // cacheable graph remain untouched even after multiple placements.
+    EXPECT_EQ(
+        child.symbolic_nodes.records().front().node_bundle_handles.front(),
+        child_symbolic_bundle);
+    EXPECT_EQ(
+        child.connections.configured_sample_connections()
+            .front().source_channels.front().channel.bundle,
+        child_first_source_bundle);
+
+    auto const& parent_symbolics = configured.symbolic_nodes.records();
+    ASSERT_EQ(parent_symbolics.size(), 2u);
+    EXPECT_EQ(parent_symbolics[first.symbolic_node(0)].source_identity, "shared-child-node");
+    EXPECT_EQ(parent_symbolics[second.symbolic_node(0)].source_identity, "shared-child-node");
+    EXPECT_NE(
+        parent_symbolics[first.symbolic_node(0)].node_bundle_handles.front(),
+        parent_symbolics[second.symbolic_node(0)].node_bundle_handles.front());
+}
+
+TEST(ConfiguredGraphEmbedding, RemapsConnectionsAndNestedScopesThroughExplicitTranslation)
+{
+    auto child = make_nested_annotated_graph();
+    auto const local_nested_scope = first_subgraph_handle(child);
+    ASSERT_TRUE(local_nested_scope.has_value());
+
+    iv::GraphBuilder parent;
+    auto const embedding = parent.embed(child, "cached-instance");
+    parent.outputs();
+    auto configured = std::move(parent).finish();
+
+    ASSERT_TRUE(embedding.root_scope < configured.node_bundles.size());
+    EXPECT_TRUE(configured.node_bundles.bundle(embedding.root_scope).is_subgraph());
+    auto const translated_nested = embedding.scope(*local_nested_scope);
+    ASSERT_TRUE(translated_nested < configured.node_bundles.size());
+    EXPECT_TRUE(configured.node_bundles.bundle(translated_nested).is_subgraph());
+    EXPECT_NE(translated_nested, embedding.root_scope);
+
+    auto const child_connections = child.connections.configured_sample_connections();
+    auto const parent_connections = configured.connections.configured_sample_connections();
+    ASSERT_EQ(parent_connections.size(), child_connections.size());
+    for (std::size_t i = 0; i < child_connections.size(); ++i) {
+        expect_connection_is_translation(
+            child_connections[i], parent_connections[i], embedding);
+    }
+}
+
+TEST(ConfiguredGraphEmbedding, PreservesEachBundlesMembershipAcquisitionOrder)
+{
+    iv::GraphBuilder child_builder;
+    auto earlier = iv::details::configure_concrete_node<Pass>(child_builder);
+    earlier._annotate_source_info("secondary", "/tmp/child.cpp", 1, 2);
+    auto member = iv::details::configure_concrete_node<Pass>(child_builder);
+    member._annotate_source_info("primary", "/tmp/child.cpp", 3, 4);
+    member._annotate_source_info("secondary", "/tmp/child.cpp", 5, 6);
+    auto const member_handle = member.node_bundle_handle();
+    child_builder.outputs();
+    auto child = std::move(child_builder).finish();
+
+    iv::GraphBuilder parent;
+    auto const first = parent.embed(child, "first");
+    auto const second = parent.embed(child, "second");
+    parent.outputs();
+    auto const configured = std::move(parent).finish();
+    for (auto const* embedding : {&first, &second}) {
+        auto const& memberships = configured.node_bundles.bundle(embedding->node_bundle(member_handle)).symbolic_node_handles();
+        EXPECT_EQ(memberships, (std::vector{embedding->symbolic_node(1), embedding->symbolic_node(0)}));
+    }
+}
+
+TEST(ConfiguredGraphEmbedding, PreservesScopedSymbolicIdentityInsteadOfFlatteningEqualChildren)
+{
+    auto child = make_nested_annotated_graph();
+
+    iv::GraphBuilder parent;
+    auto const first = parent.embed(child, "left");
+    auto const second = parent.embed(child, "right");
+    parent.outputs();
+    auto configured = std::move(parent).finish();
+
+    auto const& records = configured.symbolic_nodes.records();
+    ASSERT_EQ(records.size(), 2u);
+    auto const& left = records[first.symbolic_node(0)];
+    auto const& right = records[second.symbolic_node(0)];
+
+    // Source/type identity stays stable, while the introspection ID is
+    // scope-qualified so lowering cannot flatten the two child placements.
+    EXPECT_NE(left.id, right.id);
+    EXPECT_TRUE(left.id.starts_with("shared-child-node#type:"));
+    EXPECT_TRUE(right.id.starts_with("shared-child-node#type:"));
+    EXPECT_EQ(left.source_identity, right.source_identity);
+    EXPECT_EQ(left.type_identity, right.type_identity);
+    ASSERT_EQ(left.node_bundle_handles.size(), 1u);
+    ASSERT_EQ(right.node_bundle_handles.size(), 1u);
+    EXPECT_NE(left.node_bundle_handles.front(), right.node_bundle_handles.front());
+
+    auto const& left_inverse = configured.node_bundles
+        .bundle(left.node_bundle_handles.front()).symbolic_node_handles();
+    auto const& right_inverse = configured.node_bundles
+        .bundle(right.node_bundle_handles.front()).symbolic_node_handles();
+    EXPECT_TRUE(std::ranges::contains(left_inverse, first.symbolic_node(0)));
+    EXPECT_TRUE(std::ranges::contains(right_inverse, second.symbolic_node(0)));
+    EXPECT_FALSE(std::ranges::contains(left_inverse, second.symbolic_node(0)));
+    EXPECT_FALSE(std::ranges::contains(right_inverse, first.symbolic_node(0)));
+}
+
+TEST(ConfiguredGraphEmbedding, PreservesForwardingThroughRepeatedSymbolicDeclarations)
+{
+    using namespace iv;
+    GraphBuilder root;
+    auto const outside = details::configure_concrete_node<Pass>(root);
+    outside._annotate_source_info("outside", "/tmp/child.cpp", 1, 2);
+    auto nested = root.nested();
+    auto const first = details::configure_concrete_node<Pass>(nested);
+    _annotate_source_info_after_statement(&first, "first", "/tmp/child.cpp", 3, 4, "a", 2, true, false);
+    _annotate_source_info_after_statement(&first, "first", "/tmp/child.cpp", 9, 10, "a", 0, false, false);
+    auto const second = first;
+    _annotate_source_info_after_statement(&second, "second", "/tmp/child.cpp", 5, 6, "b", 3, true, false);
+    auto const repeated = second;
+    _annotate_source_info_after_statement(&repeated, "first", "/tmp/child.cpp", 3, 4, "a", 2, true, false);
+    auto const branch = first.node_ref();
+    _annotate_source_info_after_statement(&branch, "branch", "/tmp/child.cpp", 7, 8, "c", 4, true, false);
+    second.connect_input(0, Sample{2});
+    EXPECT_EQ(first.node_bundle_handle(), repeated.node_bundle_handle());
+    EXPECT_EQ(first.node_bundle_handle(), branch.node_bundle_handle());
+    nested.outputs("out"_P.with_display_name("Out") = repeated, "branch"_P.with_display_name("Branch") = branch);
+
+    auto const child = nested.configured_graph();
+    ASSERT_TRUE(child.has_value());
+    auto const& records = child->symbolic_nodes.records();
+    ASSERT_EQ(records.size(), 3u);
+    ASSERT_EQ(records[0].source_identity, "first");
+    ASSERT_EQ(records[0].node_bundle_handles.size(), 1u);
+    auto const bundle = records[0].node_bundle_handles.front();
+    auto const check_occurrences = [](NodeBundle const& node, std::size_t first_record,
+                                       std::size_t second_record, std::size_t branch_record) {
+        auto const expected = std::array{
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = first_record},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = second_record, .upstream = 0},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = first_record, .upstream = 1},
+            ConfiguredNodeRefOccurrence{.symbolic_node_handle = branch_record, .upstream = 0},
+        };
+        EXPECT_TRUE(std::ranges::equal(node.node_ref_occurrences(), expected));
+    };
+    check_occurrences(child->node_bundles.bundle(bundle), 0, 1, 2);
+    auto const child_wires = child->connections.configured_sample_connections();
+    ASSERT_EQ(child_wires.size(), 3u);
+    EXPECT_EQ(child_wires[0].target_symbolic_node, 1u);
+    EXPECT_EQ(child_wires[0].target_channels.front().bundle, bundle);
+    EXPECT_EQ(child_wires[1].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(child_wires[2].source_channels[0].node_ref_occurrence, 3u);
+
+    (void)root.subgraph(std::move(nested), "live");
+    auto const embedded = root.embed(*child, "frozen");
+    root.outputs();
+    auto const configured = std::move(root).finish();
+    check_occurrences(configured.node_bundles.bundle(embedded.node_bundle(bundle)),
+        embedded.symbolic_node(0), embedded.symbolic_node(1), embedded.symbolic_node(2));
+    auto const wires = configured.connections.configured_sample_connections();
+    ASSERT_EQ(wires.size(), 6u);
+    EXPECT_EQ(wires[3].target_symbolic_node, embedded.symbolic_node(1));
+    EXPECT_EQ(wires[3].target_channels.front().bundle, embedded.node_bundle(bundle));
+    EXPECT_EQ(wires[4].source_channels[0].channel.bundle, embedded.node_bundle(bundle));
+    EXPECT_EQ(wires[4].source_channels[0].node_ref_occurrence, 2u);
+    EXPECT_EQ(wires[5].source_channels[0].node_ref_occurrence, 3u);
+}
+
+TEST(ConfiguredGraphEmbedding, RejectsUnfinishedFrozenGraphAndFailsTheParentSession)
+{
+    iv::GraphBuilder unfinished;
+    auto frozen = std::move(unfinished).finish();
+
+    iv::GraphBuilder parent;
+    EXPECT_THROW(parent.embed(frozen), std::logic_error);
+    // A session operation that raised an error fails its session.
+    EXPECT_THROW(parent.outputs(), std::logic_error);
+    EXPECT_THROW((void)std::move(parent).finish(), std::logic_error);
+}
+
+TEST(ConfiguredGraphEmbedding, TranslationRejectsForeignLocalHandles)
+{
+    auto child = make_nested_annotated_graph();
+    iv::GraphBuilder parent;
+    auto const embedding = parent.embed(child);
+
+    EXPECT_THROW((void)embedding.node_bundle(child.node_bundles.size()), std::out_of_range);
+    EXPECT_THROW((void)embedding.symbolic_node(child.symbolic_nodes.records().size()), std::out_of_range);
+}
+} // namespace

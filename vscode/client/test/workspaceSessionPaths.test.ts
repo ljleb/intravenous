@@ -1,21 +1,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as path from "node:path";
 
-import { autoDetectedServerDirectoriesForWorkspaceRoot } from "../src/serverBinaryPaths";
+import { resolveIntravenousBinary } from "../src/serverBinaryPaths";
 
-test("workspaceSession server auto-detection includes parent repo build directories", () => {
-    const workspaceRoot = "projects/simple_sine";
-    const directories = autoDetectedServerDirectoriesForWorkspaceRoot(workspaceRoot)
-        .map((candidate) => candidate.directory);
+test("the development launcher runtime takes precedence over a workspace setting", (ctx) => {
+    const previous = process.env.INTRAVENOUS_DIR;
+    ctx.after(() => {
+        if (previous === undefined) delete process.env.INTRAVENOUS_DIR;
+        else process.env.INTRAVENOUS_DIR = previous;
+    });
 
-    assert.ok(
-        directories.includes("build/src/intravenous"),
-        "expected repo-level build/src/intravenous to be searched",
-    );
-    assert.ok(
-        directories.includes("build/intravenous"),
-        "expected repo-level build/intravenous to be searched",
-    );
-    assert.equal(directories[0], "projects/simple_sine/build/src/intravenous");
-    assert.equal(directories[1], "projects/simple_sine/build/intravenous");
+    const runtime = path.resolve("dev-session", "runtime");
+    const configured = path.resolve("build", "src", "intravenous");
+    process.env.INTRAVENOUS_DIR = runtime;
+    const bundled = path.resolve("dev-bundle", "runtime");
+    assert.deepEqual(resolveIntravenousBinary("intravenous", configured, bundled), {
+        source: "development bundle",
+        path: path.join(bundled, "intravenous"),
+    });
+    assert.deepEqual(resolveIntravenousBinary("intravenous", configured), {
+        source: "INTRAVENOUS_DIR",
+        path: path.join(runtime, "intravenous"),
+    });
+
+    delete process.env.INTRAVENOUS_DIR;
+    assert.deepEqual(resolveIntravenousBinary("intravenous", configured), {
+        source: "intravenous.intravenousDir",
+        path: path.join(configured, "intravenous"),
+    });
+    assert.throws(() => resolveIntravenousBinary("intravenous"), /scripts\/run_dev\.sh/);
 });

@@ -12,14 +12,9 @@ namespace iv::details {
     template<typename Inputs>
     struct fixed_input_count : std::integral_constant<size_t, std::dynamic_extent> {};
 
-    template<size_t N>
-    struct fixed_input_count<std::array<InputConfig, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_input_count<std::span<InputConfig const, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_input_count<std::span<InputConfig, N>> : std::integral_constant<size_t, N> {};
+    template<PortConfigTuple Inputs>
+    struct fixed_input_count<Inputs>
+        : std::integral_constant<size_t, port_config_count_v<Inputs>> {};
 
     template<typename Node>
     consteval size_t fixed_sample_input_count()
@@ -33,7 +28,7 @@ namespace iv::details {
             if constexpr (fixed_input_count<Inputs>::value == std::dynamic_extent)
                 return std::dynamic_extent;
             else
-                return count_sample_ports(Node::inputs());
+                return count_continuous_ports(Node::inputs());
         }
     }
 
@@ -76,14 +71,9 @@ namespace iv::details {
     template<typename Outputs>
     struct fixed_output_count : std::integral_constant<size_t, std::dynamic_extent> {};
 
-    template<size_t N>
-    struct fixed_output_count<std::array<OutputConfig, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_output_count<std::span<OutputConfig const, N>> : std::integral_constant<size_t, N> {};
-
-    template<size_t N>
-    struct fixed_output_count<std::span<OutputConfig, N>> : std::integral_constant<size_t, N> {};
+    template<PortConfigTuple Outputs>
+    struct fixed_output_count<Outputs>
+        : std::integral_constant<size_t, port_config_count_v<Outputs>> {};
 
     template<typename Node>
     consteval size_t fixed_sample_output_count()
@@ -97,7 +87,7 @@ namespace iv::details {
             if constexpr (fixed_output_count<Outputs>::value == std::dynamic_extent)
                 return std::dynamic_extent;
             else
-                return count_sample_ports(Node::outputs());
+                return count_continuous_ports(Node::outputs());
         }
     }
 

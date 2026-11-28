@@ -2,11 +2,12 @@
 
 #include <intravenous/graph/builder/constexpr_hash.hpp>
 #include <intravenous/graph/builder/port_refs.h>
-#include <intravenous/graph/builder/virtual_nodes.hpp>
+#include <intravenous/graph/builder/symbolic_nodes.hpp>
 #include <intravenous/channel_layout.h>
 
 #include <algorithm>
 #include <ranges>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -19,24 +20,24 @@ struct NodeBundlePortIdHash {
     auto result = constexpr_hash_combine(0, value.node_bundle_handle);
     result = constexpr_hash_combine(
         result, static_cast<size_t>(value.port_kind));
-    return constexpr_hash_combine(result, value.port_ordinal);
+    return constexpr_hash_combine(result, value.port_index);
   }
 };
 } // namespace details
 
 class GraphBuilderNodeBundles;
-class GraphBuilderVirtualNodes;
+class GraphBuilderSymbolicNodes;
 
 struct GraphBuilderVacantSampleInput {
   NodeBundlePortId target{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleInputConfig config{};
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
+  ContinuousInputConfig config{};
 };
 struct GraphBuilderVacantEventInput {
   NodeBundlePortId target{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
   EventInputConfig config{};
 };
 struct GraphBuilderVacantInputs {
@@ -44,83 +45,105 @@ struct GraphBuilderVacantInputs {
   std::vector<GraphBuilderVacantEventInput> event{};
 };
 
-struct GraphBuilderVirtualSampleInput {
+struct GraphBuilderSymbolicSampleInput {
   NodeBundlePortId target{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleInputConfig config{};
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
+  ContinuousInputConfig config{};
   bool has_existing_connection = false;
 };
-struct GraphBuilderVirtualEventInput {
+struct GraphBuilderSymbolicEventInput {
   NodeBundlePortId target{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
   EventInputConfig config{};
   bool has_existing_connection = false;
 };
-struct GraphBuilderVirtualInputs {
-  std::vector<GraphBuilderVirtualSampleInput> sample{};
-  std::vector<GraphBuilderVirtualEventInput> event{};
+struct GraphBuilderSymbolicInputs {
+  std::vector<GraphBuilderSymbolicSampleInput> sample{};
+  std::vector<GraphBuilderSymbolicEventInput> event{};
 };
 
-struct GraphBuilderVirtualSampleInputChannel {
+struct GraphBuilderSymbolicSampleInputChannel {
   std::vector<SampleInputChannelId> targets{};
   bool has_existing_connection = false;
 };
-struct GraphBuilderVirtualSampleInputFamily {
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  size_t family_ordinal = 0;
+struct GraphBuilderSymbolicSampleInputFamily {
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
+  size_t family_index = 0;
   std::string family_name{};
-  SampleInputConfig config{};
+  ContinuousInputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
-  std::vector<GraphBuilderVirtualSampleInputChannel> channels{};
+  std::vector<GraphBuilderSymbolicSampleInputChannel> channels{};
 };
-struct GraphBuilderVirtualSampleInputFamilies {
-  std::vector<GraphBuilderVirtualSampleInputFamily> families{};
+struct GraphBuilderSymbolicSampleInputFamilies {
+  std::vector<GraphBuilderSymbolicSampleInputFamily> families{};
 };
 
-struct GraphBuilderVirtualSampleOutput {
+struct GraphBuilderSymbolicSampleOutput {
   NodeBundlePortId source{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  SampleOutputConfig config{};
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
+  ContinuousOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
-struct GraphBuilderVirtualEventOutput {
+struct GraphBuilderSymbolicEventOutput {
   NodeBundlePortId source{};
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
   EventOutputConfig config{};
   bool has_existing_downstream_connection = false;
 };
-struct GraphBuilderVirtualOutputs {
-  std::vector<GraphBuilderVirtualSampleOutput> sample{};
-  std::vector<GraphBuilderVirtualEventOutput> event{};
+struct GraphBuilderSymbolicOutputs {
+  std::vector<GraphBuilderSymbolicSampleOutput> sample{};
+  std::vector<GraphBuilderSymbolicEventOutput> event{};
 };
 
-struct GraphBuilderVirtualSampleOutputChannel {
+struct GraphBuilderSymbolicSampleOutputChannel {
   std::vector<SampleOutputChannelId> sources{};
   bool has_existing_downstream_connection = false;
 };
-struct GraphBuilderVirtualSampleOutputFamily {
-  std::string virtual_node_id{};
-  size_t member_ordinal = 0;
-  size_t family_ordinal = 0;
+struct GraphBuilderSymbolicSampleOutputFamily {
+  std::string symbolic_node_id{};
+  size_t member_index = 0;
+  size_t family_index = 0;
   std::string family_name{};
-  SampleOutputConfig config{};
+  ContinuousOutputConfig config{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
-  std::vector<GraphBuilderVirtualSampleOutputChannel> channels{};
+  std::vector<GraphBuilderSymbolicSampleOutputChannel> channels{};
 };
-struct GraphBuilderVirtualSampleOutputFamilies {
-  std::vector<GraphBuilderVirtualSampleOutputFamily> families{};
+struct GraphBuilderSymbolicSampleOutputFamilies {
+  std::vector<GraphBuilderSymbolicSampleOutputFamily> families{};
+};
+
+struct ConfiguredSampleConnectionDetach {
+  size_t loop_extra_latency = 1;
+  std::optional<Sample> initial_value_override{};
+  bool operator==(ConfiguredSampleConnectionDetach const&) const = default;
+};
+
+struct ConfiguredSampleConnectionSource {
+  SampleOutputChannelId channel{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredSampleConnectionDetach> detach{};
+  // Index in the source bundle's node_ref_occurrences(), when selected.
+  std::optional<std::size_t> node_ref_occurrence{};
+  bool operator==(ConfiguredSampleConnectionSource const&) const = default;
 };
 
 struct ConfiguredSampleConnection {
   ChannelTypeId source_type = ChannelTypeId::mono;
-  std::vector<SampleOutputChannelId> source_channels{};
+  // Each complete source layout contributes channel-wise to this connection.
+  std::vector<ConfiguredSampleConnectionSource> source_channels{};
   ChannelTypeId target_type = ChannelTypeId::mono;
   std::vector<SampleInputChannelId> target_channels{};
+  // The selected symbolic member input. An empty handle selects the bundle
+  // port directly. All target channels belong to the same member port.
+  std::optional<SymbolicNodeHandle> target_symbolic_node{};
+  // Authored by C++ graph construction. A project cable or knob can replace it.
+  bool source_owned = false;
   bool operator==(ConfiguredSampleConnection const&) const = default;
 };
 
@@ -133,9 +156,22 @@ struct SampleLoweringPlan {
   std::vector<SampleLoweringGroup> groups{};
 };
 
+struct ConfiguredEventConnectionDetach {
+  size_t loop_extra_latency = 1;
+  bool operator==(ConfiguredEventConnectionDetach const&) const = default;
+};
+
+struct ConfiguredEventConnectionSource {
+  EventOutputPortId port{};
+  // A value marks this dependency for removal when GraphJit forms the
+  // execution DAG. It does not identify or prescribe runtime storage.
+  std::optional<ConfiguredEventConnectionDetach> detach{};
+  bool operator==(ConfiguredEventConnectionSource const&) const = default;
+};
+
 struct ConfiguredEventConnection {
   EventTypeId source_type = EventTypeId::empty;
-  std::vector<EventOutputPortId> sources{};
+  std::vector<ConfiguredEventConnectionSource> sources{};
   EventTypeId target_type = EventTypeId::empty;
   std::vector<EventInputPortId> targets{};
   bool operator==(ConfiguredEventConnection const&) const = default;
@@ -146,8 +182,9 @@ public:
   constexpr void record_configured_sample_connection(
       ConfiguredSampleConnection connection)
   {
-    if (connection.source_channels.size()
-        != channel_count(connection.source_type))
+    auto const source_width = channel_count(connection.source_type);
+    if (source_width == 0 || connection.source_channels.empty()
+        || connection.source_channels.size() % source_width != 0)
       details::error(
           "configured sample connection source does not match its channel type");
     if (connection.target_channels.size()
@@ -169,20 +206,27 @@ public:
   constexpr bool event_output_is_connected(EventOutputPortId) const;
 
   constexpr GraphBuilderVacantInputs collect_vacant_inputs(
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
-  constexpr GraphBuilderVirtualInputs collect_virtual_inputs(
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
-  constexpr GraphBuilderVirtualSampleInputFamilies
-      collect_virtual_sample_input_families(
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
-  constexpr GraphBuilderVirtualOutputs collect_virtual_outputs(
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
-  constexpr GraphBuilderVirtualSampleOutputFamilies
-      collect_virtual_sample_output_families(
-      GraphBuilderNodeBundles const&, GraphBuilderVirtualNodes const&) const;
+      GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
+  constexpr GraphBuilderSymbolicInputs collect_symbolic_inputs(
+      GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
+  constexpr GraphBuilderSymbolicSampleInputFamilies
+      collect_symbolic_sample_input_families(
+      GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
+  constexpr GraphBuilderSymbolicOutputs collect_symbolic_outputs(
+      GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
+  constexpr GraphBuilderSymbolicSampleOutputFamilies
+      collect_symbolic_sample_output_families(
+      GraphBuilderNodeBundles const&, GraphBuilderSymbolicNodes const&) const;
 
   constexpr void import_child(
-      GraphBuilderConnections const&, size_t node_bundle_offset);
+      GraphBuilderConnections const&, size_t node_bundle_offset,
+      size_t symbolic_node_offset);
+  constexpr size_t sample_connection_count() const {
+    return _configured_sample_connections.size();
+  }
+  constexpr size_t event_connection_count() const {
+    return _configured_event_connections.size();
+  }
   static constexpr GraphBuilderConnections from_configured_connections(
       std::span<ConfiguredSampleConnection const>,
       std::span<ConfiguredEventConnection const>);
@@ -201,7 +245,11 @@ constexpr bool GraphBuilderConnections::sample_input_is_connected(
 constexpr bool GraphBuilderConnections::sample_output_is_connected(
     SampleOutputChannelId source) const {
   return std::ranges::any_of(_configured_sample_connections,
-      [&](auto const& c) { return std::ranges::contains(c.source_channels, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.source_channels, [&](auto const& candidate) {
+          return candidate.channel == source;
+        });
+      });
 }
 constexpr bool GraphBuilderConnections::event_input_is_connected(
     EventInputPortId target) const {
@@ -211,7 +259,11 @@ constexpr bool GraphBuilderConnections::event_input_is_connected(
 constexpr bool GraphBuilderConnections::event_output_is_connected(
     EventOutputPortId source) const {
   return std::ranges::any_of(_configured_event_connections,
-      [&](auto const& c) { return std::ranges::contains(c.sources, source); });
+      [&](auto const& c) {
+        return std::ranges::any_of(c.sources, [&](auto const& candidate) {
+          return candidate.port == source;
+        });
+      });
 }
 
 constexpr std::span<ConfiguredSampleConnection const>
@@ -262,18 +314,18 @@ GraphBuilderConnections::from_configured_connections(
 constexpr GraphBuilderVacantInputs
 GraphBuilderConnections::collect_vacant_inputs(
     GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes) const {
+    GraphBuilderSymbolicNodes const& symbolic_nodes) const {
   GraphBuilderVacantInputs result;
-  for (auto const& virtual_node : virtual_nodes.records()) {
-    for (size_t member = 0; member < virtual_node.node_bundle_handles.size(); ++member) {
-      auto const handle = virtual_node.node_bundle_handles[member];
+  for (auto const& symbolic_node : symbolic_nodes.records()) {
+    for (size_t member = 0; member < symbolic_node.node_bundle_handles.size(); ++member) {
+      auto const handle = symbolic_node.node_bundle_handles[member];
       auto const& bundle = bundles.bundle(handle);
       for (size_t input = 0; input < bundle.sample_input_count(); ++input) {
         NodeBundlePortId const target{handle, PortKind::sample, input};
         auto const channels = bundles.sample_input_channels(target);
         if (std::ranges::any_of(channels,
             [&](auto channel) { return sample_input_is_connected(channel); })) continue;
-        result.sample.push_back({target, virtual_node.id, member,
+        result.sample.push_back({target, symbolic_node.id, member,
                                  bundles.resolve_sample_input(target).config});
       }
       for (size_t input = 0; input < bundle.event_input_count(); ++input) {
@@ -281,7 +333,7 @@ GraphBuilderConnections::collect_vacant_inputs(
         auto const ports = bundles.event_input_ports(target);
         if (std::ranges::any_of(ports,
             [&](auto port) { return event_input_is_connected(port); })) continue;
-        result.event.push_back({target, virtual_node.id, member,
+        result.event.push_back({target, symbolic_node.id, member,
                                 bundles.resolve_event_input(target).config});
       }
     }
@@ -289,20 +341,20 @@ GraphBuilderConnections::collect_vacant_inputs(
   return result;
 }
 
-constexpr GraphBuilderVirtualInputs
-GraphBuilderConnections::collect_virtual_inputs(
+constexpr GraphBuilderSymbolicInputs
+GraphBuilderConnections::collect_symbolic_inputs(
     GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes) const {
-  GraphBuilderVirtualInputs result;
-  for (auto const& virtual_node : virtual_nodes.records()) {
-    for (size_t member = 0; member < virtual_node.node_bundle_handles.size(); ++member) {
-      auto const handle = virtual_node.node_bundle_handles[member];
+    GraphBuilderSymbolicNodes const& symbolic_nodes) const {
+  GraphBuilderSymbolicInputs result;
+  for (auto const& symbolic_node : symbolic_nodes.records()) {
+    for (size_t member = 0; member < symbolic_node.node_bundle_handles.size(); ++member) {
+      auto const handle = symbolic_node.node_bundle_handles[member];
       auto const& bundle = bundles.bundle(handle);
       for (size_t input = 0; input < bundle.sample_input_count(); ++input) {
         NodeBundlePortId const target{handle, PortKind::sample, input};
         auto const channels = bundles.sample_input_channels(target);
         result.sample.push_back({
-            target, virtual_node.id, member,
+            target, symbolic_node.id, member,
             bundles.resolve_sample_input(target).config,
             std::ranges::any_of(channels, [&](auto c) { return sample_input_is_connected(c); })});
       }
@@ -310,7 +362,7 @@ GraphBuilderConnections::collect_virtual_inputs(
         NodeBundlePortId const target{handle, PortKind::event, input};
         auto const ports = bundles.event_input_ports(target);
         result.event.push_back({
-            target, virtual_node.id, member,
+            target, symbolic_node.id, member,
             bundles.resolve_event_input(target).config,
             std::ranges::any_of(ports, [&](auto p) { return event_input_is_connected(p); })});
       }
@@ -319,30 +371,30 @@ GraphBuilderConnections::collect_virtual_inputs(
   return result;
 }
 
-constexpr GraphBuilderVirtualSampleInputFamilies
-GraphBuilderConnections::collect_virtual_sample_input_families(
+constexpr GraphBuilderSymbolicSampleInputFamilies
+GraphBuilderConnections::collect_symbolic_sample_input_families(
     GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes) const {
-  GraphBuilderVirtualSampleInputFamilies result;
-  for (auto const& virtual_node : virtual_nodes.records()) {
-    for (auto const& mapping : virtual_node.sample_inputs) {
+    GraphBuilderSymbolicNodes const& symbolic_nodes) const {
+  GraphBuilderSymbolicSampleInputFamilies result;
+  for (auto const& symbolic_node : symbolic_nodes.records()) {
+    for (auto const& mapping : symbolic_node.sample_inputs) {
       if (mapping.channels.empty()) continue;
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_input(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
-      std::vector<GraphBuilderVirtualSampleInputChannel> channels(channel_total);
+      std::vector<GraphBuilderSymbolicSampleInputChannel> channels(channel_total);
       for (auto const target : mapping.channels) {
         if (target.channel >= channel_total)
-          details::error("virtual sample input channel does not match its declared layout");
+          details::error("symbolic sample input channel does not match its declared layout");
         auto& channel = channels[target.channel];
         if (!std::ranges::contains(channel.targets, target)) channel.targets.push_back(target);
         channel.has_existing_connection |= sample_input_is_connected(target);
       }
       result.families.push_back({
-          .virtual_node_id = virtual_node.id,
-          .family_ordinal = mapping.ordinal,
+          .symbolic_node_id = symbolic_node.id,
+          .family_index = mapping.index,
           .family_name = mapping.name,
           .config = std::move(config),
           .channel_type = mapping.channel_layout.channel_type,
@@ -353,20 +405,20 @@ GraphBuilderConnections::collect_virtual_sample_input_families(
   return result;
 }
 
-constexpr GraphBuilderVirtualOutputs
-GraphBuilderConnections::collect_virtual_outputs(
+constexpr GraphBuilderSymbolicOutputs
+GraphBuilderConnections::collect_symbolic_outputs(
     GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes) const {
-  GraphBuilderVirtualOutputs result;
-  for (auto const& virtual_node : virtual_nodes.records()) {
-    for (size_t member = 0; member < virtual_node.node_bundle_handles.size(); ++member) {
-      auto const handle = virtual_node.node_bundle_handles[member];
+    GraphBuilderSymbolicNodes const& symbolic_nodes) const {
+  GraphBuilderSymbolicOutputs result;
+  for (auto const& symbolic_node : symbolic_nodes.records()) {
+    for (size_t member = 0; member < symbolic_node.node_bundle_handles.size(); ++member) {
+      auto const handle = symbolic_node.node_bundle_handles[member];
       auto const& bundle = bundles.bundle(handle);
       for (size_t output = 0; output < bundle.sample_output_count(); ++output) {
         NodeBundlePortId const source{handle, PortKind::sample, output};
         auto const channels = bundles.sample_output_channels(source);
         result.sample.push_back({
-            source, virtual_node.id, member,
+            source, symbolic_node.id, member,
             bundles.resolve_sample_output(source).config,
             std::ranges::any_of(channels,
                 [&](auto c) { return sample_output_is_connected(c); })});
@@ -375,7 +427,7 @@ GraphBuilderConnections::collect_virtual_outputs(
         NodeBundlePortId const source{handle, PortKind::event, output};
         auto const ports = bundles.event_output_ports(source);
         result.event.push_back({
-            source, virtual_node.id, member,
+            source, symbolic_node.id, member,
             bundles.resolve_event_output(source).config,
             std::ranges::any_of(ports,
                 [&](auto p) { return event_output_is_connected(p); })});
@@ -385,30 +437,30 @@ GraphBuilderConnections::collect_virtual_outputs(
   return result;
 }
 
-constexpr GraphBuilderVirtualSampleOutputFamilies
-GraphBuilderConnections::collect_virtual_sample_output_families(
+constexpr GraphBuilderSymbolicSampleOutputFamilies
+GraphBuilderConnections::collect_symbolic_sample_output_families(
     GraphBuilderNodeBundles const& bundles,
-    GraphBuilderVirtualNodes const& virtual_nodes) const {
-  GraphBuilderVirtualSampleOutputFamilies result;
-  for (auto const& virtual_node : virtual_nodes.records()) {
-    for (auto const& mapping : virtual_node.sample_outputs) {
+    GraphBuilderSymbolicNodes const& symbolic_nodes) const {
+  GraphBuilderSymbolicSampleOutputFamilies result;
+  for (auto const& symbolic_node : symbolic_nodes.records()) {
+    for (auto const& mapping : symbolic_node.sample_outputs) {
       if (mapping.channels.empty()) continue;
       auto const first = mapping.channels.front();
       auto config = bundles.resolve_sample_output(
           {first.bundle, PortKind::sample, first.port}).config;
-      config.channel_layout = mapping.channel_layout;
+      set_continuous_channel_layout(config, mapping.channel_layout);
       auto const channel_total = channel_count(mapping.channel_layout.channel_type);
-      std::vector<GraphBuilderVirtualSampleOutputChannel> channels(channel_total);
+      std::vector<GraphBuilderSymbolicSampleOutputChannel> channels(channel_total);
       for (auto const source : mapping.channels) {
         if (source.channel >= channel_total)
-          details::error("virtual sample output channel does not match its declared layout");
+          details::error("symbolic sample output channel does not match its declared layout");
         auto& channel = channels[source.channel];
         if (!std::ranges::contains(channel.sources, source)) channel.sources.push_back(source);
         channel.has_existing_downstream_connection |= sample_output_is_connected(source);
       }
       result.families.push_back({
-          .virtual_node_id = virtual_node.id,
-          .family_ordinal = mapping.ordinal,
+          .symbolic_node_id = symbolic_node.id,
+          .family_index = mapping.index,
           .family_name = mapping.name,
           .config = std::move(config),
           .channel_type = mapping.channel_layout.channel_type,
@@ -420,14 +472,17 @@ GraphBuilderConnections::collect_virtual_sample_output_families(
 }
 
 constexpr void GraphBuilderConnections::import_child(
-    GraphBuilderConnections const& child, size_t bundle_offset) {
+    GraphBuilderConnections const& child, size_t bundle_offset,
+    size_t symbolic_offset) {
   for (auto connection : child._configured_sample_connections) {
-    for (auto& channel : connection.source_channels) channel.bundle += bundle_offset;
+    for (auto& source : connection.source_channels)
+      source.channel.bundle += bundle_offset;
     for (auto& channel : connection.target_channels) channel.bundle += bundle_offset;
+    if (connection.target_symbolic_node) *connection.target_symbolic_node += symbolic_offset;
     _configured_sample_connections.push_back(std::move(connection));
   }
   for (auto connection : child._configured_event_connections) {
-    for (auto& source : connection.sources) source.bundle += bundle_offset;
+    for (auto& source : connection.sources) source.port.bundle += bundle_offset;
     for (auto& target : connection.targets) target.bundle += bundle_offset;
     _configured_event_connections.push_back(std::move(connection));
   }

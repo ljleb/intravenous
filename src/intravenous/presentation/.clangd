@@ -1,0 +1,6 @@
+If:
+  PathMatch: guest_runtime\.c
+CompileFlags:
+  CompilationDatabase: None
+  Remove: [-std=*]
+  Add: [--target=wasm32-unknown-unknown, -ffreestanding, -nostdlibinc, -std=c17]

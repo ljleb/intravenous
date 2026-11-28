@@ -1,0 +1,194 @@
+#pragma once
+
+#include <intravenous/graph/build_types.h>
+#include <intravenous/linker_event.h>
+#include <intravenous/packages/presentation_artifacts.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/project/runtime_project_api_types.h>
+#include <intravenous/rpc/socket_rpc_requests.h>
+#include <intravenous/execution/project_playback.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
+#include <intravenous/sample.h>
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace iv {
+    struct PackageRefreshPublication;
+    struct ProjectGraphPublication;
+
+    using SocketRpcGraphQueryResult = ProjectQueryResult;
+    using SocketRpcRegionQueryResult = ProjectRegionQueryResult;
+    using SocketRpcServerMessage = ProjectMessageNotification;
+    using SocketRpcServerStatus = ProjectStatusNotification;
+
+    using SocketRpcGraphQueryBySpansEvent =
+        void (*)(GraphQueryBySpansRequest const &, SocketRpcGraphQueryResultBuilder &);
+    using SocketRpcGraphQueryActiveRegionsEvent =
+        void (*)(GraphQueryActiveRegionsRequest const &, SocketRpcRegionQueryResultBuilder &);
+    using SocketRpcGetSymbolicNodeEvent =
+        void (*)(GetSymbolicNodeRequest const &, SocketRpcSymbolicNodeResultBuilder &);
+    using SocketRpcGetSymbolicNodesEvent =
+        void (*)(GetSymbolicNodesRequest const &, SocketRpcSymbolicNodesResultBuilder &);
+    using SocketRpcGetGraphScopeEvent =
+        void (*)(GetGraphScopeRequest const &, SocketRpcGraphScopeResultBuilder &);
+    using SocketRpcGetProjectLaneViewsEvent = void (*)(GetProjectLaneViewsRequest const&, std::vector<std::optional<std::string>>&);
+    using SocketRpcResetGraphStateEvent = void (*)(ResetGraphStateRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcGetNodeDefinitionsEvent = void (*)(std::shared_ptr<NodeDefinitionsSnapshot const>&);
+    using SocketRpcCreateNodeInstanceEvent =
+        void (*)(CreateNodeInstanceRequest const &, SocketRpcCreateNodeInstanceResultBuilder &);
+    using SocketRpcGetIvPackageDefinitionsEvent =
+        void (*)(GetIvPackageDefinitionsRequest const &, SocketRpcIvPackageDefinitionsResultBuilder &);
+    using SocketRpcListPresentationsEvent = void (*)(std::optional<PresentationCatalog>&);
+    using SocketRpcFetchPresentationArtifactEvent = void (*)(std::string const&, std::shared_ptr<std::string const>&);
+    using SocketRpcCreateIvPackageEvent =
+        void (*)(CreateIvPackageRequest const &, SocketRpcIvPackageResultBuilder &);
+    using SocketRpcGetNodeInstancesEvent =
+        void (*)(GetNodeInstancesRequest const &, SocketRpcNodeInstancesResultBuilder &);
+    using SocketRpcSetProjectToolchainEvent = void (*)(SetProjectToolchainRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcApplyProjectEditEvent = void (*)(ApplyProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcUndoProjectEditEvent = void (*)(UndoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcRedoProjectEditEvent = void (*)(RedoProjectEditRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDeleteNodeInstanceEvent =
+        void (*)(DeleteNodeInstanceRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcUpdateNodeInstancesEvent =
+        void (*)(UpdateNodeInstancesRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcUpsertGraphConnectionEvent =
+        void (*)(UpsertGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDeleteGraphConnectionEvent =
+        void (*)(DeleteGraphConnectionRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcUpsertManualControlEvent =
+        void (*)(UpsertManualControlRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcToggleManualInputEvent =
+        void (*)(ToggleManualInputRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDeleteManualControlEvent =
+        void (*)(DeleteManualControlRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcSetManualControlHoverEvent =
+        void (*)(SetManualControlHoverRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcBeginManualControlInteractionEvent = void (*)(
+        BeginManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
+    // One live gesture value from a client reader thread; see
+    // LiveManualControlUpdateRequest.
+    using SocketRpcLiveManualControlUpdateEvent =
+        void (*)(LiveManualControlUpdateRequest&);
+    using SocketRpcEndManualControlInteractionEvent = void (*)(
+        EndManualControlInteractionRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcClientDisconnectedEvent =
+        void (*)(SocketRpcClientDisconnectedRequest&);
+    using SocketRpcNodeMessageGestureEvent = void (*)(NodeMessageGestureRequest const&, SocketRpcAckResponseBuilder&);
+    using SocketRpcDispatchNodeMessageEvent =
+        void (*)(DispatchNodeMessageRequest const&, SocketRpcNodeMessageResultBuilder&);
+    using SocketRpcGetNodeEventProtocolEvent =
+        void (*)(GetNodeEventProtocolRequest const&,
+                 SocketRpcNodeEventProtocolResultBuilder&);
+    using SocketRpcGetAudioDevicesEvent =
+        void (*)(GetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
+    using SocketRpcPlaybackEvent = void (*)(ProjectPlaybackRequest&);
+    using SocketRpcSetAudioDevicesEvent =
+        void (*)(SetAudioDevicesRequest const &, SocketRpcAudioDevicesResultBuilder &);
+    using SocketRpcSaveProjectEvent =
+        void (*)(SaveProjectRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcEnableProjectAutosaveEvent =
+        void (*)(EnableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcDisableProjectAutosaveEvent =
+        void (*)(DisableProjectAutosaveRequest const &, SocketRpcAckResponseBuilder &);
+    using SocketRpcGetSessionProjectStateEvent =
+        void (*)(SessionSnapshotRequest const&,
+                 SocketRpcSessionProjectStateResultBuilder&);
+    using SocketRpcGetAutosaveStateEvent =
+        void (*)(SessionSnapshotRequest const&,
+                 SocketRpcAutosaveStateResultBuilder&);
+
+    IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryBySpansEvent, iv_socket_rpc_graph_query_by_spans_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGraphQueryActiveRegionsEvent, iv_socket_rpc_graph_query_active_regions_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodeEvent, iv_socket_rpc_get_symbolic_node_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSymbolicNodesEvent, iv_socket_rpc_get_symbolic_nodes_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetGraphScopeEvent, iv_socket_rpc_get_graph_scope_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcResetGraphStateEvent, iv_socket_rpc_reset_graph_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetProjectLaneViewsEvent, iv_socket_rpc_get_project_lane_views_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeDefinitionsEvent, iv_socket_rpc_get_node_definitions_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateNodeInstanceEvent, iv_socket_rpc_create_node_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetIvPackageDefinitionsEvent, iv_socket_rpc_get_iv_package_definitions_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcListPresentationsEvent, iv_socket_rpc_list_presentations_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcFetchPresentationArtifactEvent, iv_socket_rpc_fetch_presentation_artifact_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcCreateIvPackageEvent, iv_socket_rpc_create_iv_package_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeInstancesEvent, iv_socket_rpc_get_node_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetProjectToolchainEvent, iv_socket_rpc_set_project_toolchain_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcApplyProjectEditEvent, iv_socket_rpc_apply_project_edit_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUndoProjectEditEvent, iv_socket_rpc_undo_project_edit_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcRedoProjectEditEvent, iv_socket_rpc_redo_project_edit_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteNodeInstanceEvent, iv_socket_rpc_delete_node_instance_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUpdateNodeInstancesEvent, iv_socket_rpc_update_node_instances_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUpsertGraphConnectionEvent, iv_socket_rpc_upsert_graph_connection_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteGraphConnectionEvent, iv_socket_rpc_delete_graph_connection_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcUpsertManualControlEvent, iv_socket_rpc_upsert_manual_control_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcToggleManualInputEvent, iv_socket_rpc_toggle_manual_input_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDeleteManualControlEvent, iv_socket_rpc_delete_manual_control_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetManualControlHoverEvent, iv_socket_rpc_set_manual_control_hover_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcBeginManualControlInteractionEvent, iv_socket_rpc_begin_manual_control_interaction_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcLiveManualControlUpdateEvent, iv_socket_rpc_live_manual_control_update_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcEndManualControlInteractionEvent, iv_socket_rpc_end_manual_control_interaction_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcClientDisconnectedEvent, iv_socket_rpc_client_disconnected_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDispatchNodeMessageEvent, iv_socket_rpc_dispatch_node_message_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcNodeMessageGestureEvent, iv_socket_rpc_node_message_gesture_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetNodeEventProtocolEvent, iv_socket_rpc_get_node_event_protocol_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetAudioDevicesEvent, iv_socket_rpc_get_audio_devices_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcPlaybackEvent, iv_socket_rpc_playback_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSetAudioDevicesEvent, iv_socket_rpc_set_audio_devices_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcSaveProjectEvent, iv_socket_rpc_save_project_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcEnableProjectAutosaveEvent, iv_socket_rpc_enable_project_autosave_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcDisableProjectAutosaveEvent, iv_socket_rpc_disable_project_autosave_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetSessionProjectStateEvent, iv_socket_rpc_get_session_project_state_event);
+    IV_DECLARE_LINKER_EVENT(SocketRpcGetAutosaveStateEvent, iv_socket_rpc_get_autosave_state_event);
+
+    class SocketRpcServer {
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+
+    public:
+        void send_observations(std::span<ObservationDelivery const> deliveries);
+        explicit SocketRpcServer(
+            std::filesystem::path workspace_root,
+            int initial_rpc_fd = -1);
+        ~SocketRpcServer();
+        SocketRpcServer(SocketRpcServer &&) = delete;
+        SocketRpcServer &operator=(SocketRpcServer &&) = delete;
+
+        SocketRpcServer(SocketRpcServer const &) = delete;
+        SocketRpcServer &operator=(SocketRpcServer const &) = delete;
+
+        void start();
+        void attach_client(int connected_fd, bool trusted = true);
+        bool wait_until_ready(std::chrono::milliseconds timeout) const;
+        void wait();
+        void request_shutdown();
+        void commit_package_refresh(std::function<void()> publish);
+
+        [[nodiscard]] std::uint64_t revision() const noexcept;
+        [[nodiscard]] std::size_t client_count() const;
+        [[nodiscard]] std::optional<std::filesystem::path> endpoint() const;
+
+        void send_server_message(SocketRpcServerMessage const &notification);
+        void send_server_status(SocketRpcServerStatus const &notification);
+        void handle_control_compile_status(std::span<ProjectControlCompileStatus const> statuses);
+        void send_iv_package_definitions_updated();
+        void send_symbolic_nodes_updated(
+            ProjectSymbolicNodesNotification const &notification);
+        // The read-model changes a project-graph change committed: the
+        // instance-list invalidation and the symbolic-node replacements.
+        void send_project_graph_publication(
+            ProjectGraphPublication const &publication);
+        void handle_project_notification(ProjectNotification const &notification);
+        // The one report of a package refresh.
+        void handle_package_refresh_published(
+            PackageRefreshPublication const &publication);
+    };
+} // namespace iv

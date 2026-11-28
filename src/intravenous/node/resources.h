@@ -1,74 +1,49 @@
 #pragma once
 
+#include <intravenous/devices/system_audio_binding.h>
+#include <intravenous/global_index.h>
+
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <cstdint>
+#include <vector>
 
 namespace iv {
     struct JuceVstWrapperSpec;
-    struct RuntimeSampleInputBinding;
-    struct RuntimeEventInputBinding;
-    struct RuntimeOutputBinding;
-
     using UniqueResource = std::unique_ptr<void, void(*)(void*)>;
 
-    inline constexpr std::uint32_t RUNTIME_BINDING_RESOURCE_ABI_VERSION = 1;
-
-    struct RuntimeBindingResources {
-        std::uint32_t abi_version = 0;
-        std::uint32_t struct_size = 0;
-        void* owner = nullptr;
-        RuntimeSampleInputBinding const* (*resolve_sample_input)(
-            void*, char const*, size_t) = nullptr;
-        RuntimeEventInputBinding const* (*resolve_event_input)(
-            void*, char const*, size_t) = nullptr;
-        RuntimeOutputBinding const* (*resolve_output)(
-            void*, char const*, size_t) = nullptr;
-
-        void validate() const
-        {
-            if (!owner) return;
-            if (abi_version != RUNTIME_BINDING_RESOURCE_ABI_VERSION ||
-                struct_size < sizeof(RuntimeBindingResources)) {
-                throw std::logic_error(
-                    "incompatible runtime binding resource ABI");
-            }
-        }
-
-        RuntimeSampleInputBinding const* sample_input(
-            std::string_view semantic_key) const
-        {
-            validate();
-            return owner && resolve_sample_input
-                ? resolve_sample_input(
-                    owner, semantic_key.data(), semantic_key.size())
-                : nullptr;
-        }
-
-        RuntimeEventInputBinding const* event_input(
-            std::string_view semantic_key) const
-        {
-            validate();
-            return owner && resolve_event_input
-                ? resolve_event_input(
-                    owner, semantic_key.data(), semantic_key.size())
-                : nullptr;
-        }
-
-        RuntimeOutputBinding const* output(
-            std::string_view semantic_key) const
-        {
-            validate();
-            return owner && resolve_output
-                ? resolve_output(
-                    owner, semantic_key.data(), semantic_key.size())
-                : nullptr;
-        }
+    struct SampleRecordingBinding {
+        void* target = nullptr;
+        void (*submit_fn)(void*, GlobalIndex, std::vector<std::byte>&&) noexcept = nullptr;
     };
 
     struct ResourceContext {
+        struct SystemAudioResources {
+            void* owner = nullptr;
+            SystemAudioInputBinding (*resolve_input_fn)(
+                void*, std::string_view) = nullptr;
+            SystemAudioOutputBinding (*resolve_output_fn)(
+                void*, std::string_view) = nullptr;
+
+            SystemAudioInputBinding resolve_input(
+                std::string_view device_id) const
+            {
+                return resolve_input_fn
+                    ? resolve_input_fn(owner, device_id)
+                    : SystemAudioInputBinding{};
+            }
+
+            SystemAudioOutputBinding resolve_output(
+                std::string_view device_id) const
+            {
+                return resolve_output_fn
+                    ? resolve_output_fn(owner, device_id)
+                    : SystemAudioOutputBinding{};
+            }
+        };
+
         struct VstResources {
             void* owner = nullptr;
             UniqueResource (*create_juce_vst_fn)(void*, JuceVstWrapperSpec const&) = nullptr;
@@ -85,7 +60,14 @@ namespace iv {
             }
         };
 
+        struct SampleRecordingResources {
+            void* owner = nullptr;
+            SampleRecordingBinding (*bind_fn)(void*, std::string_view directory,
+                std::uint64_t output, std::size_t sample_rate, std::size_t channels) = nullptr;
+        };
+
         VstResources vst {};
-        RuntimeBindingResources runtime_bindings {};
+        SystemAudioResources system_audio {};
+        SampleRecordingResources sample_recording {};
     };
 }

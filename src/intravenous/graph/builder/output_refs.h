@@ -13,7 +13,7 @@
 namespace iv {
     // This describes how a concrete public sample port participates in a
     // public declaration. It deliberately lives beside, rather than inside,
-    // SampleOutputConfig describes one physical sample port, whose ordinal
+    // ContinuousOutputConfig describes one storage sample port, whose index
     // is its position in the config array.
     struct PublicSamplePortMember {
         std::string family_name {};
@@ -25,20 +25,28 @@ namespace iv {
     struct NamedRef {
         std::string_view name;
         std::variant<SamplePortRef, Sample, EventPortRef> value;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
 
-        NamedRef(std::string_view name, SamplePortRef sample_port): name(name), value(sample_port) {}
-        NamedRef(std::string_view name, Sample sample): name(name), value(sample) {}
-        NamedRef(std::string_view name, EventPortRef event): name(name), value(event) {}
+        NamedRef(PortNames names, SamplePortRef sample_port)
+            : name(names.identifier), value(sample_port), display_name(names.display),
+              short_display_name(names.short_display) {}
+        NamedRef(PortNames names, Sample sample)
+            : name(names.identifier), value(sample), display_name(names.display),
+              short_display_name(names.short_display) {}
+        NamedRef(PortNames names, EventPortRef event)
+            : name(names.identifier), value(event), display_name(names.display),
+              short_display_name(names.short_display) {}
     };
 
     struct OutputRefConfig {
         SamplePortRef ref;
-        SampleOutputConfig config;
+        ContinuousOutputConfig config;
         PublicSamplePortMember public_member {};
         // When set, this declaration contributes only one semantic channel to
         // the wider destination port. Completion decides how to materialize
         // the aggregate for the current runtime representation.
-        std::optional<size_t> target_channel_ordinal {};
+        std::optional<size_t> target_channel_index {};
     };
 
     struct EventOutputRefConfig {
@@ -48,7 +56,7 @@ namespace iv {
 
     // Module-facing output declarations carry only borrowed views and fixed
     // size handles. libiv_builder copies the strings and materializes the
-    // owning SampleOutputConfig records before the call returns.
+    // owning ContinuousOutputConfig records before the call returns.
     struct SampleOutputRequest {
         SamplePortRef ref;
         std::string_view name;
@@ -56,18 +64,25 @@ namespace iv {
         std::string_view family_name;
         ChannelTypeId family_channel_type = ChannelTypeId::mono;
         bool whole_stream = true;
-        size_t target_channel_ordinal = std::numeric_limits<size_t>::max();
+        size_t target_channel_index = std::numeric_limits<size_t>::max();
+        std::string_view display_name {};
+        std::string_view short_display_name {};
 
         constexpr bool targets_single_channel() const {
-            return target_channel_ordinal != std::numeric_limits<size_t>::max();
+            return target_channel_index != std::numeric_limits<size_t>::max();
         }
     };
 
     struct EventOutputRequest {
         EventPortRef ref;
         std::string_view name;
+        std::string_view display_name {};
+        std::string_view short_display_name {};
     };
 
+    using OutputRequest = std::variant<SampleOutputRequest, EventOutputRequest>;
+
+    static_assert(std::is_trivially_copyable_v<OutputRequest>);
     static_assert(std::is_trivially_copyable_v<SampleOutputRequest>);
     static_assert(std::is_trivially_copyable_v<EventOutputRequest>);
 }

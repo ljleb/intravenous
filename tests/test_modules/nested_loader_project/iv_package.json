@@ -1,1 +1,9 @@
-{"schema":2,"entry":"module.cpp"}
+{
+  "schema": 2,
+  "entry": "module.cpp",
+  "namespace": "iv.test.nested_loader_project",
+  "dependencies": [
+    "builtin",
+    "iv.test.nested_loader_voice"
+  ]
+}

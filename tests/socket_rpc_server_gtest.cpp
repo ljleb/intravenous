@@ -1,26 +1,31 @@
 #include "module_test_utils.h"
 
 #include <intravenous/bridge.h>
-#include <intravenous/runtime/audio_device_lanes.h>
-#include <intravenous/runtime/lane_views.h>
-#include <intravenous/runtime/runtime_project_events.h>
-#include <intravenous/runtime/socket_rpc_audio_device_lanes_bridge.h>
-#include <intravenous/runtime/socket_rpc_lane_views_bridge.h>
-#include <intravenous/runtime/socket_rpc_server.h>
+#include <intravenous/audio/system_audio_devices.h>
+#include <intravenous/project/project_graph.h>
+#include <intravenous/app/bridges/project_graph_system_audio_devices_bridge.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/app/bridges/socket_rpc_system_audio_devices_bridge.h>
+#include <intravenous/rpc/socket_rpc_server.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <array>
+#include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <cstring>
-#include <string_view>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <vector>
 
@@ -30,11 +35,6 @@ namespace {
 
     constexpr auto socket_rpc_startup_timeout = 30s;
     constexpr auto socket_rpc_response_timeout = 30s;
-
-    iv::InternedString intern(std::string_view value)
-    {
-        return iv::InternedString::from_view(value);
-    }
 
     struct IdleFakeAudioInputDevice {
         iv::RenderConfig config_;
@@ -56,9 +56,9 @@ namespace {
         void request_shutdown() {}
     };
 
-    iv::AudioDeviceLanesBackend make_audio_backend()
+    iv::SystemAudioDevicesBackend make_audio_backend()
     {
-        return iv::AudioDeviceLanesBackend{
+        return iv::SystemAudioDevicesBackend{
             .list_output_devices = [] {
                 return std::vector<iv::AudioDeviceDescriptor>{
                     {.device_id = "default", .name = "System Default"},
@@ -84,6 +84,7 @@ namespace {
         };
     }
 
+    // Stands in for IvModuleSourceIntrospection.
     struct SocketRpcTestState {
         iv::SocketRpcServer *current_server = nullptr;
 
@@ -92,7 +93,6 @@ namespace {
         bool graph_query_should_fail = false;
         int graph_query_fail_code = -32000;
         std::string graph_query_fail_message;
-        std::optional<iv::LaneViewResult> deferred_lane_view_notification;
 
         void reset()
         {
@@ -102,16 +102,12 @@ namespace {
             graph_query_should_fail = false;
             graph_query_fail_code = -32000;
             graph_query_fail_message.clear();
-            deferred_lane_view_notification.reset();
         }
         void handle_graph_query_by_spans(
         iv::GraphQueryBySpansRequest const &request,
         iv::SocketRpcGraphQueryResultBuilder &builder)
         {
         graph_query_requests.push_back(request);
-        if (deferred_lane_view_notification.has_value() && current_server != nullptr) {
-            current_server->send_lane_view_updated(*deferred_lane_view_notification);
-        }
         if (graph_query_should_fail) {
             builder.fail(
                 graph_query_fail_code,
@@ -125,6 +121,148 @@ namespace {
 
     SocketRpcTestState socket_rpc_test_state;
 
+    std::string snapshot_configuration(std::size_t size)
+    {
+        // Four-byte UTF-8 characters exercise chunk boundaries in both JSON layers.
+        std::string configuration;
+        configuration.reserve(size);
+        while (configuration.size() < size) configuration += "\xf0\x9f\x8e\xb5";
+        return configuration;
+    }
+
+    std::string snapshot_lane_state()
+    {
+        std::string state = R"({"text":")";
+        for (int index = 0; index < 63'000; ++index) state += "\\n";
+        return state + R"("})";
+    }
+
+    // Persistence collection reaches NodeInstances in the real server.
+    struct SessionProjectStateFake {
+        std::atomic<unsigned> captures{0};
+
+        void handle_get_session_project_state(
+            iv::SessionSnapshotRequest const&,
+            iv::SocketRpcSessionProjectStateResultBuilder& builder)
+        {
+            ++captures;
+            iv::SocketRpcNodeInstancesResultBuilder instances;
+            IV_INVOKE_LINKER_EVENT(iv_socket_rpc_get_node_instances_event, iv::GetNodeInstancesRequest{}, instances);
+            std::vector<iv::ProjectCommand> commands{iv::ProjectCommand{
+                .command = "nodeInstances.update",
+                .args = nlohmann::ordered_json{
+                    {"instance_id", "snapshot-instance"}, {"configuration_source", snapshot_configuration(540'000)}},
+            }};
+            auto const state = snapshot_lane_state();
+            for (int lane = 0; lane < 7; ++lane) {
+                commands.push_back({"projectPresentation.setLaneView", {{"index", lane}, {"state", state}}});
+            }
+            builder.succeed(std::move(commands));
+        }
+    };
+
+    // Stands in for ProjectAutosave.
+    struct AutosaveStateFake {
+        void handle_get_autosave_state(
+            iv::SessionSnapshotRequest const&,
+            iv::SocketRpcAutosaveStateResultBuilder& builder)
+        {
+            builder.succeed(true);
+        }
+    };
+
+    // Stands in for NodeInstances.
+    struct NodeInstancesFake {
+        std::atomic<bool> large_configurations{false};
+
+        void handle_get_node_instances(
+            iv::GetNodeInstancesRequest const&,
+            iv::SocketRpcNodeInstancesResultBuilder& builder)
+        {
+            iv::IvModuleInstanceInfo instance{
+                .instance_id = "snapshot-instance",
+                .definition_id = "iv.test.snapshot.module",
+                .display_name = "Snapshot instance",
+                .realized = true,
+            };
+            if (!large_configurations.load()) {
+                builder.succeed({std::move(instance)});
+                return;
+            }
+            instance.configuration_source = snapshot_configuration(360'000);
+            std::vector<iv::IvModuleInstanceInfo> instances;
+            for (int index = 0; index < 3; ++index) {
+                instance.instance_id = "snapshot-instance-" + std::to_string(index);
+                instances.push_back(instance);
+            }
+            builder.succeed(std::move(instances));
+        }
+    };
+
+    // Stands in for PackageDefinitions.
+    struct PackageDefinitionsFake {
+        void handle_get_package_definitions(
+            iv::GetIvPackageDefinitionsRequest const&,
+            iv::SocketRpcIvPackageDefinitionsResultBuilder& builder)
+        {
+            builder.succeed({iv::IvPackageInfo{
+                .package_id = "iv.test.snapshot",
+                .package_root = "/tmp/iv-test-snapshot",
+            }});
+        }
+    };
+
+    // Stands in for ProjectGraph.
+    struct ProjectGraphFake {
+        void handle_get_node_event_protocol(
+            iv::GetNodeEventProtocolRequest const&,
+            iv::SocketRpcNodeEventProtocolResultBuilder& builder)
+        {
+            builder.succeed(iv::NodeEventProtocolSnapshot{
+                .project_graph_generation = 12,
+                .definitions_generation = 7,
+            });
+        }
+
+        // Accepts live values of the gesture named "drag" and closes it at end.
+        std::atomic<bool> drag_open{false};
+        void handle_live_manual_control_update(iv::LiveManualControlUpdateRequest& request)
+        {
+            if (request.interaction.interaction_id != "drag" || !drag_open.load()) return;
+            request.applied = true;
+            request.control = {.node = {.instance_id = "osc"}, .port_name = "frequency"};
+        }
+        void handle_begin_manual_control(
+            iv::BeginManualControlInteractionRequest const&, iv::SocketRpcAckResponseBuilder& builder)
+        {
+            drag_open.store(true);
+            builder.succeed();
+        }
+        void handle_end_manual_control(
+            iv::EndManualControlInteractionRequest const&, iv::SocketRpcAckResponseBuilder& builder)
+        {
+            drag_open.store(false);
+            builder.succeed();
+        }
+        // A closed client's open gesture commits as one durable change.
+        void handle_client_disconnected(iv::SocketRpcClientDisconnectedRequest& request)
+        {
+            request.project_state_changed = drag_open.exchange(false);
+        }
+
+        // A mutation answers with the read-model changes it committed.
+        void handle_delete_node_instance(
+            iv::DeleteNodeInstanceRequest const&,
+            iv::SocketRpcAckResponseBuilder& builder)
+        {
+            builder.set_publication(iv::ProjectGraphPublication{
+                .instances_changed = true,
+            });
+            builder.succeed();
+        }
+    };
+
+
     IV_DECLARE_BRIDGE(
         socket_rpc_server_test_state_bridge,
         iv::SocketRpcServer,
@@ -135,9 +273,87 @@ namespace {
         socket_rpc_server_test_state_bridge,
         iv_socket_rpc_graph_query_by_spans_event,
         &SocketRpcTestState::handle_graph_query_by_spans)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_session_project_state_bridge,
+        iv::SocketRpcServer,
+        SessionProjectStateFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_session_project_state_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_session_project_state_bridge,
+        iv_socket_rpc_get_session_project_state_event,
+        &SessionProjectStateFake::handle_get_session_project_state)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_autosave_state_bridge,
+        iv::SocketRpcServer,
+        AutosaveStateFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_autosave_state_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_autosave_state_bridge,
+        iv_socket_rpc_get_autosave_state_event,
+        &AutosaveStateFake::handle_get_autosave_state)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_node_instances_bridge,
+        iv::SocketRpcServer,
+        NodeInstancesFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_node_instances_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_node_instances_bridge,
+        iv_socket_rpc_get_node_instances_event,
+        &NodeInstancesFake::handle_get_node_instances)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_package_definitions_bridge,
+        iv::SocketRpcServer,
+        PackageDefinitionsFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_package_definitions_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_package_definitions_bridge,
+        iv_socket_rpc_get_iv_package_definitions_event,
+        &PackageDefinitionsFake::handle_get_package_definitions)
+    IV_DECLARE_BRIDGE(
+        socket_rpc_server_test_project_graph_bridge,
+        iv::SocketRpcServer,
+        ProjectGraphFake);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_project_graph_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_get_node_event_protocol_event,
+        &ProjectGraphFake::handle_get_node_event_protocol)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_delete_node_instance_event,
+        &ProjectGraphFake::handle_delete_node_instance)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_live_manual_control_update_event,
+        &ProjectGraphFake::handle_live_manual_control_update)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_begin_manual_control_interaction_event,
+        &ProjectGraphFake::handle_begin_manual_control)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_end_manual_control_interaction_event,
+        &ProjectGraphFake::handle_end_manual_control)
+    IV_SUBSCRIBE_LINKER_EVENT(
+        socket_rpc_server_test_project_graph_bridge,
+        iv_socket_rpc_client_disconnected_event,
+        &ProjectGraphFake::handle_client_disconnected)
+    IV_DECLARE_BRIDGE(socket_rpc_server_test_audio_graph_bridge, iv::SocketRpcServer, iv::ProjectGraph);
+    IV_DEFINE_BRIDGE(socket_rpc_server_test_audio_graph_bridge)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_set_audio_devices_event, &iv::ProjectGraph::handle_socket_rpc_set_audio_devices)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_undo_project_edit_event, &iv::ProjectGraph::handle_socket_rpc_undo_project_edit)
+    IV_SUBSCRIBE_LINKER_EVENT(socket_rpc_server_test_audio_graph_bridge,
+        iv_socket_rpc_redo_project_edit_event, &iv::ProjectGraph::handle_socket_rpc_redo_project_edit)
     std::filesystem::path make_server_workspace()
     {
-        auto const workspace = iv::test::fresh_module_fixture_workspace("socket_rpc_server");
+        auto const* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        auto const test_name = info
+            ? std::string("socket_rpc_server_") + info->test_suite_name()
+                + "_" + info->name()
+            : std::string("socket_rpc_server");
+        auto const workspace = iv::test::fresh_module_fixture_workspace(test_name);
         std::ofstream marker(workspace / "iv_project.jsonl", std::ios::binary | std::ios::trunc);
         EXPECT_TRUE(static_cast<bool>(marker));
         std::ofstream module_cpp(workspace / "module.cpp", std::ios::binary | std::ios::trunc);
@@ -236,22 +452,68 @@ namespace {
         return fds;
     }
 
+    int connect_unix_socket(std::filesystem::path const& endpoint)
+    {
+        auto const fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            throw std::runtime_error(
+                std::string("socket failed: ") + std::strerror(errno));
+        }
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        auto const value = endpoint.string();
+        if (value.size() >= sizeof(address.sun_path)) {
+            ::close(fd);
+            throw std::runtime_error("test Unix socket path is too long");
+        }
+        std::copy(value.begin(), value.end(), address.sun_path);
+        if (::connect(
+                fd,
+                reinterpret_cast<sockaddr const*>(&address),
+                sizeof(address)) != 0) {
+            auto const message = std::string(std::strerror(errno));
+            ::close(fd);
+            throw std::runtime_error("connect failed: " + message);
+        }
+        return fd;
+    }
+
     class SocketRpcHarness {
         std::array<int, 2> fds;
 
     public:
         iv::SocketRpcServer server;
-        iv::AudioDeviceLanes audio_device_lanes;
+        iv::SystemAudioDevices system_audio_devices;
         socket_rpc_server_test_state_bridge::scope test_state_scope;
-        iv::socket_rpc_audio_device_lanes_bridge::scope audio_device_lanes_scope;
+        SessionProjectStateFake session_project_state;
+        AutosaveStateFake autosave_state;
+        NodeInstancesFake node_instances;
+        PackageDefinitionsFake package_definitions;
+        ProjectGraphFake project_graph;
+        iv::ProjectGraph audio_project_graph;
+        iv::project_graph_system_audio_devices_bridge::scope audio_owner_scope;
+        socket_rpc_server_test_audio_graph_bridge::scope audio_history_scope;
+        socket_rpc_server_test_session_project_state_bridge::scope session_project_state_scope;
+        socket_rpc_server_test_autosave_state_bridge::scope autosave_state_scope;
+        socket_rpc_server_test_node_instances_bridge::scope node_instances_scope;
+        socket_rpc_server_test_package_definitions_bridge::scope package_definitions_scope;
+        socket_rpc_server_test_project_graph_bridge::scope project_graph_scope;
+        iv::socket_rpc_system_audio_devices_bridge::scope system_audio_devices_scope;
         std::string response_buffer;
 
         explicit SocketRpcHarness(std::filesystem::path const& workspace)
             : fds(make_socket_pair()),
               server(workspace, fds[1]),
-              audio_device_lanes(48000, 8, make_audio_backend()),
+              system_audio_devices(48000, 8, make_audio_backend()),
               test_state_scope(server, socket_rpc_test_state),
-              audio_device_lanes_scope(server, audio_device_lanes)
+              audio_owner_scope(audio_project_graph, system_audio_devices),
+              audio_history_scope(server, audio_project_graph),
+              session_project_state_scope(server, session_project_state),
+              autosave_state_scope(server, autosave_state),
+              node_instances_scope(server, node_instances),
+              package_definitions_scope(server, package_definitions),
+              project_graph_scope(server, project_graph),
+              system_audio_devices_scope(server, system_audio_devices)
         {
             socket_rpc_test_state.current_server = &server;
             server.start();
@@ -304,7 +566,7 @@ namespace {
     };
 }
 
-TEST(SocketRpcServer, SendsReadyNotificationAndStopsOnDisconnect)
+TEST(SocketRpcServer, SendsReadyNotificationAndStopsWhenItsOwnerDisconnects)
 {
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
@@ -313,14 +575,21 @@ TEST(SocketRpcServer, SendsReadyNotificationAndStopsOnDisconnect)
     ASSERT_FALSE(ready.empty());
     EXPECT_TRUE(ready.contains(R"("method":"server.ready")")) << ready;
 
+    // The inherited descriptor belongs to the process that launched the
+    // server. Closing it stops the server without a shutdown request.
     harness.close_client_fd();
-    harness.server.wait();
+    auto stopped = std::async(std::launch::async, [&] { harness.server.wait(); });
+    auto const status = stopped.wait_for(2s);
+    if (status != std::future_status::ready) {
+        harness.server.request_shutdown();
+    }
+    EXPECT_EQ(status, std::future_status::ready);
 }
 
 TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
 {
     socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
+    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::SymbolicNodeInfo {
         .id = "node-1",
         .kind = "TestNode",
         .source_identity = "src-1",
@@ -352,42 +621,7 @@ TEST(SocketRpcServer, DispatchesQueryEventAndReturnsSubscriberResult)
     EXPECT_EQ(captured.match_mode, iv::SourceRangeMatchMode::intersection);
 }
 
-TEST(SocketRpcServer, DistinguishesOpenAndUpdateLaneViewEvents)
-{
-    socket_rpc_test_state.reset();
-    auto harness = SocketRpcHarness(make_server_workspace());
-    iv::LaneViews lane_views;
-    auto lane_views_scope = iv::socket_rpc_lane_views_bridge::bind(
-        harness.server,
-        lane_views);
 
-    ASSERT_FALSE(harness.read_line().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":3,"method":"timeline.openLaneView","params":{"viewId":"view-a","filter":{"kind":"graphInputs"},"startIndex":1,"visibleLaneCount":2}})"
-        "\n");
-    auto const open_response = harness.read_response(3);
-    EXPECT_TRUE(open_response.contains(R"("viewId":"view-a")")) << open_response;
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":4,"method":"timeline.updateLaneView","params":{"viewId":"view-b","filter":{"kind":"graphInputs"},"startIndex":3,"visibleLaneCount":4}})"
-        "\n");
-    auto const update_response = harness.read_response(4);
-    EXPECT_TRUE(update_response.contains(R"("viewId":"view-b")")) << update_response;
-
-    auto const active_requests = lane_views.active_view_requests();
-    auto const open_request = std::ranges::find_if(active_requests, [](auto const &request) {
-        return request.view_id.str() == "view-a";
-    });
-    ASSERT_NE(open_request, active_requests.end());
-    EXPECT_EQ(open_request->start_index, 1u);
-
-    auto const update_request = std::ranges::find_if(active_requests, [](auto const &request) {
-        return request.view_id.str() == "view-b";
-    });
-    ASSERT_NE(update_request, active_requests.end());
-    EXPECT_EQ(update_request->start_index, 3u);
-}
 
 TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
 {
@@ -409,88 +643,506 @@ TEST(SocketRpcServer, DispatchesAudioDeviceGetAndSetRequests)
     auto const set_response = harness.read_response(9);
     EXPECT_TRUE(set_response.contains(R"("deviceId":"out-1")")) << set_response;
     EXPECT_TRUE(set_response.contains(R"("selectedInput")")) << set_response;
-    auto const snapshot = harness.audio_device_lanes.audio_devices_snapshot();
+    auto const snapshot = harness.system_audio_devices.audio_devices_snapshot();
     EXPECT_EQ(snapshot.selected_output.device_id, std::optional<std::string>{"out-1"});
     EXPECT_FALSE(snapshot.selected_input.device_id.has_value());
 }
 
-TEST(SocketRpcServer, UnboundRequestReturnsTheOwningServiceError)
+TEST(SocketRpcServer, TransfersOneCapturedSnapshotWithLargeDurableCommandsAndRuntimeReads)
 {
     socket_rpc_test_state.reset();
     auto harness = SocketRpcHarness(make_server_workspace());
-
     ASSERT_FALSE(harness.read_line().empty());
+    harness.node_instances.large_configurations.store(true);
 
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":10,"method":"playback.pause","params":{}})"
-        "\n");
-    auto const response = harness.read_response(10);
-    EXPECT_TRUE(response.contains("timeline execution service is unavailable"))
-        << response;
-}
-
-TEST(SocketRpcServer, ClosesLaneViewAndShutsDown)
-{
-    socket_rpc_test_state.reset();
-    auto harness = SocketRpcHarness(make_server_workspace());
-    iv::LaneViews lane_views;
-    auto lane_views_scope = iv::socket_rpc_lane_views_bridge::bind(
-        harness.server,
-        lane_views);
-
-    ASSERT_FALSE(harness.read_line().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":5,"method":"timeline.openLaneView","params":{"viewId":"view-z","filter":{"kind":"graphInputs"}}})"
-        "\n");
-    ASSERT_FALSE(harness.read_response(5).empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":6,"method":"timeline.closeLaneView","params":{"viewId":"view-z"}})"
-        "\n");
-    auto const close_response = harness.read_response(6);
-    EXPECT_TRUE(close_response.contains(R"("ok":true)")) << close_response;
-    EXPECT_TRUE(lane_views.active_view_requests().empty());
-
-    harness.write_request(
-        R"({"jsonrpc":"2.0","id":7,"method":"server.shutdown","params":{}})"
-        "\n");
-    auto const shutdown_response = harness.read_response(7);
-    EXPECT_TRUE(shutdown_response.contains(R"("ok":true)")) << shutdown_response;
-}
-
-TEST(SocketRpcServer, DefersLaneViewNotificationsUntilAfterResponse)
-{
-    socket_rpc_test_state.reset();
-    socket_rpc_test_state.graph_query_result.nodes.push_back(iv::VirtualNodeInfo {
-        .id = "node-2",
-        .kind = "DeferredNode",
-    });
-    socket_rpc_test_state.deferred_lane_view_notification = iv::LaneViewResult {
-        .view_id = intern("deferred-view"),
-        .lanes = iv::LaneQueryResult {
-            .start_index = 0,
-            .visible_lane_count = 1,
-            .total_lane_count = 1,
-        },
+    using Json = nlohmann::ordered_json;
+    int id = 10;
+    auto request = [&](std::string const& method, Json params = Json::object()) {
+        auto const request_id = id++;
+        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", request_id}, {"method", method},
+            {"params", std::move(params)}}.dump() + "\n");
+        auto const line = harness.read_response(request_id);
+        EXPECT_LT(line.size(), 512 * 1024u);
+        return Json::parse(line);
     };
-    auto workspace = make_server_workspace();
-    auto harness = SocketRpcHarness(workspace);
+    auto assemble = [&](Json reply) {
+        if (!reply.contains("resultChunk")) return reply.at("result");
+        auto const transfer_id = reply.at("resultChunk").at("transferId");
+        std::string document;
+        for (;;) {
+            auto const& chunk = reply.at("resultChunk");
+            EXPECT_EQ(chunk.at("transferId"), transfer_id);
+            EXPECT_EQ(chunk.at("offset"), document.size());
+            document += chunk.at("text").get<std::string>();
+            auto const next = chunk.at("nextOffset");
+            if (next.is_null()) break;
+            EXPECT_EQ(next, document.size());
+            reply = request("session.readResult", {{"transferId", transfer_id}, {"offset", next}});
+        }
+        EXPECT_TRUE(request("session.readResult", {{"transferId", transfer_id}, {"offset", document.size()}}).contains("error"));
+        return Json::parse(document).at("result");
+    };
 
+    auto initial = request("session.snapshot");
+    ASSERT_TRUE(initial.contains("resultChunk")) << initial.value("error", Json(nullptr));
+    EXPECT_EQ(request("nodeInstances.delete", {{"instanceId", "other"}}).at("result").at("sessionRevision"), 1);
+    auto const snapshot = assemble(std::move(initial));
+    EXPECT_EQ(harness.session_project_state.captures.load(), 1u);
+    EXPECT_EQ(snapshot.at("sessionRevision"), 0);
+    EXPECT_EQ(snapshot.at("autosave").at("enabled"), true);
+    EXPECT_EQ(snapshot.at("packages").at("packages").at(0).at("packageId"), "iv.test.snapshot");
+    EXPECT_FALSE(snapshot.at("audioDevices").at("outputDevices").empty());
+    EXPECT_EQ(snapshot.at("nodeEventProtocol").at("projectGraphGeneration"), 12);
+    auto const& commands = snapshot.at("project").at("commands");
+    ASSERT_EQ(commands.size(), 8u);
+    EXPECT_TRUE(commands[0].at("args").at("configuration_source") == snapshot_configuration(540'000));
+    auto const state = snapshot_lane_state();
+    for (std::size_t index = 1; index < commands.size(); ++index) {
+        EXPECT_EQ(commands[index].at("args").at("index"), index - 1);
+        EXPECT_TRUE(commands[index].at("args").at("state") == state);
+    }
+    auto runtime = request("nodeInstances.get");
+    ASSERT_TRUE(runtime.contains("resultChunk"));
+    auto const instances = assemble(std::move(runtime));
+    EXPECT_EQ(instances.at("sessionRevision"), 1);
+    auto const& captured = snapshot.at("nodeInstances").at("instances");
+    ASSERT_EQ(captured.size(), 3u);
+    EXPECT_TRUE(instances.at("instances") == captured);
+    EXPECT_TRUE(captured.at(2).at("configurationSource") == snapshot_configuration(360'000));
+}
+
+TEST(SocketRpcServer, DeliversOneOrderedNotificationToEverySubscribedClient)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
     ASSERT_FALSE(harness.read_line().empty());
 
-    std::string const query_request =
-        R"({"jsonrpc":"2.0","id":7,"method":"graph.queryBySpans","params":{"filePath":")" +
-        (workspace / "module.cpp").generic_string() +
-        R"(","ranges":[{"start":{"line":1,"column":1},"end":{"line":1,"column":1}}],"match":"intersection"}})" "\n";
-    harness.write_request(query_request);
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string second_buffer;
+    ASSERT_FALSE(read_line_until(
+        second[0], &second_buffer, socket_rpc_startup_timeout).empty());
 
-    auto const query_response = harness.read_response(7);
-    ASSERT_FALSE(query_response.empty());
-    EXPECT_TRUE(query_response.contains(R"("id":"node-2")")) << query_response;
+    harness.server.send_server_message(iv::SocketRpcServerMessage{
+        .level = "info",
+        .message = "shared notification",
+    });
 
-    auto const deferred_notification = harness.read_line(5s);
-    ASSERT_FALSE(deferred_notification.empty());
-    EXPECT_TRUE(deferred_notification.contains(R"("method":"timeline.laneViewUpdated")")) << deferred_notification;
-    EXPECT_TRUE(deferred_notification.contains(R"("viewId":"deferred-view")")) << deferred_notification;
+    auto const first_message = harness.read_line();
+    auto const second_message = read_line_until(
+        second[0], &second_buffer, socket_rpc_response_timeout);
+    ASSERT_FALSE(first_message.empty());
+    ASSERT_FALSE(second_message.empty());
+    auto const first_json = nlohmann::ordered_json::parse(first_message);
+    auto const second_json = nlohmann::ordered_json::parse(second_message);
+    EXPECT_EQ(first_json["method"], "server.message");
+    EXPECT_EQ(second_json["method"], "server.message");
+    EXPECT_EQ(first_json["params"]["revision"], 1);
+    EXPECT_EQ(second_json["params"]["revision"], 1);
+
+    ::close(second[0]);
+}
+
+// A mutation's read-model changes return on its result builder and go out
+// after the response, at the response's revision, without the handler
+// notifying SocketRpcServer.
+TEST(SocketRpcServer, PublishesAMutationsReadModelChangesAfterItsResponse)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":70,"method":"nodeInstances.delete","params":{"instanceId":"instance:gone"}})"
+        "\n");
+    auto const response = nlohmann::ordered_json::parse(harness.read_response(70));
+    EXPECT_EQ(response["result"]["sessionRevision"], 1);
+
+    auto const notification = nlohmann::ordered_json::parse(harness.read_line());
+    EXPECT_EQ(notification["method"], "nodeInstances.updated");
+    EXPECT_EQ(notification["params"]["revision"], 1);
+    EXPECT_EQ(notification["params"], (nlohmann::ordered_json{{"revision", 1}}));
+}
+
+TEST(SocketRpcServer, TransferExhaustionRejectsAnEditBeforeItCommits)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.node_instances.large_configurations.store(true);
+    using Json = nlohmann::ordered_json;
+    for (int id = 10; id < 14; ++id) {
+        harness.write_request(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "nodeInstances.get"},
+            {"params", Json::object()}}.dump() + "\n");
+        auto const reply = Json::parse(harness.read_response(id));
+        ASSERT_TRUE(reply.contains("resultChunk")) << reply.value("error", Json(nullptr));
+    }
+    harness.write_request(R"({"jsonrpc":"2.0","id":14,"method":"nodeInstances.delete","params":{"instanceId":"other"}})" "\n");
+    auto const error = Json::parse(harness.read_response(14)).at("error");
+    EXPECT_EQ(error.at("message"), "finish reading outstanding RPC results before editing the project");
+    EXPECT_EQ(error.at("data").at("currentRevision"), 0);
+    EXPECT_EQ(harness.server.revision(), 0u);
+    // A rejected mutation cannot publish nodeInstances.updated.
+    EXPECT_TRUE(harness.read_line(40ms).empty());
+}
+
+TEST(SocketRpcServer, PublishesPackageChangesAtOneRevision)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.server.commit_package_refresh([&] {
+        harness.server.send_iv_package_definitions_updated();
+        harness.server.send_project_graph_publication({.instances_changed = true, .graph_changed = true});
+    });
+    EXPECT_EQ(harness.server.revision(), 1u);
+    for (auto const* method : {"ivPackages.updated", "nodeInstances.updated", "graph.changed"}) {
+        auto const message = nlohmann::ordered_json::parse(harness.read_line());
+        EXPECT_EQ(message.at("method"), method);
+        EXPECT_EQ(message.at("params").at("revision"), 1);
+    }
+}
+
+// A live gesture value takes no revision and no reply. Other clients get it
+// as a replaceable frame; none follows the revision that commits its end.
+TEST(SocketRpcServer, PublishesControlCompilationTimingsWithoutAnActivationClaim)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    std::array statuses{
+        iv::ProjectControlCompileStatus{.request_id = 7, .project_generation = 3,
+            .phase = "queued", .dynamic = true, .predictive = true, .inputs = {"frequency"}},
+        iv::ProjectControlCompileStatus{.request_id = 7, .project_generation = 3,
+            .phase = "prepared", .dynamic = true, .predictive = true, .inputs = {"frequency"},
+            .elapsed_us = 15000, .queue_us = 1000, .preparation_us = 15000},
+    };
+    harness.server.handle_control_compile_status(statuses);
+    for (auto const& expected : statuses) {
+        auto const json = nlohmann::ordered_json::parse(harness.read_line());
+        EXPECT_EQ(json["method"], "graph.controlCompilation");
+        EXPECT_EQ(json["params"]["requestId"], 7);
+        EXPECT_EQ(json["params"]["phase"], expected.phase);
+        EXPECT_EQ(json["params"]["preparationUs"], expected.preparation_us);
+        EXPECT_FALSE(json["params"].contains("activationUs"));
+    }
+}
+
+TEST(SocketRpcServer, InvalidControlPayloadKeepsItsRequestIdAndTheNextGestureCanBegin)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    // A rejected hover must complete its own client request. Replying with
+    // another ID leaves the client's entire ordered gesture queue waiting.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":95,"method":"manualControls.hover","params":{"node":{"instanceId":"osc","path":[]},"inputName":"frequency","outputName":"main"}})" "\n");
+    auto const rejected = nlohmann::ordered_json::parse(harness.read_response(95));
+    EXPECT_EQ(rejected["id"], 95);
+    ASSERT_TRUE(rejected.contains("error"));
+    EXPECT_EQ(rejected["error"]["data"]["currentRevision"], 0);
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":96,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.5}})" "\n");
+    auto const started = nlohmann::ordered_json::parse(harness.read_response(96));
+    ASSERT_TRUE(started.contains("result"));
+    EXPECT_EQ(started["result"]["sessionRevision"], 1);
+}
+
+TEST(SocketRpcServer, RelaysLiveManualValuesToOtherClientsUntilTheGestureEnds)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string second_buffer;
+    ASSERT_FALSE(read_line_until(second[0], &second_buffer, socket_rpc_startup_timeout).empty());
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":80,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.25}})"
+        "\n");
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_response(80))["result"]["sessionRevision"], 1);
+    EXPECT_EQ(nlohmann::ordered_json::parse(read_line_until(
+        second[0], &second_buffer, socket_rpc_response_timeout))["method"], "session.revisionChanged");
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"drag","value":0.5}})"
+        "\n");
+    auto const frame = nlohmann::ordered_json::parse(read_line_until(
+        second[0], &second_buffer, socket_rpc_response_timeout));
+    EXPECT_EQ(frame["method"], "manualControls.liveValue");
+    EXPECT_EQ(frame["params"]["inputName"], "frequency");
+    EXPECT_EQ(frame["params"]["node"]["instanceId"], "osc");
+    EXPECT_FLOAT_EQ(frame["params"]["value"].get<float>(), .5f);
+    EXPECT_FALSE(frame["params"].contains("revision"));
+
+    // The next value is still inside the relay interval when the end commits.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","method":"manualControls.update","params":{"interactionId":"drag","value":0.75}})"
+        "\n"
+        R"({"jsonrpc":"2.0","id":81,"method":"manualControls.end","params":{"interactionId":"drag","value":0.75,"expectedRevision":1}})"
+        "\n");
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_response(81))["result"]["sessionRevision"], 2);
+    for (;;) {
+        auto const line = read_line_until(second[0], &second_buffer, socket_rpc_response_timeout);
+        ASSERT_FALSE(line.empty());
+        auto const message = nlohmann::ordered_json::parse(line);
+        if (message["method"] == "session.revisionChanged") {
+            EXPECT_EQ(message["params"]["revision"], 2);
+            break;
+        }
+        EXPECT_EQ(message["method"], "manualControls.liveValue");
+    }
+    EXPECT_TRUE(read_line_until(second[0], &second_buffer, 150ms).empty());
+    // The sender receives neither relays nor replies for its live values,
+    // only the revisions of its begin and end.
+    for (auto line = harness.read_line(150ms); !line.empty(); line = harness.read_line(150ms)) {
+        auto const message = nlohmann::ordered_json::parse(line);
+        EXPECT_FALSE(message.contains("id")) << line;
+        EXPECT_EQ(message["method"], "session.revisionChanged") << line;
+    }
+    ::close(second[0]);
+}
+
+TEST(SocketRpcServer, PublishesOneRevisionWhenAClosedClientsGestureCommits)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    auto gesturing = make_socket_pair();
+    harness.server.attach_client(gesturing[1], true);
+    std::string gesturing_buffer;
+    ASSERT_FALSE(read_line_until(gesturing[0], &gesturing_buffer, socket_rpc_startup_timeout).empty());
+    std::string const begin =
+        R"({"jsonrpc":"2.0","id":90,"method":"manualControls.begin","params":{"interactionId":"drag","node":{"instanceId":"osc","path":[]},"inputName":"frequency","value":0.25}})"
+        "\n";
+    ASSERT_EQ(::write(gesturing[0], begin.data(), begin.size()), static_cast<ssize_t>(begin.size()));
+    ASSERT_FALSE(read_response_for_id(gesturing[0], &gesturing_buffer, 90, socket_rpc_response_timeout).empty());
+    EXPECT_EQ(nlohmann::ordered_json::parse(harness.read_line())["params"]["revision"], 1);
+
+    ::close(gesturing[0]);
+    auto const committed = nlohmann::ordered_json::parse(harness.read_line());
+    EXPECT_EQ(committed["method"], "session.revisionChanged");
+    EXPECT_EQ(committed["params"]["revision"], 2);
+}
+
+TEST(SocketRpcServer, RejectsAStaleMutationAfterThePriorMutationCommits)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    ASSERT_EQ(harness.server.revision(), 0u);
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":60,"method":"audioDevices.set","params":{"outputDeviceId":"out-1","inputDeviceId":null,"expectedRevision":0}})"
+        "\n");
+    auto const committed = nlohmann::ordered_json::parse(
+        harness.read_response(60));
+    EXPECT_EQ(committed["result"]["sessionRevision"], 1);
+
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":61,"method":"audioDevices.set","params":{"outputDeviceId":"default","inputDeviceId":null,"expectedRevision":0}})"
+        "\n");
+    auto const stale = nlohmann::ordered_json::parse(
+        harness.read_response(61));
+    EXPECT_TRUE(stale.contains("error"));
+    EXPECT_EQ(stale["error"]["code"], -32009);
+    EXPECT_EQ(stale["error"]["data"]["currentRevision"], 1);
+    EXPECT_TRUE(
+        stale["error"]["message"].get<std::string>().contains(
+            "stale project session revision"));
+    EXPECT_EQ(harness.server.revision(), 1u);
+}
+
+TEST(SocketRpcServer, ReplaysFromARevisionAndAppliesPerClientTopicFilters)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.server.send_server_message(iv::SocketRpcServerMessage{
+        .level = "info",
+        .message = "before attach",
+    });
+    ASSERT_TRUE(harness.read_line().contains("before attach"));
+
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string buffer;
+    ASSERT_FALSE(read_line_until(
+        second[0], &buffer, socket_rpc_startup_timeout).empty());
+    auto const subscribe = std::string(
+        R"({"jsonrpc":"2.0","id":65,"method":"session.subscribe","params":{"afterRevision":0,"topics":["server.message"]}})"
+        "\n");
+    ASSERT_EQ(
+        ::write(second[0], subscribe.data(), subscribe.size()),
+        static_cast<ssize_t>(subscribe.size()));
+    auto const response = nlohmann::ordered_json::parse(read_response_for_id(
+        second[0], &buffer, 65, socket_rpc_response_timeout));
+    EXPECT_FALSE(response["result"]["snapshotRequired"]);
+    EXPECT_EQ(response["result"]["replayedNotificationCount"], 1);
+    auto const replayed = read_line_until(
+        second[0], &buffer, socket_rpc_response_timeout);
+    EXPECT_TRUE(replayed.contains("before attach"));
+
+    harness.server.send_server_status(iv::SocketRpcServerStatus{
+        .level = "info",
+        .message = "filtered status",
+    });
+    harness.server.send_server_message(iv::SocketRpcServerMessage{
+        .level = "info",
+        .message = "selected message",
+    });
+    auto const selected = read_line_until(
+        second[0], &buffer, socket_rpc_response_timeout);
+    EXPECT_TRUE(selected.contains("selected message")) << selected;
+    EXPECT_FALSE(selected.contains("filtered status")) << selected;
+    ::close(second[0]);
+}
+
+TEST(SocketRpcServer, DisconnectsAClientWhoseOutboundQueueCannotAcceptAMessage)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    // Losing the owner would stop the server, so the owner filters out the
+    // oversized server.message and only the second client overflows.
+    harness.write_request(
+        R"({"jsonrpc":"2.0","id":64,"method":"session.subscribe","params":{"afterRevision":0,"topics":["server.status"]}})"
+        "\n");
+    ASSERT_FALSE(harness.read_response(64).empty());
+
+    auto second = make_socket_pair();
+    harness.server.attach_client(second[1], true);
+    std::string second_buffer;
+    ASSERT_FALSE(read_line_until(
+        second[0], &second_buffer, socket_rpc_startup_timeout).empty());
+    ASSERT_EQ(harness.server.client_count(), 2u);
+
+    harness.server.send_server_message(iv::SocketRpcServerMessage{
+        .level = "info",
+        .message = std::string(2 * 1024 * 1024, 'x'),
+    });
+
+    auto const deadline = std::chrono::steady_clock::now() + 2s;
+    while (harness.server.client_count() != 1
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_EQ(harness.server.client_count(), 1u);
+    ::close(second[0]);
+
+    auto replacement = make_socket_pair();
+    harness.server.attach_client(replacement[1], true);
+    std::string buffer;
+    ASSERT_FALSE(read_line_until(
+        replacement[0], &buffer, socket_rpc_startup_timeout).empty());
+    auto const subscribe = std::string(
+        R"({"jsonrpc":"2.0","id":66,"method":"session.subscribe","params":{"afterRevision":0,"topics":[]}})"
+        "\n");
+    ASSERT_EQ(
+        ::write(replacement[0], subscribe.data(), subscribe.size()),
+        static_cast<ssize_t>(subscribe.size()));
+    auto const response = nlohmann::ordered_json::parse(read_response_for_id(
+        replacement[0], &buffer, 66, socket_rpc_response_timeout));
+    EXPECT_TRUE(response["result"]["snapshotRequired"]);
+    EXPECT_EQ(response["result"]["oldestAvailableRevision"], 1);
+    ::close(replacement[0]);
+}
+
+TEST(SocketRpcServer, PublishesProtectedLocalDescriptorAndElectsOneOwner)
+{
+    socket_rpc_test_state.reset();
+    auto const workspace = make_server_workspace();
+    std::filesystem::path descriptor_path;
+    {
+        iv::SocketRpcServer server(workspace);
+        server.start();
+        ASSERT_TRUE(server.wait_until_ready(socket_rpc_startup_timeout));
+        auto const endpoint = server.endpoint();
+        ASSERT_TRUE(endpoint.has_value());
+        descriptor_path = endpoint->parent_path() / "descriptor.json";
+        std::ifstream descriptor_input(descriptor_path);
+        ASSERT_TRUE(static_cast<bool>(descriptor_input));
+        auto const descriptor = nlohmann::ordered_json::parse(descriptor_input);
+        EXPECT_EQ(descriptor["protocolVersion"], 0);
+        EXPECT_EQ(
+            descriptor["projectRoot"],
+            std::filesystem::weakly_canonical(workspace).generic_string());
+        ASSERT_TRUE(descriptor["localCapability"].is_string());
+        EXPECT_FALSE(
+            descriptor["localCapability"].get<std::string>().empty());
+
+        iv::SocketRpcServer contender(workspace);
+        EXPECT_THROW(contender.start(), std::runtime_error);
+        EXPECT_TRUE(std::filesystem::exists(descriptor_path));
+
+        auto const client_fd = connect_unix_socket(*endpoint);
+        std::string buffer;
+        auto const ready = read_line_until(
+            client_fd, &buffer, socket_rpc_startup_timeout);
+        EXPECT_TRUE(ready.contains(R"("authenticationRequired":true)"));
+
+        auto const unauthenticated = std::string(
+            R"({"jsonrpc":"2.0","id":63,"method":"audioDevices.get","params":{}})"
+            "\n");
+        ASSERT_EQ(
+            ::write(
+                client_fd, unauthenticated.data(), unauthenticated.size()),
+            static_cast<ssize_t>(unauthenticated.size()));
+        EXPECT_TRUE(read_response_for_id(
+            client_fd, &buffer, 63, socket_rpc_response_timeout).contains(
+                "session client is not authenticated"));
+
+        auto const wrong_hello = std::string(
+            R"({"jsonrpc":"2.0","id":64,"method":"session.hello","params":{"clientId":"test-client","localCapability":"wrong"}})"
+            "\n");
+        ASSERT_EQ(
+            ::write(client_fd, wrong_hello.data(), wrong_hello.size()),
+            static_cast<ssize_t>(wrong_hello.size()));
+        EXPECT_TRUE(read_response_for_id(
+            client_fd, &buffer, 64, socket_rpc_response_timeout).contains(
+                "session local capability is invalid"));
+
+        auto const hello = std::string(
+            R"({"jsonrpc":"2.0","id":62,"method":"session.hello","params":{"clientId":"test-client","localCapability":")")
+            + descriptor["localCapability"].get<std::string>()
+            + R"("}})"
+            + "\n";
+        ASSERT_EQ(
+            ::write(client_fd, hello.data(), hello.size()),
+            static_cast<ssize_t>(hello.size()));
+        auto const response = read_response_for_id(
+            client_fd, &buffer, 62, socket_rpc_response_timeout);
+        EXPECT_TRUE(response.contains(R"("clientId":"test-client")"));
+        ::close(client_fd);
+
+        server.request_shutdown();
+        server.wait();
+    }
+    EXPECT_FALSE(std::filesystem::exists(descriptor_path));
+}
+
+TEST(SocketRpcServer, AudioSelectionParticipatesInRevisionStampedProjectUndoRedo)
+{
+    socket_rpc_test_state.reset();
+    auto harness = SocketRpcHarness(make_server_workspace());
+    ASSERT_FALSE(harness.read_line().empty());
+    harness.write_request(R"({"id":90,"method":"audioDevices.set","params":{"outputDeviceId":"out-1","inputDeviceId":null}})" "\n");
+    auto selected = nlohmann::ordered_json::parse(harness.read_response(90));
+    ASSERT_FALSE(selected.contains("error"));
+    EXPECT_EQ(selected["result"]["selectedOutput"]["deviceId"], "out-1");
+    harness.write_request(R"({"id":91,"method":"project.undo","params":{}})" "\n");
+    auto undone = nlohmann::ordered_json::parse(harness.read_response(91));
+    ASSERT_FALSE(undone.contains("error"));
+    EXPECT_GT(undone["result"]["sessionRevision"].get<std::uint64_t>(), selected["result"]["sessionRevision"].get<std::uint64_t>());
+    harness.write_request(R"({"id":92,"method":"audioDevices.get","params":{}})" "\n");
+    auto state = nlohmann::ordered_json::parse(harness.read_response(92));
+    EXPECT_EQ(state["result"]["selectedOutput"]["deviceId"], "default");
+    harness.write_request(R"({"id":93,"method":"project.redo","params":{}})" "\n");
+    auto redone = nlohmann::ordered_json::parse(harness.read_response(93));
+    ASSERT_FALSE(redone.contains("error"));
+    EXPECT_GT(redone["result"]["sessionRevision"].get<std::uint64_t>(), undone["result"]["sessionRevision"].get<std::uint64_t>());
+    harness.write_request(R"({"id":94,"method":"audioDevices.get","params":{}})" "\n");
+    state = nlohmann::ordered_json::parse(harness.read_response(94));
+    EXPECT_EQ(state["result"]["selectedOutput"]["deviceId"], "out-1");
 }

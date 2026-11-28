@@ -1,0 +1,58 @@
+import { markRaw, shallowRef, type Component } from "vue";
+
+import GenericPresentation from "./GenericPresentation.vue";
+import SamplerPresentation from "./SamplerPresentation.vue";
+import PluginLane from "./PluginLane.vue";
+import { PresentationRegistry } from "./registry";
+import { genericPresentationId, projectProgramsByDefinition } from "../../src/presentationPrograms";
+import type { PresentationArtifact } from "../../src/presentationPlugin";
+export { genericPresentationId };
+
+// The client's presentation registry. Specialized presentations bundled with
+// the client register here by stable leaf or module definition ID.
+const presentations = new PresentationRegistry<Component>({
+    presentationId: genericPresentationId,
+    displayName: "Generic",
+    component: markRaw(GenericPresentation),
+});
+presentations.register({ presentationId: "builtin.timeline", displayName: "Timeline",
+    definitionIds: ["builtin.timeline"], component: markRaw(GenericPresentation), timeline: true,
+    icon: "M2 5h12v7H2zm3 0v3m3-3v4m3-4v3" });
+presentations.register({ presentationId: "builtin.sampler", displayName: "Sampler",
+    definitionIds: ["builtin.sampler"], component: markRaw(SamplerPresentation) });
+
+const hosted = markRaw(PluginLane);
+const projectPrograms = shallowRef(new Map<string, PresentationArtifact>());
+const shippedPrograms = shallowRef(new Map<string, PresentationArtifact>());
+
+export function replaceProjectPresentations(plugins: PresentationArtifact[]): void {
+    const next = new Map<string, PresentationArtifact>();
+    const previous = projectPrograms.value;
+    for (const [id, plugin] of projectProgramsByDefinition(plugins)) {
+        const existing = previous.get(id);
+        next.set(id, existing && existing.id === plugin.id && existing.digest === plugin.digest
+            && JSON.stringify(existing.manifest) === JSON.stringify(plugin.manifest) ? existing : plugin);
+    }
+    projectPrograms.value = next;
+    const previousShipped = shippedPrograms.value;
+    shippedPrograms.value = new Map(plugins.filter(({ id }) => id.startsWith("builtin/")).map((artifact) => {
+        const existing = previousShipped.get(artifact.id);
+        return [artifact.id, existing?.digest === artifact.digest ? existing : artifact];
+    }));
+}
+
+export function shippedPresentation(id: string): PresentationArtifact | undefined {
+    return shippedPrograms.value.get(id);
+}
+
+export function selectPresentation(definitionId: string) {
+    const program = projectPrograms.value.get(definitionId);
+    if (program) {
+        const manifest = program.manifest;
+        const configuration = manifest.initialConfiguration;
+        return { component: hosted, program, presentationId: program.id, displayName: manifest.title, usedGeneric: false,
+            timeline: manifest.timeline, icon: manifest.icon,
+            createInitialConfiguration: configuration === undefined ? undefined : () => configuration };
+    }
+    return { ...presentations.select(definitionId), program: undefined };
+}

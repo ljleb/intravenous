@@ -1,4 +1,7 @@
 #include <intravenous/module/loader.h>
+#include <intravenous/module/package_manifest.h>
+
+#include "build_cache_scratch.h"
 
 #include <algorithm>
 #include <chrono>
@@ -47,8 +50,7 @@ enum class SourceShape {
 };
 
 struct Options {
-    std::filesystem::path workspace =
-        std::filesystem::temp_directory_path() / "intravenous-module-build-benchmark";
+    std::filesystem::path workspace;
     size_t voices = 1;
     bool keep_workspace = false;
     bool source_introspection = true;
@@ -100,7 +102,7 @@ std::string benchmark_source(size_t voices, SourceShape shape)
 {
     std::ostringstream source;
     auto finish = [&] {
-        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main);\n";
+        source << "\nIV_MODULE(\"iv.benchmark.compile\", module_main, \"Compile Benchmark\");\n";
         return source.str();
     };
     source << "#include <intravenous/dsl.h>\n";
@@ -117,14 +119,14 @@ std::string benchmark_source(size_t voices, SourceShape shape)
         return finish();
     }
     source << "    using namespace iv;\n"
-           << "    auto const frequency = g.input<\"frequency\">(220.0f);\n";
+           << "    auto const frequency = g.input(\"Frequency\", {.default_value = 220.0f});\n";
     if (shape == SourceShape::input) {
         source << "}\n";
         return finish();
     }
     for (size_t voice = 0; voice < voices; ++voice) {
         source << "    auto const osc" << voice
-               << " = g.node<\"saw_oscillator\">();\n";
+               << " = g.node<\"saw\">();\n";
     }
     if (shape == SourceShape::nodes) {
         source << "}\n";
@@ -362,7 +364,7 @@ std::vector<std::pair<std::string, std::int64_t>> finalizer_timings(
 {
     std::istringstream lines(read(path));
     std::string line;
-    if (!std::getline(lines, line) || line != "version=1") {
+    if (!std::getline(lines, line) || line != "version=0") {
         throw std::runtime_error("invalid finalizer timing report '" + path.string() + "'");
     }
 
@@ -493,7 +495,7 @@ void run(Options const& options)
         }
         workload = "project-module";
     } else {
-        module = options.workspace / "modules" / "compile_benchmark";
+        module = options.workspace / iv::IV_PROJECT_PACKAGES_DIR / "compile_benchmark";
         hot_source = module / "module.cpp";
         write(options.workspace / "iv_project.jsonl", "");
         write(module / "iv_package.json", R"({"schema":2,"entry":"module.cpp"})");
@@ -504,7 +506,7 @@ void run(Options const& options)
     {
         std::vector<std::string> loader_log;
         iv::ModuleLoader loader(
-            std::filesystem::current_path(), {},
+            std::filesystem::current_path(),
             iv::ModuleLoaderToolchainConfig{
                 .c_compiler = options.c_compiler,
                 .cxx_compiler = options.cxx_compiler,
@@ -513,8 +515,13 @@ void run(Options const& options)
             },
             [&](std::string const& entry) { loader_log.push_back(entry); });
 
+        // Measure a cold and warm build in an explicitly owned workspace.
+        auto const request = iv::PackageBuildRequest{
+            .package_root = module,
+            .artifact_root = options.workspace / "artifacts",
+        };
         auto const cold_start = Clock::now();
-        (void)loader.compile_package(module);
+        (void)loader.compile_package(request);
         auto const cold_elapsed = Clock::now() - cold_start;
         auto const ninja_log = find_ninja_log(options.workspace);
         auto const cold_log = read(ninja_log);
@@ -541,7 +548,7 @@ void run(Options const& options)
         write(hot_source, source);
         loader_log.clear();
         auto const hot_start = Clock::now();
-        (void)loader.compile_package(module);
+        (void)loader.compile_package(request);
         auto const hot_elapsed = Clock::now() - hot_start;
         auto const hot_log = read(ninja_log);
         auto const hot_finalizer_timings = finalizer_timings(
@@ -576,7 +583,12 @@ void run(Options const& options)
 int main(int argc, char** argv)
 {
     try {
-        run(parse_options(argc, argv));
+        auto options = parse_options(argc, argv);
+        if (options.workspace.empty()) {
+            if (options.keep_workspace) throw std::invalid_argument("--keep requires --workspace");
+            options.workspace = benchmark_scratch(argc, argv) / "module-build";
+        }
+        run(options);
     } catch (std::exception const& error) {
         std::cerr << "iv-module-build-benchmark: " << error.what() << '\n';
         return 1;

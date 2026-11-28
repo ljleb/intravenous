@@ -5,7 +5,7 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     using namespace iv;
 
     auto const phase = g.node<"phase_integrator">();
-    auto const osc = g.node<"saw_oscillator">();
+    auto const osc = g.node<"saw">();
     auto const low_pass = g.node<"simple_iir_low_pass">();
     auto const high_pass = g.node<"simple_iir_high_pass">();
 
@@ -21,4 +21,4 @@ void benchmark_constant_filtered(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
-IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered);
+IV_MODULE("iv.test.benchmark_constant_filtered", benchmark_constant_filtered, "Benchmark Constant Filtered");

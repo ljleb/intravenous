@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -17,6 +18,9 @@
 
 namespace iv {
 class GraphBuilder;
+namespace details {
+struct BuilderSession;
+}
 
 template<class ChannelType>
 class TypedSamplePortRef;
@@ -31,8 +35,11 @@ class TypedPublicSampleInputRef;
 
 // A sample expression is exactly the ordered semantic source channels that
 // participate in an configured connection. It has no execution/topology address.
+// Its identity is the owning BuilderSession: refs created through different
+// GraphBuilder/SubgraphBuilder views of one session are compatible, refs from
+// different sessions are not.
 struct SamplePortRef {
-  GraphBuilder* graph_builder{};
+  details::BuilderSession* session{};
   ChannelTypeId channel_type = ChannelTypeId::mono;
   // The semantic channel list belongs to the builder graph. Keeping only a
   // handle here makes copied and typed DSL references cheap and is the same
@@ -60,11 +67,14 @@ struct SamplePortRef {
   auto operator[](Member) const
   requires requires {
     typename std::remove_cvref_t<Member>::channel_type;
-    std::remove_cvref_t<Member>::channel_ordinal;
+    std::remove_cvref_t<Member>::channel_index;
   };
-  SamplePortRef detach(size_t loop_extra_latency = 1) const;
+  SamplePortRef detach(
+      size_t loop_extra_latency = 1,
+      std::optional<Sample> initial_value = std::nullopt) const;
   void _annotate_source_info(
-      std::string_view, std::string_view, uint32_t, uint32_t) const;
+      std::string_view, std::string_view, uint32_t, uint32_t,
+      uint32_t declaration_line = 0, bool no_lane = false) const;
   std::string to_string() const;
 };
 
@@ -93,8 +103,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end) const {
-    _port._annotate_source_info(id, file, begin, end);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Channel>
@@ -113,15 +123,15 @@ public:
   using member_type = Member;
   explicit TypedSamplePortChannelRef(
       TypedSamplePortRef<ChannelType> port)
-      : _port(port.erased().select_channel(Member::channel_ordinal)) {}
+      : _port(port.erased().select_channel(Member::channel_index)) {}
 
   constexpr operator SamplePortRef() const { return _port; }
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr SamplePortRef const& port() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end) const {
-    _port._annotate_source_info(id, file, begin, end);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 };
 
@@ -143,7 +153,7 @@ public:
             members.data(), members.size())) {}
   explicit TypedSamplePortTileRef(SamplePortRef port)
       : _port(std::move(port)) {
-    if (!_port.graph_builder ||
+    if (!_port.session ||
         _port.channel_type != ChannelTypeTraits<ChannelType>::id ||
         _port.channels().size() != ChannelType::channel_count)
       details::error("typed tiled sample output does not match its channel type");
@@ -153,8 +163,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end) const {
-    _port._annotate_source_info(id, file, begin, end);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Member>
@@ -178,8 +188,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end) const {
-    _port._annotate_source_info(id, file, begin, end);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _port._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 };
 
@@ -190,7 +200,7 @@ requires std::same_as<typename std::remove_cvref_t<Member>::channel_type,
                       ChannelType> {
   using MemberType = std::remove_cvref_t<Member>;
   return TypedSamplePortTileChannelRef<ChannelType, MemberType>{
-      _port.select_channel(MemberType::channel_ordinal)};
+      _port.select_channel(MemberType::channel_index)};
 }
 
 template<class ChannelType>
@@ -213,13 +223,11 @@ struct PublicSampleInputRef {
   void _annotate_source_info(
       std::string_view declaration_identity,
       std::string_view file_path,
-      uint32_t begin, uint32_t end) const;
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const;
 };
 
-// A named public input has a compile-time channel type when it was declared
-// through GraphBuilder::input<Name, ChannelType>.  Keep its public-input
-// identity so source annotations still attach to the graph interface, while
-// exposing the same channel-selection API as a TypedSamplePortRef.
+// Keep the public-input identity for source annotations while exposing
+// compile-time channel selection like TypedSamplePortRef.
 template<class ChannelType>
 class TypedPublicSampleInputRef {
   PublicSampleInputRef _input;
@@ -235,8 +243,8 @@ public:
   constexpr SamplePortRef const& erased() const { return _input.port; }
   constexpr void _annotate_source_info(
       std::string_view id, std::string_view file,
-      uint32_t begin, uint32_t end) const {
-    _input._annotate_source_info(id, file, begin, end);
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const {
+    _input._annotate_source_info(id, file, begin, end, declaration_line, no_lane);
   }
 
   template<class Channel>
@@ -252,10 +260,10 @@ template<class Member>
 auto SamplePortRef::operator[](Member member) const
 requires requires {
   typename std::remove_cvref_t<Member>::channel_type;
-  std::remove_cvref_t<Member>::channel_ordinal;
+  std::remove_cvref_t<Member>::channel_index;
 } {
   using ChannelType = typename std::remove_cvref_t<Member>::channel_type;
-  if (!graph_builder ||
+  if (!session ||
       channel_type != ChannelTypeTraits<ChannelType>::id ||
       channels().size() != ChannelType::channel_count) {
     details::error("sample port does not match the requested channel type");
@@ -267,7 +275,7 @@ requires requires {
 // configuration. A tiled source is one TiledNodeBundle event port; lowering expands
 // it to member execution ports when compiling the graph.
 struct EventPortRef {
-  GraphBuilder* graph_builder{};
+  details::BuilderSession* session{};
   EventTypeId type = EventTypeId::empty;
   // Like SamplePortRef, this is a session-owned semantic expression, not a
   // container embedded in every DSL value.
@@ -279,12 +287,15 @@ struct EventPortRef {
   explicit EventPortRef(GraphBuilder&, NodeBundlePortId bundle_port);
   explicit EventPortRef(
       GraphBuilder&, EventTypeId, std::span<EventOutputPortId const>);
+  explicit EventPortRef(GraphBuilder&, std::span<EventPortRef const>);
 
   constexpr EventPortRef& operator=(EventPortRef const&) = default;
   constexpr EventPortRef& operator=(EventPortRef&&) noexcept = default;
   std::span<EventOutputPortId const> sources() const;
+  EventPortRef detach(size_t loop_extra_latency = 1) const;
   void _annotate_source_info(
-      std::string_view, std::string_view, uint32_t, uint32_t) const;
+      std::string_view, std::string_view, uint32_t, uint32_t,
+      uint32_t declaration_line = 0, bool no_lane = false) const;
   std::string to_string() const;
 };
 
@@ -299,6 +310,6 @@ struct PublicEventInputRef {
   void _annotate_source_info(
       std::string_view declaration_identity,
       std::string_view file_path,
-      uint32_t begin, uint32_t end) const;
+      uint32_t begin, uint32_t end, uint32_t declaration_line = 0, bool no_lane = false) const;
 };
 } // namespace iv

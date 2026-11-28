@@ -1,5 +1,26 @@
 {
   "nodes": {
+    "c-docc": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1795404481,
+        "narHash": "sha256-1mfuhpNhuE9YFOGw66WKY1aYp4oBH7xG1XTnHZpoweg=",
+        "owner": "ljleb",
+        "repo": "c-docc",
+        "rev": "b6b8c8a4c3c3402113f89f3eb1c307de0af8777f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ljleb",
+        "ref": "0.0.1",
+        "repo": "c-docc",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1788614874,
@@ -18,6 +39,7 @@
     },
     "root": {
       "inputs": {
+        "c-docc": "c-docc",
         "nixpkgs": "nixpkgs"
       }
     }

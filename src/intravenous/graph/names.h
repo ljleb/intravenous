@@ -39,6 +39,12 @@ constexpr std::string event_type_name(EventTypeId type)
         return "boundary";
     case EventTypeId::empty:
         return "empty";
+    case EventTypeId::sample:
+        return "sample";
+    case EventTypeId::curve_point:
+        return "curve_point";
+    case EventTypeId::beat:
+        return "beat";
     case EventTypeId::count:
         break;
     }
@@ -63,7 +69,7 @@ constexpr std::string stable_identity_suffix(std::string_view value)
     return std::string(digits + begin, digits + sizeof(digits));
 }
 
-constexpr std::string typed_virtual_node_id(
+constexpr std::string typed_symbolic_node_id(
     std::string_view source_identity,
     std::string_view type_identity)
 {

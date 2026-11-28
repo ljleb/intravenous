@@ -1,0 +1,22 @@
+{
+  "presentationId": "example.marker/marker",
+  "snapshot": {
+    "node": {
+      "address": {"instanceId": "50645d7a-74a8-485f-aad5-de193445a692"},
+      "definitionId": "builtin.beats",
+      "arguments": [],
+      "ports": []
+    },
+    "revision": 0,
+    "mode": "editable",
+    "editable": true,
+    "viewport": {"width": 500, "height": 80},
+    "observations": {},
+    "state": null
+  },
+  "inputs": [
+    {"atMs": 0, "value": {"type": "gesture", "id": "1", "phase": "begin", "point": {"x": 250, "y": 40}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}},
+    {"atMs": 40, "value": {"type": "gesture", "id": "1", "phase": "move", "point": {"x": 150, "y": 40}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}},
+    {"atMs": 80, "value": {"type": "gesture", "id": "1", "phase": "finish", "point": {"x": 150, "y": 40}, "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}}}
+  ]
+}

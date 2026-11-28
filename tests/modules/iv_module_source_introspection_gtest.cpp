@@ -1,25 +1,31 @@
 #include "../module_test_utils.h"
+#include "../event_source_test_support.h"
 
-#include <intravenous/runtime/graph_input_lanes.h>
-#include <intravenous/runtime/graph_input_lanes_timeline_bridge.h>
-#include <intravenous/runtime/iv_module_definitions_iv_module_instances_bridge.h>
-#include <intravenous/runtime/iv_module_instances.h>
-#include <intravenous/runtime/iv_module_instances_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/iv_module_instances_iv_module_source_introspection_bridge.h>
-#include <intravenous/runtime/lane_filters.h>
-#include <intravenous/runtime/timeline_lane_filters_bridge.h>
-#include <intravenous/runtime/iv_module_source_introspection.h>
-#include <intravenous/runtime/iv_module_source_introspection_graph_input_lanes_bridge.h>
-#include <intravenous/runtime/timeline.h>
-#include <intravenous/node/block_executor.h>
+#include <intravenous/app/bridges/node_definitions_project_graph_bridge.h>
+#include <intravenous/project/graph_connections.h>
+#include <intravenous/project/project_graph.h>
+#include <intravenous/project/runtime_project_events.h>
+#include <intravenous/app/bridges/project_graph_graph_connections_bridge.h>
+#include <intravenous/app/bridges/project_graph_node_instances_bridge.h>
+#include <intravenous/app/bridges/project_graph_package_definitions_bridge.h>
+#include <intravenous/app/bridges/project_graph_iv_module_source_introspection_bridge.h>
+#include <intravenous/rpc/socket_rpc_requests.h>
+#include <intravenous/rpc/socket_rpc_response_builders.h>
+#include <intravenous/project/node_instances.h>
+#include <intravenous/packages/package_definitions.h>
+#include <intravenous/packages/package_jit.h>
+#include <intravenous/app/bridges/node_instances_iv_module_source_introspection_bridge.h>
+#include <intravenous/packages/iv_module_source_introspection.h>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -38,58 +44,97 @@ std::string source_text(iv::LiveSourceSpan const& span)
     return map.text.substr(begin, end - begin);
 }
 
-struct SeededIvModuleSourceIntrospectionApp {
-    iv::Timeline timeline;
-    iv::IvModuleInstances instances;
-    iv::IvModuleDefinitions definitions;
-    iv::GraphInputLanes graph_input_lanes;
-    iv::LaneFilters lane_filters;
+struct InitializedIvModuleSourceIntrospectionApp {
+    iv::NodeInstances instances;
+    iv::NodeDefinitions definitions;
+    iv::GraphConnections graph_connections;
+    iv::ProjectGraph project_graph;
     iv::IvModuleSourceIntrospection introspection;
+    iv::PackageDefinitions packages;
     iv::StartupConfig startup_config;
-    iv::timeline_lane_filters_bridge::scope timeline_lane_filters_scope;
-    iv::iv_module_definitions_iv_module_instances_bridge::scope
-        iv_module_definitions_iv_module_instances_scope;
-    iv::iv_module_instances_iv_module_source_introspection_bridge::scope
+    iv::node_definitions_project_graph_bridge::scope
+        node_definitions_project_graph_scope;
+    iv::project_graph_node_instances_bridge::scope
+        project_graph_node_instances_scope;
+    iv::project_graph_graph_connections_bridge::scope
+        project_graph_graph_connections_scope;
+    iv::project_graph_package_definitions_bridge::scope
+        project_graph_package_definitions_scope;
+    iv::project_graph_iv_module_source_introspection_bridge::scope
+        project_graph_iv_module_source_introspection_scope;
+    iv::node_instances_iv_module_source_introspection_bridge::scope
         iv_module_instances_iv_module_source_introspection_scope;
-    iv::iv_module_instances_graph_input_lanes_bridge::scope
-        iv_module_instances_graph_input_lanes_scope;
-    iv::iv_module_source_introspection_graph_input_lanes_bridge::scope
-        iv_module_source_introspection_graph_input_lanes_scope;
-    iv::graph_input_lanes_timeline_bridge::scope
-        graph_input_lanes_timeline_scope;
 
-    SeededIvModuleSourceIntrospectionApp(
+    ~InitializedIvModuleSourceIntrospectionApp() { project_graph.stop_compilation(); }
+
+    InitializedIvModuleSourceIntrospectionApp(
         std::filesystem::path workspace_root,
         std::filesystem::path discovery_start,
-        std::vector<std::filesystem::path> extra_search_roots)
-        : startup_config(
+        std::vector<std::filesystem::path> extra_common_package_roots)
+        : packages(workspace_root),
+          startup_config(
               std::move(workspace_root),
               std::move(discovery_start),
-              std::move(extra_search_roots)),
-          timeline_lane_filters_scope(timeline, lane_filters),
-          iv_module_definitions_iv_module_instances_scope(definitions, instances),
+              std::move(extra_common_package_roots)),
+          node_definitions_project_graph_scope(definitions, project_graph),
+          project_graph_node_instances_scope(project_graph, instances),
+          project_graph_graph_connections_scope(project_graph, graph_connections),
+          project_graph_package_definitions_scope(project_graph, packages),
+          project_graph_iv_module_source_introspection_scope(
+              project_graph,
+              introspection),
           iv_module_instances_iv_module_source_introspection_scope(
               instances,
-              introspection),
-          iv_module_instances_graph_input_lanes_scope(
-              instances,
-              graph_input_lanes),
-          iv_module_source_introspection_graph_input_lanes_scope(
-              introspection,
-              graph_input_lanes),
-          graph_input_lanes_timeline_scope(graph_input_lanes, timeline)
+              introspection)
     {}
 
-    auto initialize()
+    void initialize()
     {
-        auto const config = startup_config.initialize();
+        auto config = startup_config.initialize();
         auto const module_root = std::filesystem::weakly_canonical(config.workspace_root);
-        auto definition = iv::test::load_runtime_iv_module_definition(config, module_root);
-        (void)instances.create_instance(
-            definition.module_id,
-            module_root,
-            "instance:1");
-        definitions.seed_loaded_definition(std::move(definition));
+        auto const builtin_root = iv::test::staged_builtin_package_root();
+        iv::PackageJit jit(std::move(config));
+        iv::PackageJitBatchRequest request{
+            .declarations = {{
+                .package_id = builtin_root.generic_string(),
+                .package_root = builtin_root,
+                .provenance = iv::PackageProvenance::built_in,
+                .artifact_root = iv::test::builtin_package_artifact_root(),
+                .package_namespace = "builtin",
+            }, {
+                .package_id = module_root.generic_string(),
+                .package_root = module_root,
+            }},
+        };
+        jit.handle_build_request(request);
+        if (!request.result.failed.empty())
+            throw std::runtime_error(request.result.failed.front().message);
+        auto const project = std::ranges::find(request.result.revisions, module_root, &iv::PackageRevision::package_root);
+        ASSERT_NE(project, request.result.revisions.end());
+        ASSERT_FALSE(project->module_definitions.empty());
+        auto const module_id = project->module_definitions.front().definition_id;
+
+        // Keep the real provider tables so ProjectGraph can construct the
+        // instance and expose its declaration locations.
+        auto snapshot = std::make_shared<iv::PackageDefinitionsSnapshot>();
+        snapshot->generation = 1;
+        for (auto& revision : request.result.revisions) {
+            auto id = revision.package_id;
+            snapshot->by_package_id.emplace(std::move(id),
+                std::make_shared<iv::PackageRevision const>(std::move(revision)));
+        }
+        iv::PackageDefinitionsPublicationRequest publication{.snapshot = std::move(snapshot)};
+        in_event_source([&] { definitions.handle_package_definitions_publication(publication); });
+        iv::ProjectStringBuilder created;
+        in_event_source([&] { return project_graph.handle_project_create_node_instance(
+            iv::ProjectCreateNodeInstanceRequest{
+                .instance_id = "instance:1",
+                .definition_id = module_id,
+                .package_root = module_root,
+            },
+            created); });
+        EXPECT_EQ(created.build(), "instance:1");
+        ASSERT_FALSE(project_graph.configuration_failure());
     }
 
     auto query_by_spans(
@@ -105,44 +150,14 @@ struct SeededIvModuleSourceIntrospectionApp {
         return introspection.query_active_regions(file_path);
     }
 
-    auto get_virtual_node(std::string const &node_id) const
+    auto get_symbolic_node(std::string const &node_id) const
     {
-        return introspection.get_virtual_node(node_id);
+        return introspection.get_symbolic_node(node_id);
     }
 
-    auto get_virtual_nodes(std::vector<std::string> const &node_ids) const
+    auto get_symbolic_nodes(std::vector<std::string> const &node_ids) const
     {
-        return introspection.get_virtual_nodes(node_ids);
-    }
-
-    void set_sample_input_value(
-        std::string const &node_id,
-        size_t input_ordinal,
-        iv::Sample value,
-        std::optional<size_t> member_ordinal = std::nullopt)
-    {
-        graph_input_lanes.set_sample_input_value(
-            iv::ProjectSetSampleInputValueRequest {
-                .node_id = node_id,
-                .member_ordinal = member_ordinal,
-                .input_ordinal = input_ordinal,
-                .value = value,
-            });
-    }
-
-    void set_sample_input_state(
-        std::string const &node_id,
-        size_t input_ordinal,
-        iv::ProjectSampleInputState state,
-        std::optional<size_t> member_ordinal = std::nullopt)
-    {
-        graph_input_lanes.set_sample_input_state(
-            iv::ProjectSetSampleInputStateRequest {
-                .node_id = node_id,
-                .member_ordinal = member_ordinal,
-                .input_ordinal = input_ordinal,
-                .state = state,
-            });
+        return introspection.get_symbolic_nodes(node_ids);
     }
 };
 } // namespace
@@ -151,7 +166,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
 {
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -169,7 +184,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansReturnsMatchingLiveNodesWithPorts)
     EXPECT_FALSE(node.kind.empty());
     EXPECT_FALSE(node.source_spans.empty());
     bool has_any_port =
-        !node.sample_inputs.empty() || !node.sample_outputs.empty() || !node.event_inputs.empty() ||
+        !node.continuous_inputs.empty() || !node.continuous_outputs.empty() || !node.event_inputs.empty() ||
         !node.event_outputs.empty();
     EXPECT_TRUE(has_any_port);
 }
@@ -197,13 +212,13 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<AliasedStateNode> const& ctx) const
         {
             auto& state = ctx.state();
-            ctx.outputs[0].push(state.gain);
+            ctx.template output<0>().push(state.gain);
             ++state.phase;
         }
     };
@@ -211,13 +226,13 @@ namespace {
     struct InheritedStateNode : StateCarrier {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void tick(iv::TickSampleContext<InheritedStateNode> const& ctx) const
         {
             auto& state = ctx.state();
-            ctx.outputs[0].push(state.gain);
+            ctx.template output<0>().push(state.gain);
             ++state.phase;
         }
     };
@@ -227,7 +242,7 @@ namespace {
 
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{};
+            return std::array<iv::SequentialOutputConfig<iv::Sample>, 1>{};
         }
 
         void initialize(iv::InitializationContext<ScalarStateNode> const& ctx) const
@@ -237,8 +252,26 @@ namespace {
 
         void tick(iv::TickSampleContext<ScalarStateNode> const& ctx) const
         {
-            ctx.outputs[0].push(static_cast<float>(ctx.state()));
+            ctx.template output<0>().push(static_cast<float>(ctx.state()));
         }
+    };
+
+    struct BackgroundStatePayload {
+        std::uint64_t epoch = 3;
+        float gain = 0.25f;
+    };
+
+    struct BackgroundStateNode {
+        using State = BackgroundStatePayload;
+
+        static constexpr auto outputs()
+        {
+            return std::array{iv::output<iv::Sample>({"out", "Out"}, iv::OutputProduction::coverage)};
+        }
+
+        void propagate_forward_coverage(iv::PropagateForwardCoverageContext<BackgroundStateNode>& ctx) const
+        { ctx.output<"out">().publish(std::span<iv::GlobalIndexRange const>{}); }
+        void tock_coverage(iv::TockCoverageContext<BackgroundStateNode>&) const {}
     };
 
     void aliased_state_module(iv::GraphBuilder& g)
@@ -247,53 +280,72 @@ namespace {
         auto const direct = details::configure_concrete_node<AliasedStateNode>(g);
         auto const inherited = details::configure_concrete_node<InheritedStateNode>(g);
         auto const scalar = details::configure_concrete_node<ScalarStateNode>(g);
+        auto const background = details::configure_concrete_node<BackgroundStateNode>(g);
         g.outputs(
-            "direct"_P = direct,
-            "inherited"_P = inherited,
-            "scalar"_P = scalar);
+            "direct"_P.with_display_name("Direct") = direct,
+            "inherited"_P.with_display_name("Inherited") = inherited,
+            "scalar"_P.with_display_name("Scalar") = scalar,
+            "background"_P.with_display_name("Background") = background);
     }
 }
 )");
 
     auto loader = iv::test::make_loader();
-    auto definition = loader.load_package_definitions(workspace).front();
-    auto executor = iv::BlockNodeExecutor::create(
-        iv::TypeErasedNode(definition.root), 8);
+    auto definition = iv::test::load_project_package_definitions(loader, workspace).front();
+    ASSERT_NE(definition.configured_graph, nullptr);
 
     auto structural_state_nodes = 0u;
-    for (auto const& record : executor.layout().nodes) {
-        auto const has_phase = record.node_state_structure
+    auto scalar_state_nodes = 0u;
+    auto background_state_nodes = 0u;
+    definition.configured_graph->node_bundles.for_each_configured_bundle(
+        [&](iv::ConfiguredNodeBundleView const& bundle) {
+        if (!bundle.state_structures_storage
+            || !*bundle.state_structures_storage) {
+            return;
+        }
+        auto const& structures = **bundle.state_structures_storage;
+        auto const has_phase = structures.state
             && std::ranges::any_of(
-                record.node_state_structure->fields,
-                [](iv::NodeStateFieldStructure const& field) {
-                    return field.name == "phase";
-                });
+                    structures.state->fields,
+                    [](iv::NodeStateFieldStructure const& field) {
+                        return field.name == "phase";
+                    });
         if (has_phase) {
             ++structural_state_nodes;
-            ASSERT_EQ(record.node_state_structure->fields.size(), 2u);
-            EXPECT_FALSE(record.node_state_structure->fields.front().type_name.empty());
+            ASSERT_EQ(structures.state->fields.size(), 2u);
+            EXPECT_TRUE(structures.state->type_identity.valid());
+            EXPECT_FALSE(structures.state->type_identity.display_name.empty());
+            EXPECT_FALSE(structures.state->fields.front().type_name.empty());
         }
-    }
+        if (structures.state
+            && structures.state->size_bits == sizeof(std::int32_t) * 8
+            && structures.state->fields.empty()) {
+            ++scalar_state_nodes;
+        }
+        if (!structures.tock_state) return;
+        auto const has_epoch = std::ranges::any_of(
+            structures.tock_state->fields,
+            [](iv::NodeStateFieldStructure const& field) {
+                return field.name == "epoch";
+            });
+        if (!has_epoch) return;
+        ++background_state_nodes;
+        EXPECT_TRUE(structures.tock_state->type_identity.valid());
+        EXPECT_FALSE(
+            structures.tock_state->type_identity.display_name.empty());
+        ASSERT_EQ(structures.tock_state->fields.size(), 2u);
+    });
     // NodeState<Node>::Type accepts both a direct alias and an alias found by
-    // normal base-class lookup. Both must reach the finalized runtime layout.
+    // normal base-class lookup. Both must survive in ConfiguredGraph metadata.
     EXPECT_EQ(structural_state_nodes, 2u);
-
-    auto scalar_state_nodes = 0u;
-    for (auto const& record : executor.layout().nodes) {
-        if (!record.node_state_structure
-            || record.node_state_structure->size_bits != sizeof(std::int32_t) * 8
-            || !record.node_state_structure->fields.empty()) {
-            continue;
-        }
-        ++scalar_state_nodes;
-    }
     EXPECT_EQ(scalar_state_nodes, 1u);
+    EXPECT_EQ(background_state_nodes, 1u);
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansKeepsDistinctDeclarationsSeparate)
 {
     auto const workspace = shared_inline_module_workspace(
-        "iv_module_source_introspection_merged_virtual",
+        "iv_module_source_introspection_merged_symbolic",
         R"(#include <intravenous/dsl.h>
 
 namespace {
@@ -304,18 +356,18 @@ namespace {
             g, static_cast<iv::Sample>(I)).node_ref();
     }
 
-    void merged_virtual_module(iv::GraphBuilder& g)
+    void merged_symbolic_module(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const a = make_value<0>(g);
         auto const b = make_value<1>(g);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -332,92 +384,6 @@ namespace {
     EXPECT_EQ(constant_count, 2u);
 }
 
-TEST(IvModuleSourceIntrospection, GenericChannelOutputArgumentsArePublicOutputSourceSpans)
-{
-    auto const workspace = make_inline_module_workspace(
-        "iv_module_source_introspection_generic_channel_outputs",
-        R"(#include <intravenous/dsl.h>
-
-namespace {
-    void generic_channel_outputs(iv::GraphBuilder& g)
-    {
-        using namespace iv;
-        auto const source = details::configure_concrete_node<Constant>(g, 0.25f);
-        g.outputs("main"_P[stereo::left] = source, "main"_P[stereo::right] = source);
-    }
-}
-)");
-
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
-    app.initialize();
-    app.introspection.set_public_sample_outputs(app.graph_input_lanes.public_sample_outputs());
-    auto const result = app.query_by_spans(
-        std::filesystem::weakly_canonical(workspace / "module.cpp"),
-        {{.start = {.line = 1, .column = 1}, .end = {.line = 16, .column = 1}}});
-    std::vector<iv::VirtualNodeInfo const*> outputs;
-    for (auto const& node : result.nodes) if (node.kind == "Public output") outputs.push_back(&node);
-    ASSERT_EQ(outputs.size(), 2u);
-    for (auto const* output : outputs) {
-        ASSERT_FALSE(output->source_spans.empty());
-        ASSERT_EQ(output->sample_outputs.size(), 1u);
-        EXPECT_EQ(output->sample_outputs.front().connectivity, iv::VirtualPortConnectivity::connected);
-        EXPECT_EQ(output->sample_outputs.front().state_value, "timelineLane");
-        ASSERT_EQ(output->members.size(), 2u);
-        for (auto const& member : output->members) {
-            ASSERT_EQ(member.sample_outputs.size(), 1u);
-            EXPECT_EQ(member.sample_outputs.front().state_value, "virtualFollow");
-            EXPECT_EQ(member.sample_outputs.front().connectivity, iv::VirtualPortConnectivity::connected);
-        }
-    }
-}
-
-TEST(IvModuleSourceIntrospection, TypedPublicInputsAndCapturedBuilderOutputsRemainSourceAnnotated)
-{
-    auto const workspace = make_inline_module_workspace(
-        "iv_module_source_introspection_typed_public_ports_in_lambda",
-        R"(#include <intravenous/dsl.h>
-
-namespace {
-    void typed_public_ports_in_lambda(iv::GraphBuilder& g)
-    {
-        using namespace iv;
-        auto const frequency = g.input<"frequency">(220.0);
-        auto const detune = g.input<"detune">(2.5);
-        auto emit = [&] {
-            g.outputs("main"_P = frequency + detune);
-        };
-        emit();
-    }
-}
-)");
-
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
-    app.initialize();
-
-    auto const inputs = app.graph_input_lanes.public_sample_inputs();
-    ASSERT_EQ(inputs.size(), 2u);
-    for (auto const& input : inputs) {
-        EXPECT_FALSE(input.source_identity.empty());
-        EXPECT_FALSE(input.source_infos.empty());
-    }
-    auto const outputs = app.graph_input_lanes.public_sample_outputs();
-    ASSERT_EQ(outputs.size(), 1u);
-    EXPECT_FALSE(outputs.front().source_identity.empty());
-    EXPECT_FALSE(outputs.front().source_infos.empty());
-
-    auto const result = app.query_by_spans(
-        std::filesystem::weakly_canonical(workspace / "module.cpp"),
-        {{.start = {.line = 1, .column = 1}, .end = {.line = 20, .column = 1}}});
-    size_t public_inputs = 0;
-    size_t public_outputs = 0;
-    for (auto const& node : result.nodes) {
-        if (node.kind == "Public input") ++public_inputs;
-        if (node.kind == "Public output") ++public_outputs;
-    }
-    EXPECT_EQ(public_inputs, 2u);
-    EXPECT_EQ(public_outputs, 1u);
-}
-
 TEST(IvModuleSourceIntrospection, EmbeddedModulePublicInputIdentifiersRemainPortAnnotated)
 {
     auto const workspace = make_inline_module_workspace(
@@ -428,24 +394,27 @@ namespace {
     void child_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto const in = g.input<"in">();
-        auto const az = g.input<"azimuth">(0, -180, 180);
-        g.outputs("main"_P = in + az);
+        auto const in = g.input();
+        auto const azimuth = g.input("Azimuth", {
+            .default_value = 5, .min = -180, .max = 180, .geometry = KnobGeometry::circle,
+        });
+        auto const elevation = g.input("Elev", "Elevation angle", {.default_value = 0, .min = -180, .max = 180});
+        g.outputs("main"_P = in + azimuth + elevation);
     }
-    IV_MODULE("iv.test.source_provenance.child", child_module);
+    IV_MODULE("iv.test.source_provenance.child", child_module, "Child");
 
     void module_main(iv::GraphBuilder& g)
     {
         using namespace iv;
         auto const child = g.node<"iv.test.source_provenance.child">();
-        g.outputs("main"_P = child);
+        g.outputs("main"_P.with_display_name("Main") = child);
     }
-    IV_MODULE("iv.test.source_provenance.main", module_main);
+    IV_MODULE("iv.test.source_provenance.main", module_main, "Main");
 }
 )");
 
     auto loader = iv::test::make_loader();
-    auto definitions = loader.load_package_definitions(workspace);
+    auto definitions = iv::test::load_project_package_definitions(loader, workspace);
     auto const definition = std::ranges::find_if(definitions, [](auto const& candidate) {
         return candidate.module_id == "iv.test.source_provenance.main";
     });
@@ -458,10 +427,10 @@ namespace {
     auto has_port_identifier = [&](std::string_view port_name,
                                    std::string_view identifier) {
         return std::ranges::any_of(
-            definition->introspection.virtual_nodes,
+            definition->introspection.symbolic_nodes,
             [&](auto const& node) {
                 return std::ranges::any_of(
-                    node.sample_inputs,
+                    node.continuous_inputs,
                     [&](auto const& port) {
                         return port.name == port_name
                             && std::ranges::any_of(
@@ -474,7 +443,22 @@ namespace {
     };
 
     EXPECT_TRUE(has_port_identifier("in", "in"));
-    EXPECT_TRUE(has_port_identifier("azimuth", "az"));
+    EXPECT_TRUE(has_port_identifier("azimuth", "azimuth"));
+    EXPECT_TRUE(has_port_identifier("elevation", "elevation"));
+    auto const child = std::ranges::find(definitions, "iv.test.source_provenance.child", &iv::ModuleLoader::LoadedDefinition::module_id);
+    ASSERT_NE(child, definitions.end());
+    auto const& ports = child->introspection.public_continuous_inputs;
+    ASSERT_EQ(ports.size(), 3u);
+    EXPECT_TRUE(ports[0].input_config.display_name.empty());
+    EXPECT_EQ(ports[1].input_config.display_name, "Azimuth");
+    EXPECT_EQ(ports[2].input_config.display_name, "Elevation angle");
+    EXPECT_EQ(ports[2].input_config.short_display_name, "Elev");
+    auto const& angle = iv::sequential_input_metadata<iv::Sample>(
+        iv::sequential_input_properties(ports[1].input_config));
+    EXPECT_FLOAT_EQ(angle.default_value.value, 5);
+    EXPECT_FLOAT_EQ(angle.min.value, -180);
+    EXPECT_FLOAT_EQ(angle.max.value, 180);
+    EXPECT_EQ(angle.geometry, iv::KnobGeometry::circle);
 }
 
 TEST(IvModuleSourceIntrospection, SourceProvenanceUsesOnlyIdentifiersAndNamedBindingStrings)
@@ -488,8 +472,8 @@ namespace {
     struct TriggerSource {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{
-                iv::event_output("trigger", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -497,8 +481,8 @@ namespace {
     struct TriggerSink {
         static constexpr auto inputs()
         {
-            return std::array<iv::InputConfig, 1>{
-                iv::event_input("gate", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_input({"gate", "Gate"}, iv::EventTypeId::trigger, iv::InputAccess::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSink> const&) const {}
     };
@@ -506,23 +490,21 @@ namespace {
     void token_provenance_module(iv::GraphBuilder& g)
     {
         using namespace iv;
-        auto frequency = g.input(440.0);
+        auto frequency = g.input("Frequency", {.default_value = 440.0});
         auto saw = details::configure_concrete_node<SawOscillator>(g);
         saw("frequency"_P = frequency);
         auto out = saw * 0.5f;
         auto trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
         auto event_sink = details::configure_concrete_node<TriggerSink>(g);
         event_sink("gate"_F = trigger);
-        g.outputs("main"_P = out);
-        g.event_outputs("trigger"_F = trigger);
+        g.outputs("trigger"_F.with_display_name("Trigger") = trigger, "main"_P.with_display_name("Main") = out,
+            "pulse"_F.with_display_name("Pulse") = trigger, "dry"_P.with_display_name("Dry") = frequency);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
-    app.introspection.set_public_sample_outputs(app.graph_input_lanes.public_sample_outputs());
-    app.introspection.set_public_event_outputs(app.graph_input_lanes.public_event_outputs());
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
     auto const all = app.query_by_spans(
@@ -542,28 +524,6 @@ namespace {
     EXPECT_TRUE(std::ranges::any_of(saw->source_spans, [](auto const& span) {
         return source_text(span) == "saw";
     }));
-
-    auto const public_input = std::ranges::find_if(all.nodes, [](auto const& node) {
-        return node.kind == "Public input";
-    });
-    ASSERT_NE(public_input, all.nodes.end());
-    ASSERT_FALSE(public_input->source_spans.empty());
-    for (auto const& span : public_input->source_spans)
-        EXPECT_EQ(source_text(span), "frequency");
-
-    auto const sample_output = std::ranges::find_if(all.nodes, [](auto const& node) {
-        return node.kind == "Public output" && !node.sample_outputs.empty();
-    });
-    ASSERT_NE(sample_output, all.nodes.end());
-    ASSERT_EQ(sample_output->source_spans.size(), 1u);
-    EXPECT_EQ(source_text(sample_output->source_spans.front()), "\"main\"");
-
-    auto const event_output = std::ranges::find_if(all.nodes, [](auto const& node) {
-        return node.kind == "Public event output" && !node.event_outputs.empty();
-    });
-    ASSERT_NE(event_output, all.nodes.end());
-    ASSERT_EQ(event_output->source_spans.size(), 1u);
-    EXPECT_EQ(source_text(event_output->source_spans.front()), "\"trigger\"");
 
     auto const source_map = iv::SourceTextLineMap::from_file(module_cpp);
     auto query_at = [&](std::string_view needle, size_t inside = 0) {
@@ -592,9 +552,9 @@ namespace {
         frequency_port.nodes,
         [](auto const& node) { return node.kind.contains("SawOscillator"); });
     ASSERT_NE(frequency_node, frequency_port.nodes.end());
-    ASSERT_EQ(frequency_node->sample_inputs.size(), 1u);
-    EXPECT_EQ(frequency_node->sample_inputs.front().name, "frequency");
-    EXPECT_TRUE(frequency_node->sample_outputs.empty());
+    ASSERT_EQ(frequency_node->continuous_inputs.size(), 1u);
+    EXPECT_EQ(frequency_node->continuous_inputs.front().name, "frequency");
+    EXPECT_TRUE(frequency_node->continuous_outputs.empty());
     EXPECT_TRUE(frequency_node->event_inputs.empty());
     EXPECT_TRUE(frequency_node->event_outputs.empty());
     ASSERT_EQ(frequency_node->source_spans.size(), 1u);
@@ -607,24 +567,82 @@ namespace {
     ASSERT_NE(gate_node, gate_port.nodes.end());
     ASSERT_EQ(gate_node->event_inputs.size(), 1u);
     EXPECT_EQ(gate_node->event_inputs.front().name, "gate");
-    EXPECT_TRUE(gate_node->sample_inputs.empty());
-    EXPECT_TRUE(gate_node->sample_outputs.empty());
+    EXPECT_TRUE(gate_node->continuous_inputs.empty());
+    EXPECT_TRUE(gate_node->continuous_outputs.empty());
     EXPECT_TRUE(gate_node->event_outputs.empty());
     ASSERT_EQ(gate_node->source_spans.size(), 1u);
     EXPECT_EQ(source_text(gate_node->source_spans.front()), "\"gate\"");
     EXPECT_TRUE(has_kind(
         query_at("\"gate\"_F", std::string_view("\"gate\"").size()),
         "TriggerSink"));
-    EXPECT_TRUE(has_kind(query_at("frequency);", 2), "Public input"));
-    EXPECT_TRUE(std::ranges::any_of(query_at("\"main\"_P", 2).nodes, [](auto const& node) {
-        return node.kind == "Public output";
+    // The scope's public ports now have their own introspection records.
+    // An input identifier selects that input, and an output binding name
+    // selects the public output, without making the surrounding call active.
+    auto const public_input = query_at("frequency);", 2);
+    auto const input_node = std::ranges::find_if(public_input.nodes, [](auto const& node) {
+        return node.type_identity == "public-input" && node.kind == "input";
+    });
+    ASSERT_NE(input_node, public_input.nodes.end());
+    ASSERT_EQ(input_node->continuous_outputs.size(), 1u);
+    EXPECT_TRUE(input_node->continuous_inputs.empty());
+    EXPECT_TRUE(input_node->event_inputs.empty());
+    EXPECT_TRUE(input_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(input_node->source_spans, [](auto const& span) {
+        return source_text(span) == "frequency";
     }));
-    EXPECT_TRUE(std::ranges::any_of(query_at("\"trigger\"_F", 2).nodes, [](auto const& node) {
-        return node.kind == "Public event output";
+
+    auto const sample_output = query_at("\"main\"_P", 2);
+    auto const sample_output_node = std::ranges::find_if(sample_output.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(sample_output_node, sample_output.nodes.end());
+    ASSERT_EQ(sample_output_node->continuous_inputs.size(), 1u);
+    EXPECT_EQ(sample_output_node->continuous_inputs.front().name, "main");
+    EXPECT_TRUE(sample_output_node->continuous_outputs.empty());
+    EXPECT_TRUE(sample_output_node->event_inputs.empty());
+    EXPECT_TRUE(sample_output_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(sample_output_node->source_spans, [](auto const& span) {
+        return source_text(span) == "\"main\"";
     }));
+
+    auto const event_output = query_at("\"trigger\"_F", 2);
+    auto const event_output_node = std::ranges::find_if(event_output.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(event_output_node, event_output.nodes.end());
+    ASSERT_EQ(event_output_node->event_inputs.size(), 1u);
+    EXPECT_EQ(event_output_node->event_inputs.front().name, "trigger");
+    EXPECT_TRUE(event_output_node->continuous_inputs.empty());
+    EXPECT_TRUE(event_output_node->continuous_outputs.empty());
+    EXPECT_TRUE(event_output_node->event_outputs.empty());
+    EXPECT_TRUE(std::ranges::any_of(event_output_node->source_spans, [](auto const& span) {
+        return source_text(span) == "\"trigger\"";
+    }));
+
+    // Mixed declaration positions differ from the per-kind connection indices.
+    // Both kinds' second outputs must keep their own binding annotations.
+    auto const second_event = query_at("\"pulse\"_F", 2);
+    auto const pulse = std::ranges::find_if(second_event.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(pulse, second_event.nodes.end());
+    ASSERT_EQ(pulse->event_inputs.size(), 1u);
+    EXPECT_EQ(pulse->event_inputs.front().name, "pulse");
+    auto const second_sample = query_at("\"dry\"_P", 2);
+    auto const dry = std::ranges::find_if(second_sample.nodes, [](auto const& node) {
+        return node.type_identity == "public-output" && node.kind == "output";
+    });
+    ASSERT_NE(dry, second_sample.nodes.end());
+    ASSERT_EQ(dry->continuous_inputs.size(), 1u);
+    EXPECT_EQ(dry->continuous_inputs.front().name, "dry");
+
+    // Move past the inclusive end of each name token: the UDL suffix itself
+    // must not become a highlighted source range.
+    EXPECT_TRUE(query_at("\"main\"_P", std::string_view("\"main\"").size() + 1).nodes.empty());
+    EXPECT_TRUE(query_at("\"trigger\"_F", std::string_view("\"trigger\"").size() + 1).nodes.empty());
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedVirtualNodeIdStableAcrossReload)
+TEST(IvModuleSourceIntrospection, QueryBySpansKeepsAnnotatedSymbolicNodeIdStableAcrossReload)
 {
     auto const workspace = make_inline_module_workspace(
         "iv_module_source_introspection_stable_annotated_id",
@@ -639,12 +657,12 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
@@ -674,7 +692,7 @@ namespace {
     EXPECT_EQ(reloaded_it->id, initial_id);
 }
 
-TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedVirtualNode)
+TEST(IvModuleSourceIntrospection, QueryBySpansReturnsAnnotatedSymbolicNode)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_annotated_symbol",
@@ -689,13 +707,13 @@ namespace {
             "decl:annotated_symbol_module::a"
         );
         auto const& sink = a;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -721,8 +739,8 @@ namespace {
     {
         static constexpr auto outputs()
         {
-            return std::array<iv::OutputConfig, 1>{
-                iv::event_output("trigger", iv::EventTypeId::trigger)};
+            return std::array{
+                iv::event_output({"trigger", "Trigger"}, iv::EventTypeId::trigger, iv::OutputProduction::sequential)};
         }
         void tick(iv::TickSampleContext<TriggerSource> const&) const {}
     };
@@ -735,7 +753,7 @@ namespace {
         auto const p = g.tile<stereo>(left, right);
         auto const trigger = details::configure_concrete_node<TriggerSource>(g).event_port();
         auto const sink = details::configure_concrete_node<
-            Sum<stereo, SampleStreamLayout::planar, 1>>(g);
+            SumN<stereo, SampleStreamLayout::planar, 1>>(g);
         sink(p);
         g.outputs(sink);
         g.event_outputs(trigger);
@@ -743,7 +761,7 @@ namespace {
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(
+    InitializedIvModuleSourceIntrospectionApp app(
         workspace, iv::test::repo_root(), {});
     app.initialize();
 
@@ -757,13 +775,13 @@ namespace {
         tiled_value.nodes.begin(), tiled_value.nodes.end(),
         [](auto const& node) { return node.type_identity == "sample-port"; });
     ASSERT_NE(port, tiled_value.nodes.end());
-    ASSERT_EQ(port->sample_outputs.size(), 1u);
+    ASSERT_EQ(port->continuous_outputs.size(), 1u);
     EXPECT_EQ(
-        port->sample_outputs.front().sample_channel_type,
+        port->continuous_outputs.front().channel_type,
         iv::ChannelTypeId::stereo);
     ASSERT_EQ(port->members.size(), 1u);
     for (auto const& member : port->members)
-        EXPECT_EQ(member.sample_outputs.size(), 1u);
+        EXPECT_EQ(member.continuous_outputs.size(), 1u);
 
     auto const event_value = app.query_by_spans(
         module_cpp,
@@ -784,7 +802,7 @@ namespace {
     EXPECT_FALSE(std::ranges::any_of(
         direct_initializer.nodes,
         [](auto const& node) {
-            return node.kind.contains("Sum")
+            return node.kind.contains("SumN<")
                 && node.type_identity != "sample-port";
         }));
 
@@ -795,11 +813,95 @@ namespace {
     auto const sink = std::find_if(
         node_call.nodes.begin(), node_call.nodes.end(),
         [](auto const& node) {
-            return node.kind.contains("Sum")
+            return node.kind.contains("SumN<")
                 && node.type_identity != "sample-port";
         });
     ASSERT_NE(sink, node_call.nodes.end());
     EXPECT_FALSE(sink->source_spans.empty());
+
+    iv::SocketRpcGraphScopeResultBuilder scope_builder;
+    in_event_source([&] {
+        app.project_graph.handle_socket_rpc_get_graph_scope(
+            {.expanded = {{.instance_id = "instance:1"}}}, scope_builder);
+    });
+    auto const reply = nlohmann::ordered_json::parse(scope_builder.build(1));
+    ASSERT_TRUE(reply.contains("result")) << reply.dump();
+    auto const& scope = reply.at("result");
+    auto const& children = scope.at("childScopes").at(0).at("nodes");
+    auto const module_source = iv::test::read_text(module_cpp);
+    auto expect_declaration = [&](std::string_view label, int line) {
+        auto const child = std::ranges::find_if(children, [&](auto const& entry) {
+            return entry.value("childSourceLabel", std::string{}) == label;
+        });
+        ASSERT_NE(child, children.end()) << label;
+        ASSERT_TRUE(child->contains("declarationSource")) << label;
+        auto const& source = child->at("declarationSource");
+        EXPECT_EQ(source.at("filePath"), module_cpp.generic_string());
+        EXPECT_EQ(source.at("line"), line);
+        auto const identifier_offset = module_source.find(std::string(label) + " = ");
+        ASSERT_NE(identifier_offset, std::string::npos);
+        EXPECT_EQ(source.at("byteOffset"), identifier_offset);
+    };
+    expect_declaration("p", 19);
+    expect_declaration("trigger", 20);
+    expect_declaration("sink", 21);
+}
+
+TEST(IvModuleSourceIntrospection, NoLaneKeepsHiddenDeclarationsAddressableInSource)
+{
+    auto const workspace = shared_inline_module_workspace(
+        "iv_module_source_introspection_no_lane",
+        R"(#include <intravenous/dsl.h>
+
+namespace {
+    void no_lane_module(iv::GraphBuilder& g)
+    {
+        using namespace iv;
+        auto const visible = details::configure_concrete_node<Constant>(g, 0.25f);
+        IV_NO_LANE auto const hiddenCopy = visible;
+        IV_NO_LANE NodeRef assigned;
+        assigned = details::configure_concrete_node<Constant>(g, 0.5f).node_ref();
+
+        SamplePortRef block_output;
+        IV_NO_LANE {
+            auto const nested = details::configure_concrete_node<Constant>(g, 0.75f);
+            {
+                auto const hiddenPort = nested[0];
+                block_output = hiddenPort;
+                (void)visible;
+            }
+        }
+        g.outputs("copy"_P.with_display_name("Copy") = hiddenCopy, "assigned"_P.with_display_name("Assigned") = assigned, "block"_P.with_display_name("Block") = block_output);
+    }
+}
+)");
+
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    app.initialize();
+
+    auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
+    auto const source = app.query_by_spans(module_cpp,
+        {{.start = {.line = 1, .column = 1}, .end = {.line = 23, .column = 1}}});
+    std::set<std::string> source_names;
+    for (auto const& node : source.nodes) {
+        for (auto const& span : node.source_spans) source_names.insert(source_text(span));
+    }
+
+    iv::SocketRpcGraphScopeResultBuilder scope_builder;
+    in_event_source([&] {
+        app.project_graph.handle_socket_rpc_get_graph_scope(
+            {.expanded = {{.instance_id = "instance:1"}}}, scope_builder);
+    });
+    auto const reply = nlohmann::ordered_json::parse(scope_builder.build(1));
+    ASSERT_TRUE(reply.contains("result")) << reply.dump();
+    auto const& children = reply.at("result").at("childScopes").at(0).at("nodes");
+    std::set<std::string> lane_names;
+    for (auto const& node : children) lane_names.insert(node.value("childSourceLabel", std::string{}));
+    EXPECT_TRUE(lane_names.contains("visible"));
+    for (auto const* name : {"hiddenCopy", "assigned", "nested", "hiddenPort"}) {
+        EXPECT_TRUE(source_names.contains(name)) << name;
+        EXPECT_FALSE(lane_names.contains(name)) << name;
+    }
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansReturnsSingleAssignedDeclarationBackedRef)
@@ -815,12 +917,12 @@ namespace {
         NodeRef x;
         x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
         auto const& sink = x;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -848,12 +950,12 @@ namespace {
         x = details::configure_concrete_node<Constant>(g, 0.0f).node_ref();
         x = details::configure_concrete_node<Constant>(g, 1.0f).node_ref();
         auto const& sink = x;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     EXPECT_THROW((void)app.initialize(), std::exception);
 }
 
@@ -869,7 +971,7 @@ namespace {
     iv::NodeRef make_sum(iv::GraphBuilder& g)
     {
         return iv::details::configure_concrete_node<
-            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, Inputs>>(g).node_ref();
+            iv::SumN<iv::mono, iv::SampleStreamLayout::planar, Inputs>>(g).node_ref();
     }
 
     void schema_mismatch_module(iv::GraphBuilder& g)
@@ -878,12 +980,12 @@ namespace {
         auto const a = make_sum<2>(g);
         auto const b = make_sum<3>(g);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -892,15 +994,16 @@ namespace {
 
     size_t singleton_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (node.member_count == 1 && node.kind.contains("Sum<") &&
-            (node.sample_inputs.size() == 2 || node.sample_inputs.size() == 3)) {
+        if (node.member_count == 1 && node.kind.contains("SumN<") &&
+            (node.continuous_inputs.size() == 2
+             || node.continuous_inputs.size() == 3)) {
             ++singleton_sum_count;
         }
     }
     EXPECT_GE(singleton_sum_count, 2u);
 }
 
-TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndependentVirtualNodes)
+TEST(IvModuleSourceIntrospection, SameLvalueWithDifferentNodeTypesProducesIndependentSymbolicNodes)
 {
     auto const workspace = shared_inline_module_workspace(
         "iv_module_source_introspection_split_lvalue_types",
@@ -921,15 +1024,15 @@ namespace {
             g.outputs(output = p);
         };
 
-        make_branch.template operator()<true>("first_sum"_P);
-        make_branch.template operator()<false>("difference"_P);
-        make_branch.template operator()<true>("second_sum"_P);
+        make_branch.template operator()<true>("first_sum"_P.with_display_name("First sum"));
+        make_branch.template operator()<false>("difference"_P.with_display_name("Difference"));
+        make_branch.template operator()<true>("second_sum"_P.with_display_name("Second sum"));
     }
 }
 )"
     );
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -937,7 +1040,7 @@ namespace {
         { { .start = { .line = 1, .column = 1 }, .end = { .line = 28, .column = 1 } } }
     );
 
-    std::vector<iv::VirtualNodeInfo const*> split_nodes;
+    std::vector<iv::SymbolicNodeInfo const*> split_nodes;
     for (auto const& node : result.nodes) {
         if (node.source_identity.ends_with("@p"))
             split_nodes.push_back(&node);
@@ -950,27 +1053,20 @@ namespace {
     EXPECT_TRUE(split_nodes[1]->id.contains("#type:"));
 
     auto const sum = std::ranges::find_if(split_nodes, [](auto const* node) {
-        return node->kind.contains("Sum<");
+        return node->kind.contains("std::plus");
     });
     auto const difference = std::ranges::find_if(split_nodes, [](auto const* node) {
-        return node->kind.contains("BinaryOpNode");
+        return node->kind.contains("std::minus");
     });
     ASSERT_NE(sum, split_nodes.end());
     ASSERT_NE(difference, split_nodes.end());
     ASSERT_EQ((*sum)->members.size(), 2u);
-    EXPECT_EQ((*sum)->members[0].ordinal, 0u);
-    EXPECT_EQ((*sum)->members[1].ordinal, 1u);
+    EXPECT_EQ((*sum)->members[0].index, 0u);
+    EXPECT_EQ((*sum)->members[1].index, 1u);
     ASSERT_EQ((*difference)->members.size(), 1u);
-    EXPECT_EQ((*difference)->members[0].ordinal, 0u);
+    EXPECT_EQ((*difference)->members[0].index, 0u);
 
-    app.set_sample_input_value((*sum)->id, 0, 0.25f);
-    auto const updated_sum = app.get_virtual_node((*sum)->id);
-    auto const untouched_difference = app.get_virtual_node((*difference)->id);
-    EXPECT_FLOAT_EQ(static_cast<float>(updated_sum.sample_inputs[0].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(
-        static_cast<float>(untouched_difference.sample_inputs[0].current_value),
-        0.0f
-    );
+
 }
 
 TEST(IvModuleSourceIntrospection, QueryBySpansAggregatesMixedConnectivity)
@@ -986,7 +1082,7 @@ namespace {
     {
         (void)I;
         return iv::details::configure_concrete_node<
-            iv::Sum<iv::mono, iv::SampleStreamLayout::planar, 1>>(g).node_ref();
+            iv::SumN<iv::mono, iv::SampleStreamLayout::planar, 1>>(g).node_ref();
     }
 
     void mixed_connectivity_module(iv::GraphBuilder& g)
@@ -998,12 +1094,12 @@ namespace {
         auto const b = make_sum<1>(g);
         a(value);
         auto const sink = a + b;
-        g.outputs("main"_P = sink);
+        g.outputs("main"_P.with_display_name("Main") = sink);
     }
 }
 )");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -1013,11 +1109,14 @@ namespace {
     size_t connected_sum_count = 0;
     size_t disconnected_sum_count = 0;
     for (auto const &node : result.nodes) {
-        if (!node.kind.contains("Sum<") || node.sample_inputs.size() != 1) continue;
+        if (!node.kind.contains("SumN<")
+            || node.continuous_inputs.size() != 1) continue;
         EXPECT_EQ(node.member_count, 1u);
-        if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::connected) {
+        if (node.continuous_inputs.front().connectivity
+            == iv::SymbolicPortConnectivity::connected) {
             ++connected_sum_count;
-        } else if (node.sample_inputs.front().connectivity == iv::VirtualPortConnectivity::disconnected) {
+        } else if (node.continuous_inputs.front().connectivity
+                   == iv::SymbolicPortConnectivity::disconnected) {
             ++disconnected_sum_count;
         }
     }
@@ -1030,7 +1129,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansIntersectsMultipleSelections)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -1064,7 +1163,7 @@ TEST(IvModuleSourceIntrospection, QueryBySpansUnionsMultipleSelections)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const tone_range = iv::SourceRange{.start = {.line = 8, .column = 20}, .end = {.line = 8, .column = 20}};
@@ -1095,7 +1194,7 @@ TEST(IvModuleSourceIntrospection, QueryActiveRegionsReturnsOnlySourceSpans)
     auto const workspace = read_only_module_fixture_workspace("local_cmake");
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const nodes = app.query_by_spans(
@@ -1148,13 +1247,13 @@ void polyphonic_module(iv::GraphBuilder& g)
             "frequency"_P = 440.0
         );
         (void)Voice;
-        g.outputs("main"_P = saw * m["amplitude"_P]);
+        g.outputs("main"_P.with_display_name("Main") = saw * m["amplitude"_P]);
     });
 }
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -1162,59 +1261,28 @@ void polyphonic_module(iv::GraphBuilder& g)
         {{.start = {.line = 12, .column = 20}, .end = {.line = 12, .column = 20}}});
 
     ASSERT_EQ(result.nodes.size(), 1u);
-    auto const& virtual_node = result.nodes.front();
-    EXPECT_EQ(virtual_node.kind, "iv::SawOscillator");
-    EXPECT_EQ(virtual_node.member_count, 2u);
-    ASSERT_EQ(virtual_node.members.size(), 2u);
-    EXPECT_EQ(virtual_node.members[0].ordinal, 0u);
-    EXPECT_EQ(virtual_node.members[1].ordinal, 1u);
-    EXPECT_EQ(virtual_node.members[0].kind, "iv::SawOscillator");
-    EXPECT_EQ(virtual_node.members[1].kind, "iv::SawOscillator");
-    ASSERT_EQ(virtual_node.sample_inputs.size(), 2u);
-    EXPECT_EQ(virtual_node.sample_inputs[0].name, "phase_offset");
-    EXPECT_EQ(virtual_node.sample_inputs[1].name, "frequency");
-    ASSERT_EQ(virtual_node.sample_outputs.size(), 1u);
-    EXPECT_EQ(virtual_node.sample_outputs[0].name, "out");
+    auto const& symbolic_node = result.nodes.front();
+    EXPECT_EQ(symbolic_node.kind, "iv::SawOscillator");
+    EXPECT_EQ(symbolic_node.member_count, 2u);
+    ASSERT_EQ(symbolic_node.members.size(), 2u);
+    EXPECT_EQ(symbolic_node.members[0].index, 0u);
+    EXPECT_EQ(symbolic_node.members[1].index, 1u);
+    EXPECT_EQ(symbolic_node.members[0].kind, "iv::SawOscillator");
+    EXPECT_EQ(symbolic_node.members[1].kind, "iv::SawOscillator");
+    ASSERT_EQ(symbolic_node.continuous_inputs.size(), 2u);
+    EXPECT_EQ(symbolic_node.continuous_inputs[0].name, "phase_offset");
+    EXPECT_EQ(symbolic_node.continuous_inputs[1].name, "frequency");
+    ASSERT_EQ(symbolic_node.continuous_outputs.size(), 1u);
+    EXPECT_EQ(symbolic_node.continuous_outputs[0].name, "out");
 
-    auto const resolved = app.get_virtual_node(virtual_node.id);
+    auto const resolved = app.get_symbolic_node(symbolic_node.id);
     EXPECT_EQ(resolved.kind, "iv::SawOscillator");
     EXPECT_EQ(resolved.member_count, 2u);
-    ASSERT_EQ(resolved.sample_inputs.size(), 2u);
-    EXPECT_EQ(resolved.sample_inputs[0].name, "phase_offset");
-    EXPECT_EQ(resolved.sample_inputs[1].name, "frequency");
-    ASSERT_EQ(resolved.sample_outputs.size(), 1u);
-    EXPECT_EQ(resolved.sample_outputs[0].name, "out");
-
-    app.set_sample_input_value(virtual_node.id, 1, 0.25f);
-    auto const virtual_override = app.get_virtual_node(virtual_node.id);
-    ASSERT_EQ(virtual_override.members.size(), 2u);
-    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(virtual_override.members[1].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FALSE(virtual_override.members[0].sample_inputs[1].has_concrete_override);
-    EXPECT_FALSE(virtual_override.members[1].sample_inputs[1].has_concrete_override);
-
-    app.set_sample_input_value(virtual_node.id, 1, 0.75f, 1u);
-    auto const concrete_override = app.get_virtual_node(virtual_node.id);
-    ASSERT_EQ(concrete_override.members.size(), 2u);
-    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(concrete_override.members[1].sample_inputs[1].current_value), 0.75f);
-    EXPECT_FALSE(concrete_override.members[0].sample_inputs[1].has_concrete_override);
-    EXPECT_TRUE(concrete_override.members[1].sample_inputs[1].has_concrete_override);
-
-    app.set_sample_input_state(
-        virtual_node.id,
-        1,
-        iv::ProjectSampleInputState::virtual_follow,
-        1u);
-    auto const cleared_override = app.get_virtual_node(virtual_node.id);
-    ASSERT_EQ(cleared_override.members.size(), 2u);
-    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[0].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FLOAT_EQ(static_cast<float>(cleared_override.members[1].sample_inputs[1].current_value), 0.25f);
-    EXPECT_FALSE(cleared_override.members[0].sample_inputs[1].has_concrete_override);
-    EXPECT_FALSE(cleared_override.members[1].sample_inputs[1].has_concrete_override);
+    ASSERT_EQ(resolved.continuous_inputs.size(), 2u);
+    EXPECT_EQ(resolved.continuous_inputs[0].name, "phase_offset");
+    EXPECT_EQ(resolved.continuous_inputs[1].name, "frequency");
+    ASSERT_EQ(resolved.continuous_outputs.size(), 1u);
+    EXPECT_EQ(resolved.continuous_outputs[0].name, "out");
 
     EXPECT_TRUE(std::ranges::none_of(result.nodes, [](auto const &node) {
         return node.kind == "Polyphonic";
@@ -1242,13 +1310,13 @@ void polyphonic_module(iv::GraphBuilder& g)
             "frequency"_P = 440.0
         );
         (void)Voice;
-        g.outputs("main"_P = saw * m["amplitude"_P]);
+        g.outputs("main"_P.with_display_name("Main") = saw * m["amplitude"_P]);
     });
 }
 )");
 
     auto const module_cpp = std::filesystem::weakly_canonical(workspace / "module.cpp");
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const result = app.query_by_spans(
@@ -1265,13 +1333,13 @@ void polyphonic_module(iv::GraphBuilder& g)
     }));
 }
 
-TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
+TEST(IvModuleSourceIntrospection, ReloadKeepsSymbolicNodeIdsAddressable)
 {
     auto const workspace = mutable_module_fixture_workspace("iv_module_source_introspection_reload_epoch", "local_cmake");
     auto const module_cpp = workspace / "module.cpp";
     iv::test_support::write_text(workspace / "iv_project.jsonl", "");
 
-    SeededIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
+    InitializedIvModuleSourceIntrospectionApp app(workspace, iv::test::repo_root(), {});
     app.initialize();
 
     auto const initial = app.query_by_spans(
@@ -1288,5 +1356,5 @@ TEST(IvModuleSourceIntrospection, ReloadKeepsVirtualNodeIdsAddressable)
     iv::test::write_text(module_cpp, original_text);
 
     EXPECT_FALSE(reloaded.nodes.empty());
-    EXPECT_NO_THROW((void)app.get_virtual_node(initial.nodes.front().id));
+    EXPECT_NO_THROW((void)app.get_symbolic_node(initial.nodes.front().id));
 }

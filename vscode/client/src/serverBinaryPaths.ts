@@ -1,39 +1,20 @@
 import * as path from "path";
 
-export type ServerBinaryDirectoryCandidate = {
-    source: string;
-    directory: string;
-};
-
-export function autoDetectedServerDirectoriesForWorkspaceRoot(
-    workspaceRoot: string,
-): ServerBinaryDirectoryCandidate[] {
-    let current = workspaceRoot;
-    let depth = 0;
-    let directories: ServerBinaryDirectoryCandidate[] = [];
-
-    while (true) {
-        directories.push({
-            source: depth === 0
-                ? "auto-detected build/src/intravenous"
-                : `auto-detected parent build/src/intravenous (${current})`,
-            directory: path.join(current, "build", "src", "intravenous"),
-        });
-        directories.push({
-            source: depth === 0
-                ? "auto-detected build/intravenous"
-                : `auto-detected parent build/intravenous (${current})`,
-            directory: path.join(current, "build", "intravenous"),
-        });
-
-        const parent = path.dirname(current);
-        if (parent === current) {
-            break;
-        }
-
-        current = parent;
-        depth += 1;
+export function resolveIntravenousBinary(name: string, configuredDir?: string,
+    bundledRuntime?: string): { source: string; path: string } {
+    if (bundledRuntime) return { source: "development bundle", path: path.join(bundledRuntime, name) };
+    const envDir = process.env.INTRAVENOUS_DIR;
+    if (envDir) {
+        if (!path.isAbsolute(envDir)) throw new Error(`INTRAVENOUS_DIR must be absolute: ${envDir}`);
+        return { source: "INTRAVENOUS_DIR", path: path.join(envDir, name) };
     }
-
-    return directories;
+    if (configuredDir) {
+        if (!path.isAbsolute(configuredDir)) throw new Error(`intravenous.intravenousDir must be absolute: ${configuredDir}`);
+        return { source: "intravenous.intravenousDir", path: path.join(configuredDir, name) };
+    }
+    throw new Error(
+        "Intravenous executable directory is not configured. "
+        + "Launch with nix develop --command ./scripts/run_dev.sh PROJECT_DIRECTORY, "
+        + "or set INTRAVENOUS_DIR or intravenous.intravenousDir.",
+    );
 }

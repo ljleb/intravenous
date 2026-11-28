@@ -1,0 +1,738 @@
+#include "test_support.h"
+#include <intravenous/graph/programmatic_inputs.h>
+
+namespace iv::test::graph_jit_tests {
+
+namespace {
+
+constexpr char graph_jit_manual_control_slice_module_id[] =
+    "iv.test.graph_jit.state_context.manual_control_slice_module";
+
+struct ManualControlSliceProbeStateMirror {
+    std::uint64_t calls = 0;
+    std::uint64_t value_count = 0;
+    std::array<float, 12> values{};
+    std::array<float, 6> history_before_slice{};
+};
+
+std::shared_ptr<iv::ConfiguredGraph const> configured_module_manual_fanout(
+    iv::PackageRevision const& revision, bool dynamic, bool convert = true,
+    bool connected = false)
+{
+    using namespace iv;
+    using Session = std::unique_ptr<iv::details::BuilderSession, decltype(&iv::details::iv_builder_session_destroy)>;
+    Session session(iv::details::iv_builder_session_create(), iv::details::iv_builder_session_destroy);
+    if (!session) throw std::runtime_error("could not create module manual-control test session");
+    auto const root = revision.package_root.generic_string();
+    std::array packages{iv::details::BuilderPackageView{
+        .package_root = root, .definitions = revision.provider_definitions,
+        .config_pointer_fields = revision.config_pointer_fields,
+        .retained_globals = revision.retained_globals,
+        .node_state_structures = revision.node_state_structures,
+    }};
+    iv::details::set_builder_packages(session.get(), packages);
+    iv::GraphBuilder graph(session.get());
+    auto configure = [&]<class... Args>(std::string_view id, Args&&... values) {
+        auto const definition = std::ranges::find_if(
+            revision.provider_definitions, [&](auto const& entry) {
+                return std::string_view(entry.id, entry.id_size) == id;
+            });
+        if (definition == revision.provider_definitions.end() || !definition->signature) {
+            throw std::runtime_error("module manual-control fixture definition has no signature");
+        }
+        auto const* signature = definition->signature();
+        auto arguments = iv::details::configuration_arguments(std::forward<Args>(values)...);
+        if (!signature || signature->argument_count != arguments.size()) {
+            throw std::runtime_error("module manual-control fixture argument count mismatch");
+        }
+        // As in configured_module_graph_with_arguments(), host code has no
+        // finalized type identities. These callers supply each parameter's
+        // exact C++ type and use the package's identity for that parameter.
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            arguments[i].type = signature->parameter_types[i];
+        }
+        return iv::details::configure_package_definition_provider(
+            graph, id, std::nullopt, arguments);
+    };
+    auto module = graph.subgraph([&](iv::SubgraphBuilder& boundary) {
+        auto value = iv::programmatic::declare_input(boundary, "value", {"Value"}, {.default_value = iv::Sample{.25f}});
+        auto converted = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        auto delayed = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        if (convert) {
+            // A real feedback cycle carries a zero ordinary contribution. The
+            // knob is added at the module input before conversion or detach.
+            // Both probe nodes were created first to keep their state indices.
+            auto feedback = configure("iv.test.graph_jit.state_context.feedback_gain",
+                std::uint64_t{0}, static_cast<std::uint64_t const*>(nullptr));
+            auto zero_feedback = configure("iv.test.graph_jit.state_context.feedback_gain",
+                std::uint64_t{0}, static_cast<std::uint64_t const*>(nullptr));
+            auto zero = configure("iv.test.graph_jit.state_context.constant", iv::Sample{0});
+            auto one = configure("iv.test.graph_jit.state_context.constant", iv::Sample{1});
+            converted(graph.tile<iv::stereo>(value, zero));
+            feedback.connect_input("in", static_cast<iv::SamplePortRef>(value).detach(2, iv::Sample{-1}));
+            feedback.connect_input("gain", static_cast<iv::SamplePortRef>(one));
+            zero_feedback.connect_input("in", static_cast<iv::SamplePortRef>(feedback));
+            zero_feedback.connect_input("gain", static_cast<iv::SamplePortRef>(zero));
+            delayed(feedback); // Read the delayed output outside the cycle.
+            boundary.outputs(iv::PortName<"feedback">{}.with_display_name("Feedback") = zero_feedback);
+        } else {
+            converted(value);
+            delayed(value);
+            boundary.outputs();
+        }
+    }, "manual-module");
+    if (convert) module(static_cast<iv::SamplePortRef>(module));
+    if (connected) {
+        auto source = configure("iv.test.graph_jit.state_context.constant", iv::Sample{.75f});
+        module(source);
+        auto other = iv::details::configure_package_definition_provider(graph,
+            "iv.test.graph_jit.state_context.manual_control_slice_probe", std::nullopt, {});
+        other(source);
+    }
+    auto const module_handle = module.node_bundle_handle();
+    graph.outputs();
+    auto configured = iv::details::take_built_graph(session.get());
+    if (convert || connected) mark_sample_wires_as_project(configured, {module_handle, PortKind::sample, 0});
+    configured.manual_controls.push_back({
+        .id = {.node = {.instance_id = "module"}, .port_name = "value"},
+        .input = {module_handle, iv::PortKind::sample, 0}, .settled_value = .25f,
+        .participation = connected ? iv::ManualControlParticipation::disconnected_only
+            : iv::ManualControlParticipation::participate_with_connections,
+        .dynamic = dynamic,
+    });
+    if (connected) {
+        configured.identity.value = "manual-override-test";
+        for (iv::NodeBundleHandle bundle = 0; bundle < configured.node_bundles.size(); ++bundle) {
+            auto const& node = configured.node_bundles.bundle(bundle);
+            if (!node.is_concrete()) continue;
+            auto const identity = configured.symbolic_nodes.create(
+                "node:" + std::to_string(bundle), node.type_identity());
+            configured.symbolic_nodes.attach_bundle_member(configured.node_bundles, identity, bundle);
+        }
+    }
+    return std::make_shared<iv::ConfiguredGraph const>(std::move(configured));
+}
+
+} // namespace
+
+TEST_F(GraphJitRuntimeFixture, DisconnectingModuleInputPreservesHistoryAndStartsItsStoredValue)
+{
+    auto connected = configured_module_manual_fanout(*revision, false, false, true);
+    auto disconnected = std::make_shared<iv::ConfiguredGraph>(*connected);
+    auto const module = disconnected->manual_controls[0].input.node_bundle_handle;
+    auto samples = std::vector<iv::ConfiguredSampleConnection>(
+        connected->connections.configured_sample_connections().begin(),
+        connected->connections.configured_sample_connections().end());
+    auto const erased = std::erase_if(samples, [&](auto const& connection) {
+        return std::ranges::any_of(connection.target_channels, [&](auto const& channel) {
+            return channel.bundle == module;
+        });
+    });
+    ASSERT_EQ(erased, 1u);
+    disconnected->connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, connected->connections.configured_event_connections());
+    auto before = compile_graph(connected, 395);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 396, .graph = disconnected, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    auto initial = before.compiled_graph->node_layout.create_storage(resources);
+    initial.initialize();
+    before.compiled_graph->root_operations.tick_block(initial.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto current = after.compiled_graph->node_layout.create_storage(resources);
+    ASSERT_TRUE(after.compiled_graph->cutover);
+    auto migration = current.prepare_migration_from(initial);
+    auto transfer = iv::graph_jit::prepare_realtime_port_state_transfers(
+        after.compiled_graph->cutover->state_transition, initial.buffer(), current.buffer());
+    ASSERT_TRUE(transfer) << transfer.error();
+    migration.commit();
+    iv::graph_jit::execute_realtime_port_state_transfers(*transfer, initial.buffer(), current.buffer(), index(4));
+    auto const& operation = after.compiled_graph->root_operations.transition_tick_block
+        ? after.compiled_graph->root_operations.transition_tick_block : after.compiled_graph->root_operations.tick_block;
+    operation(current.buffer().data(), &empty_tick_invocation, index(4), 4);
+    after.compiled_graph->root_operations.tick_block(current.buffer().data(), &empty_tick_invocation, index(8), 4);
+    for (std::size_t node = 0; node < 2; ++node) {
+        auto const* state = static_cast<ManualControlSliceProbeStateMirror*>(current.state_ptr(node));
+        ASSERT_NE(state, nullptr);
+        EXPECT_FLOAT_EQ(state->history_before_slice[2], .75f);
+        EXPECT_FLOAT_EQ(state->history_before_slice[3], .25f);
+        ASSERT_EQ(state->value_count, 12u);
+        for (std::size_t i = 0; i < 12; ++i) {
+            EXPECT_FLOAT_EQ(state->values[i], i < 4 ? .75f : .25f) << "sample " << i;
+        }
+    }
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleOverrideMigratesConsumedHistoryAndRestoresItsSharedSource)
+{
+    auto ordinary = configured_module_manual_fanout(*revision, false, false, true);
+    auto overridden = std::make_shared<iv::ConfiguredGraph>(*ordinary);
+    overridden->manual_controls[0].dynamic = true;
+    overridden->manual_controls[0].override_connections = true;
+    auto before = compile_graph(ordinary, 392);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto during = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 393, .graph = overridden, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(during.succeeded()) << (during.diagnostics.empty() ? "" : during.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 394, .graph = ordinary, .definitions = definitions},
+        .predecessor = during.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    EXPECT_FALSE(iv::GraphExecutor::can_replace_realtime_code(*before.compiled_graph, *during.compiled_graph));
+
+    auto initial_storage = before.compiled_graph->node_layout.create_storage(resources);
+    initial_storage.initialize();
+    before.compiled_graph->root_operations.tick_block(
+        initial_storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto override_storage = during.compiled_graph->node_layout.create_storage(resources);
+    auto restored_storage = after.compiled_graph->node_layout.create_storage(resources);
+    auto migrate_and_tick = [&](iv::NodeStorage& previous_storage,
+                                iv::CompiledGraph const& current, iv::NodeStorage& current_storage,
+                                std::int64_t begin) {
+        ASSERT_TRUE(current.cutover);
+        auto migration = current_storage.prepare_migration_from(previous_storage);
+        auto transfer = iv::graph_jit::prepare_realtime_port_state_transfers(
+            current.cutover->state_transition, previous_storage.buffer(), current_storage.buffer());
+        ASSERT_TRUE(transfer) << transfer.error();
+        migration.commit();
+        iv::graph_jit::execute_realtime_port_state_transfers(
+            *transfer, previous_storage.buffer(), current_storage.buffer(), index(begin));
+        auto const& operation = current.root_operations.transition_tick_block
+            ? current.root_operations.transition_tick_block : current.root_operations.tick_block;
+        operation(current_storage.buffer().data(), &empty_tick_invocation, index(begin), 4);
+    };
+    migrate_and_tick(initial_storage, *during.compiled_graph, override_storage, 4);
+    ASSERT_FALSE(HasFatalFailure());
+    migrate_and_tick(override_storage, *after.compiled_graph, restored_storage, 8);
+    ASSERT_FALSE(HasFatalFailure());
+    std::size_t probe_index = 0;
+    for (std::size_t node = 0; node < after.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (after.compiled_graph->node_layout.nodes[node].state_size != sizeof(ManualControlSliceProbeStateMirror)) continue;
+        auto const* probe = static_cast<ManualControlSliceProbeStateMirror*>(restored_storage.state_ptr(node));
+        ASSERT_NE(probe, nullptr);
+        EXPECT_EQ(probe->calls, 6u);
+        EXPECT_EQ(probe->value_count, 12u);
+        for (std::size_t i = 0; i < 12; ++i) {
+            auto const expected = probe_index < 2 && i >= 4 && i < 8 ? .25f : .75f;
+            EXPECT_FLOAT_EQ(probe->values[i], expected) << "probe " << probe_index << ", sample " << i;
+        }
+        EXPECT_FLOAT_EQ(probe->history_before_slice[2], .75f);
+        EXPECT_FLOAT_EQ(probe->history_before_slice[4], probe_index < 2 ? .25f : .75f);
+        ++probe_index;
+    }
+    EXPECT_EQ(probe_index, 3u);
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleOverrideReplacesCppAndProjectWiring)
+{
+    auto graph = std::make_shared<iv::ConfiguredGraph>(
+        *configured_module_manual_fanout(*revision, false, false, true));
+    auto& control = graph->manual_controls.front();
+    control.override_connections = true;
+    auto const wires = graph->connections.configured_sample_connections();
+    std::vector samples(wires.begin(), wires.end());
+    auto const incoming = std::ranges::find_if(samples, [&](auto const& connection) {
+        return connection.target_channels.front().bundle == control.input.node_bundle_handle;
+    });
+    ASSERT_NE(incoming, samples.end());
+    ASSERT_FALSE(incoming->source_owned);
+    auto cpp_wire = *incoming;
+    cpp_wire.source_owned = true;
+    samples.push_back(std::move(cpp_wire));
+    graph->connections = iv::GraphBuilderConnections::from_configured_connections(
+        samples, graph->connections.configured_event_connections());
+
+    auto compiled = compile_graph(graph, 395);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& layout = compiled.compiled_graph->node_layout;
+    auto storage = layout.create_storage(resources);
+    storage.initialize();
+    compiled.compiled_graph->root_operations.tick_block(
+        storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+
+    std::size_t probe_index = 0;
+    for (std::size_t node = 0; node < layout.nodes.size(); ++node) {
+        if (layout.nodes[node].state_size != sizeof(ManualControlSliceProbeStateMirror)) continue;
+        auto const* probe = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(node));
+        ASSERT_NE(probe, nullptr);
+        ASSERT_EQ(probe->value_count, 4u);
+        for (std::size_t i = 0; i < probe->value_count; ++i)
+            EXPECT_FLOAT_EQ(probe->values[i], probe_index < 2 ? .25f : .75f);
+        ++probe_index;
+    }
+    EXPECT_EQ(probe_index, 3u);
+}
+
+TEST_F(GraphJitRuntimeFixture, SymbolicInputAuditionYieldsToAnEnabledConcreteKnob)
+{
+    auto const base = configured_module_graph(*revision, graph_jit_manual_control_slice_module_id);
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+    std::optional<iv::NodeBundleHandle> target;
+    for (iv::NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        if (graph->node_bundles.bundle(bundle).is_concrete()) {
+            target = bundle;
+            break;
+        }
+    }
+    ASSERT_TRUE(target);
+    auto const type = graph->node_bundles.bundle(*target).type_identity();
+    auto const symbol = graph->symbolic_nodes.create("probe", type);
+    graph->symbolic_nodes.attach_bundle_member(graph->node_bundles, symbol, *target);
+    iv::ManualControlId const symbolic{
+        .node = {.instance_id = "module", .path = {iv::ProjectSymbolicNodeSelector{.source_identity = "probe"}}},
+        .port_name = "value",
+    };
+    auto concrete = symbolic;
+    concrete.node.path.push_back(iv::ProjectSymbolicMemberSelector{.index = 0});
+    auto const input = iv::NodeBundlePortId{*target, iv::PortKind::sample, 0};
+    graph->manual_controls.push_back({.id = symbolic, .input = input, .settled_value = .75f,
+        .dynamic = true, .override_connections = true, .input_symbolic_node = symbol,
+        .enabled = false});
+    graph->manual_controls.push_back({.id = concrete, .input = input, .settled_value = .25f});
+
+    auto const enabled = compile_graph(graph, 397);
+    ASSERT_TRUE(enabled.succeeded()) << (enabled.diagnostics.empty() ? "" : enabled.diagnostics.front().message);
+    ASSERT_EQ(enabled.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_EQ(enabled.compiled_graph->manual_controls.front().configured.id, concrete);
+
+    auto disabled_graph = std::make_shared<iv::ConfiguredGraph>(*graph);
+    disabled_graph->manual_controls.back().enabled = false;
+    auto const disabled = compile_graph(disabled_graph, 398);
+    ASSERT_TRUE(disabled.succeeded()) << (disabled.diagnostics.empty() ? "" : disabled.diagnostics.front().message);
+    ASSERT_EQ(disabled.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_EQ(disabled.compiled_graph->manual_controls.front().configured.id, symbolic);
+}
+
+TEST_F(GraphJitRuntimeFixture,
+       DynamicManualControlInterpolatesAcrossAllPrimitiveSlices)
+{
+    auto const base = configured_module_graph(
+        *revision, graph_jit_manual_control_slice_module_id);
+    ASSERT_TRUE(base);
+
+    auto with_manual_control = [&](bool dynamic) {
+        auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+        std::optional<iv::NodeBundleHandle> target;
+        for (iv::NodeBundleHandle bundle = 0;
+             bundle < graph->node_bundles.size(); ++bundle) {
+            if (!graph->node_bundles.bundle(bundle).is_concrete()) continue;
+            auto const inputs = graph->node_bundles
+                .typed_ports(bundle).sample_inputs();
+            if (inputs.size() == 1 && inputs.front().name == "value") {
+                target = bundle;
+                break;
+            }
+        }
+        EXPECT_TRUE(target.has_value());
+        if (target) {
+            graph->manual_controls.push_back(iv::ConfiguredManualControl{
+                .id = {
+                    .node = {.instance_id = "instance:manual"},
+                    .port_name = "value",
+                },
+                .input = {*target, iv::PortKind::sample, 0},
+                .settled_value = iv::Sample{0.25f},
+                .dynamic = dynamic,
+            });
+        }
+        return std::shared_ptr<iv::ConfiguredGraph const>(std::move(graph));
+    };
+
+    auto constant = compile_graph(with_manual_control(false), 270);
+    ASSERT_TRUE(constant.succeeded())
+        << (constant.diagnostics.empty()
+                ? ""
+                : constant.diagnostics.front().message);
+    auto dynamic = compile_graph(with_manual_control(true), 270);
+    ASSERT_TRUE(dynamic.succeeded())
+        << (dynamic.diagnostics.empty()
+                ? ""
+                : dynamic.diagnostics.front().message);
+    ASSERT_EQ(constant.timings.size(), 1u);
+    ASSERT_EQ(dynamic.timings.size(), 1u);
+    EXPECT_EQ(constant.timings.front().region_specializations_compiled, 1u);
+    EXPECT_EQ(constant.timings.front().region_specializations_reused, 0u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_compiled, 1u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_reused, 0u);
+    EXPECT_EQ(constant.timings.front().region_specializations_skipped, 0u);
+    EXPECT_EQ(dynamic.timings.front().region_specializations_skipped, 0u);
+    ASSERT_EQ(constant.compiled_graph->manual_controls.size(), 1u);
+    ASSERT_EQ(dynamic.compiled_graph->manual_controls.size(), 1u);
+    EXPECT_FALSE(constant.compiled_graph->manual_controls[0].configured.dynamic);
+    EXPECT_TRUE(dynamic.compiled_graph->manual_controls[0].configured.dynamic);
+    EXPECT_EQ(
+        constant.compiled_graph->node_layout.storage_size,
+        dynamic.compiled_graph->node_layout.storage_size);
+    ASSERT_EQ(
+        constant.compiled_graph->node_layout.regions.size(),
+        dynamic.compiled_graph->node_layout.regions.size());
+    for (std::size_t region = 0;
+         region < constant.compiled_graph->node_layout.regions.size();
+         ++region) {
+        auto const& lhs = constant.compiled_graph->node_layout.regions[region];
+        auto const& rhs = dynamic.compiled_graph->node_layout.regions[region];
+        EXPECT_EQ(lhs.kind, rhs.kind);
+        EXPECT_EQ(lhs.storage_offset, rhs.storage_offset);
+        EXPECT_EQ(lhs.size, rhs.size);
+        EXPECT_EQ(lhs.alignment, rhs.alignment);
+        EXPECT_EQ(lhs.migration_identity, rhs.migration_identity);
+    }
+
+    auto constant_storage = constant.compiled_graph
+        ->node_layout.create_storage(resources);
+    constant_storage.initialize();
+    auto* constant_state = static_cast<ManualControlSliceProbeStateMirror*>(
+        constant_storage.state_ptr(0));
+    ASSERT_NE(constant_state, nullptr);
+    constant.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        4);
+    EXPECT_EQ(constant_state->calls, 2u);
+    ASSERT_EQ(constant_state->value_count, 4u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(constant_state->values[i], 0.25f);
+    }
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[0], 0.25f);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[1], 0.25f);
+
+    // Code-only activation keeps this NodeStorage. Constant code maintained
+    // the canonical shadow timeline while exposing an immutable input to the
+    // node, so dynamic code sees the correct preceding history immediately.
+    auto const state_offset = dynamic.compiled_graph
+        ->manual_controls.front().state_storage_offset;
+    EXPECT_EQ(
+        state_offset,
+        constant.compiled_graph->manual_controls.front().state_storage_offset);
+    auto* runtime_state = reinterpret_cast<iv::ManualControlRuntimeState*>(
+        constant_storage.buffer().data() + state_offset);
+    std::atomic_ref<std::uint32_t>(runtime_state->target_bits).store(
+        std::bit_cast<std::uint32_t>(1.0f), std::memory_order_relaxed);
+
+    dynamic.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(4),
+        4);
+    EXPECT_EQ(constant_state->calls, 4u);
+    ASSERT_EQ(constant_state->value_count, 8u);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[2], 0.25f);
+    EXPECT_FLOAT_EQ(constant_state->history_before_slice[3], 0.625f);
+    EXPECT_FLOAT_EQ(constant_state->values[4], 0.4375f);
+    EXPECT_FLOAT_EQ(constant_state->values[5], 0.625f);
+    EXPECT_FLOAT_EQ(constant_state->values[6], 0.8125f);
+    EXPECT_FLOAT_EQ(constant_state->values[7], 1.0f);
+    EXPECT_FLOAT_EQ(
+        std::bit_cast<float>(runtime_state->effective_bits), 1.0f);
+
+    dynamic.compiled_graph->root_operations.tick_block(
+        constant_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(8),
+        4);
+    EXPECT_EQ(constant_state->calls, 6u);
+    ASSERT_EQ(constant_state->value_count, 12u);
+    for (std::size_t i = 8; i < 12; ++i) {
+        EXPECT_FLOAT_EQ(constant_state->values[i], 1.0f);
+    }
+
+    auto connected_graph = std::make_shared<iv::ConfiguredGraph>(
+        *configured_module_graph(*revision, graph_jit_reused_sample_arena_module_id));
+    std::vector<iv::NodeBundleHandle> connected_targets;
+    for (iv::NodeBundleHandle bundle = 0;
+         bundle < connected_graph->node_bundles.size(); ++bundle) {
+        if (!connected_graph->node_bundles.bundle(bundle).is_concrete()) continue;
+        auto const inputs = connected_graph->node_bundles
+            .typed_ports(bundle).sample_inputs();
+        if (inputs.size() == 1 && inputs.front().name == "in") {
+            connected_targets.push_back(bundle);
+        }
+    }
+    ASSERT_EQ(connected_targets.size(), 2u);
+    connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
+        .id = {
+            .node = {.instance_id = "instance:connected"},
+            .port_name = "in",
+        },
+        .input = {connected_targets[0], iv::PortKind::sample, 0},
+        .settled_value = iv::Sample{0.5f},
+        .participation =
+            iv::ManualControlParticipation::participate_with_connections,
+    });
+    connected_graph->manual_controls.push_back(iv::ConfiguredManualControl{
+        .id = {
+            .node = {.instance_id = "instance:disconnected-only"},
+            .port_name = "in",
+        },
+        .input = {connected_targets[1], iv::PortKind::sample, 0},
+        .settled_value = iv::Sample{0.5f},
+        .participation =
+            iv::ManualControlParticipation::disconnected_only,
+    });
+    for (auto const& control : connected_graph->manual_controls)
+        mark_sample_wires_as_project(*connected_graph, control.input);
+    auto connected = compile_graph(std::move(connected_graph), 271);
+    ASSERT_TRUE(connected.succeeded())
+        << (connected.diagnostics.empty()
+                ? ""
+                : connected.diagnostics.front().message);
+    auto connected_storage = connected.compiled_graph
+        ->node_layout.create_storage(resources);
+    connected_storage.initialize();
+    connected.compiled_graph->root_operations.tick_block(
+        connected_storage.buffer().data(),
+        &empty_tick_invocation,
+        index(0),
+        4);
+    std::vector<SampleConsumerProbeStateMirror const*> consumer_states;
+    for (std::size_t node = 0;
+         node < connected.compiled_graph->node_layout.nodes.size(); ++node) {
+        if (connected.compiled_graph->node_layout.nodes[node].state_size
+            == sizeof(SampleConsumerProbeStateMirror)) {
+            consumer_states.push_back(
+                static_cast<SampleConsumerProbeStateMirror const*>(
+                    connected_storage.state_ptr(node)));
+        }
+    }
+    ASSERT_EQ(consumer_states.size(), 2u);
+    auto sums = std::array{
+        consumer_states[0]->sum,
+        consumer_states[1]->sum,
+    };
+    std::ranges::sort(sums);
+    EXPECT_EQ(sums, (std::array<float, 2>{6.0f, 8.0f}));
+}
+
+TEST_F(GraphJitRuntimeFixture, CircularModuleKnobRampsAcrossTheSeamAndTakesTheIncreasingHalfTurn)
+{
+    using namespace iv;
+    auto const base = configured_module_graph(*revision, "iv.test.graph_jit.circular_manual_control_slice");
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<ConfiguredGraph>(*base);
+    std::optional<NodeBundlePortId> azimuth;
+    for (NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        auto const& node = graph->node_bundles.bundle(bundle);
+        if (!node.is_subgraph()) continue;
+        for (std::size_t port = 0; port < node.sample_input_count(); ++port) {
+            NodeBundlePortId const input{bundle, PortKind::sample, port};
+            if (graph->node_bundles.resolve_sample_input(input).config.name == "azimuth")
+                azimuth = input;
+        }
+    }
+    ASSERT_TRUE(azimuth);
+    graph->manual_controls.push_back({
+        .id = {.node = {.instance_id = "circular"}, .port_name = "azimuth"},
+        .input = *azimuth, .settled_value = Sample{179}, .dynamic = true,
+    });
+    auto const compiled = compile_graph(graph, 271);
+    ASSERT_TRUE(compiled.succeeded())
+        << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& executable = *compiled.compiled_graph;
+    ASSERT_EQ(executable.manual_controls.size(), 1u);
+    auto const& control = executable.manual_controls.front();
+    EXPECT_EQ(control.configured.circular_range, (CircularSampleRange{Sample{-180}, Sample{180}}));
+    auto storage = executable.node_layout.create_storage(resources);
+    storage.initialize();
+    auto* runtime = reinterpret_cast<ManualControlRuntimeState*>(
+        storage.buffer().data() + control.state_storage_offset);
+    auto const* probe = find_unique_state<ManualControlSliceProbeStateMirror>(executable.node_layout, storage);
+    ASSERT_NE(probe, nullptr);
+    auto tick = [&](float target, GlobalIndex position) {
+        std::atomic_ref(runtime->target_bits).store(std::bit_cast<std::uint32_t>(target));
+        executable.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, position, 4);
+        EXPECT_FLOAT_EQ(std::bit_cast<float>(runtime->effective_bits), target);
+    };
+    tick(-179.0f, index(0));
+    tick(1.0f, index(4));
+    tick(-179.0f, index(8));
+    ASSERT_EQ(probe->value_count, 12u);
+    EXPECT_EQ(probe->values, (std::array{179.5f, -180.f, -179.5f, -179.f,
+        -134.f, -89.f, -44.f, 1.f, 46.f, 91.f, 136.f, -179.f}));
+}
+
+TEST_F(GraphJitRuntimeFixture, ManualControlStateFollowsTheMatchedNodeWhenSelectionOrderChanges)
+{
+    auto const base = configured_module_graph(*revision, graph_jit_reused_sample_arena_module_id);
+    ASSERT_TRUE(base);
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*base);
+    graph->identity.value = "manual-selection-order";
+    for (iv::NodeBundleHandle bundle = 0; bundle < graph->node_bundles.size(); ++bundle) {
+        if (!graph->node_bundles.bundle(bundle).is_concrete()) continue;
+        auto const inputs = graph->node_bundles.typed_ports(bundle).sample_inputs();
+        if (inputs.size() != 1 || inputs.front().name != "in") continue;
+        graph->project_leaf_instances.emplace(bundle, "consumer:" + std::to_string(bundle));
+        graph->manual_controls.push_back({
+            .id = {.node = {.instance_id = "consumers"}, .port_name = "in"},
+            .input = {bundle, iv::PortKind::sample, 0},
+            .concrete_selection_index = graph->manual_controls.size(),
+            .settled_value = iv::Sample{0.5f},
+            .participation = iv::ManualControlParticipation::participate_with_connections,
+            .dynamic = true,
+        });
+    }
+    ASSERT_EQ(graph->manual_controls.size(), 2u);
+    auto reordered = std::make_shared<iv::ConfiguredGraph>(*graph);
+    std::swap(reordered->manual_controls[0].concrete_selection_index,
+        reordered->manual_controls[1].concrete_selection_index);
+    std::ranges::reverse(reordered->manual_controls);
+
+    auto before = compile_graph(graph, 397);
+    ASSERT_TRUE(before.succeeded()) << (before.diagnostics.empty() ? "" : before.diagnostics.front().message);
+    auto after = jit->handle_project_graph_transaction({
+        .successor = {.project_generation = 398, .graph = reordered, .definitions = definitions},
+        .predecessor = before.compiled_graph,
+    });
+    ASSERT_TRUE(after.succeeded()) << (after.diagnostics.empty() ? "" : after.diagnostics.front().message);
+    ASSERT_EQ(before.compiled_graph->manual_controls.size(), 2u);
+    ASSERT_EQ(after.compiled_graph->manual_controls.size(), 2u);
+
+    auto prior = before.compiled_graph->node_layout.create_storage(resources);
+    prior.initialize();
+    auto current = after.compiled_graph->node_layout.create_storage(resources);
+    auto migration = current.prepare_migration_from(prior);
+    for (auto const& binding : after.compiled_graph->manual_controls) {
+        auto const& prior_bindings = before.compiled_graph->manual_controls;
+        auto const match = std::ranges::find_if(prior_bindings, [&](auto const& candidate) {
+            return candidate.configured.input == binding.configured.input;
+        });
+        ASSERT_NE(match, prior_bindings.end());
+        EXPECT_NE(match->configured.concrete_selection_index, binding.configured.concrete_selection_index);
+        EXPECT_TRUE(std::ranges::any_of(migration.raw_region_transfers, [&](auto const& transfer) {
+            return transfer.previous_offset == match->state_storage_offset
+                && transfer.current_offset == binding.state_storage_offset;
+        }));
+    }
+    migration.commit();
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleKnobTakeoverKeepsDelayAfterOpeningFeedback)
+{
+    auto graph = std::make_shared<iv::ConfiguredGraph>(*configured_module_manual_fanout(*revision, false));
+    auto const input = graph->manual_controls.front().input;
+    auto const configured = graph->connections.configured_sample_connections();
+    std::vector wires(configured.begin(), configured.end());
+    auto const feedback = std::ranges::find_if(wires, [&](auto const& wire) {
+        return std::ranges::any_of(wire.target_channels, [&](auto target) {
+            return target.bundle == input.node_bundle_handle && target.port == input.port_index;
+        });
+    });
+    ASSERT_NE(feedback, wires.end());
+    feedback->source_owned = true;
+    graph->connections = iv::GraphBuilderConnections::from_configured_connections(wires,
+        graph->connections.configured_event_connections());
+
+    auto const compiled = compile_graph(graph, 390);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& executable = *compiled.compiled_graph;
+    auto storage = executable.node_layout.create_storage(resources);
+    storage.initialize();
+    executable.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto const* delayed = static_cast<ManualControlSliceProbeStateMirror const*>(storage.state_ptr(1));
+    ASSERT_NE(delayed, nullptr);
+    ASSERT_EQ(delayed->value_count, 4u);
+    EXPECT_EQ((std::array{delayed->values[0], delayed->values[1], delayed->values[2], delayed->values[3]}),
+        (std::array{-1.f, -1.f, .25f, .25f}));
+}
+
+TEST_F(GraphJitRuntimeFixture, ModuleManualControlPreservesConversionFanoutAndDetachAcrossCodeActivation)
+{
+    auto constant = compile_graph(configured_module_manual_fanout(*revision, false), 390);
+    ASSERT_TRUE(constant.succeeded()) << (constant.diagnostics.empty() ? "" : constant.diagnostics.front().message);
+    auto dynamic = compile_graph(configured_module_manual_fanout(*revision, true), 390);
+    ASSERT_TRUE(dynamic.succeeded()) << (dynamic.diagnostics.empty() ? "" : dynamic.diagnostics.front().message);
+    auto const& steady = *constant.compiled_graph;
+    auto const& live = *dynamic.compiled_graph;
+    // The module input is connected to the module's own feedback output, so
+    // both variants resolve it in one stage before conversion and fan-out.
+    // The knob is bound once, at that stage.
+    ASSERT_EQ(steady.manual_controls.size(), 1u);
+    ASSERT_EQ(live.manual_controls.size(), 1u);
+    ASSERT_EQ(steady.node_layout.regions.size(), live.node_layout.regions.size());
+    EXPECT_EQ(steady.node_layout.storage_size, live.node_layout.storage_size);
+    for (std::size_t index = 0; index < steady.node_layout.regions.size(); ++index) {
+        auto const& a = steady.node_layout.regions[index];
+        auto const& b = live.node_layout.regions[index];
+        EXPECT_EQ(a.storage_offset, b.storage_offset);
+        EXPECT_EQ(a.size, b.size);
+        EXPECT_EQ(a.migration_identity, b.migration_identity);
+    }
+    auto storage = steady.node_layout.create_storage(resources);
+    storage.initialize();
+    auto* converted = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(0));
+    auto* delayed = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(1));
+    ASSERT_NE(converted, nullptr);
+    ASSERT_NE(delayed, nullptr);
+    steady.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    ASSERT_EQ(converted->value_count, 4u);
+    ASSERT_EQ(delayed->value_count, 4u);
+    for (std::size_t i = 0; i < 4; ++i) EXPECT_FLOAT_EQ(converted->values[i], .125f);
+    EXPECT_FLOAT_EQ(delayed->values[0], -1.f);
+    EXPECT_FLOAT_EQ(delayed->values[1], -1.f);
+    EXPECT_FLOAT_EQ(delayed->values[2], .25f);
+    EXPECT_FLOAT_EQ(delayed->values[3], .25f);
+    for (auto const& binding : live.manual_controls) {
+        auto* state = reinterpret_cast<iv::ManualControlRuntimeState*>(storage.buffer().data() + binding.state_storage_offset);
+        std::atomic_ref<std::uint32_t>(state->target_bits).store(std::bit_cast<std::uint32_t>(1.f), std::memory_order_relaxed);
+    }
+    live.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(4), 4);
+    std::array expected_converted{.21875f, .3125f, .40625f, .5f};
+    std::array expected_delayed{.25f, .25f, .4375f, .625f};
+    ASSERT_EQ(converted->value_count, 8u);
+    ASSERT_EQ(delayed->value_count, 8u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(converted->values[4 + i], expected_converted[i]);
+        EXPECT_FLOAT_EQ(delayed->values[4 + i], expected_delayed[i]);
+    }
+    live.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(8), 4);
+    EXPECT_FLOAT_EQ(delayed->values[8], .8125f);
+    EXPECT_FLOAT_EQ(delayed->values[9], 1.f);
+    EXPECT_FLOAT_EQ(delayed->values[10], 1.f);
+    EXPECT_FLOAT_EQ(delayed->values[11], 1.f);
+}
+
+TEST_F(GraphJitRuntimeFixture, UniformSettledModuleManualInputKeepsImmutableInputBinding)
+{
+    auto compiled = compile_graph(configured_module_manual_fanout(*revision, false, false), 391);
+    ASSERT_TRUE(compiled.succeeded()) << (compiled.diagnostics.empty() ? "" : compiled.diagnostics.front().message);
+    auto const& graph = *compiled.compiled_graph;
+    // This fixture variant is ordinary fanout without the feedback branch.
+    // The disconnected module input is resolved once, at its stage, which
+    // carries the knob. Both internal leaves read the stage's output.
+    ASSERT_EQ(graph.manual_controls.size(), 1u);
+    auto const stage_input = graph.manual_controls[0].configured.input;
+    auto const& requirements = graph.realtime_port_state_requirements.states;
+    auto const& realizations = graph.realtime_port_state_realizations.sample_states;
+    // The settled constant reaches each leaf's history input as an immutable
+    // binding, as a settled knob on a disconnected leaf input does.
+    std::size_t leaf_inputs = 0;
+    for (std::size_t index_in_requirements = 0; index_in_requirements < requirements.size();
+         ++index_in_requirements) {
+        auto const& requirement = requirements[index_in_requirements];
+        if (requirement.direction != iv::graph_jit::PortDirection::input
+            || requirement.configured_port == stage_input) continue;
+        ++leaf_inputs;
+        auto realization = std::ranges::find_if(realizations, [&](auto const& entry) {
+            return entry.requirement_index == index_in_requirements;
+        });
+        ASSERT_NE(realization, realizations.end());
+        EXPECT_EQ(realization->retained_access, iv::graph_jit::SampleRealtimePortStateAccess::immutable_constant);
+    }
+    EXPECT_EQ(leaf_inputs, 2u);
+    auto storage = graph.node_layout.create_storage(resources);
+    storage.initialize();
+    graph.root_operations.tick_block(storage.buffer().data(), &empty_tick_invocation, index(0), 4);
+    auto* state = static_cast<ManualControlSliceProbeStateMirror*>(storage.state_ptr(0));
+    ASSERT_EQ(state->value_count, 4u);
+    for (std::size_t value = 0; value < 4; ++value) EXPECT_FLOAT_EQ(state->values[value], .25f);
+}
+
+} // namespace iv::test::graph_jit_tests

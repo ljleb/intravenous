@@ -3,16 +3,21 @@
 #include "intravenous/graph/builder.h"
 #include "intravenous/basic_nodes/constant.h"
 #include "intravenous/basic_nodes/arithmetic.h"
+#include "intravenous/basic_nodes/sample_fallback.h"
 #ifdef IV_INTERNAL_TRANSLATION_UNIT
 #error "dsl.h is reserved for user-configured DSL code; include graph/builder.h or module/abi.h from internal code."
 #endif
 
 #include <intravenous/channel_ports.h>
+#include <intravenous/graph/programmatic_inputs.h>
 #include <intravenous/module/source_annotations.h>
 #include <intravenous/module/package_definitions.h>
 #include <intravenous/node/module_api.h>
 
 #include <cstddef>
+
+// The package source plugin reads this marker before the next statement.
+#define IV_NO_LANE
 
 namespace iv {
     template<class Fn>
@@ -107,6 +112,15 @@ namespace iv {
         return ref;
     }
 
+    constexpr void _prepare_node_source_identity_before_statement(
+        GraphBuilder* builder,
+        char const* declaration_identity,
+        char const* authored_name)
+    {
+        details::iv_builder_prepare_node_source_identity(
+            builder, declaration_identity, authored_name);
+    }
+
     template<class Ref>
     requires SourceInfoAnnotatableRef<Ref>
     constexpr Ref&& _annotate_node_source_info(
@@ -127,16 +141,19 @@ namespace iv {
         char const* declaration_identity,
         char const* file_path,
         uint32_t begin,
-        uint32_t end)
+        uint32_t end, char const* declaration_name, uint32_t declaration_line,
+        bool declares_ref, bool no_lane)
     {
         using Value = std::remove_cv_t<Ref>;
-        if constexpr (SourceInfoAnnotatableRef<Value>) {
+        if constexpr (std::is_base_of_v<NodeRef, Value>) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end);
-        } else if constexpr (std::same_as<Value, PublicSampleInputRef>
-                             || std::same_as<Value, PublicEventInputRef>) {
+                declaration_identity, file_path, begin, end, declaration_name,
+                declaration_line, declares_ref, no_lane);
+        } else if constexpr (requires {
+            ref->_annotate_source_info(declaration_identity, file_path, begin, end, declaration_line, no_lane);
+        }) {
             ref->_annotate_source_info(
-                declaration_identity, file_path, begin, end);
+                declaration_identity, file_path, begin, end, declaration_line, no_lane);
         } else {
             static_assert(false, "unsupported source-annotatable DSL reference");
         }
@@ -163,13 +180,13 @@ namespace iv {
     constexpr void _annotate_public_output_after_statement(
         GraphBuilder* builder,
         bool event,
-        size_t ordinal,
+        size_t index,
         char const* file_path,
         uint32_t begin,
         uint32_t end)
     {
         details::iv_builder_annotate_public_output_source_span(
-            builder, event, ordinal, file_path, begin, end);
+            builder, event, index, file_path, begin, end);
     }
 
     template<fixed_string Name>
@@ -194,7 +211,7 @@ namespace iv {
 
     constexpr SamplePortRef lift(SamplePortRef s)
     {
-        if (!s.graph_builder) {
+        if (!s.session) {
             details::error("cannot lift an empty sample port");
         }
         return s;
@@ -222,7 +239,7 @@ namespace iv {
     };
 
     template<class Node>
-    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> > 0)
     struct typed_sample_port_traits<
         TypedNodeRef<Node, ConcretePortProjection>> {
         static constexpr auto output_layout =
@@ -232,7 +249,7 @@ namespace iv {
     };
 
     template<class Node, class ChannelType>
-    requires (details::static_output_count_v<std::remove_cvref_t<Node>> == 1)
+    requires (details::static_output_count_v<std::remove_cvref_t<Node>> > 0)
     struct typed_sample_port_traits<
         TypedNodeRef<Node, TiledPortProjection<ChannelType>>> {
         using channel_type = ChannelType;
@@ -319,7 +336,7 @@ namespace iv {
         std::floating_point<std::remove_cvref_t<T>> ||
         std::is_same_v<std::remove_cvref_t<T>, Sample>;
 
-    // Binary operators synthesize connection-aware, runtime-tiled nodes. They
+    // Binary operators generate connection-aware, runtime-tiled nodes. They
     // are compiler/DSL internals rather than a second public node-creation
     // API: the registered-ID API deliberately accepts construction arguments,
     // while these operands are graph connections. Once package definitions can
@@ -329,24 +346,28 @@ namespace iv {
     requires ((SamplePortLike<L> || ScalarLike<L>) && (SamplePortLike<R> || ScalarLike<R>))
     constexpr auto make_binary_op(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        GraphBuilder* g = nullptr;
+        details::BuilderSession* session = nullptr;
 
         if constexpr (SamplePortLike<L>) {
             SamplePortRef s = static_cast<SamplePortRef>(lhs);
-            g = s.graph_builder;
+            session = s.session;
         }
 
         if constexpr (SamplePortLike<R>) {
             SamplePortRef s = static_cast<SamplePortRef>(rhs);
-            if (!g) {
-                g = s.graph_builder;
+            if (!session) {
+                session = s.session;
             }
         }
 
-        if (!g) {
+        if (!session) {
             details::error(std::string(op_name) + ": at least one operand must be a sample port");
         }
 
+        // The generated node belongs to the session's current scope, whichever
+        // view created the operands.
+        GraphBuilder builder(session);
+        auto* const g = &builder;
         SamplePortRef lhs_sample_port = lift_sample_operand(*g, std::forward<L>(lhs));
         SamplePortRef rhs_sample_port = lift_sample_operand(*g, std::forward<R>(rhs));
 
@@ -390,7 +411,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator+(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Sum<mono, SampleStreamLayout::planar, 2>>(
+        return make_binary_op<Sum>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator+"
@@ -405,10 +426,26 @@ namespace iv {
     constexpr auto operator+(L&& lhs, R&& rhs)
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        auto sum = make_binary_op<
-            Sum<mono, SampleStreamLayout::planar, 2>, ChannelType>(
+        return make_binary_op<Sum, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator+");
-        return sum;
+    }
+
+    // A reusable signal which selects the left value wherever it is covered.
+    template<class L, class R>
+    requires (
+        (SamplePortLike<L> || ScalarLike<L>) &&
+        (SamplePortLike<R> || ScalarLike<R>) &&
+        (SamplePortLike<L> || SamplePortLike<R>))
+    constexpr auto operator|(L&& lhs, R&& rhs)
+    {
+        if constexpr (TypedSamplePortLike<L> || TypedSamplePortLike<R>) {
+            using ChannelType = typename binary_typed_channel<L, R>::type;
+            return make_binary_op<details::SampleFallback, ChannelType>(
+                std::forward<L>(lhs), std::forward<R>(rhs), "operator|");
+        } else {
+            return make_binary_op<details::SampleFallback>(
+                std::forward<L>(lhs), std::forward<R>(rhs), "operator|");
+        }
     }
 
     template<class L, class R>
@@ -418,7 +455,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator-(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Subtract>(
+        return make_binary_op<Subtraction>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"
@@ -434,7 +471,7 @@ namespace iv {
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
 
-        return make_binary_op<Subtract, ChannelType>(
+        return make_binary_op<Subtraction, ChannelType>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator-"
@@ -448,7 +485,7 @@ namespace iv {
         !(TypedSamplePortLike<L> || TypedSamplePortLike<R>))
     constexpr NodeRef operator*(L&& lhs, R&& rhs)
     {
-        return make_binary_op<Product<2>>(
+        return make_binary_op<Product>(
             std::forward<L>(lhs),
             std::forward<R>(rhs),
             "operator*"
@@ -463,9 +500,8 @@ namespace iv {
     constexpr auto operator*(L&& lhs, R&& rhs)
     {
         using ChannelType = typename binary_typed_channel<L, R>::type;
-        auto product = make_binary_op<Product<2>, ChannelType>(
+        return make_binary_op<Product, ChannelType>(
             std::forward<L>(lhs), std::forward<R>(rhs), "operator*");
-        return product;
     }
 
     template<class L, class R>
@@ -487,6 +523,16 @@ namespace iv {
     constexpr SamplePortRef operator~(SamplePortRef&& sample_port)
     {
         return sample_port.detach();
+    }
+
+    constexpr EventPortRef operator~(EventPortRef const& event_port)
+    {
+        return event_port.detach();
+    }
+
+    constexpr EventPortRef operator~(EventPortRef&& event_port)
+    {
+        return event_port.detach();
     }
 
     template<class T>
@@ -522,15 +568,22 @@ namespace iv {
     )
     constexpr auto connect_unary_node(L&& lhs, R&& rhs, std::string_view op_name)
     {
-        SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
         NodeRef target = _materialize_node_ref(std::forward<R>(rhs));
-        bool const has_output = details::iv_builder_connect_unary_sample(
-            target, source, op_name);
         if constexpr (NodeLike<L>) {
+            auto node = _materialize_node_ref(std::forward<L>(lhs));
+            auto const port = node.output_port_at(0);
+            if (port.port_kind == PortKind::event) {
+                (void)details::iv_builder_connect_unary_event(
+                    target, node.event_port(port.port_index), op_name);
+            } else {
+                (void)details::iv_builder_connect_unary_sample(
+                    target, node[port.port_index], op_name);
+            }
             return target;
-        } else if (!has_output) {
-            return source;
         } else {
+            SamplePortRef source = static_cast<SamplePortRef>(std::forward<L>(lhs));
+            bool const has_output = details::iv_builder_connect_unary_sample(target, source, op_name);
+            if (!has_output) return source;
             return static_cast<SamplePortRef>(target);
         }
     }

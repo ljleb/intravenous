@@ -1,0 +1,357 @@
+{
+  "definitions": [
+    {
+      "definitionId": "builtin.automation.curve",
+      "supportedEventTypes": [
+        {
+          "definitionFingerprint": "117f10bf8d2ad496",
+          "nominalId": "c:$@N@iv@N@automation@S@AddPoint"
+        },
+        {
+          "definitionFingerprint": "f9e1ca07f921f9ea",
+          "nominalId": "c:$@N@iv@N@automation@S@MovePoint"
+        },
+        {
+          "definitionFingerprint": "625a00abfdca9fc6",
+          "nominalId": "c:$@N@iv@N@automation@S@PlacePoint"
+        },
+        {
+          "definitionFingerprint": "c1b7cfa2c11beeb0",
+          "nominalId": "c:$@N@iv@N@automation@S@RemovePoint"
+        },
+        {
+          "definitionFingerprint": "e8fdd3f15690b14c",
+          "nominalId": "c:$@N@iv@N@automation@S@SetSegment"
+        }
+      ]
+    }
+  ],
+  "eventTypes": [
+    {
+      "definitionFingerprint": "117f10bf8d2ad496",
+      "displayName": "iv::automation::AddPoint",
+      "nominalId": "c:$@N@iv@N@automation@S@AddPoint",
+      "payload": {
+        "fields": [
+          {
+            "name": "point",
+            "value": {
+              "fields": [
+                {
+                  "name": "id",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "unsignedInteger"
+                  }
+                },
+                {
+                  "name": "seconds",
+                  "value": {
+                    "bitWidth": 64,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "value",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "interpolation",
+                  "value": {
+                    "bitWidth": 8,
+                    "enumerators": [
+                      {
+                        "name": "empty",
+                        "value": "0"
+                      },
+                      {
+                        "name": "hold",
+                        "value": "1"
+                      },
+                      {
+                        "name": "bezier",
+                        "value": "2"
+                      }
+                    ],
+                    "kind": "enumeration",
+                    "signed": false
+                  }
+                },
+                {
+                  "name": "tension",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "sample_index",
+                  "value": {
+                    "kind": "convertedScalar"
+                  }
+                },
+                {
+                  "name": "order",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "unsignedInteger"
+                  }
+                }
+              ],
+              "kind": "aggregate"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    },
+    {
+      "definitionFingerprint": "f9e1ca07f921f9ea",
+      "displayName": "iv::automation::MovePoint",
+      "nominalId": "c:$@N@iv@N@automation@S@MovePoint",
+      "payload": {
+        "fields": [
+          {
+            "name": "id",
+            "value": {
+              "bitWidth": 32,
+              "kind": "unsignedInteger"
+            }
+          },
+          {
+            "name": "seconds",
+            "value": {
+              "bitWidth": 64,
+              "kind": "floatingPoint"
+            }
+          },
+          {
+            "name": "value",
+            "value": {
+              "bitWidth": 32,
+              "kind": "floatingPoint"
+            }
+          },
+          {
+            "name": "sample_index",
+            "value": {
+              "kind": "convertedScalar"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    },
+    {
+      "definitionFingerprint": "625a00abfdca9fc6",
+      "displayName": "iv::automation::PlacePoint",
+      "nominalId": "c:$@N@iv@N@automation@S@PlacePoint",
+      "payload": {
+        "fields": [
+          {
+            "name": "point",
+            "value": {
+              "fields": [
+                {
+                  "name": "id",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "unsignedInteger"
+                  }
+                },
+                {
+                  "name": "seconds",
+                  "value": {
+                    "bitWidth": 64,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "value",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "interpolation",
+                  "value": {
+                    "bitWidth": 8,
+                    "enumerators": [
+                      {
+                        "name": "empty",
+                        "value": "0"
+                      },
+                      {
+                        "name": "hold",
+                        "value": "1"
+                      },
+                      {
+                        "name": "bezier",
+                        "value": "2"
+                      }
+                    ],
+                    "kind": "enumeration",
+                    "signed": false
+                  }
+                },
+                {
+                  "name": "tension",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "floatingPoint"
+                  }
+                },
+                {
+                  "name": "sample_index",
+                  "value": {
+                    "kind": "convertedScalar"
+                  }
+                },
+                {
+                  "name": "order",
+                  "value": {
+                    "bitWidth": 32,
+                    "kind": "unsignedInteger"
+                  }
+                }
+              ],
+              "kind": "aggregate"
+            }
+          },
+          {
+            "name": "insert",
+            "value": {
+              "kind": "boolean"
+            }
+          },
+          {
+            "name": "segments",
+            "value": {
+              "element": {
+                "fields": [
+                  {
+                    "name": "id",
+                    "value": {
+                      "bitWidth": 32,
+                      "kind": "unsignedInteger"
+                    }
+                  },
+                  {
+                    "name": "interpolation",
+                    "value": {
+                      "bitWidth": 8,
+                      "enumerators": [
+                        {
+                          "name": "empty",
+                          "value": "0"
+                        },
+                        {
+                          "name": "hold",
+                          "value": "1"
+                        },
+                        {
+                          "name": "bezier",
+                          "value": "2"
+                        }
+                      ],
+                      "kind": "enumeration",
+                      "signed": false
+                    }
+                  },
+                  {
+                    "name": "tension",
+                    "value": {
+                      "bitWidth": 32,
+                      "kind": "floatingPoint"
+                    }
+                  }
+                ],
+                "kind": "aggregate"
+              },
+              "kind": "sequence"
+            }
+          },
+          {
+            "name": "ordered_ids",
+            "value": {
+              "element": {
+                "bitWidth": 32,
+                "kind": "unsignedInteger"
+              },
+              "kind": "sequence"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    },
+    {
+      "definitionFingerprint": "c1b7cfa2c11beeb0",
+      "displayName": "iv::automation::RemovePoint",
+      "nominalId": "c:$@N@iv@N@automation@S@RemovePoint",
+      "payload": {
+        "fields": [
+          {
+            "name": "id",
+            "value": {
+              "bitWidth": 32,
+              "kind": "unsignedInteger"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    },
+    {
+      "definitionFingerprint": "e8fdd3f15690b14c",
+      "displayName": "iv::automation::SetSegment",
+      "nominalId": "c:$@N@iv@N@automation@S@SetSegment",
+      "payload": {
+        "fields": [
+          {
+            "name": "id",
+            "value": {
+              "bitWidth": 32,
+              "kind": "unsignedInteger"
+            }
+          },
+          {
+            "name": "interpolation",
+            "value": {
+              "bitWidth": 8,
+              "enumerators": [
+                {
+                  "name": "empty",
+                  "value": "0"
+                },
+                {
+                  "name": "hold",
+                  "value": "1"
+                },
+                {
+                  "name": "bezier",
+                  "value": "2"
+                }
+              ],
+              "kind": "enumeration",
+              "signed": false
+            }
+          },
+          {
+            "name": "tension",
+            "value": {
+              "bitWidth": 32,
+              "kind": "floatingPoint"
+            }
+          }
+        ],
+        "kind": "aggregate"
+      }
+    }
+  ],
+  "formatVersion": 0
+}

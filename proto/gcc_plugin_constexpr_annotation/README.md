@@ -15,7 +15,7 @@ source_location)` in both GCC function-body representations. Its
 transformed before constant evaluation.
 
 `real_graph_probe.cpp` uses the repository's actual `GraphBuilder::node`,
-`TypedNodeRef`, source annotation, virtual-node metadata, and consteval graph
+`TypedNodeRef`, source annotation, symbolic-node metadata, and consteval graph
 metadata path. It is the integration threshold for considering the prototype
 applicable to Intravenous rather than only to isolated C++ trees.
 

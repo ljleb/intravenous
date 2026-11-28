@@ -14,46 +14,87 @@ export type SourceSpan = {
     end: SourcePosition;
 };
 
-export type VirtualPortConnectivity =
+export type SymbolicPortConnectivity =
     | "disconnected"
     | "connected"
     | "mixed";
 
-export type VirtualPort = {
-    ordinal?: number;
-    name?: string;
-    type?: string;
-    connectivity?: VirtualPortConnectivity | string;
-    defaultValue?: number;
-    minValue?: number | null;
-    maxValue?: number | null;
-    currentValue?: number;
-    hasConcreteOverride?: boolean;
-    stateValue?: string;
+export type SymbolicPortBinding =
+    | "interface"
+    | "none"
+    | "symbolicInput"
+    | "symbolicOutput"
+    | "mixed";
+
+export type FractionalGlobalIndexValue = {
+    wholeBits: string;
+    fractionBits: string;
 };
 
-export type VirtualNodeMember = {
-    ordinal?: number;
+export type ScalarPresentationNumber =
+    | number
+    | "nan"
+    | "positiveInfinity"
+    | "negativeInfinity";
+
+export type KnobGeometry = "linear" | "circle";
+
+export type ContinuousValueAlternative = {
+    type: string;
+    rank: number;
+    channelCapability: "scalar" | "audio";
+    defaultValue?: ScalarPresentationNumber | FractionalGlobalIndexValue;
+    minValue?: ScalarPresentationNumber;
+    maxValue?: ScalarPresentationNumber;
+    scrubSpeed?: ScalarPresentationNumber;
+    geometry?: KnobGeometry;
+};
+
+export type SymbolicContinuousPort = {
+    index: number;
+    name: string;
+    displayName?: string;
+    shortDisplayName?: string;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
+    valueTypes: ContinuousValueAlternative[];
+    channelType?: string;
+};
+
+export type SymbolicEventPort = {
+    index: number;
+    name: string;
+    displayName?: string;
+    shortDisplayName?: string;
+    connectivity: SymbolicPortConnectivity;
+    binding: SymbolicPortBinding;
+    eventType: string;
+};
+
+export type SymbolicNodeMember = {
+    index?: number;
     backingNodeId?: string;
     kind?: string;
     typeIdentity?: string;
-    sampleInputs?: VirtualPort[];
-    sampleOutputs?: VirtualPort[];
-    eventInputs?: VirtualPort[];
-    eventOutputs?: VirtualPort[];
+    definitionId?: string;
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
 };
 
-export type VirtualNode = {
+export type SymbolicNode = {
     id?: string;
     instanceId?: string;
     kind?: string;
-    packageIdentity?: string;
+    sourceIdentity?: string;
     typeIdentity?: string;
+    definitionId?: string;
     sourceSpans?: SourceSpan[];
-    sampleInputs?: VirtualPort[];
-    sampleOutputs?: VirtualPort[];
-    eventInputs?: VirtualPort[];
-    eventOutputs?: VirtualPort[];
+    continuousInputs?: SymbolicContinuousPort[];
+    continuousOutputs?: SymbolicContinuousPort[];
+    eventInputs?: SymbolicEventPort[];
+    eventOutputs?: SymbolicEventPort[];
     memberCount?: number;
-    members?: VirtualNodeMember[];
+    members?: SymbolicNodeMember[];
 };

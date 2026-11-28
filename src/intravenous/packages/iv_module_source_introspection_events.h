@@ -1,0 +1,42 @@
+#pragma once
+
+#include <intravenous/linker_event.h>
+#include <intravenous/project/iv_module_instance_types.h>
+#include <intravenous/packages/node_definition_types.h>
+#include <intravenous/project/runtime_project_api_types.h>
+
+#include <filesystem>
+#include <optional>
+#include <vector>
+
+namespace iv {
+class IvModuleInstancesSourceFileFilterBuilder {
+    std::optional<std::vector<IvModuleInstanceInfo>> result;
+
+public:
+    void succeed(std::vector<IvModuleInstanceInfo> value);
+    [[nodiscard]] bool has_response() const;
+    [[nodiscard]] std::vector<IvModuleInstanceInfo> build() const;
+};
+
+// The source-introspection input of one ProjectGraph root build, applied once:
+// the module definitions the build's definitions publication changed (empty
+// otherwise) and, when the project's instance declarations changed, all of
+// them. The symbolic-node replacements this produces return in `result` for
+// ProjectGraph to publish with the rest of the build's changes.
+struct IvModuleSourceIntrospectionProjectGraphRequest {
+    IvPackageDefinitionsChanged package_definitions{};
+    std::optional<std::vector<IvModuleInstanceInfo>> instance_declarations{};
+    std::optional<ProjectSymbolicNodesNotification> result{};
+    bool handled = false;
+};
+
+using IvModuleInstancesSourceFileFilterEvent =
+    void (*)(std::filesystem::path const&,
+             std::vector<IvModuleInstanceInfo> const&,
+             IvModuleInstancesSourceFileFilterBuilder&);
+
+IV_DECLARE_LINKER_EVENT(
+    IvModuleInstancesSourceFileFilterEvent,
+    iv_runtime_iv_module_instances_source_file_filter_event);
+} // namespace iv

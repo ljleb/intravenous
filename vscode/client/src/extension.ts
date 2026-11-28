@@ -1,22 +1,31 @@
 import "reflect-metadata";
 
+import { closeSync, existsSync, openSync } from "node:fs";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { container } from "tsyringe";
 
 import { LiveGraphViewProvider } from "./liveGraphViewProvider";
-import { LaneViewProvider } from "./lanesViewProvider";
 import { NodeSpanHighlighter } from "./nodeSpanHighlighter";
 import { WorkspaceSessionFactory } from "./workspaceSessionFactory";
-import { ModulesViewProvider } from "./modulesViewProvider";
 import { timestampOutput } from "./outputLog";
-
-let deactivating = false;
+import { GraphEditorProvider } from "./graphEditorProvider";
+import type { GraphEditorAction } from "./graphEditorProtocol";
+import { knobPointerLockVersionWarning } from "./editorCompatibility";
+import { NativeClientHelper } from "./nativeClientHelper";
+import { resolveIntravenousBinary } from "./serverBinaryPaths";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    deactivating = false;
+    const bundleMarker = context.asAbsolutePath(".iv-dev-bundle");
+    let bundledRuntime: string | undefined;
+    if (existsSync(bundleMarker)) {
+        // On Linux Nix sees the open store file as a process-lifetime root.
+        const bundle = openSync(bundleMarker, "r");
+        context.subscriptions.push(new vscode.Disposable(() => closeSync(bundle)));
+        bundledRuntime = join(context.extensionPath, "..", "runtime");
+    }
     const outputChannel = timestampOutput(vscode.window.createOutputChannel("Intravenous"));
     const provider = new LiveGraphViewProvider(context.extensionUri);
-    const modulesProvider = new ModulesViewProvider();
     const highlighter = new NodeSpanHighlighter();
     const sessionFactory = container.resolve(WorkspaceSessionFactory);
 
@@ -29,6 +38,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    const localDesktop = vscode.env.uiKind === vscode.UIKind.Desktop
+        && (!vscode.env.remoteName || context.extension.extensionKind === vscode.ExtensionKind.UI);
+    let nativeHelper: NativeClientHelper | undefined;
+    if (process.platform === "linux" && localDesktop) {
+        const name = "intravenous-client-helper";
+        nativeHelper = new NativeClientHelper(() => {
+            const configured = vscode.workspace.getConfiguration("intravenous", workspaceFolder?.uri).get<string>("intravenousDir");
+            const binary = resolveIntravenousBinary(name, configured, bundledRuntime);
+            return NativeClientHelper.launch(binary.path);
+        }, (message) => outputChannel.appendLine(message));
+        context.subscriptions.push(nativeHelper);
+        nativeHelper.start();
+    } else {
+        outputChannel.appendLine("Native cursor return is unavailable. It requires a local Linux desktop extension host.");
+    }
     if (!workspaceFolder) {
         return;
     }
@@ -36,263 +60,65 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const session = sessionFactory.create(
         workspaceFolder,
         outputChannel,
-        outputChannel,
         provider,
-        modulesProvider,
         highlighter,
+        bundledRuntime,
     );
-    const configureLaneProvider = (laneProvider: LaneViewProvider) => {
-        laneProvider.setCloseHandler(() => {
-            // VS Code owns the persisted editor layout. A normal panel close
-            // removes only this runtime view subscription.
-            if (deactivating) return;
-            const viewId = laneProvider.currentLaneViewId();
-            if (!viewId) return;
-            session.closeLaneView(viewId).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous lane view close failed: ${error.message}`);
-            });
-        });
-        laneProvider.setViewportHandler(() => {
-            const viewId = laneProvider.currentLaneViewId();
-            if (!viewId) return;
-            session.updateLaneViewVisibleLanes(viewId).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous lane viewport update failed: ${error.message}`);
-            });
-        });
-        laneProvider.setScrubHandler((sampleIndex) => {
-            session.seekPlayback(sampleIndex).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous seek playback failed: ${error.message}`);
-            });
-        });
-        laneProvider.setLaneUiStateHandler((laneId, serializedState, expectedRevision) => {
-            session.setTimelineLaneUiState(laneId, serializedState, expectedRevision).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous lane UI state update failed: ${error.message}`);
-            });
-        });
-        laneProvider.setLaneRenameHandler((laneId, name) => {
-            session.setTimelineLaneName(laneId, name).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous lane rename failed: ${error.message}`);
-            });
-        });
-        laneProvider.setLaneDeleteHandler((laneId) => {
-            outputChannel.appendLine(`[debug]: Intravenous lane deletion requested: ${laneId}`);
-            session.deleteTimelineLane(laneId)
-                .then(() => {
-                    outputChannel.appendLine(`[debug]: Intravenous lane deletion acknowledged: ${laneId}`);
-                })
-                .catch((error: Error) => {
-                    outputChannel.appendLine(`Intravenous lane deletion failed: ${error.message}`);
-                });
-        });
-        laneProvider.setLaneDuplicateHandler((laneId) => {
-            session.duplicateTimelineLane(laneId).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous lane duplication failed: ${error.message}`);
-            });
-        });
-        laneProvider.setCaptureFilePickerHandler(async (laneId, currentPath, expectedRevision) => {
-            const defaultUri = currentPath && (currentPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(currentPath))
-                ? vscode.Uri.file(currentPath)
-                : vscode.Uri.joinPath(workspaceFolder.uri, currentPath || "timeline-capture.wav");
-            const selected = await vscode.window.showSaveDialog({
-                defaultUri,
-                filters: { "Wave audio": ["wav"] },
-                saveLabel: "Select capture destination",
-                title: "Select audio capture destination",
-            });
-            if (!selected) return;
-            session.setTimelineLaneUiState(
-                laneId,
-                JSON.stringify({ path: selected.fsPath }),
-                expectedRevision,
-            ).catch((error: Error) => {
-                outputChannel.appendLine(`Intravenous capture destination update failed: ${error.message}`);
-            });
-        });
-        laneProvider.setConnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            outputChannel.appendLine(`[debug]: RPC connect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
-            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
-                .then(async () => {
-                    outputChannel.appendLine("[debug]: RPC connect acknowledged; refreshing lane view");
-                    const viewId = laneProvider.currentLaneViewId();
-                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    outputChannel.appendLine("[debug]: Lane view refresh completed");
-                })
-                .catch((error: Error) => {
-                    outputChannel.appendLine(`[debug]: RPC connect failed: ${error.message}`);
-                });
-        });
-        laneProvider.setDisconnectHandler((sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            outputChannel.appendLine(`[debug]: RPC disconnect ${sourceLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
-            session.disconnectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
-                .then(async () => {
-                    outputChannel.appendLine("[debug]: RPC disconnect acknowledged; refreshing lane view");
-                    const viewId = laneProvider.currentLaneViewId();
-                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    outputChannel.appendLine("[debug]: Lane view refresh completed");
-                })
-                .catch((error: Error) => {
-                    outputChannel.appendLine(`[debug]: RPC disconnect failed: ${error.message}`);
-                });
-        });
-        laneProvider.setRewireHandler((sourceLaneId, oldTargetLaneId, targetLaneId, portDomain, portKind, portOrdinal) => {
-            outputChannel.appendLine(`[debug]: Rewire ${sourceLaneId}: ${oldTargetLaneId} -> ${targetLaneId} ${portDomain}/${portKind}[${portOrdinal}]`);
-            // The webview emits one semantic state change. This bridge keeps
-            // the existing transport temporarily while the runtime grows an
-            // atomic replace request, avoiding a lost connection on failure.
-            session.connectTimelineLanes(sourceLaneId, targetLaneId, portDomain, portKind, portOrdinal)
-                .then(() => session.disconnectTimelineLanes(sourceLaneId, oldTargetLaneId, portDomain, portKind, portOrdinal))
-                .then(async () => {
-                    const viewId = laneProvider.currentLaneViewId();
-                    if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-                    outputChannel.appendLine("[debug]: Rewire completed; lane view refresh completed");
-                })
-                .catch((error: Error) => {
-                    outputChannel.appendLine(`[debug]: Rewire failed: ${error.message}`);
-                });
-        });
-        laneProvider.setConnectionDebugHandler((message) => {
-            outputChannel.appendLine(`[debug]: ${message}`);
-        });
-        laneProvider.setDebugHandler((message) => {
-            const field = typeof message.field === "string" ? ` ${message.field}` : "";
-            const detail = typeof message.detail === "string" ? ` ${message.detail}` : "";
-            outputChannel.appendLine(`Intravenous beat pointer${field}: ${String(message.phase || "event")}${detail}`);
-        });
-    };
-    const openNewLaneView = async () => {
-        const laneProvider = new LaneViewProvider();
-        configureLaneProvider(laneProvider);
-        const viewId = session.registerLaneView(laneProvider);
-        laneProvider.open();
-        await session.openLaneView(viewId);
-    };
-    modulesProvider.setControlHandler((message) => session.dispatchModulesControl(message));
 
-    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.lanes", {
-        async deserializeWebviewPanel(panel, state) {
-            const laneProvider = new LaneViewProvider();
-            laneProvider.revive(panel, state);
-            configureLaneProvider(laneProvider);
-            const viewId = session.registerLaneView(laneProvider, laneProvider.currentLaneViewId());
-            try {
-                await session.openLaneView(viewId);
-            } catch (error: any) {
-                outputChannel.appendLine(`Intravenous lane view restore failed: ${error.message}`);
-            }
-        },
+    const graphEditor = new GraphEditorProvider(context.extensionUri, session, outputChannel, nativeHelper, context.globalState);
+    provider.setInteractionHintHandler((hint) => graphEditor.setInspectionHint(hint));
+    context.subscriptions.push(graphEditor);
+    for (const seek of [false, true]) context.subscriptions.push(vscode.commands.registerCommand(
+        seek ? "intravenous.seekPlayback" : "intravenous.togglePlayback", async () => {
+            try { await graphEditor.playbackAction(seek); }
+            catch (error) { void vscode.window.showErrorMessage(`Cannot change playback: ${error.message}`); }
+        }));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openGraphEditor", () => graphEditor.open()));
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.retryServer", async () => {
+        try { await session.retryServer(); }
+        catch (error) { void vscode.window.showErrorMessage(`Cannot start Intravenous: ${error.message}`); }
     }));
-    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.modules", {
-        async deserializeWebviewPanel(panel) {
-            modulesProvider.revive(panel);
-            try {
-                await session.refreshModulesPanel();
-            } catch (error: any) {
-                outputChannel.appendLine(`Intravenous modules restore failed: ${error.message}`);
-            }
-        },
+    context.subscriptions.push(vscode.commands.registerCommand("intravenous.debug", () => graphEditor.debug()));
+    const graphActions: GraphEditorAction[] = ["addNode", "editNode", "deleteNode", "openNodeSource", "createPackage", "deleteConnection", "undo", "redo"];
+    for (const action of graphActions) {
+        context.subscriptions.push(vscode.commands.registerCommand(`intravenous.${action}`, async () => {
+            try { await graphEditor.runAction(action); }
+            catch (error) { void vscode.window.showErrorMessage(`Cannot edit project: ${error.message}`); }
+        }));
+    }
+    context.subscriptions.push(vscode.window.registerWebviewPanelSerializer("intravenous.graphEditor", {
+        async deserializeWebviewPanel(panel) { graphEditor.revive(panel); },
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openLanes", async () => {
-        try {
-            await openNewLaneView();
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous lane query failed: ${error.message}`);
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.createLane", async () => {
-        let creatableLanes: Array<{ typeId: string; category: string; label: string; description: string }>;
-        try {
-            creatableLanes = await session.getTimelineLaneTypes();
-            outputChannel.appendLine("Intravenous create-lane types: "
-                + creatableLanes.map((lane) => lane.typeId).join(", "));
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous lane type query failed: ${error.message}`);
-            return;
-        }
-        const items: vscode.QuickPickItem[] = [];
-        let category = "";
-        for (const lane of creatableLanes) {
-            if (lane.category !== category) {
-                category = lane.category;
-                items.push({label: category, kind: vscode.QuickPickItemKind.Separator});
-            }
-            items.push({
-                label: lane.label,
-                description: lane.description,
-                detail: lane.typeId,
-            });
-        }
-        const selected = await vscode.window.showQuickPick(items, {
-            title: "Create Timeline Lane",
-            placeHolder: "Choose a lane type",
-            matchOnDescription: true,
-            matchOnDetail: true,
-        });
-        if (!selected || selected.kind === vscode.QuickPickItemKind.Separator) return;
-        const lane = creatableLanes.find((candidate) => candidate.label === selected.label);
-        if (!lane) return;
-        try {
-            await session.createTimelineLane(lane.typeId);
-            const viewId = laneProvider.currentLaneViewId();
-            if (viewId) await session.updateLaneViewVisibleLanes(viewId);
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous lane creation failed: ${error.message}`);
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.openModules", async () => {
-        modulesProvider.open();
-        try {
-            await session.refreshModulesPanel();
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous modules refresh failed: ${error.message}`);
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.resumePlayback", async () => {
-        try {
-            await session.resumePlayback(0);
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous resume failed: ${error.message}`);
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.pausePlayback", async () => {
-        try {
-            await session.pausePlayback();
-        } catch (error: any) {
-            outputChannel.appendLine(`Intravenous pause failed: ${error.message}`);
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand("intravenous.togglePlayback", async () => {
-        try {
-            await session.togglePlayback();
-        } catch (error) {
-            outputChannel.appendLine(`Intravenous playback toggle failed: ${error.message}`);
-        }
-    }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.saveProject", async () => {
         try {
             await session.saveProject();
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous project save failed: ${error.message}`);
+            outputChannel.appendLine(`Project save failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.enableProjectAutosave", async () => {
         try {
             await session.enableProjectAutosave();
-            void vscode.window.showInformationMessage("Intravenous project autosave enabled");
+            void vscode.window.showInformationMessage("Project autosave enabled");
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous autosave enable failed: ${error.message}`);
+            outputChannel.appendLine(`Autosave enable failed: ${error.message}`);
         }
     }));
     context.subscriptions.push(vscode.commands.registerCommand("intravenous.disableProjectAutosave", async () => {
         try {
             await session.disableProjectAutosave();
-            void vscode.window.showInformationMessage("Intravenous project autosave disabled");
+            void vscode.window.showInformationMessage("Project autosave disabled");
         } catch (error: any) {
-            outputChannel.appendLine(`Intravenous autosave disable failed: ${error.message}`);
+            outputChannel.appendLine(`Autosave disable failed: ${error.message}`);
         }
     }));
 
     provider.setControlHandler(async (message) => session.dispatchLiveGraphControl(message));
+    provider.setNodeEventHandler((target, event, id) => session.nodeEvents.send("source-inspection", target, event, id),
+        (target, id, begin) => begin ? session.nodeEvents.begin("source-inspection", target, id)
+            : session.nodeEvents.end("source-inspection", target, id),
+        () => session.nodeEvents.releaseOwner("source-inspection"));
 
     context.subscriptions.push({ dispose: () => void session.shutdown() });
     context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(() => {
@@ -301,10 +127,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         if (editor) {
             highlighter.applyToEditor(editor);
-            void session.updateFromEditor(editor).then((nodes) => {
-                session.updatePrimaryHighlight(nodes);
-            }, (error: Error) => {
-                outputChannel.appendLine(`Intravenous editor query failed: ${error.message}`);
+            void session.updateFromEditor(editor).catch((error: Error) => {
+                outputChannel.appendLine(`Editor query failed: ${error.message}`);
             });
         }
     }));
@@ -312,6 +136,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!session.isIntravenousProject()) {
         outputChannel.appendLine(`workspace is not an Intravenous project: missing ${session.projectMarkerPath()}`);
         return;
+    }
+
+    if (vscode.env.uiKind === vscode.UIKind.Desktop) {
+        const warning = knobPointerLockVersionWarning(vscode.env.appName, vscode.version);
+        if (warning) {
+            outputChannel.appendLine(warning);
+            void vscode.window.showWarningMessage(warning);
+        }
     }
 
     context.subscriptions.push(vscode.languages.registerDocumentHighlightProvider(
@@ -346,23 +178,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     try {
         await session.start();
         if (vscode.window.activeTextEditor) {
-            const nodes = await session.updateFromEditor(vscode.window.activeTextEditor);
-            session.updatePrimaryHighlight(nodes);
+            await session.updateFromEditor(vscode.window.activeTextEditor);
         }
     } catch (error: any) {
-        outputChannel.appendLine(`Intravenous startup failed: ${error.message}`);
-        throw error;
+        outputChannel.appendLine(`Startup failed: ${error.message}`);
     }
 
     context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(async (event) => {
-        if (event.textEditor.document.uri.scheme !== "file") {
+        if (event.textEditor !== vscode.window.activeTextEditor || event.textEditor.document.uri.scheme !== "file") {
             return;
         }
         try {
-            const nodes = await session.updateFromEditor(event.textEditor);
-            session.updatePrimaryHighlight(nodes);
+            await session.updateFromEditor(event.textEditor);
         } catch (error: any) {
-            const message = `Intravenous query failed: ${error.message}`;
+            const message = `Query failed: ${error.message}`;
             if (message !== session.lastQueryError) {
                 outputChannel.appendLine(message);
                 session.lastQueryError = message;
@@ -371,6 +200,4 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }));
 }
 
-export function deactivate(): void {
-    deactivating = true;
-}
+export function deactivate(): void {}

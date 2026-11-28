@@ -1,0 +1,100 @@
+# Channel Type Registry Direction
+
+For a future open registry and tensor model, see the
+[deferred proposal on project-defined port types](./project_defined_port_types_proposal.md).
+
+## Goal
+
+Channel types have one canonical declaration.  That declaration defines their
+named members and is also the closed registry from which static and runtime
+channel information is derived.
+
+The system must support both static configured DSP syntax and runtime
+conversion, persistence, device, and RPC state.  Static code therefore uses a channel
+descriptor type while runtime state uses its stable `ChannelTypeId`.
+
+## Canonical registry
+
+The registry is an X-macro list.  Each line declares one type and every member
+of that type exactly once:
+
+```cpp
+#define IV_CHANNEL_TYPES(X) \
+    X(mono, "mono", center) \
+    X(stereo, "stereo", left, right)
+```
+
+The registry generates:
+
+- `mono` and `stereo` descriptor types;
+- typed member values such as `stereo::left`;
+- `type::channel_names` and derived `type::channel_count`;
+- the closed `SupportedChannelTypes` type list;
+- stable runtime `ChannelTypeId` values and wire names.
+
+The stable wire name is explicit so persisted data does not change meaning if a
+C++ namespace is renamed.
+
+## Configured syntax
+
+`ChannelMember<Type, Tag>` encodes both its owning channel type and member at
+compile time.  This supports the named-family form:
+
+```cpp
+g.outputs(
+    "main"_P[stereo::left] = left,
+    "main"_P[stereo::right] = right);
+```
+
+and the convenience form for a module's sole public sample output:
+
+```cpp
+g.outputs(stereo::left = left, stereo::right = right);
+```
+
+The latter lowers to one public family named `main`.  It may not be mixed with
+explicitly named output families in the same `outputs(...)` call.
+
+## Runtime and conversion boundary
+
+`ChannelLayout` continues to carry `ChannelTypeId` because persistence, RPC,
+devices, and runtime-discovered nodes are dynamically shaped.  The ID is
+derived from the canonical registry and maps back to a descriptor through the
+closed registry.
+
+Adding a type should require no incidental switches or parallel count/name
+traits.  It must, however, require deliberate conversion definitions for every
+supported semantic pair.  Registry-generated validation should make a missing
+non-identity conversion a compile-time error rather than inventing a channel
+order or reduction.
+
+The conversion definitions are coefficient-matrix declarations owned by the semantic
+source/target pair. Identity matrices are generated for every registered type. Adding
+a new channel type therefore adds its one canonical type declaration and new
+conversion declarations between that type and the already supported types; it does
+not modify an existing conversion function. Runtime block conversion, GraphJit
+materialization/composition, zero-copy alias detection, latency-alignment planning,
+wire-name serialization and channel-count lookup are all derived from the registry and
+those matrices. A missing ordered pair fails registry validation at compile time.
+
+
+## FFT blocks use the existing audio channel registry
+
+The planned continuous value-type extension registers `FractionalGlobalIndex` in addition to
+audio-domain `iv::Sample` and `FFTBlock`. The audio-domain `Sample`/`FFTBlock` values
+continue to use the existing `ChannelTypeId`/channel-member registry. `FractionalGlobalIndex` is
+a scalar sample-coordinate value and does not require changing the channel registry.
+The registered value type determines whether the channel model applies; this does
+**not** make channel layout a universal property of every application value type.
+
+For FFT data, the canonical representation is planar by channel: a stereo FFT stream
+has one FFT block for the left channel and one for the right channel. GraphBuilder's
+existing channel tiling remains applicable to spectral nodes, so a tiled stereo node
+may still lower to one concrete mono spectral node per channel member. The initial FFT
+contract does not add a frequency-interleaved layout alternative.
+
+Channel conversion over FFT blocks remains aliasing or linear arithmetic over
+corresponding frequency values. Because the FFT is linear, legal channel reductions
+such as stereo averaging have the same mathematical meaning before or after the FFT
+(up to floating-point reassociation). GraphJit may exploit that fact as an
+optimization; it must not change the authored channel semantics.

@@ -5,6 +5,7 @@
 // derived only where kind-specific graph machinery needs them.
 
 #include <intravenous/graph/port_ids.h>
+#include <intravenous/node/tick_coverage.h>
 #include <intravenous/ports.h>
 
 #include <stdexcept>
@@ -17,6 +18,31 @@ struct NodePorts {
     std::vector<InputConfig> input_configs {};
     std::vector<OutputConfig> output_configs {};
 
+    bool supports_tick_coverage(PortKind kind, std::size_t output,
+        std::span<details::TickCoverageTerm const> terms) const
+    {
+        if (kind == PortKind::sample) {
+            if (output >= sample_output_count()) return false;
+            auto const config = sample_output(output);
+            if (!is_sequential_output(config) || config.realization != OutputRealization::computed)
+                return false;
+        } else if (kind == PortKind::event) {
+            if (output >= event_output_count()) return false;
+            auto const config = event_output(output);
+            if (!is_sequential_output(config) || config.realization != OutputRealization::computed)
+                return false;
+        } else return false;
+
+        if (!details::valid_tick_coverage_terms(terms, sample_input_count(), event_input_count()))
+            return false;
+        for (auto const& term : terms) {
+            if (term.op != details::TickCoverageOp::input) continue;
+            if (term.kind == PortKind::sample ? !is_sequential(sample_input(term.first))
+                : !is_sequential(event_input(term.first))) return false;
+        }
+        return true;
+    }
+
     constexpr std::vector<InputConfig> const& inputs() const
     {
         return input_configs;
@@ -28,22 +54,22 @@ struct NodePorts {
     }
 
 
-    constexpr std::vector<SampleInputConfig> sample_inputs() const
+    constexpr std::vector<ContinuousInputConfig> sample_inputs() const
     {
-        std::vector<SampleInputConfig> result;
+        std::vector<ContinuousInputConfig> result;
         result.reserve(sample_input_count());
         for (InputConfig const& config : input_configs) {
-            if (is_sample(config)) result.push_back(materialize_sample_config(config));
+            if (is_continuous(config)) result.push_back(materialize_continuous_config(config));
         }
         return result;
     }
 
-    constexpr std::vector<SampleOutputConfig> sample_outputs() const
+    constexpr std::vector<ContinuousOutputConfig> sample_outputs() const
     {
-        std::vector<SampleOutputConfig> result;
+        std::vector<ContinuousOutputConfig> result;
         result.reserve(sample_output_count());
         for (OutputConfig const& config : output_configs) {
-            if (is_sample(config)) result.push_back(materialize_sample_config(config));
+            if (is_continuous(config)) result.push_back(materialize_continuous_config(config));
         }
         return result;
     }
@@ -53,7 +79,7 @@ struct NodePorts {
         std::vector<EventInputConfig> result;
         result.reserve(event_input_count());
         for (InputConfig const& config : input_configs) {
-            if (!is_sample(config)) result.push_back(materialize_event_config(config));
+            if (!is_continuous(config)) result.push_back(materialize_event_config(config));
         }
         return result;
     }
@@ -63,19 +89,19 @@ struct NodePorts {
         std::vector<EventOutputConfig> result;
         result.reserve(event_output_count());
         for (OutputConfig const& config : output_configs) {
-            if (!is_sample(config)) result.push_back(materialize_event_config(config));
+            if (!is_continuous(config)) result.push_back(materialize_event_config(config));
         }
         return result;
     }
 
     constexpr size_t sample_input_count() const
     {
-        return count_sample_ports(input_configs);
+        return count_continuous_ports(input_configs);
     }
 
     constexpr size_t sample_output_count() const
     {
-        return count_sample_ports(output_configs);
+        return count_continuous_ports(output_configs);
     }
 
     constexpr size_t event_input_count() const
@@ -88,40 +114,40 @@ struct NodePorts {
         return count_event_ports(output_configs);
     }
 
-    constexpr SampleInputConfig sample_input(size_t ordinal) const
+    constexpr ContinuousInputConfig sample_input(size_t index) const
     {
         for (InputConfig const& config : input_configs) {
-            if (!is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_sample_config(config);
+            if (!is_continuous(config)) continue;
+            if (index-- == 0) return materialize_continuous_config(config);
         }
-        throw std::out_of_range("sample input ordinal is out of bounds");
+        throw std::out_of_range("sample input index is out of bounds");
     }
 
-    constexpr SampleOutputConfig sample_output(size_t ordinal) const
+    constexpr ContinuousOutputConfig sample_output(size_t index) const
     {
         for (OutputConfig const& config : output_configs) {
-            if (!is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_sample_config(config);
+            if (!is_continuous(config)) continue;
+            if (index-- == 0) return materialize_continuous_config(config);
         }
-        throw std::out_of_range("sample output ordinal is out of bounds");
+        throw std::out_of_range("sample output index is out of bounds");
     }
 
-    constexpr EventInputConfig event_input(size_t ordinal) const
+    constexpr EventInputConfig event_input(size_t index) const
     {
         for (InputConfig const& config : input_configs) {
-            if (is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_event_config(config);
+            if (is_continuous(config)) continue;
+            if (index-- == 0) return materialize_event_config(config);
         }
-        throw std::out_of_range("event input ordinal is out of bounds");
+        throw std::out_of_range("event input index is out of bounds");
     }
 
-    constexpr EventOutputConfig event_output(size_t ordinal) const
+    constexpr EventOutputConfig event_output(size_t index) const
     {
         for (OutputConfig const& config : output_configs) {
-            if (is_sample(config)) continue;
-            if (ordinal-- == 0) return materialize_event_config(config);
+            if (is_continuous(config)) continue;
+            if (index-- == 0) return materialize_event_config(config);
         }
-        throw std::out_of_range("event output ordinal is out of bounds");
+        throw std::out_of_range("event output index is out of bounds");
     }
 
     constexpr NodeBundlePortId input_port_at(
@@ -130,15 +156,32 @@ struct NodePorts {
         if (position >= input_configs.size()) {
             throw std::out_of_range("positional input is out of bounds");
         }
-        auto const sample = is_sample(input_configs[position]);
-        size_t ordinal = 0;
-        for (size_t index = 0; index < position; ++index) {
-            ordinal += is_sample(input_configs[index]) == sample;
+        auto const sample = is_continuous(input_configs[position]);
+        size_t port_index = 0;
+        for (size_t config_index = 0; config_index < position; ++config_index) {
+            port_index += is_continuous(input_configs[config_index]) == sample;
         }
         return {
             node_bundle_handle,
             sample ? PortKind::sample : PortKind::event,
-            ordinal,
+            port_index,
+        };
+    }
+    constexpr NodeBundlePortId output_port_at(
+        NodeBundleHandle node_bundle_handle, size_t position) const
+    {
+        if (position >= output_configs.size()) {
+            throw std::out_of_range("positional output is out of bounds");
+        }
+        auto const sample = is_continuous(output_configs[position]);
+        size_t port_index = 0;
+        for (size_t config_index = 0; config_index < position; ++config_index) {
+            port_index += is_continuous(output_configs[config_index]) == sample;
+        }
+        return {
+            node_bundle_handle,
+            sample ? PortKind::sample : PortKind::event,
+            port_index,
         };
     }
 };

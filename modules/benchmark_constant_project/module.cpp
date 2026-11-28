@@ -16,4 +16,4 @@ void benchmark_constant_project(iv::GraphBuilder& g)
     g.outputs("main"_P[stereo::left] = tone, "main"_P[stereo::right] = tone);
 }
 
-IV_MODULE("iv.test.benchmark_constant_project", benchmark_constant_project);
+IV_MODULE("iv.test.benchmark_constant_project", benchmark_constant_project, "Benchmark Constant Project");

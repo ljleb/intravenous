@@ -2,8 +2,9 @@
 
 #include <intravenous/module/watcher.h>
 
-int main()
+int main(int, char** argv)
 {
+    iv::test::set_test_executable_name(argv[0]);
     iv::test::install_crash_handlers();
 
     auto const fixtures = iv::test::test_modules_root();
@@ -18,33 +19,33 @@ int main()
     iv::test::copy_directory(project_src, project_dst);
     iv::test::copy_directory(voice_src, voice_dst);
 
-    auto loader = iv::test::make_loader({ runtime_root });
-    (void)loader.load_package_definitions(voice_dst);
-    auto graph = loader.load_package_definitions(project_dst).front();
+    auto loader = iv::test::make_loader();
+    (void)iv::test::load_project_package_definitions(loader, voice_dst);
+    auto graph = iv::test::load_project_package_definitions(loader, project_dst).front();
 
     auto watcher = iv::make_dependency_watcher();
     watcher.update(graph.dependencies);
-    iv::test::require(!watcher.has_changes(), "watcher should be clean before edits");
+    iv::test::require(watcher.changed_dependencies().empty(), "watcher should be clean before edits");
 
     iv::test::write_text_advancing_timestamp(project_dst / "compile_commands.json", "[]\n");
-    iv::test::require(!watcher.has_changes(), "watcher should ignore generated compile databases");
+    iv::test::require(watcher.changed_dependencies().empty(), "watcher should ignore generated compile databases");
 
     auto const clangd_cache = project_dst / ".cache" / "clangd" / "index";
     std::filesystem::create_directories(clangd_cache);
     iv::test::write_text_advancing_timestamp(clangd_cache / "module.cpp.fake.idx", "index\n");
-    iv::test::require(!watcher.has_changes(), "watcher should ignore clangd cache writes");
+    iv::test::require(watcher.changed_dependencies().empty(), "watcher should ignore clangd cache writes");
 
     auto module_cpp = voice_dst / "module.cpp";
     auto source = iv::test::read_text(module_cpp);
-    auto needle = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);");
-    auto replacement = std::string("auto const amplitude = g.input<\"amplitude\">(0.1);/* watcher marker*/");
+    auto needle = std::string("auto const amplitude = g.input(\"Amplitude\", {.default_value = 0.1});");
+    auto replacement = std::string("auto const amplitude = g.input(\"Amplitude\", {.default_value = 0.1});/* watcher marker*/");
     iv::test::require(source.contains(needle), "watch fixture did not contain expected marker");
     source.replace(source.find(needle), needle.size(), replacement);
     iv::test::write_text_advancing_timestamp(module_cpp, source);
 
     bool saw_change = false;
     for (int i = 0; i < 40; ++i) {
-        if (watcher.has_changes()) {
+        if (!watcher.changed_dependencies().empty()) {
             saw_change = true;
             break;
         }
